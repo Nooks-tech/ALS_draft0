@@ -1,0 +1,66 @@
+# Triggered by Nooks after merchant payment. Runs EAS build for Android + iOS with merchant branding.
+name: Nooks-triggered build
+on:
+  workflow_dispatch:
+    inputs:
+      merchant_id:
+        required: true
+        type: string
+      logo_url:
+        required: false
+        type: string
+        default: ""
+      primary_color:
+        required: false
+        type: string
+        default: "#0D9488"
+      accent_color:
+        required: false
+        type: string
+        default: "#0D9488"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require EXPO_TOKEN
+        run: |
+          if [ -z "${{ secrets.EXPO_TOKEN }}" ]; then
+            echo "::error::EXPO_TOKEN is not set. Do this:"
+            echo "1. Get token: Open https://expo.dev → log in → Profile → Account settings → Access tokens → Create token (e.g. name 'GitHub Actions') → copy the token."
+            echo "2. Set in GitHub: This repo → Settings → Secrets and variables → Actions → New repository secret → Name: EXPO_TOKEN, Value: (paste token) → Add secret."
+            echo "Or from repo root: run  gh secret set EXPO_TOKEN  and paste the token when prompted."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Android
+        env:
+          EXPO_PUBLIC_MERCHANT_ID: ${{ github.event.inputs.merchant_id }}
+          EXPO_PUBLIC_LOGO_URL: ${{ github.event.inputs.logo_url }}
+          EXPO_PUBLIC_PRIMARY_COLOR: ${{ github.event.inputs.primary_color }}
+          EXPO_PUBLIC_ACCENT_COLOR: ${{ github.event.inputs.accent_color }}
+        run: eas build --platform android --non-interactive --no-wait
+
+      - name: Build iOS
+        env:
+          EXPO_PUBLIC_MERCHANT_ID: ${{ github.event.inputs.merchant_id }}
+          EXPO_PUBLIC_LOGO_URL: ${{ github.event.inputs.logo_url }}
+          EXPO_PUBLIC_PRIMARY_COLOR: ${{ github.event.inputs.primary_color }}
+          EXPO_PUBLIC_ACCENT_COLOR: ${{ github.event.inputs.accent_color }}
+        run: eas build --platform ios --non-interactive --no-wait
