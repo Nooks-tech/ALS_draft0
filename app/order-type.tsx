@@ -1,11 +1,12 @@
 import { ArrowLeft, Bike, MapPin, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Dimensions, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useMenuContext } from '../src/context/MenuContext';
+import { useOperations } from '../src/context/OperationsContext';
 import { useSavedAddresses } from '../src/context/SavedAddressesContext';
 import { SwipeableBottomSheet } from '../src/components/common/SwipeableBottomSheet';
 
@@ -17,6 +18,7 @@ export default function OrderTypeScreen() {
   const { primaryColor } = useMerchantBranding();
   const { orderType, setOrderType, selectedBranch, setSelectedBranch, setDeliveryAddress } = useCart();
   const { branches } = useMenuContext();
+  const { isClosed, isPickupOnly } = useOperations();
   const { addresses: savedAddresses, setDefault, updateAddress, removeAddress } = useSavedAddresses();
   const [step, setStep] = useState<'choice' | 'branch' | 'map'>('choice');
 
@@ -27,6 +29,25 @@ export default function OrderTypeScreen() {
     } else {
       router.back();
     }
+  };
+
+  /** Parse distance string like "1.5 km" to number for sorting. */
+  const parseDistance = (d: string | undefined): number => {
+    if (!d) return Infinity;
+    const m = d.match(/([\d.]+)\s*km?/i);
+    return m ? parseFloat(m[1]) : Infinity;
+  };
+
+  const sortedBranches = useMemo(
+    () => [...branches].sort((a, b) => parseDistance(a.distance) - parseDistance(b.distance)),
+    [branches],
+  );
+
+  const handleDelivery = () => {
+    setOrderType('delivery');
+    const closest = sortedBranches[0];
+    if (closest) setSelectedBranch(closest);
+    setStep('map');
   };
 
   const modalHeight = SCREEN_HEIGHT * 0.65;
@@ -152,19 +173,29 @@ export default function OrderTypeScreen() {
         {step === 'choice' && (
           <View>
             <Text className="text-2xl font-bold text-slate-900 mb-6">How'll you have it?</Text>
-            <TouchableOpacity
-              onPress={() => { setOrderType('delivery'); setStep('branch'); }}
-              className="flex-row items-center p-5 rounded-[28px] mb-4 bg-slate-50 border border-slate-100 shadow-sm"
-            >
-              <View className="p-4 rounded-2xl" style={{ backgroundColor: `${primaryColor}20` }}><Bike size={28} color={primaryColor} /></View>
-              <View className="ml-4 flex-1">
-                <Text className="text-lg font-bold text-slate-800">Delivery</Text>
-                <Text className="text-slate-500 text-xs">Direct to your doorstep</Text>
+            {isClosed && (
+              <View className="mb-4 p-4 rounded-2xl bg-amber-50 border border-amber-200">
+                <Text className="font-bold text-amber-800">Store is currently closed</Text>
+                <Text className="text-amber-700 text-sm mt-1">You can still browse the menu. Orders will be available when we reopen.</Text>
               </View>
-            </TouchableOpacity>
+            )}
+            {!isPickupOnly && (
+              <TouchableOpacity
+                onPress={handleDelivery}
+                disabled={isClosed}
+                className={`flex-row items-center p-5 rounded-[28px] mb-4 border border-slate-100 shadow-sm ${isClosed ? 'bg-slate-100 opacity-60' : 'bg-slate-50'}`}
+              >
+                <View className="p-4 rounded-2xl" style={{ backgroundColor: `${primaryColor}20` }}><Bike size={28} color={primaryColor} /></View>
+                <View className="ml-4 flex-1">
+                  <Text className="text-lg font-bold text-slate-800">Delivery</Text>
+                  <Text className="text-slate-500 text-xs">Direct to your doorstep</Text>
+                </View>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
               onPress={() => { setOrderType('pickup'); setStep('branch'); }}
-              className="flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm"
+              disabled={isClosed}
+              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${isClosed ? 'opacity-60' : ''}`}
             >
               <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
               <View className="ml-4 flex-1">
@@ -178,7 +209,7 @@ export default function OrderTypeScreen() {
         {step === 'branch' && (
           <View className="pb-8">
             <Text className="text-2xl font-bold mb-6">Select Branch</Text>
-            {branches.map((b) => (
+            {sortedBranches.map((b) => (
                 <TouchableOpacity
                   key={b.id}
                   onPress={() => handleSelectBranch(b)}

@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { fetchOrdersForCustomer, insertOrder, subscribeToOrders, type OrderRow } from '../api/orders';
+import { notifyOrderStatusUpdate } from '../utils/orderNotifications';
 import type { CartItem } from './CartContext';
 import { useAuth } from './AuthContext';
 
@@ -104,7 +105,10 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     channelRef.current = subscribeToOrders(
       customerId,
       (row) => setOrders((prev) => [rowToOrder(row), ...prev.filter((o) => o.id !== row.id)]),
-      (row) => setOrders((prev) => prev.map((o) => (o.id === row.id ? rowToOrder(row) : o)))
+      (row) => {
+        setOrders((prev) => prev.map((o) => (o.id === row.id ? rowToOrder(row) : o)));
+        notifyOrderStatusUpdate(row.id, row.status);
+      }
     );
     return () => {
       channelRef.current?.unsubscribe();
@@ -139,7 +143,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
           delivery_address: order.deliveryAddress ?? null,
           delivery_lat: order.deliveryLat ?? null,
           delivery_lng: order.deliveryLng ?? null,
-          delivery_city: undefined,
+          delivery_city: null,
           oto_id: order.otoId ?? null,
         });
       }

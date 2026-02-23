@@ -1,5 +1,7 @@
+import * as ExpoClipboard from 'expo-clipboard';
 import { Copy } from 'lucide-react-native';
-import { Clipboard, ImageBackground, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, ImageBackground, Text, TouchableOpacity, View } from 'react-native';
+import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface OfferProps {
   title: string;
@@ -10,14 +12,15 @@ interface OfferProps {
 }
 
 export const OfferCard = ({ title, description, code, image, expiry }: OfferProps) => {
-  const copyToClipboard = () => {
-    Clipboard.setString(code);
-    alert(`Copied code: ${code}`);
+  const { primaryColor } = useMerchantBranding();
+
+  const copyToClipboard = async () => {
+    await ExpoClipboard.setStringAsync(code);
+    Alert.alert('Copied', `Code "${code}" copied to clipboard`);
   };
 
   return (
     <View className="mb-6 rounded-2xl overflow-hidden shadow-md bg-white">
-      {/* 1. Image Background */}
       <ImageBackground 
         source={{ uri: image }} 
         className="h-40 justify-end p-4"
@@ -28,7 +31,6 @@ export const OfferCard = ({ title, description, code, image, expiry }: OfferProp
         <Text className="text-gray-200 text-sm z-10">{expiry}</Text>
       </ImageBackground>
 
-      {/* 2. Content & Code */}
       <View className="p-4 flex-row justify-between items-center">
         <View className="flex-1 pr-4">
           <Text className="text-gray-600 leading-5">{description}</Text>
@@ -36,10 +38,11 @@ export const OfferCard = ({ title, description, code, image, expiry }: OfferProp
 
         <TouchableOpacity 
           onPress={copyToClipboard}
-          className="bg-red-50 px-4 py-2 rounded-lg border border-red-100 border-dashed flex-row items-center"
+          className="px-4 py-2 rounded-lg border border-dashed flex-row items-center"
+          style={{ backgroundColor: `${primaryColor}10`, borderColor: `${primaryColor}40` }}
         >
-          <Text className="text-[#00854e] font-bold mr-2 tracking-wider">{code}</Text>
-          <Copy size={16} color="#FF5A5F" />
+          <Text className="font-bold mr-2 tracking-wider" style={{ color: primaryColor }}>{code}</Text>
+          <Copy size={16} color={primaryColor} />
         </TouchableOpacity>
       </View>
     </View>

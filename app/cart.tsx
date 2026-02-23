@@ -4,10 +4,12 @@ import React from 'react';
 import { Image, SafeAreaView, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { useOperations } from '../src/context/OperationsContext';
 
 export default function CartScreen() {
   const router = useRouter();
   const { primaryColor } = useMerchantBranding();
+  const { isClosed } = useOperations();
   const {
     cartItems,
     updateQuantity,
@@ -26,6 +28,7 @@ export default function CartScreen() {
   const finalTotal = totalPrice + deliveryFee;
 
   const handleCheckout = () => {
+    if (isClosed) return;
     if (orderType === 'delivery' && !deliveryAddress?.address) {
       router.push('/order-type');
       return;
@@ -195,11 +198,15 @@ export default function CartScreen() {
       {/* --- BOTTOM CHECKOUT BUTTON --- */}
       {!!cartItems.length && (
         <View className="absolute bottom-0 left-0 right-0 bg-white p-6 pb-10 border-t border-slate-100">
+          {isClosed && (
+            <Text className="text-center text-red-500 font-bold mb-2">Store is closed — checkout unavailable</Text>
+          )}
           <TouchableOpacity
-            style={{ backgroundColor: primaryColor }}
-            className="p-5 rounded-[28px] flex-row justify-between items-center shadow-xl shadow-teal-900/20"
-            activeOpacity={0.9}
+            style={{ backgroundColor: isClosed ? '#94a3b8' : primaryColor }}
+            className="p-5 rounded-[28px] flex-row justify-between items-center shadow-xl"
+            activeOpacity={isClosed ? 1 : 0.9}
             onPress={handleCheckout}
+            disabled={isClosed}
           >
             <View className="flex-row items-center">
               <View className="bg-white/20 p-2 rounded-xl mr-3">

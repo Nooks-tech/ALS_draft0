@@ -48,7 +48,7 @@ export const SavedAddressesProvider = ({ children }: { children: ReactNode }) =>
     };
     setAddresses((prev) => {
       const next = prev.map((a) => ({ ...a, isDefault: addr.isDefault ? false : a.isDefault }));
-      const list = [...next, { ...newAddr, isDefault: addr.isDefault || prev.length === 0 }];
+      const list = [...next, { ...newAddr, isDefault: addr.isDefault ?? (prev.length === 0) }];
       persist(list);
       return list;
     });

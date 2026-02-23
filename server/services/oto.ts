@@ -145,11 +145,10 @@ export const otoService = {
     const lon = payload.deliveryAddress.lng;
 
     const deliveryOptionId = payload.deliveryOptionId ?? OTO_DELIVERY_OPTION_ID;
-    const otoOrder = {
+    const otoOrder: Record<string, unknown> = {
       orderId: payload.orderId,
-      createShipment: true,
+      createShipment: 'true',
       pickupLocationCode: pickupCode || undefined,
-      deliveryOptionId,
       payment_method: 'paid',
       amount: payload.amount,
       amount_due: 0,
@@ -179,6 +178,9 @@ export const otoService = {
         sku: item.name.replace(/\s/g, '-').toLowerCase(),
       })),
     };
+    if (deliveryOptionId != null) {
+      otoOrder.deliveryOptionId = String(deliveryOptionId);
+    }
 
     const result = await otoRequest<OTOOrderResponse>('/createOrder', otoOrder);
     return result;
@@ -189,7 +191,6 @@ export const otoService = {
     destinationCity: string;
     weight?: number;
     serviceType?: 'express' | 'sameDay' | 'fastDelivery' | 'coldDelivery' | 'heavyAndBulky' | 'electronicAndHeavy';
-    /** Required for Bullet Delivery (Mrsool, etc.) - pass coordinates to get same-day options */
     originLat?: number;
     originLon?: number;
     destinationLat?: number;
@@ -197,38 +198,83 @@ export const otoService = {
     length?: number;
     width?: number;
     height?: number;
-  }): Promise<{ deliveryOptionId: number; deliveryCompanyName: string; deliveryOptionName: string; serviceType: string; price: number; avgDeliveryTime: string }[]> {
-    const body: Record<string, any> = {
+  }): Promise<{ deliveryOptionId: number; deliveryCompanyName: string; deliveryOptionName: string; serviceType: string; price: number; avgDeliveryTime: string; source: 'oto' | 'own' }[]> {
+    const baseBody: Record<string, any> = {
       originCity: params.originCity,
       destinationCity: params.destinationCity,
       weight: params.weight ?? 0.5,
-      originCountry: 'SA',
-      destinationCountry: 'SA',
     };
-    if (params.serviceType) body.serviceType = params.serviceType;
-    if (params.originLat != null) body.originLat = params.originLat;
-    if (params.originLon != null) body.originLon = params.originLon;
-    if (params.destinationLat != null) body.destinationLat = params.destinationLat;
-    if (params.destinationLon != null) body.destinationLon = params.destinationLon;
-    if (params.length != null) body.length = params.length;
-    if (params.width != null) body.width = params.width;
-    if (params.height != null) body.height = params.height;
-    const data = await otoRequest<{ deliveryCompany?: any[] }>('/checkOTODeliveryFee', body);
-    const list = data?.deliveryCompany ?? [];
-    const mapped = list.map((c: any) => ({
-      deliveryOptionId: c.deliveryOptionId,
-      deliveryCompanyName: c.deliveryCompanyName ?? '',
-      deliveryOptionName: c.deliveryOptionName ?? '',
-      serviceType: c.serviceType ?? '',
-      price: c.price ?? 0,
-      avgDeliveryTime: c.avgDeliveryTime ?? '',
-    }));
-    return mapped.filter((o) => matchesPreferredCarrier(o.deliveryCompanyName));
+    if (params.serviceType) baseBody.serviceType = params.serviceType;
+    if (params.originLat != null) baseBody.originLat = params.originLat;
+    if (params.originLon != null) baseBody.originLon = params.originLon;
+    if (params.destinationLat != null) baseBody.destinationLat = params.destinationLat;
+    if (params.destinationLon != null) baseBody.destinationLon = params.destinationLon;
+    if (params.length != null) baseBody.length = params.length;
+    if (params.width != null) baseBody.width = params.width;
+    if (params.height != null) baseBody.height = params.height;
+
+    const mapOptions = (list: any[], source: 'oto' | 'own') =>
+      (list ?? []).map((c: any) => ({
+        deliveryOptionId: c.deliveryOptionId,
+        deliveryCompanyName: c.deliveryCompanyName ?? '',
+        deliveryOptionName: c.deliveryOptionName ?? '',
+        serviceType: c.serviceType ?? '',
+        price: c.price ?? 0,
+        avgDeliveryTime: c.avgDeliveryTime ?? '',
+        source,
+      }));
+
+    // 1) OTO's marketplace contracts (checkOTODeliveryFee) — Mrsool "Bullet" typically here
+    const otoBody = { ...baseBody, originCountry: 'SA', destinationCountry: 'SA' };
+    const otoPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkOTODeliveryFee', otoBody)
+      .then((d) => mapOptions(d?.deliveryCompany ?? [], 'oto'))
+      .catch(() => [] as ReturnType<typeof mapOptions>);
+
+    // 2) Your own DC contracts (checkDeliveryFee) — Careem, Barq when DC-activated
+    const ownBody: Record<string, any> = {
+      originCity: params.originCity,
+      destinationCity: params.destinationCity,
+      weight: params.weight ?? 0.5,
+    };
+    if (params.originLat != null) { ownBody.originLat = String(params.originLat); ownBody.originLon = String(params.originLon); }
+    if (params.destinationLat != null) { ownBody.destinationLat = String(params.destinationLat); ownBody.destinationLon = String(params.destinationLon); }
+    if (params.originLat != null || params.destinationLat != null) ownBody.deliveryType = 'bullet';
+    const ownPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkDeliveryFee', ownBody)
+      .then((d) => mapOptions(d?.deliveryCompany ?? [], 'own'))
+      .catch(() => [] as ReturnType<typeof mapOptions>);
+
+    const [otoOpts, ownOpts] = await Promise.all([otoPromise, ownPromise]);
+
+    // Merge: deduplicate by deliveryOptionId, prefer own contract pricing
+    const seen = new Set<number>();
+    const merged: typeof otoOpts = [];
+    for (const o of [...ownOpts, ...otoOpts]) {
+      if (!seen.has(o.deliveryOptionId)) {
+        seen.add(o.deliveryOptionId);
+        merged.push(o);
+      }
+    }
+
+    const filtered = merged.filter((o) => matchesPreferredCarrier(o.deliveryCompanyName));
+
+    if (filtered.length > 0) {
+      console.log(`[OTO] ${filtered.length} delivery option(s): ${filtered.map((o) => `${o.deliveryCompanyName} (${o.source})`).join(', ')}`);
+    }
+    return filtered;
   },
 
   /** POST /dcList - list all delivery companies integrated with OTO */
   async dcList(): Promise<unknown> {
     const data = await otoRequest<unknown>('/dcList', {});
+    return data;
+  },
+
+  /** GET /getDeliveryOptions - lists your activated DC contracts, optionally filtered by city or orderId */
+  async getActivatedDeliveryOptions(city?: string, orderId?: string): Promise<unknown> {
+    const params: Record<string, string> = {};
+    if (city) params.city = city;
+    if (orderId) params.orderId = orderId;
+    const data = await otoRequest<unknown>('/getDeliveryOptions', params, 'GET');
     return data;
   },
 
@@ -305,25 +351,37 @@ export const otoService = {
 
   async healthCheck(): Promise<boolean> {
     try {
-      const token = await getAccessToken();
-      const res = await fetch(`${OTO_BASE}/healthCheck`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      return res.ok;
+      await getAccessToken();
+      const cities = await this.getCities('SA', 1);
+      return cities.length > 0;
     } catch {
       return false;
     }
   },
 
   /**
-   * Get order status from OTO (e.g. pickedUp, outForDelivery, delivered).
-   * orderId is the OTO order id (numeric, from createOrder response).
+   * Get order details from OTO including status and shipment tracking.
+   * Uses GET /orderDetails?orderId=X (official OTO v2 endpoint).
+   * orderId is the OTO order id (numeric otoId from createOrder, or your orderId string).
    */
   async orderStatus(orderId: number | string): Promise<OTOOrderStatusResponse> {
-    const data = await otoRequest<OTOOrderStatusResponse>('/orderStatus', {
+    const data = await otoRequest<Record<string, unknown>>('/orderDetails', {
       orderId: String(orderId),
-    });
-    return data;
+    }, 'GET');
+
+    const shipments = Array.isArray(data?.shipments) ? data.shipments as Record<string, unknown>[] : [];
+    const latestShipment = shipments[0];
+    const tracking = latestShipment?.tracking as Record<string, unknown> | undefined;
+
+    return {
+      orderId: String(data?.orderId ?? orderId),
+      status: String(data?.status ?? latestShipment?.status ?? ''),
+      deliveryCompanyName: String(latestShipment?.deliveryCompanyName ?? ''),
+      trackingNumber: String(latestShipment?.trackingNumber ?? ''),
+      estimatedDeliveryTime: String(latestShipment?.estimatedDeliveryTime ?? ''),
+      printAWBUrl: typeof latestShipment?.printAWBUrl === 'string' ? latestShipment.printAWBUrl : undefined,
+      driverLat: typeof tracking?.lat === 'number' ? tracking.lat : (typeof tracking?.lat === 'string' ? parseFloat(tracking.lat) : undefined),
+      driverLon: typeof tracking?.lon === 'number' ? tracking.lon : (typeof tracking?.lon === 'string' ? parseFloat(tracking.lon) : undefined),
+    };
   },
 };

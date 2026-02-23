@@ -25,7 +25,7 @@ import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, Status
 export default function MoreScreen() {
   const { t, i18n } = useTranslation();
   const router = useRouter();
-  const { primaryColor } = useMerchantBranding();
+  const { primaryColor, backgroundColor } = useMerchantBranding();
   const { profile } = useProfile();
   const { signOut } = useAuth();
 
@@ -77,7 +77,7 @@ export default function MoreScreen() {
   );
 
   return (
-    <SafeAreaView style={{ paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0 }} className="flex-1 bg-slate-100">
+    <SafeAreaView style={{ flex: 1, paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0, backgroundColor }}>
       <ScrollView>
         <View className="bg-white p-6 mb-4 items-center border-b border-slate-100">
           <View className="w-20 h-20 rounded-full mb-3 justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>

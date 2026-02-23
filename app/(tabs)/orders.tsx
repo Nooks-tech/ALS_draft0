@@ -10,13 +10,13 @@ export default function OrdersScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const { orders, loading } = useOrders();
-  const { primaryColor } = useMerchantBranding();
+  const { primaryColor, backgroundColor } = useMerchantBranding();
 
   const orderItemsSummary = (order: (typeof orders)[0]) =>
     order.items.map((i) => `${i.name}${i.quantity > 1 ? ` x${i.quantity}` : ''}`).join(', ');
 
   return (
-    <View className="flex-1 bg-slate-50">
+    <View className="flex-1" style={{ backgroundColor }}>
       <StatusBar barStyle="dark-content" />
       <View className="pt-14 pb-4 px-5 bg-white border-b border-slate-100 flex-row items-center">
         <TouchableOpacity onPress={() => router.replace('/(tabs)/menu')} className="mr-4 p-2 -ml-2">

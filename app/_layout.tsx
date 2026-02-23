@@ -7,12 +7,22 @@ import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
 
+import * as Notifications from 'expo-notifications';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 import { AuthProvider } from '../src/context/AuthContext';
 import { CartProvider } from '../src/context/CartContext';
 import { MerchantBrandingWrapper } from '../src/context/MerchantBrandingContext';
 import { MerchantProvider } from '../src/context/MerchantContext';
+import { OperationsProvider } from '../src/context/OperationsContext';
 import { FavoritesProvider } from '../src/context/FavoritesContext';
 import { MenuProvider } from '../src/context/MenuContext';
 import { OrdersProvider } from '../src/context/OrdersContext';
@@ -48,6 +58,7 @@ export default function RootLayout() {
         <AuthProvider>
         <MerchantProvider>
         <MerchantBrandingWrapper>
+        <OperationsProvider>
         <CartProvider>
           <MenuProvider>
           <FavoritesProvider>
@@ -81,6 +92,7 @@ export default function RootLayout() {
           </FavoritesProvider>
           </MenuProvider>
         </CartProvider>
+        </OperationsProvider>
         </MerchantBrandingWrapper>
         </MerchantProvider>
         </AuthProvider>

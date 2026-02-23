@@ -3,6 +3,7 @@ import { Map, MapPin, Store, X } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useOrders } from '../src/context/OrdersContext';
+import { useCart } from '../src/context/CartContext';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
 import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
@@ -13,6 +14,7 @@ export default function OrderDetailModal() {
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
   const router = useRouter();
   const { orders } = useOrders();
+  const { setCartFromOrder } = useCart();
   const order = orders.find((o) => o.id === orderId);
   const { primaryColor } = useMerchantBranding();
   const [otoStatus, setOtoStatus] = useState<OTOOrderStatusResponse | null>(null);
@@ -139,6 +141,28 @@ export default function OrderDetailModal() {
             <Text className="font-bold text-slate-800">Total</Text>
             <Text className="font-bold text-lg" style={{ color: primaryColor }}>{order.total} SAR</Text>
           </View>
+
+          {order.status === 'Delivered' && (
+            <TouchableOpacity
+              onPress={() => {
+                setCartFromOrder({
+                  items: order.items,
+                  orderType: order.orderType,
+                  branchId: order.branchId,
+                  branchName: order.branchName,
+                  deliveryAddress: order.deliveryAddress,
+                  deliveryLat: order.deliveryLat,
+                  deliveryLng: order.deliveryLng,
+                });
+                router.back();
+                router.replace('/(tabs)/menu');
+              }}
+              className="mt-6 py-4 rounded-2xl items-center"
+              style={{ backgroundColor: primaryColor }}
+            >
+              <Text className="text-white font-bold text-base">Re-order</Text>
+            </TouchableOpacity>
+          )}
         </ScrollView>
       </View>
     </View>

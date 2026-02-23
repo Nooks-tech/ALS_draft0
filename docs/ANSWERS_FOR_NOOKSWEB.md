@@ -115,6 +115,18 @@ We’ll tell you the URL when the server is live. If we set a shared secret, we�
 
 ---
 
+## 11. Operations API (store status, prep time, delivery mode)
+
+We call **`GET {NOOKS_BASE}/api/public/merchants/{merchantId}/operations`** and expect:
+
+- **store_status** – `open` | `busy` | `closed` (we reflect in the app, e.g. disable ordering when closed).
+- **prep_time_minutes** – number (we use for estimated ready time).
+- **delivery_mode** – `delivery_and_pickup` | `pickup_only` (we show or hide delivery accordingly).
+
+We poll this when the app is in the merchant flow (or will use Supabase Realtime on `app_config` when you expose it). See `src/api/nooksOperations.ts` and `docs/MESSAGE_FROM_NOOKS_AND_ALS_RESPONSE.md`.
+
+---
+
 ## Summary table
 
 | Topic | ALS_draft0 answer |
@@ -129,5 +141,6 @@ We’ll tell you the URL when the server is live. If we set a shared secret, we�
 | **Auth** | Same `auth.users`; same email can be merchant and customer (one user). |
 | **Branding** | Set by merchant in Nooks (onboarding + Settings). We consume it via API and apply it in the app; no customer color picker. |
 | **Build webhook** | Set `BUILD_SERVICE_WEBHOOK_URL=https://<our-api-host>/build`; we’ll provide the host when deployed. Optional: send `x-nooks-secret` if we agree a secret. |
+| **Operations** | We call `GET …/merchants/{id}/operations` for store_status, prep_time_minutes, delivery_mode; we poll (or Realtime) so the app reflects dashboard changes. |
 
 If you need more detail on any point (e.g. exact column names for promos, or order payload shape), say which section and we can narrow it down.

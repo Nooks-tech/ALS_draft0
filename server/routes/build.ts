@@ -1,5 +1,5 @@
 /**
- * Nooks build webhook – Option B (Serverless + GitHub Actions).
+ * Nooks build webhook – Option A (one build per merchant).
  * Receives POST from Nooks after merchant payment and triggers the GitHub Actions
  * workflow that runs EAS build for Android + iOS with merchant branding env vars.
  */
@@ -32,10 +32,12 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const { merchant_id, logo_url, primary_color, accent_color } = req.body || {};
+  const { merchant_id, logo_url, primary_color, accent_color, background_color, platforms, use_test_builds } = req.body || {};
   if (!merchant_id || typeof merchant_id !== 'string') {
     return res.status(400).json({ error: 'Missing merchant_id' });
   }
+  // platforms (e.g. ["android", "ios"]) is optional; we always trigger both
+  // use_test_builds: when true, use EAS preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed
 
   if (!GITHUB_TOKEN || !GITHUB_REPO) {
     console.warn('[Build] GITHUB_TOKEN or GITHUB_REPO not set');
@@ -44,12 +46,16 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     });
   }
 
-  const inputs = {
+  const inputs: Record<string, string> = {
     merchant_id: String(merchant_id).trim(),
     logo_url: logo_url != null ? String(logo_url) : '',
     primary_color: primary_color != null ? String(primary_color) : '#0D9488',
     accent_color: accent_color != null ? String(accent_color) : '#0D9488',
+    background_color: background_color != null ? String(background_color) : '#f5f5f4',
   };
+  if (use_test_builds === true || use_test_builds === 'true') {
+    inputs.use_test_builds = 'true';
+  }
 
   res.status(202).json({ message: 'Builds triggered', merchant_id: inputs.merchant_id });
 

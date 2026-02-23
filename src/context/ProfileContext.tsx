@@ -35,7 +35,7 @@ function rowToProfile(row: ProfileRow | null, email: string): ProfileData {
     fullName: row?.full_name ?? '',
     email: email ?? '',
     phone: row?.phone_number ?? '',
-    dateOfBirth: '',
+    dateOfBirth: (row as Record<string, unknown>)?.date_of_birth as string ?? '',
   };
 }
 

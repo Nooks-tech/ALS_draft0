@@ -18,6 +18,15 @@ on:
         required: false
         type: string
         default: "#0D9488"
+      background_color:
+        required: false
+        type: string
+        default: "#f5f5f4"
+      use_test_builds:
+        description: "Use preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -55,7 +64,13 @@ jobs:
           EXPO_PUBLIC_LOGO_URL: ${{ github.event.inputs.logo_url }}
           EXPO_PUBLIC_PRIMARY_COLOR: ${{ github.event.inputs.primary_color }}
           EXPO_PUBLIC_ACCENT_COLOR: ${{ github.event.inputs.accent_color }}
-        run: eas build --platform android --non-interactive --no-wait
+          EXPO_PUBLIC_BACKGROUND_COLOR: ${{ github.event.inputs.background_color }}
+        run: |
+          if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
+            eas build --platform android --profile preview --non-interactive --no-wait
+          else
+            eas build --platform android --non-interactive --no-wait
+          fi
 
       - name: Build iOS
         env:
@@ -63,4 +78,10 @@ jobs:
           EXPO_PUBLIC_LOGO_URL: ${{ github.event.inputs.logo_url }}
           EXPO_PUBLIC_PRIMARY_COLOR: ${{ github.event.inputs.primary_color }}
           EXPO_PUBLIC_ACCENT_COLOR: ${{ github.event.inputs.accent_color }}
-        run: eas build --platform ios --non-interactive --no-wait
+          EXPO_PUBLIC_BACKGROUND_COLOR: ${{ github.event.inputs.background_color }}
+        run: |
+          if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
+            eas build --platform ios --profile ios-simulator --non-interactive --no-wait
+          else
+            eas build --platform ios --non-interactive --no-wait
+          fi

@@ -26,6 +26,8 @@ export type CartContextType = {
   deliveryAddress: { address: string; lat?: number; lng?: number; city?: string } | null;
   setDeliveryAddress: (addr: { address: string; lat?: number; lng?: number; city?: string } | null) => void;
   clearCart: () => void;
+  /** Re-order: set cart and order type from a placed order (e.g. for Re-order button). */
+  setCartFromOrder: (order: { items: CartItem[]; orderType: 'delivery' | 'pickup'; branchId?: string; branchName?: string; deliveryAddress?: string; deliveryLat?: number; deliveryLng?: number }) => void;
 };
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -89,6 +91,31 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     setCartItems([]);
   };
 
+  const setCartFromOrder = (order: {
+    items: CartItem[];
+    orderType: 'delivery' | 'pickup';
+    branchId?: string;
+    branchName?: string;
+    deliveryAddress?: string;
+    deliveryLat?: number;
+    deliveryLng?: number;
+  }) => {
+    setCartItems(order.items);
+    setOrderType(order.orderType);
+    if (order.branchId != null && order.branchName != null) {
+      setSelectedBranch({ id: order.branchId, name: order.branchName, address: '' });
+    }
+    if (order.orderType === 'delivery' && order.deliveryAddress) {
+      setDeliveryAddress({
+        address: order.deliveryAddress,
+        lat: order.deliveryLat,
+        lng: order.deliveryLng,
+      });
+    } else {
+      setDeliveryAddress(null);
+    }
+  };
+
   return (
     <CartContext.Provider
       value={{
@@ -105,6 +132,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         deliveryAddress,
         setDeliveryAddress,
         clearCart,
+        setCartFromOrder,
       }}
     >
       {children}

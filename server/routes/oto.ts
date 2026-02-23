@@ -44,6 +44,17 @@ otoRouter.get('/dc-list', async (_req, res) => {
   }
 });
 
+/** GET /api/oto/activated-carriers?city=Madinah - shows which carriers are active on your account for a city */
+otoRouter.get('/activated-carriers', async (req, res) => {
+  try {
+    const city = (req.query.city as string) || undefined;
+    const data = await otoService.getActivatedDeliveryOptions(city);
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to fetch activated carriers' });
+  }
+});
+
 /** GET /api/oto/cities?country=SA - list valid city names (use these in delivery-options) */
 otoRouter.get('/cities', async (req, res) => {
   try {
@@ -56,19 +67,37 @@ otoRouter.get('/cities', async (req, res) => {
 });
 
 /** GET /api/oto/verify - quick setup verification */
-otoRouter.get('/verify', async (_req, res) => {
+otoRouter.get('/verify', async (req, res) => {
   try {
+    const city = (req.query.city as string) || 'Madinah';
     const health = await otoService.healthCheck();
     const cities = await otoService.getCities('SA', 20).catch(() => []);
     const options = await otoService
-      .getDeliveryOptions({ originCity: 'Madinah', destinationCity: 'Riyadh', weight: 0.5 })
+      .getDeliveryOptions({
+        originCity: city,
+        destinationCity: city,
+        weight: 0.5,
+        originLat: CITY_COORDS[city]?.lat,
+        originLon: CITY_COORDS[city]?.lon,
+        destinationLat: CITY_COORDS[city]?.lat,
+        destinationLon: CITY_COORDS[city]?.lon,
+      })
       .catch(() => []);
+    const activatedDCs = await otoService.getActivatedDeliveryOptions(city).catch(() => null);
     res.json({
       auth: health,
       pickupLocationCode: process.env.OTO_PICKUP_LOCATION_CODE ? '✓ set' : '✗ missing',
+      preferredCarriers: process.env.OTO_PREFERRED_CARRIERS || 'careem,mrsool,barq (default)',
       sampleCities: cities.slice(0, 10).map((c) => c.name),
       deliveryOptionsCount: options.length,
-      sampleOptions: options.slice(0, 5).map((o) => ({ name: o.deliveryOptionName, price: o.price })),
+      sampleOptions: options.map((o) => ({
+        carrier: o.deliveryCompanyName,
+        option: o.deliveryOptionName,
+        price: o.price,
+        source: o.source,
+        id: o.deliveryOptionId,
+      })),
+      activatedDCs,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message });
@@ -127,19 +156,24 @@ otoRouter.get('/delivery-options', async (req, res) => {
   }
 });
 
-/** GET /api/oto/order-status?otoId=123 - OTO order status (and driver position if available). Syncs status to Supabase customer_orders when oto_id matches. */
+/** GET /api/oto/order-status?otoId=123 - OTO order details via GET /orderDetails (driver position, tracking). Syncs status to Supabase customer_orders when oto_id matches. */
 otoRouter.get('/order-status', async (req, res) => {
   try {
-    const otoId = req.query.otoId != null ? Number(req.query.otoId) : null;
-    if (otoId == null || isNaN(otoId)) {
-      return res.status(400).json({ error: 'Missing or invalid otoId' });
+    const otoIdRaw = req.query.otoId ?? req.query.orderId;
+    if (otoIdRaw == null) {
+      return res.status(400).json({ error: 'Missing otoId or orderId query param' });
     }
-    const status = await otoService.orderStatus(otoId);
+    const otoId = Number(otoIdRaw);
+    const lookupId = isNaN(otoId) ? String(otoIdRaw) : otoId;
+    const status = await otoService.orderStatus(lookupId);
     const mappedStatus = mapOtoStatusToOrderStatus(status?.status);
-    if (supabaseAdmin && mappedStatus !== 'Preparing') {
+    if (supabaseAdmin && mappedStatus !== 'Preparing' && !isNaN(otoId)) {
+      const updatePayload: Record<string, unknown> = { status: mappedStatus, updated_at: new Date().toISOString() };
+      if (status.driverLat != null) updatePayload.driver_lat = status.driverLat;
+      if (status.driverLon != null) updatePayload.driver_lng = status.driverLon;
       const { error } = await supabaseAdmin
         .from('customer_orders')
-        .update({ status: mappedStatus, updated_at: new Date().toISOString() })
+        .update(updatePayload)
         .eq('oto_id', otoId);
       if (error) console.warn('[OTO] Supabase status sync failed:', error.message);
     }
@@ -195,7 +229,8 @@ otoRouter.post('/request-delivery', async (req, res) => {
     });
 
     const optId = req.body.deliveryOptionId ?? process.env.OTO_DELIVERY_OPTION_ID;
-    console.log('[OTO] Delivery requested:', { orderId, otoId: result?.otoId, success: result?.success, deliveryOptionId: optId, carrier: optId == 6615 ? 'Mrsool' : '—' });
+    const carrierName = req.body.carrierName ?? 'unknown';
+    console.log('[OTO] Delivery requested:', { orderId, otoId: result?.otoId, success: result?.success, deliveryOptionId: optId, carrier: carrierName });
     res.json(result);
   } catch (err: any) {
     console.error('[OTO] request-delivery error:', err?.message);

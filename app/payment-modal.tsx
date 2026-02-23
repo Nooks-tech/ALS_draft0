@@ -1,33 +1,81 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { CreditCard, Plus, Trash2, X } from 'lucide-react-native';
-import { useState } from 'react';
-import { Dimensions, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Dimensions, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { SwipeableBottomSheet } from '../src/components/common/SwipeableBottomSheet';
 
-const CARDS_INITIAL = [
-  { id: '1', last4: '4242', brand: 'Visa', expiry: '12/26', isDefault: true },
-  { id: '2', last4: '5555', brand: 'Mastercard', expiry: '08/27', isDefault: false },
-];
+const STORAGE_KEY = '@als_saved_cards';
+
+type SavedCard = {
+  id: string;
+  last4: string;
+  brand: string;
+  expiry: string;
+  isDefault: boolean;
+};
+
+function detectBrand(num: string): string {
+  if (num.startsWith('4')) return 'Visa';
+  if (num.startsWith('5')) return 'Mastercard';
+  if (num.startsWith('62') || num.startsWith('81')) return 'Mada';
+  return 'Card';
+}
 
 export default function PaymentModal() {
   const router = useRouter();
   const { primaryColor } = useMerchantBranding();
-  const [cards, setCards] = useState(CARDS_INITIAL);
+  const [cards, setCards] = useState<SavedCard[]>([]);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [cardNumber, setCardNumber] = useState('');
+  const [cardExpiry, setCardExpiry] = useState('');
   const modalHeight = Dimensions.get('window').height * 0.85;
 
-  const removeCard = (id: string) => {
-    setCards((prev) => {
-      const next = prev.filter((c) => c.id !== id);
-      if (next.length > 0 && !next.some((c) => c.isDefault)) {
-        next[0] = { ...next[0], isDefault: true };
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
+      if (raw) {
+        try { setCards(JSON.parse(raw)); } catch {}
       }
-      return next;
     });
+  }, []);
+
+  const persist = useCallback((next: SavedCard[]) => {
+    setCards(next);
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }, []);
+
+  const removeCard = (id: string) => {
+    const next = cards.filter((c) => c.id !== id);
+    if (next.length > 0 && !next.some((c) => c.isDefault)) {
+      next[0] = { ...next[0], isDefault: true };
+    }
+    persist(next);
   };
 
   const setDefaultCard = (id: string) => {
-    setCards((prev) => prev.map((c) => ({ ...c, isDefault: c.id === id })));
+    persist(cards.map((c) => ({ ...c, isDefault: c.id === id })));
+  };
+
+  const handleAddCard = () => {
+    const digits = cardNumber.replace(/\s/g, '');
+    if (digits.length < 12 || !cardExpiry.includes('/')) {
+      Alert.alert('Invalid', 'Please enter a valid card number and expiry (MM/YY).');
+      return;
+    }
+    const last4 = digits.slice(-4);
+    const brand = detectBrand(digits);
+    const newCard: SavedCard = {
+      id: `card-${Date.now()}`,
+      last4,
+      brand,
+      expiry: cardExpiry.trim(),
+      isDefault: cards.length === 0,
+    };
+    persist([...cards, newCard]);
+    setShowAddForm(false);
+    setCardNumber('');
+    setCardExpiry('');
   };
 
   return (
@@ -45,6 +93,12 @@ export default function PaymentModal() {
           </TouchableOpacity>
         </View>
         <ScrollView className="flex-1 px-6 py-6" showsVerticalScrollIndicator={false}>
+          {cards.length === 0 && !showAddForm && (
+            <View className="items-center py-8">
+              <CreditCard size={48} color="#cbd5e1" />
+              <Text className="text-slate-400 mt-3">No saved payment methods</Text>
+            </View>
+          )}
           {cards.map((card) => (
             <View key={card.id} className="flex-row items-center p-4 mb-3 bg-slate-50 rounded-2xl border border-slate-100">
               <View className="bg-slate-200 p-3 rounded-xl mr-4"><CreditCard size={24} color="#64748b" /></View>
@@ -65,10 +119,41 @@ export default function PaymentModal() {
               </TouchableOpacity>
             </View>
           ))}
-          <TouchableOpacity className="flex-row items-center justify-center p-4 mt-2 border-2 border-dashed border-slate-200 rounded-2xl">
-            <Plus size={20} color={primaryColor} />
-            <Text className="font-bold ml-2" style={{ color: primaryColor }}>Add New Card</Text>
-          </TouchableOpacity>
+
+          {showAddForm ? (
+            <View className="p-4 bg-slate-50 rounded-2xl border border-slate-100 mt-2">
+              <Text className="text-slate-500 text-sm font-bold mb-2">Card Number</Text>
+              <TextInput
+                placeholder="1234 5678 9012 3456"
+                className="bg-white px-4 py-3 rounded-xl text-slate-800 font-medium mb-3 border border-slate-200"
+                keyboardType="number-pad"
+                maxLength={19}
+                value={cardNumber}
+                onChangeText={setCardNumber}
+              />
+              <Text className="text-slate-500 text-sm font-bold mb-2">Expiry</Text>
+              <TextInput
+                placeholder="MM/YY"
+                className="bg-white px-4 py-3 rounded-xl text-slate-800 font-medium mb-4 border border-slate-200"
+                maxLength={5}
+                value={cardExpiry}
+                onChangeText={setCardExpiry}
+              />
+              <View className="flex-row">
+                <TouchableOpacity onPress={() => setShowAddForm(false)} className="flex-1 py-3 rounded-xl items-center border border-slate-200 mr-2">
+                  <Text className="font-bold text-slate-600">Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleAddCard} className="flex-1 py-3 rounded-xl items-center" style={{ backgroundColor: primaryColor }}>
+                  <Text className="text-white font-bold">Save Card</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <TouchableOpacity onPress={() => setShowAddForm(true)} className="flex-row items-center justify-center p-4 mt-2 border-2 border-dashed border-slate-200 rounded-2xl">
+              <Plus size={20} color={primaryColor} />
+              <Text className="font-bold ml-2" style={{ color: primaryColor }}>Add New Card</Text>
+            </TouchableOpacity>
+          )}
           <Text className="text-slate-400 text-xs text-center mt-6">All payments are secured with SSL encryption</Text>
         </ScrollView>
       </SwipeableBottomSheet>

@@ -1,5 +1,6 @@
 import { Clock } from 'lucide-react-native';
 import { Text, TouchableOpacity, View } from 'react-native';
+import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface OrderProps {
   id: string;
@@ -11,7 +12,8 @@ interface OrderProps {
 }
 
 export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProps) => {
-  // varied colors based on status
+  const { primaryColor } = useMerchantBranding();
+
   const getStatusColor = () => {
     switch (status) {
       case 'Preparing': return 'bg-yellow-100 text-yellow-700';
@@ -28,7 +30,6 @@ export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProp
 
   return (
     <TouchableOpacity onPress={onPress} activeOpacity={0.8} className="bg-white p-4 mb-4 rounded-xl border border-gray-100 shadow-sm">
-      {/* 1. Header: ID & Status */}
       <View className="flex-row justify-between items-center mb-3">
         <Text className="text-gray-500 font-medium">Order #{id}</Text>
         <View className={`px-3 py-1 rounded-full ${bgClass}`}>
@@ -36,22 +37,20 @@ export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProp
         </View>
       </View>
 
-      {/* 2. Content */}
       <View className="flex-row items-center mb-3">
-        <View className="bg-gray-50 p-3 rounded-lg mr-3">
-          <Clock size={20} color="#FF5A5F" />
+        <View className="p-3 rounded-lg mr-3" style={{ backgroundColor: `${primaryColor}10` }}>
+          <Clock size={20} color={primaryColor} />
         </View>
-        <View>
-          <Text className="font-bold text-gray-900 text-base">{items}</Text>
+        <View className="flex-1">
+          <Text className="font-bold text-gray-900 text-base" numberOfLines={1}>{items}</Text>
           <Text className="text-gray-400 text-xs mt-1">{date}</Text>
         </View>
       </View>
 
-      {/* 3. Footer: Price & Reorder */}
       <View className="flex-row justify-between items-center pt-3 border-t border-gray-50">
         <Text className="font-bold text-lg text-gray-900">{price} SAR</Text>
-        <TouchableOpacity>
-          <Text className="text-[#FF5A5F] font-bold text-sm">Track Order</Text>
+        <TouchableOpacity onPress={onPress}>
+          <Text className="font-bold text-sm" style={{ color: primaryColor }}>View Details</Text>
         </TouchableOpacity>
       </View>
     </TouchableOpacity>

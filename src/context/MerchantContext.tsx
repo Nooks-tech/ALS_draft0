@@ -2,9 +2,9 @@
  * Merchant context – which Nooks merchant (store/brand) the customer is ordering from.
  * Used for: Nooks API (branches/branding), order attribution.
  *
- * Source (in order of precedence):
- * 1. Deep link / URL param (e.g. ?merchant=xxx) – set on launch and persists until app restart
- * 2. EXPO_PUBLIC_MERCHANT_ID in app config / env (one build per merchant)
+ * Option A (one build per merchant): When EXPO_PUBLIC_MERCHANT_ID is set at build time,
+ * that merchant is fixed for this app; URL params are ignored.
+ * Option B / dev: When env merchant is empty, merchant can come from URL (e.g. ?merchant=xxx).
  */
 import * as Linking from 'expo-linking';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
@@ -14,6 +14,9 @@ const ENV_MERCHANT_ID =
   Constants.expoConfig?.extra?.merchantId ??
   process.env.EXPO_PUBLIC_MERCHANT_ID ??
   '';
+
+/** Option A builds set this; then we never override from URL. */
+const isBuildTimeMerchant = ENV_MERCHANT_ID.trim() !== '';
 
 function parseMerchantFromUrl(url: string | null): string | null {
   if (!url) return null;
@@ -40,6 +43,7 @@ export const MerchantProvider = ({ children }: { children: ReactNode }) => {
   const [merchantId, setMerchantId] = useState(ENV_MERCHANT_ID);
 
   useEffect(() => {
+    if (isBuildTimeMerchant) return; // Option A: do not override from URL
     Linking.getInitialURL().then((url) => {
       const fromUrl = parseMerchantFromUrl(url);
       if (fromUrl) setMerchantId(fromUrl);

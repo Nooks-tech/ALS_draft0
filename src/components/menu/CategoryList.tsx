@@ -1,4 +1,5 @@
 import { ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface CategoryListProps {
   categories: string[];
@@ -7,6 +8,8 @@ interface CategoryListProps {
 }
 
 export const CategoryList = ({ categories, selectedCategory, onSelectCategory }: CategoryListProps) => {
+  const { primaryColor } = useMerchantBranding();
+
   return (
     <View>
       <ScrollView 
@@ -20,10 +23,9 @@ export const CategoryList = ({ categories, selectedCategory, onSelectCategory }:
             <TouchableOpacity 
               key={index} 
               onPress={() => onSelectCategory(category)}
+              style={isSelected ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined}
               className={`mr-3 px-5 py-2 rounded-full border ${
-                isSelected 
-                  ? 'bg-[#FF5A5F] border-[#FF5A5F]' 
-                  : 'bg-white border-gray-200'
+                isSelected ? '' : 'bg-white border-gray-200'
               }`}
             >
               <Text 

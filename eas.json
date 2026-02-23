@@ -1,33 +1,27 @@
 {
-  "cli": {
-    "version": ">= 12.0.0"
-  },
+  "cli": { "version": ">= 12.0.0" },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "ios": {
-        "resourceClass": "m-medium"
-      }
+      "ios": { "resourceClass": "m-medium" }
     },
     "preview": {
       "distribution": "internal",
-      "ios": {
-        "resourceClass": "m-medium"
-      }
+      "android": { "buildType": "apk" },
+      "ios": { "resourceClass": "m-medium" }
+    },
+    "ios-simulator": {
+      "extends": "preview",
+      "ios": { "simulator": true }
     },
     "production": {
-      "ios": {
-        "resourceClass": "m-medium"
-      }
+      "ios": { "resourceClass": "m-medium" }
     }
   },
   "submit": {
     "production": {
-      "ios": {
-        "appleId": "your-apple-id@email.com",
-        "ascAppId": "YOUR_APP_STORE_CONNECT_APP_ID"
-      }
+      "ios": { "appleId": "your-apple-id@email.com", "ascAppId": "YOUR_APP_STORE_CONNECT_APP_ID" }
     }
   }
 }

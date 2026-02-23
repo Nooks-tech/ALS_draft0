@@ -9,6 +9,7 @@ import {
   Search,
   Store
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
@@ -16,6 +17,7 @@ import {
   Image,
   ImageBackground,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StatusBar,
@@ -24,15 +26,23 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
+import { StoreStatusBanner } from '../../src/components/common/StoreStatusBanner';
 import { useCart } from '../../src/context/CartContext';
+import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useMenuContext } from '../../src/context/MenuContext';
+import { useOperations } from '../../src/context/OperationsContext';
 import { PROMOS } from '../../src/data/menu';
+
+type SliderItem = { id: string; image: string; title: string; subtitle: string };
 
 export default function MenuScreen() {
   const { totalItems, totalPrice, orderType, selectedBranch, deliveryAddress } = useCart();
+  const { merchantId } = useMerchant();
   const { products, categories, loading } = useMenuContext();
-  const { primaryColor, logoUrl } = useMerchantBranding();
+  const { primaryColor, logoUrl, backgroundColor } = useMerchantBranding();
+  const { isClosed, isBusy, isPickupOnly } = useOperations();
   const router = useRouter();
   const headerBg = primaryColor;
   const accent = primaryColor;
@@ -40,6 +50,9 @@ export default function MenuScreen() {
   const [selectedCategory, setSelectedCategory] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [promoPopupVisible, setPromoPopupVisible] = useState(false);
+  const [nooksBanners, setNooksBanners] = useState<NooksBanner[]>([]);
+  const hasShownPromoPopupRef = useRef(false);
 
   const displayCategories = useMemo(() => categories.filter((c) => c !== 'All'), [categories]);
   const sections = useMemo(() =>
@@ -56,6 +69,46 @@ export default function MenuScreen() {
   useEffect(() => {
     if (sections.length > 0 && !selectedCategory) setSelectedCategory(sections[0].title);
   }, [sections, selectedCategory]);
+
+  // Banners from nooksweb: GET …/merchants/{merchantId}/banners (slider + popup)
+  useEffect(() => {
+    if (!merchantId) return;
+    fetchNooksBanners(merchantId).then(setNooksBanners);
+  }, [merchantId]);
+
+  const sliderItems: SliderItem[] = useMemo(() => {
+    const sliderBanners = nooksBanners.filter((b) => b.placement === 'slider' || !b.placement);
+    if (sliderBanners.length > 0) {
+      return sliderBanners.map((b) => ({
+        id: b.id,
+        image: b.image_url,
+        title: b.title ?? '',
+        subtitle: b.subtitle ?? '',
+      }));
+    }
+    return PROMOS.map((p) => ({ id: String(p.id), image: p.image, title: p.title, subtitle: p.subtitle }));
+  }, [nooksBanners]);
+
+  const popupBanner = useMemo(() => {
+    const popup = nooksBanners.find((b) => b.placement === 'popup');
+    if (popup) return { image: popup.image_url, title: popup.title ?? '', subtitle: popup.subtitle ?? '' };
+    if (PROMOS.length > 0) return { image: PROMOS[0].image, title: PROMOS[0].title, subtitle: PROMOS[0].subtitle };
+    return null;
+  }, [nooksBanners]);
+
+  // Promo popup: show once per session when merchant has a popup (Nooks or local)
+  useEffect(() => {
+    if (hasShownPromoPopupRef.current || !popupBanner) return;
+    const key = 'promo_popup_shown_session';
+    AsyncStorage.getItem(key).then((v) => {
+      if (v !== '1') setPromoPopupVisible(true);
+    });
+  }, [popupBanner]);
+  const closePromoPopup = useCallback(() => {
+    setPromoPopupVisible(false);
+    hasShownPromoPopupRef.current = true;
+    AsyncStorage.setItem('promo_popup_shown_session', '1');
+  }, []);
 
   const screenWidth = Dimensions.get('window').width;
   const searchTranslateX = useSharedValue(0);
@@ -181,20 +234,21 @@ export default function MenuScreen() {
   const promoIndexRef = useRef(0);
 
   useEffect(() => {
+    if (sliderItems.length === 0) return;
     const interval = setInterval(() => {
-      const next = (promoIndexRef.current + 1) % PROMOS.length;
+      const next = (promoIndexRef.current + 1) % sliderItems.length;
       promoIndexRef.current = next;
       promoRef.current?.scrollToOffset({ offset: next * promoItemWidth, animated: true });
     }, 4000);
     return () => clearInterval(interval);
-  }, [promoItemWidth]);
+  }, [promoItemWidth, sliderItems.length]);
 
   const listHeaderComponent = useMemo(() => (
-    <View className="bg-slate-50">
+    <View style={{ backgroundColor }}>
       <View className="py-4">
         <FlatList
           ref={promoRef}
-          data={PROMOS}
+          data={sliderItems}
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
@@ -224,10 +278,10 @@ export default function MenuScreen() {
         />
       </View>
     </View>
-  ), [promoWidth, promoItemWidth]);
+  ), [promoWidth, promoItemWidth, sliderItems, backgroundColor]);
 
   const categoryBar = useMemo(() => (
-    <View className="bg-slate-50 px-5 pb-3 pt-1">
+    <View className="px-5 pb-3 pt-1" style={{ backgroundColor }}>
       <ScrollView ref={categoryScrollRef} horizontal showsHorizontalScrollIndicator={false}>
         {displayCategories.map((cat) => (
           <TouchableOpacity
@@ -241,18 +295,15 @@ export default function MenuScreen() {
         ))}
       </ScrollView>
     </View>
-  ), [selectedCategory, displayCategories, scrollToCategory]);
+  ), [selectedCategory, displayCategories, scrollToCategory, backgroundColor, accent]);
 
   return (
-    <View className="flex-1 bg-slate-50 relative"> 
+    <View className="flex-1 relative" style={{ backgroundColor }}> 
       <StatusBar barStyle="light-content" />
       
-      {/* HEADER */}
+      {/* HEADER (L→R): Pickup/branch | Search icon | Merchant logo (right-most) */}
       <View className="pt-14 pb-6 px-5 shadow-md flex-row justify-between items-center rounded-b-[40px]" style={{ backgroundColor: headerBg }}>
-        {logoUrl ? (
-          <Image source={{ uri: logoUrl }} className="w-10 h-10 rounded-lg mr-3 bg-white/20" resizeMode="contain" />
-        ) : null}
-        <TouchableOpacity onPress={openOrderType} className="flex-row items-center flex-1 min-w-0 mr-3">
+        <TouchableOpacity onPress={openOrderType} className="flex-row items-center flex-1 min-w-0 mr-2" accessibilityLabel={orderType === 'delivery' ? 'Delivering to' : 'Pickup from'} accessibilityRole="button">
           <View className="bg-white/20 p-2.5 rounded-2xl mr-3 border border-white/30 shadow-sm shrink-0">
             {orderType === 'delivery' ? <Bike size={20} color="white" /> : <Store size={20} color="white" />}
           </View>
@@ -268,17 +319,27 @@ export default function MenuScreen() {
             </Text>
           </View>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => setIsSearchVisible(true)} className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0">
-           <Search size={22} color="white" />
+        <TouchableOpacity onPress={() => setIsSearchVisible(true)} className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0 mr-2" accessibilityLabel="Search menu" accessibilityRole="button">
+          <Search size={22} color="white" />
         </TouchableOpacity>
+        <View className="ml-1" style={{ width: 40, height: 40 }} accessibilityLabel="Merchant logo" accessibilityRole="image">
+          {logoUrl ? (
+            <Image source={{ uri: logoUrl }} style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' }} resizeMode="contain" />
+          ) : (
+            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' }} />
+          )}
+        </View>
       </View>
 
       {/* STICKY CATEGORY BAR */}
       {categoryBar}
 
+      {/* STORE STATUS BANNER */}
+      <StoreStatusBanner />
+
       {/* MAIN LIST */}
       {loading ? (
-        <View className="px-5 py-4 flex-1"><Text className="text-slate-500">Loading menu...</Text></View>
+        <View className="px-5 py-4 flex-1" style={{ backgroundColor }}><Text className="text-slate-500">Loading menu...</Text></View>
       ) : (
       <ScrollView
         ref={menuScrollRef}
@@ -296,7 +357,8 @@ export default function MenuScreen() {
               key={`header-${section.title}`}
               onLayout={captureSectionY(section.title)}
               collapsable={false}
-              className="bg-slate-50 px-5 py-4"
+              className="px-5 py-4"
+              style={{ backgroundColor }}
             >
               <Text className="text-xl font-bold text-slate-800">{section.title}</Text>
             </View>,
@@ -344,7 +406,7 @@ export default function MenuScreen() {
               }
             })}
         >
-          <Animated.View style={[{ flex: 1, position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 110, backgroundColor: 'white' }, searchAnimatedStyle]}>
+          <Animated.View style={[{ flex: 1, position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 110, backgroundColor }, searchAnimatedStyle]}>
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={{ flex: 1 }}
@@ -356,11 +418,16 @@ export default function MenuScreen() {
               <Search size={20} color="#94a3b8" />
               <TextInput placeholder="What are you craving?" className="flex-1 ml-2 text-slate-700 font-medium" value={searchQuery} onChangeText={setSearchQuery} />
             </View>
+            <TouchableOpacity onPress={() => { setIsSearchVisible(false); router.push('/cart'); }} className="ml-3 p-2 rounded-xl bg-slate-100 min-w-[44px] items-center justify-center">
+              <Text className="text-slate-700 font-bold">{totalItems}</Text>
+              <Text className="text-slate-500 text-[10px]">Cart</Text>
+            </TouchableOpacity>
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
             {products.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map((item) => (
               <TouchableOpacity key={item.id} onPress={() => openProduct(item)} 
-                className="mb-4 bg-slate-50 p-3 rounded-2xl flex-row items-center border border-slate-100"
+                className="mb-4 p-3 rounded-2xl flex-row items-center border border-slate-100"
+                style={{ backgroundColor }}
               >
                 <Image source={{ uri: item.image }} className="w-16 h-16 rounded-xl bg-slate-200" />
                 <View className="ml-4 flex-1"><Text className="text-lg font-bold text-slate-800">{item.name}</Text><Text className="font-bold" style={{ color: accent }}>{item.price} SAR</Text></View>
@@ -374,8 +441,26 @@ export default function MenuScreen() {
         </GestureDetector>
       )}
 
-      {/* FLOATING CART */}
-      {!!totalItems && (
+      {/* Promo popup: once per session (Nooks placement=popup or local PROMOS[0]) */}
+      {popupBanner && (
+        <Modal visible={promoPopupVisible} transparent animationType="fade">
+          <TouchableOpacity activeOpacity={1} onPress={closePromoPopup} className="flex-1 bg-black/60 justify-center items-center px-6">
+            <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-2xl overflow-hidden bg-white shadow-2xl">
+              <ImageBackground source={{ uri: popupBanner.image }} className="aspect-[4/3] justify-end p-4" imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
+                <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
+                <Text className="text-white font-bold text-2xl z-10">{popupBanner.subtitle}</Text>
+                <Text className="text-gray-200 z-10">{popupBanner.title}</Text>
+              </ImageBackground>
+              <TouchableOpacity onPress={closePromoPopup} className="py-4 items-center border-t border-slate-100" style={{ backgroundColor: accent }}>
+                <Text className="text-white font-bold">Close</Text>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </Modal>
+      )}
+
+      {/* FLOATING CART – hidden when store is closed */}
+      {!!totalItems && !isClosed && (
         <View className="absolute bottom-10 left-5 right-5 z-[120]">
           <TouchableOpacity onPress={() => router.push('/cart')} className="p-5 rounded-[28px] flex-row justify-between items-center shadow-2xl" style={{ backgroundColor: accent }}>
               <View className="flex-row items-center">

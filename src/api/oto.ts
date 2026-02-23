@@ -10,6 +10,8 @@ export interface OTODeliveryOption {
   serviceType: string;
   price: number;
   avgDeliveryTime: string;
+  /** 'oto' = OTO marketplace contract, 'own' = your DC-activated contract */
+  source?: 'oto' | 'own';
 }
 
 export interface OTORequestDeliveryPayload {
