@@ -58,13 +58,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Write .env for EAS
+        run: |
+          cat > .env << 'ENVEOF'
+          EXPO_PUBLIC_MERCHANT_ID=${{ github.event.inputs.merchant_id }}
+          EXPO_PUBLIC_LOGO_URL=${{ github.event.inputs.logo_url }}
+          EXPO_PUBLIC_PRIMARY_COLOR=${{ github.event.inputs.primary_color }}
+          EXPO_PUBLIC_ACCENT_COLOR=${{ github.event.inputs.accent_color }}
+          EXPO_PUBLIC_BACKGROUND_COLOR=${{ github.event.inputs.background_color }}
+          EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}
+          EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}
+          EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
+          ENVEOF
+          sed -i 's/^ *//' .env
+          echo "--- .env contents (redacted) ---"
+          grep -c "=" .env && echo "vars written"
+
       - name: Build Android
-        env:
-          EXPO_PUBLIC_MERCHANT_ID: ${{ github.event.inputs.merchant_id }}
-          EXPO_PUBLIC_LOGO_URL: ${{ github.event.inputs.logo_url }}
-          EXPO_PUBLIC_PRIMARY_COLOR: ${{ github.event.inputs.primary_color }}
-          EXPO_PUBLIC_ACCENT_COLOR: ${{ github.event.inputs.accent_color }}
-          EXPO_PUBLIC_BACKGROUND_COLOR: ${{ github.event.inputs.background_color }}
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform android --profile preview --non-interactive --no-wait
@@ -73,12 +85,6 @@ jobs:
           fi
 
       - name: Build iOS
-        env:
-          EXPO_PUBLIC_MERCHANT_ID: ${{ github.event.inputs.merchant_id }}
-          EXPO_PUBLIC_LOGO_URL: ${{ github.event.inputs.logo_url }}
-          EXPO_PUBLIC_PRIMARY_COLOR: ${{ github.event.inputs.primary_color }}
-          EXPO_PUBLIC_ACCENT_COLOR: ${{ github.event.inputs.accent_color }}
-          EXPO_PUBLIC_BACKGROUND_COLOR: ${{ github.event.inputs.background_color }}
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform ios --profile ios-simulator --non-interactive --no-wait
