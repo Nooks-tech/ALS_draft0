@@ -15,12 +15,14 @@ const buildTimeBackgroundColor = process.env.EXPO_PUBLIC_BACKGROUND_COLOR || '';
 const config = {
   ...appJson,
   extra: {
+    eas: {
+      projectId: 'fb36734a-26d7-4ea6-8eec-35bb94bdbfda',
+    },
     mapboxToken: process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '',
     moyasarPublishableKey: process.env.EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY || '',
     merchantId: process.env.EXPO_PUBLIC_MERCHANT_ID || '',
     skipAuthForDev: process.env.EXPO_PUBLIC_SKIP_AUTH_FOR_DEV === 'true',
     nooksApiBaseUrl: process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || '',
-    // Build-time branding (Option A: one app per merchant)
     logoUrl: buildTimeLogoUrl || null,
     primaryColor: buildTimePrimaryColor || '',
     accentColor: buildTimeAccentColor || '',

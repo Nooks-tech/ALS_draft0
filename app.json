@@ -2,6 +2,7 @@
   "expo": {
     "name": "ALS_draft0",
     "slug": "ALS_draft0",
+    "owner": "nooks-business",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
