@@ -21,6 +21,7 @@ if (!g || !r) {
 app.use(cors());
 app.use(express.json());
 
+app.get('/', (_, res) => res.json({ status: 'ok' }));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
 app.use('/build', buildRouter);
