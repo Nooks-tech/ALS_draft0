@@ -1,0 +1,10 @@
+{
+  "steps": {
+    "build": {
+      "commands": ["echo 'No build needed'"]
+    }
+  },
+  "deploy": {
+    "startCommand": "npm run start:prod"
+  }
+}
