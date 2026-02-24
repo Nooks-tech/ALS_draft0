@@ -29,6 +29,6 @@ app.use('/api/foodics', foodicsRouter);
 app.use('/api/oto', otoRouter);
 app.use('/api/payment', paymentRouter);
 
-app.listen(PORT, () => {
-  console.log(`ALS API running at http://localhost:${PORT}`);
+app.listen(Number(PORT), '0.0.0.0', () => {
+  console.log(`ALS API running on port ${PORT}`);
 });
