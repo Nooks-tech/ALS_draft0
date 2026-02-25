@@ -67,17 +67,16 @@ export function MerchantBrandingProvider({
       const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
       const res = await fetch(url);
       if (res.ok) {
-        const data = (await res.json()) as {
-          logo_url?: string | null;
-          primary_color?: string;
-          accent_color?: string;
-          background_color?: string;
-        };
+        const data = (await res.json()) as Record<string, unknown>;
+        const logo = data.logoUrl ?? data.logo_url;
+        const primary = data.primaryColor ?? data.primary_color;
+        const accent = data.accentColor ?? data.accent_color;
+        const bg = data.backgroundColor ?? data.background_color;
         setBranding((prev) => ({
-          logoUrl: data.logo_url ?? prev.logoUrl,
-          primaryColor: data.primary_color ?? prev.primaryColor,
-          accentColor: data.accent_color ?? prev.accentColor,
-          backgroundColor: data.background_color ?? prev.backgroundColor,
+          logoUrl: typeof logo === 'string' && logo ? logo : prev.logoUrl,
+          primaryColor: typeof primary === 'string' && primary ? primary : prev.primaryColor,
+          accentColor: typeof accent === 'string' && accent ? accent : prev.accentColor,
+          backgroundColor: typeof bg === 'string' && bg ? bg : prev.backgroundColor,
         }));
       }
     } catch {

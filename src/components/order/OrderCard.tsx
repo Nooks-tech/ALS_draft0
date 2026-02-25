@@ -4,7 +4,7 @@ import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface OrderProps {
   id: string;
-  status: 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled';
+  status: 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled' | 'On Hold';
   price: number;
   date: string;
   items: string;
@@ -21,6 +21,7 @@ export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProp
       case 'Out for delivery': return 'bg-blue-100 text-blue-700';
       case 'Delivered': return 'bg-gray-100 text-gray-600';
       case 'Cancelled': return 'bg-red-100 text-red-600';
+      case 'On Hold': return 'bg-orange-100 text-orange-600';
       default: return 'bg-gray-100 text-gray-600';
     }
   };

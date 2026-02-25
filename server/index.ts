@@ -5,6 +5,8 @@ import express from 'express';
 import { authRouter } from './routes/auth';
 import { buildRouter } from './routes/build';
 import { foodicsRouter } from './routes/foodics';
+import { loyaltyRouter } from './routes/loyalty';
+import { ordersRouter } from './routes/orders';
 import { otoRouter } from './routes/oto';
 import { paymentRouter } from './routes/payment';
 
@@ -27,6 +29,8 @@ app.get('/health', (_, res) => res.json({ status: 'ok' }));
 app.use('/build', buildRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/foodics', foodicsRouter);
+app.use('/api/loyalty', loyaltyRouter);
+app.use('/api/orders', ordersRouter);
 app.use('/api/oto', otoRouter);
 app.use('/api/payment', paymentRouter);
 

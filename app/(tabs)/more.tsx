@@ -14,6 +14,7 @@ import {
   Mail,
   MapPin,
   Shield,
+  Star,
   User,
 } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
@@ -102,6 +103,7 @@ export default function MoreScreen() {
         <Text className="px-4 mb-2 text-slate-500 font-bold text-xs uppercase">Preferences</Text>
         <View className="mb-6 bg-white rounded-2xl overflow-hidden mx-4">
           <MenuItem icon={CreditCard} title="Payment Method" subtitle="Cards & payment options" onPress={() => router.push('/payment-modal')} accentColor={primaryColor} />
+          <MenuItem icon={Star} title="Loyalty Points" subtitle="Earn & redeem rewards" onPress={() => router.push('/loyalty-modal')} accentColor={primaryColor} />
         </View>
 
         <Text className="px-4 mb-2 text-slate-500 font-bold text-xs uppercase">App Settings</Text>

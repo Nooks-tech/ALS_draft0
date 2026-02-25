@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 C
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
 
 import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
 
@@ -16,8 +17,24 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
+
+async function requestNotificationPermissions() {
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('orders', {
+      name: 'Order Updates',
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: 'default',
+    });
+  }
+  const { status } = await Notifications.getPermissionsAsync();
+  if (status !== 'granted') {
+    await Notifications.requestPermissionsAsync();
+  }
+}
 import { AuthProvider } from '../src/context/AuthContext';
 import { CartProvider } from '../src/context/CartContext';
 import { MerchantBrandingWrapper } from '../src/context/MerchantBrandingContext';
@@ -44,6 +61,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (loaded || error) {
       SplashScreen.hideAsync();
+      requestNotificationPermissions();
     }
   }, [loaded, error]);
 
@@ -85,6 +103,8 @@ export default function RootLayout() {
             <Stack.Screen name="about-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="privacy-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="terms-modal" options={{ presentation: 'transparentModal' }} />
+            <Stack.Screen name="loyalty-modal" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="order-confirmed" options={{ presentation: 'modal', gestureEnabled: false }} />
           </Stack>
           </SavedAddressesProvider>
           </ProfileProvider>

@@ -2,6 +2,7 @@
  * Customer orders – persist to Supabase (customer_orders table) when user is logged in.
  */
 import type { RealtimeChannel } from '@supabase/supabase-js';
+import { api } from './client';
 import { supabase } from './supabase';
 
 export type OrderRow = {
@@ -19,6 +20,11 @@ export type OrderRow = {
   delivery_lng: number | null;
   delivery_city: string | null;
   oto_id: number | null;
+  cancellation_reason: string | null;
+  cancelled_by: string | null;
+  refund_status: string | null;
+  delivery_fee: number | null;
+  payment_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -38,6 +44,8 @@ export type OrderInsert = {
   delivery_lng?: number | null;
   delivery_city?: string | null;
   oto_id?: number | null;
+  delivery_fee?: number | null;
+  payment_id?: string | null;
 };
 
 export async function fetchOrdersForCustomer(customerId: string): Promise<OrderRow[]> {
@@ -71,12 +79,36 @@ export async function insertOrder(row: OrderInsert): Promise<boolean> {
     delivery_lng: row.delivery_lng ?? null,
     delivery_city: row.delivery_city ?? null,
     oto_id: row.oto_id ?? null,
+    delivery_fee: row.delivery_fee ?? null,
+    payment_id: row.payment_id ?? null,
   });
   if (error) {
     console.warn('[Orders] Insert error:', error.message);
     return false;
   }
   return true;
+}
+
+export async function customerCancelOrder(orderId: string): Promise<{ success: boolean; refundStatus?: string; error?: string }> {
+  return api.post<{ success: boolean; refundStatus?: string; error?: string }>(`/api/orders/${orderId}/customer-cancel`, {});
+}
+
+export async function holdOrder(orderId: string): Promise<{ success: boolean; error?: string }> {
+  return api.post<{ success: boolean; error?: string }>(`/api/orders/${orderId}/hold`, {});
+}
+
+export async function resumeOrder(orderId: string): Promise<{ success: boolean; error?: string }> {
+  return api.post<{ success: boolean; error?: string }>(`/api/orders/${orderId}/resume`, {});
+}
+
+export async function getOrderStatus(orderId: string): Promise<{
+  status: string;
+  cancellation_reason: string | null;
+  cancelled_by: string | null;
+  canCustomerCancel: boolean;
+  cancelTimeRemaining: number;
+}> {
+  return api.get(`/api/orders/${orderId}/status`);
 }
 
 export function subscribeToOrders(

@@ -1,11 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
-import { fetchOrdersForCustomer, insertOrder, subscribeToOrders, type OrderRow } from '../api/orders';
+import { customerCancelOrder, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
 import { notifyOrderStatusUpdate } from '../utils/orderNotifications';
 import type { CartItem } from './CartContext';
 import { useAuth } from './AuthContext';
 
-const ORDER_STATUSES = ['Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled'] as const;
+const ORDER_STATUSES = ['Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold'] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 export type PlacedOrder = {
@@ -22,12 +22,21 @@ export type PlacedOrder = {
   deliveryLat?: number;
   deliveryLng?: number;
   otoId?: number;
+  cancellationReason?: string;
+  cancelledBy?: string;
+  refundStatus?: string;
+  createdAt?: string;
+  deliveryFee?: number;
+  paymentId?: string;
 };
 
 export type OrdersContextType = {
   orders: PlacedOrder[];
   loading: boolean;
-  addOrder: (order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number }, generatedId?: string) => void;
+  addOrder: (order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string }, generatedId?: string) => void;
+  cancelOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
+  holdOrderForEdit: (orderId: string) => Promise<{ success: boolean; error?: string }>;
+  resumeHeldOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
 };
 
 const OrdersContext = createContext<OrdersContextType | undefined>(undefined);
@@ -70,6 +79,12 @@ function rowToOrder(row: OrderRow): PlacedOrder {
     deliveryLat: row.delivery_lat ?? undefined,
     deliveryLng: row.delivery_lng ?? undefined,
     otoId: row.oto_id ?? undefined,
+    cancellationReason: row.cancellation_reason ?? undefined,
+    cancelledBy: row.cancelled_by ?? undefined,
+    refundStatus: row.refund_status ?? undefined,
+    createdAt: row.created_at,
+    deliveryFee: row.delivery_fee ?? undefined,
+    paymentId: row.payment_id ?? undefined,
   };
 }
 
@@ -117,15 +132,17 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
   }, [customerId]);
 
   const addOrder = useCallback(
-    (order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number }, generatedId?: string) => {
+    (order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string }, generatedId?: string) => {
       const id = generatedId ?? `order-${Date.now()}`;
-      const date = formatOrderDate(new Date().toISOString());
+      const now = new Date().toISOString();
+      const date = formatOrderDate(now);
       const status: OrderStatus = 'Preparing';
       const placed: PlacedOrder = {
         ...order,
         id,
         date,
         status,
+        createdAt: now,
       };
       setOrders((prev) => [placed, ...prev]);
 
@@ -145,14 +162,58 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
           delivery_lng: order.deliveryLng ?? null,
           delivery_city: null,
           oto_id: order.otoId ?? null,
+          delivery_fee: order.deliveryFee ?? null,
+          payment_id: order.paymentId ?? null,
         });
       }
     },
     [customerId]
   );
 
+  const cancelOrder = useCallback(async (orderId: string) => {
+    try {
+      const result = await customerCancelOrder(orderId);
+      if (result.success) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? { ...o, status: 'Cancelled' as OrderStatus, cancelledBy: 'customer', cancellationReason: 'Cancelled by customer', refundStatus: result.refundStatus } : o))
+        );
+      }
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to cancel' };
+    }
+  }, []);
+
+  const holdOrderForEdit = useCallback(async (orderId: string) => {
+    try {
+      const result = await holdOrder(orderId);
+      if (result.success) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? { ...o, status: 'On Hold' as OrderStatus } : o))
+        );
+      }
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to hold' };
+    }
+  }, []);
+
+  const resumeHeldOrder = useCallback(async (orderId: string) => {
+    try {
+      const result = await resumeOrder(orderId);
+      if (result.success) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? { ...o, status: 'Preparing' as OrderStatus } : o))
+        );
+      }
+      return result;
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Failed to resume' };
+    }
+  }, []);
+
   return (
-    <OrdersContext.Provider value={{ orders, loading, addOrder }}>
+    <OrdersContext.Provider value={{ orders, loading, addOrder, cancelOrder, holdOrderForEdit, resumeHeldOrder }}>
       {children}
     </OrdersContext.Provider>
   );

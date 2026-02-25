@@ -12,6 +12,7 @@ const TAP_SECRET_KEY = process.env.TAP_SECRET_KEY;
 const MOYASAR_SECRET_KEY = process.env.MOYASAR_SECRET_KEY;
 /** Public HTTPS base URL for payment redirects (e.g. https://api.als.delivery) - required for success_url */
 const PAYMENT_REDIRECT_BASE = process.env.PAYMENT_REDIRECT_BASE_URL;
+const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
 
 export interface PaymentInitRequest {
   amount: number;
@@ -19,6 +20,7 @@ export interface PaymentInitRequest {
   orderId?: string;
   customer?: { name: string; email?: string; phone?: string };
   successUrl?: string;
+  deliveryFee?: number;
 }
 
 export interface PaymentSession {
@@ -26,6 +28,15 @@ export interface PaymentSession {
   url?: string;
   clientSecret?: string;
   status: string;
+  commission?: { rate: number; amount: number };
+}
+
+export function calculateCommission(totalAmount: number, deliveryFee: number = 0): { rate: number; amount: number } {
+  const subtotal = Math.max(0, totalAmount - deliveryFee);
+  return {
+    rate: NOOKS_COMMISSION_RATE,
+    amount: +(subtotal * NOOKS_COMMISSION_RATE).toFixed(2),
+  };
 }
 
 export const paymentService = {
@@ -108,10 +119,12 @@ export const paymentService = {
 
     const url = data.url;
     console.log('[Moyasar] Invoice created, url:', url ? 'yes' : 'no');
+    const commission = calculateCommission(req.amount, req.deliveryFee);
     return {
       id: data.id,
       url: url || undefined,
       status: data.status || 'initiated',
+      commission,
     };
   },
 };

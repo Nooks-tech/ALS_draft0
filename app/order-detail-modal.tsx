@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Map, MapPin, Store, X } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
-import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { AlertTriangle, Map, MapPin, RefreshCw, Store, Truck, X, XCircle } from 'lucide-react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
@@ -10,22 +10,94 @@ import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 
+const CANCEL_WINDOW_MS = 2 * 60 * 1000;
+
 export default function OrderDetailModal() {
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
   const router = useRouter();
-  const { orders } = useOrders();
+  const { orders, cancelOrder } = useOrders();
   const { setCartFromOrder } = useCart();
   const order = orders.find((o) => o.id === orderId);
   const { primaryColor } = useMerchantBranding();
   const [otoStatus, setOtoStatus] = useState<OTOOrderStatusResponse | null>(null);
+  const [cancelTimeLeft, setCancelTimeLeft] = useState(0);
+  const [cancelling, setCancelling] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const driverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!order?.createdAt || order.status !== 'Preparing') return;
+    const updateTimer = () => {
+      const elapsed = Date.now() - new Date(order.createdAt!).getTime();
+      const remaining = Math.max(0, CANCEL_WINDOW_MS - elapsed);
+      setCancelTimeLeft(remaining);
+      if (remaining <= 0 && timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+    updateTimer();
+    timerRef.current = setInterval(updateTimer, 1000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [order?.createdAt, order?.status]);
+
   useEffect(() => {
     if (!order?.otoId) return;
     let cancelled = false;
-    otoApi.getOrderStatus(order.otoId).then((data) => {
-      if (!cancelled) setOtoStatus(data);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [order?.otoId]);
+    const poll = () => {
+      otoApi.getOrderStatus(order.otoId!).then((data) => {
+        if (!cancelled) setOtoStatus(data);
+      }).catch(() => {});
+    };
+    poll();
+    if (order.status === 'Out for delivery') {
+      driverPollRef.current = setInterval(poll, 10000);
+    }
+    return () => {
+      cancelled = true;
+      if (driverPollRef.current) clearInterval(driverPollRef.current);
+    };
+  }, [order?.otoId, order?.status]);
+
+  const handleCancel = useCallback(async () => {
+    if (!order) return;
+    Alert.alert(
+      'Cancel Order',
+      'Are you sure you want to cancel this order? You will receive a full refund.',
+      [
+        { text: 'No', style: 'cancel' },
+        {
+          text: 'Yes, Cancel',
+          style: 'destructive',
+          onPress: async () => {
+            setCancelling(true);
+            const result = await cancelOrder(order.id);
+            setCancelling(false);
+            if (!result.success) {
+              Alert.alert('Cannot Cancel', result.error || 'Failed to cancel order.');
+            }
+          },
+        },
+      ]
+    );
+  }, [order, cancelOrder]);
+
+  const handleReorder = useCallback(() => {
+    if (!order) return;
+    setCartFromOrder({
+      items: order.items,
+      orderType: order.orderType,
+      branchId: order.branchId,
+      branchName: order.branchName,
+      deliveryAddress: order.deliveryAddress,
+      deliveryLat: order.deliveryLat,
+      deliveryLng: order.deliveryLng,
+    });
+    router.back();
+    router.replace('/(tabs)/menu');
+  }, [order, setCartFromOrder, router]);
 
   if (!order) {
     return (
@@ -43,7 +115,12 @@ export default function OrderDetailModal() {
   const branchOto = getBranchOtoConfig(order.branchId ?? '', order.branchName);
   const branchLat = branchOto?.lat;
   const branchLon = branchOto?.lon;
+  const isOutForDelivery = order.status === 'Out for delivery';
+  const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
   const canShowMap = branchLat != null && branchLon != null;
+  const canCancel = order.status === 'Preparing' && cancelTimeLeft > 0;
+  const cancelMinutes = Math.floor(cancelTimeLeft / 60000);
+  const cancelSeconds = Math.floor((cancelTimeLeft % 60000) / 1000);
 
   const statusBadgeColors: Record<string, { bg: string; text: string }> = {
     Preparing: { bg: 'bg-yellow-100', text: 'text-yellow-700' },
@@ -51,6 +128,7 @@ export default function OrderDetailModal() {
     'Out for delivery': { bg: 'bg-blue-100', text: 'text-blue-700' },
     Delivered: { bg: 'bg-gray-100', text: 'text-gray-600' },
     Cancelled: { bg: 'bg-red-100', text: 'text-red-600' },
+    'On Hold': { bg: 'bg-orange-100', text: 'text-orange-600' },
   };
   const badge = statusBadgeColors[order.status] ?? { bg: 'bg-slate-100', text: 'text-slate-600' };
 
@@ -72,10 +150,49 @@ export default function OrderDetailModal() {
             <Text className="text-slate-500 text-sm mt-2">{order.date}</Text>
           </View>
 
-          {order.status !== 'Cancelled' && (
+          {/* Cancellation reason (shown when merchant cancels) */}
+          {order.status === 'Cancelled' && order.cancellationReason && (
+            <View className="mb-4 p-4 bg-red-50 rounded-xl flex-row items-start">
+              <AlertTriangle size={18} color="#EF4444" style={{ marginTop: 2 }} />
+              <View className="flex-1 ml-3">
+                <Text className="font-bold text-red-700 text-sm">
+                  {order.cancelledBy === 'merchant' ? 'Cancelled by store' : 'You cancelled this order'}
+                </Text>
+                <Text className="text-red-600 text-sm mt-1">{order.cancellationReason}</Text>
+                {order.refundStatus === 'refunded' && (
+                  <Text className="text-green-600 text-xs mt-1 font-medium">Refund processed</Text>
+                )}
+                {order.refundStatus === 'pending_manual' && (
+                  <Text className="text-amber-600 text-xs mt-1 font-medium">Refund being processed</Text>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* Cancel button with countdown (2-min window) */}
+          {canCancel && (
+            <TouchableOpacity
+              onPress={handleCancel}
+              disabled={cancelling}
+              className="mb-4 py-3 px-4 rounded-xl border border-red-200 bg-red-50 flex-row items-center justify-center"
+            >
+              {cancelling ? (
+                <ActivityIndicator size="small" color="#EF4444" />
+              ) : (
+                <>
+                  <XCircle size={18} color="#EF4444" />
+                  <Text className="text-red-600 font-bold ml-2">
+                    Cancel Order ({cancelMinutes}:{cancelSeconds.toString().padStart(2, '0')})
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {order.status !== 'Cancelled' && order.status !== 'On Hold' && (
             <View className="mb-6">
               <Text className="font-bold text-slate-800 mb-3">Order status</Text>
-              <OrderStatusStepper status={order.status} orderType={order.orderType} accentColor={primaryColor} />
+              <OrderStatusStepper status={order.status as any} orderType={order.orderType} accentColor={primaryColor} />
             </View>
           )}
 
@@ -92,11 +209,12 @@ export default function OrderDetailModal() {
             </View>
           )}
 
-          {canShowMap && (
+          {/* Live driver tracking map – shown for "Out for delivery" status */}
+          {showDriverMap && (
             <View className="mb-6">
               <View className="flex-row items-center gap-2 mb-3">
-                <Map size={18} color={primaryColor} />
-                <Text className="font-bold text-slate-800">Track on map</Text>
+                <Truck size={18} color={primaryColor} />
+                <Text className="font-bold text-slate-800">Live driver tracking</Text>
               </View>
               <OrderTrackingMap
                 branchLat={branchLat}
@@ -119,7 +237,38 @@ export default function OrderDetailModal() {
                     <Text className="text-slate-500 text-xs">Your location</Text>
                   </View>
                 )}
+                {otoStatus?.driverLat != null && (
+                  <View className="flex-row items-center gap-1.5">
+                    <View className="w-2 h-2 rounded-full bg-indigo-500" />
+                    <Text className="text-slate-500 text-xs">Driver</Text>
+                  </View>
+                )}
               </View>
+              {otoStatus?.estimatedDeliveryTime && (
+                <Text className="text-slate-500 text-xs mt-2">
+                  ETA: {otoStatus.estimatedDeliveryTime}
+                </Text>
+              )}
+            </View>
+          )}
+
+          {/* Static map for non-delivery-tracking orders */}
+          {canShowMap && !showDriverMap && order.status !== 'Cancelled' && (
+            <View className="mb-6">
+              <View className="flex-row items-center gap-2 mb-3">
+                <Map size={18} color={primaryColor} />
+                <Text className="font-bold text-slate-800">Track on map</Text>
+              </View>
+              <OrderTrackingMap
+                branchLat={branchLat}
+                branchLon={branchLon}
+                deliveryLat={order.deliveryLat}
+                deliveryLng={order.deliveryLng}
+                driverLat={otoStatus?.driverLat}
+                driverLon={otoStatus?.driverLon}
+                branchName={order.branchName}
+                accentColor={primaryColor}
+              />
             </View>
           )}
 
@@ -142,27 +291,19 @@ export default function OrderDetailModal() {
             <Text className="font-bold text-lg" style={{ color: primaryColor }}>{order.total} SAR</Text>
           </View>
 
-          {order.status === 'Delivered' && (
+          {/* Re-order button for Delivered or Cancelled orders */}
+          {(order.status === 'Delivered' || order.status === 'Cancelled') && (
             <TouchableOpacity
-              onPress={() => {
-                setCartFromOrder({
-                  items: order.items,
-                  orderType: order.orderType,
-                  branchId: order.branchId,
-                  branchName: order.branchName,
-                  deliveryAddress: order.deliveryAddress,
-                  deliveryLat: order.deliveryLat,
-                  deliveryLng: order.deliveryLng,
-                });
-                router.back();
-                router.replace('/(tabs)/menu');
-              }}
-              className="mt-6 py-4 rounded-2xl items-center"
+              onPress={handleReorder}
+              className="mt-6 py-4 rounded-2xl items-center flex-row justify-center gap-2"
               style={{ backgroundColor: primaryColor }}
             >
+              <RefreshCw size={18} color="white" />
               <Text className="text-white font-bold text-base">Re-order</Text>
             </TouchableOpacity>
           )}
+
+          <View className="h-6" />
         </ScrollView>
       </View>
     </View>

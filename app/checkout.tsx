@@ -33,6 +33,7 @@ import {
 } from 'react-native-moyasar-sdk';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from '../src/api/config';
 import { foodicsApi } from '../src/api/foodics';
+import { loyaltyApi } from '../src/api/loyalty';
 import { otoApi } from '../src/api/oto';
 import { paymentApi } from '../src/api/payment';
 import { buildNooksOrderPayload, submitOrderToNooks } from '../src/api/nooksOrders';
@@ -57,7 +58,7 @@ import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useOrders } from '../src/context/OrdersContext';
 import { useProfile } from '../src/context/ProfileContext';
 
-export type PaymentMethod = 'apple_pay' | 'credit_card';
+export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card';
 
 const VAT_RATE = 0.15; // 15% Saudi VAT
 
@@ -79,7 +80,7 @@ export default function CheckoutScreen() {
   const { primaryColor } = useMerchantBranding();
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
-    Platform.OS === 'ios' ? 'apple_pay' : 'credit_card'
+    Platform.OS === 'ios' ? 'apple_pay' : 'samsung_pay'
   );
   const [submitting, setSubmitting] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -273,9 +274,15 @@ export default function CheckoutScreen() {
           deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat : undefined,
           deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng : undefined,
           otoId,
+          deliveryFee,
+          paymentId: orderId,
         },
         orderId
       );
+      if (customerId && customerId !== 'guest') {
+        const subtotalForPoints = Math.max(0, finalTotal - deliveryFee);
+        loyaltyApi.earn(customerId, orderId, subtotalForPoints).catch(() => {});
+      }
       const nooksPayload = buildNooksOrderPayload(
         {
           merchantId: merchantId || undefined,
@@ -295,7 +302,7 @@ export default function CheckoutScreen() {
       setMoyasarWebUrl(null);
       setShowPaymentPicker(false);
       router.dismissAll();
-      setTimeout(() => router.replace('/(tabs)/orders'), 0);
+      setTimeout(() => router.replace({ pathname: '/order-confirmed', params: { orderId } }), 0);
     } catch (err: any) {
       Alert.alert('Order Failed', err?.message || 'Order could not be created. Please contact support.');
     } finally {
@@ -372,8 +379,12 @@ export default function CheckoutScreen() {
       Alert.alert('Apple Pay', 'Apple Pay is only available on iOS.');
       return;
     }
+    if (paymentMethod === 'samsung_pay' && Platform.OS !== 'android') {
+      Alert.alert('Samsung Pay', 'Samsung Pay is only available on Android.');
+      return;
+    }
 
-    if (paymentMethod === 'apple_pay') {
+    if (paymentMethod === 'apple_pay' || paymentMethod === 'samsung_pay') {
       paymentSuccessHandled.current = false;
       setSubmitting(true);
       try {
@@ -400,7 +411,11 @@ export default function CheckoutScreen() {
   };
 
   const paymentLabel =
-    paymentMethod === 'apple_pay' ? 'Apple Pay' : 'Credit / Debit Card';
+    paymentMethod === 'apple_pay'
+      ? 'Apple Pay'
+      : paymentMethod === 'samsung_pay'
+        ? 'Samsung Pay'
+        : 'Credit / Debit Card';
 
   if (cartItems.length === 0) {
     return (
@@ -542,6 +557,10 @@ export default function CheckoutScreen() {
                 <View className="w-12 h-8 bg-black rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
                   <Text className="text-white font-bold text-xs"> Pay</Text>
                 </View>
+              ) : paymentMethod === 'samsung_pay' ? (
+                <View className="w-12 h-8 bg-blue-900 rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
+                  <Text className="text-white font-bold text-xs">S Pay</Text>
+                </View>
               ) : (
                 <View className="w-12 h-10 bg-slate-200 rounded-lg items-center justify-center">
                   <Text className="text-slate-600 font-bold text-xs">••••</Text>
@@ -568,7 +587,11 @@ export default function CheckoutScreen() {
               <ActivityIndicator size="small" color="white" />
             ) : (
               <Text className="text-white font-bold text-base">
-                {paymentMethod === 'apple_pay' ? 'Pay with  Pay' : `Pay ${finalTotal.toFixed(2)} SAR`}
+                {paymentMethod === 'apple_pay'
+                  ? 'Pay with  Pay'
+                  : paymentMethod === 'samsung_pay'
+                    ? 'Pay with Samsung Pay'
+                    : `Pay ${finalTotal.toFixed(2)} SAR`}
               </Text>
             )}
           </TouchableOpacity>
@@ -596,6 +619,17 @@ export default function CheckoutScreen() {
                   <Text className="text-white font-bold text-xs"> Pay</Text>
                 </View>
                 <Text className="ml-3 font-medium">Apple Pay</Text>
+              </TouchableOpacity>
+            )}
+            {Platform.OS === 'android' && (
+              <TouchableOpacity
+                onPress={() => { setPaymentMethod('samsung_pay'); setShowPaymentPicker(false); }}
+                className="flex-row items-center py-3 border-b border-slate-100"
+              >
+                <View className="w-12 h-8 bg-blue-900 rounded items-center justify-center">
+                  <Text className="text-white font-bold text-xs">S Pay</Text>
+                </View>
+                <Text className="ml-3 font-medium">Samsung Pay</Text>
               </TouchableOpacity>
             )}
             <TouchableOpacity
@@ -641,7 +675,9 @@ export default function CheckoutScreen() {
       <Modal visible={!!moyasarWebUrl} animationType="slide" presentationStyle="pageSheet">
         <SafeAreaView className="flex-1 bg-white">
           <View className="flex-row items-center justify-between px-5 py-4 border-b border-slate-100">
-            <Text className="text-lg font-bold text-slate-800">Pay with Apple Pay</Text>
+            <Text className="text-lg font-bold text-slate-800">
+              {paymentMethod === 'samsung_pay' ? 'Pay with Samsung Pay' : 'Pay with Apple Pay'}
+            </Text>
             <TouchableOpacity onPress={() => setMoyasarWebUrl(null)} className="p-2">
               <X size={24} color="#64748b" />
             </TouchableOpacity>
