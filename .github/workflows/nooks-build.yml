@@ -42,6 +42,25 @@ jobs:
             exit 1
           fi
 
+      - name: Require build env secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          API_URL: ${{ secrets.API_URL }}
+          NOOKS_API_BASE_URL: ${{ secrets.NOOKS_API_BASE_URL }}
+          MOYASAR_PUBLISHABLE_KEY: ${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
+        run: |
+          missing=0
+          [ -z "$SUPABASE_URL" ] && echo "::error::SUPABASE_URL is not set in GitHub repo secrets." && missing=1
+          [ -z "$SUPABASE_ANON_KEY" ] && echo "::error::SUPABASE_ANON_KEY is not set in GitHub repo secrets." && missing=1
+          [ -z "$API_URL" ] && echo "::error::API_URL is not set in GitHub repo secrets." && missing=1
+          [ -z "$NOOKS_API_BASE_URL" ] && echo "::error::NOOKS_API_BASE_URL is not set in GitHub repo secrets." && missing=1
+          [ -z "$MOYASAR_PUBLISHABLE_KEY" ] && echo "::error::MOYASAR_PUBLISHABLE_KEY is not set in GitHub repo secrets." && missing=1
+          if [ "$missing" -eq 1 ]; then
+            echo "Set missing secrets in: Repo -> Settings -> Secrets and variables -> Actions"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4

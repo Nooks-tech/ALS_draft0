@@ -3,12 +3,14 @@ import { Poppins_400Regular, Poppins_700Bold } from '@expo-google-fonts/poppins'
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import Constants from 'expo-constants';
 import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
 
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import * as Device from 'expo-device';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
 
@@ -45,6 +47,9 @@ import { MenuProvider } from '../src/context/MenuContext';
 import { OrdersProvider } from '../src/context/OrdersContext';
 import { ProfileProvider } from '../src/context/ProfileContext';
 import { SavedAddressesProvider } from '../src/context/SavedAddressesContext';
+import { useAuth } from '../src/context/AuthContext';
+import { useMerchant } from '../src/context/MerchantContext';
+import { registerPushToken } from '../src/api/push';
 import '../src/i18n';
 
 // Keep the splash screen visible while we fetch resources
@@ -83,6 +88,7 @@ export default function RootLayout() {
           <OrdersProvider>
           <ProfileProvider>
           <SavedAddressesProvider>
+          <PushTokenRegistrar />
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="(auth)" />
@@ -120,4 +126,35 @@ export default function RootLayout() {
     </GestureHandlerRootView>
     </ErrorBoundary>
   );
+}
+
+function PushTokenRegistrar() {
+  const { user } = useAuth();
+  const { merchantId } = useMerchant();
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!user?.id || !merchantId) return;
+      if (!Device.isDevice) return;
+      try {
+        const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas?.projectId;
+        const token = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
+        if (!token || cancelled) return;
+        await registerPushToken({
+          merchantId,
+          customerId: user.id,
+          token,
+        });
+      } catch {
+        // Non-blocking: push registration can fail silently.
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, merchantId]);
+
+  return null;
 }

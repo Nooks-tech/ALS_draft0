@@ -8,7 +8,7 @@ import { Router, Request, Response } from 'express';
 const BUILD_SECRET = process.env.BUILD_WEBHOOK_SECRET || '';
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
 const GITHUB_REPO = process.env.GITHUB_REPO || ''; // e.g. "owner/ALS_draft0"
-const GITHUB_REF = process.env.GITHUB_BUILD_REF || 'main';
+const GITHUB_REF = process.env.GITHUB_BUILD_REF || 'master';
 const BUILD_WEBHOOK_BASE_URL = process.env.BUILD_WEBHOOK_BASE_URL || ''; // e.g. https://api.als.delivery
 
 export const buildRouter = Router();

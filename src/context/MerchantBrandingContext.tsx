@@ -33,10 +33,19 @@ const DEFAULT_BRANDING: MerchantBranding = {
 
 /** Build-time branding from app.config.js extra (set by EAS workflow per merchant). */
 function getBuildTimeBranding(): MerchantBranding {
-  const logo = extra?.logoUrl;
-  const primary = typeof extra?.primaryColor === 'string' && extra.primaryColor ? extra.primaryColor : DEFAULT_BRANDING.primaryColor;
-  const accent = typeof extra?.accentColor === 'string' && extra.accentColor ? extra.accentColor : DEFAULT_BRANDING.accentColor;
-  const bg = typeof extra?.backgroundColor === 'string' && extra.backgroundColor ? extra.backgroundColor : DEFAULT_BRANDING.backgroundColor;
+  const logo = extra?.logoUrl ?? process.env.EXPO_PUBLIC_LOGO_URL;
+  const primary =
+    (typeof extra?.primaryColor === 'string' && extra.primaryColor) ||
+    process.env.EXPO_PUBLIC_PRIMARY_COLOR ||
+    DEFAULT_BRANDING.primaryColor;
+  const accent =
+    (typeof extra?.accentColor === 'string' && extra.accentColor) ||
+    process.env.EXPO_PUBLIC_ACCENT_COLOR ||
+    DEFAULT_BRANDING.accentColor;
+  const bg =
+    (typeof extra?.backgroundColor === 'string' && extra.backgroundColor) ||
+    process.env.EXPO_PUBLIC_BACKGROUND_COLOR ||
+    DEFAULT_BRANDING.backgroundColor;
   return {
     logoUrl: typeof logo === 'string' && logo ? logo : null,
     primaryColor: primary,
