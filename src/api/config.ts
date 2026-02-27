@@ -36,3 +36,6 @@ export const APPLE_PAY_MERCHANT_ID = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_
 
 /** Moyasar API base URL - use https://apimig.moyasar.com for staging */
 export const MOYASAR_BASE_URL = process.env.EXPO_PUBLIC_MOYASAR_BASE_URL || 'https://api.moyasar.com';
+
+/** Enable Samsung Pay button only when merchant has a configured wallet profile. */
+export const SAMSUNG_PAY_ENABLED = process.env.EXPO_PUBLIC_SAMSUNG_PAY_ENABLED === 'true';

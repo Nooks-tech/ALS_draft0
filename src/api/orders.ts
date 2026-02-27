@@ -62,6 +62,20 @@ export async function fetchOrdersForCustomer(customerId: string): Promise<OrderR
   return (data ?? []) as OrderRow[];
 }
 
+export async function fetchOrderById(orderId: string): Promise<OrderRow | null> {
+  if (!supabase || !orderId) return null;
+  const { data, error } = await supabase
+    .from('customer_orders')
+    .select('*')
+    .eq('id', orderId)
+    .maybeSingle();
+  if (error) {
+    console.warn('[Orders] Fetch by id error:', error.message);
+    return null;
+  }
+  return (data as OrderRow | null) ?? null;
+}
+
 export async function insertOrder(row: OrderInsert): Promise<boolean> {
   if (!supabase) return false;
   const { error } = await supabase.from('customer_orders').insert({

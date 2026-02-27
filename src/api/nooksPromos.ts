@@ -15,7 +15,7 @@ export type NooksPromo = {
   id: string;
   code: string;
   name: string; // display name; may equal code
-  type?: 'percentage' | 'amount';
+  type?: 'percentage' | 'amount' | 'percent' | 'fixed';
   value?: number;
   valid_from?: string;
   valid_until?: string;
@@ -35,4 +35,14 @@ export async function fetchNooksPromos(merchantId: string): Promise<NooksPromo[]
   } catch {
     return [];
   }
+}
+
+export function calculateNooksPromoDiscount(promo: NooksPromo, subtotal: number): number {
+  const rawType = String(promo.type ?? '').toLowerCase();
+  const value = Number(promo.value ?? 0);
+  if (value <= 0 || subtotal <= 0) return 0;
+  if (rawType === 'percentage' || rawType === 'percent') {
+    return Math.round(Math.min(subtotal * (value / 100), subtotal) * 100) / 100;
+  }
+  return Math.min(value, subtotal);
 }

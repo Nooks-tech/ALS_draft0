@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Bike, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import React from 'react';
+import { Alert } from 'react-native';
 import { Image, SafeAreaView, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
@@ -9,7 +10,7 @@ import { useOperations } from '../src/context/OperationsContext';
 export default function CartScreen() {
   const router = useRouter();
   const { primaryColor } = useMerchantBranding();
-  const { isClosed } = useOperations();
+  const { isClosed, isBusy } = useOperations();
   const {
     cartItems,
     updateQuantity,
@@ -28,7 +29,15 @@ export default function CartScreen() {
   const finalTotal = totalPrice + deliveryFee;
 
   const handleCheckout = () => {
-    if (isClosed) return;
+    if (isClosed || isBusy) {
+      Alert.alert(
+        'Ordering Unavailable',
+        isClosed
+          ? 'Store is currently closed.'
+          : 'Store is currently busy and not accepting new orders.'
+      );
+      return;
+    }
     if (orderType === 'delivery' && !deliveryAddress?.address) {
       router.push('/order-type');
       return;
@@ -198,15 +207,16 @@ export default function CartScreen() {
       {/* --- BOTTOM CHECKOUT BUTTON --- */}
       {!!cartItems.length && (
         <View className="absolute bottom-0 left-0 right-0 bg-white p-6 pb-10 border-t border-slate-100">
-          {isClosed && (
-            <Text className="text-center text-red-500 font-bold mb-2">Store is closed — checkout unavailable</Text>
+          {(isClosed || isBusy) && (
+            <Text className="text-center text-red-500 font-bold mb-2">
+              {isClosed ? 'Store is closed — checkout unavailable' : 'Store is busy — checkout temporarily unavailable'}
+            </Text>
           )}
           <TouchableOpacity
-            style={{ backgroundColor: isClosed ? '#94a3b8' : primaryColor }}
+            style={{ backgroundColor: (isClosed || isBusy) ? '#94a3b8' : primaryColor }}
             className="p-5 rounded-[28px] flex-row justify-between items-center shadow-xl"
-            activeOpacity={isClosed ? 1 : 0.9}
+            activeOpacity={0.9}
             onPress={handleCheckout}
-            disabled={isClosed}
           >
             <View className="flex-row items-center">
               <View className="bg-white/20 p-2 rounded-xl mr-3">

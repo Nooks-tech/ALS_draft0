@@ -12,6 +12,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Dimensions,
   FlatList,
   Image,
@@ -96,19 +97,21 @@ export default function MenuScreen() {
     return null;
   }, [nooksBanners]);
 
-  // Promo popup: show once per session when merchant has a popup (Nooks or local)
+  // Promo popup: show once per merchant to avoid cross-merchant suppression.
   useEffect(() => {
-    if (hasShownPromoPopupRef.current || !popupBanner) return;
-    const key = 'promo_popup_shown_session';
+    if (hasShownPromoPopupRef.current || !popupBanner || !merchantId) return;
+    const key = `promo_popup_shown_${merchantId}`;
     AsyncStorage.getItem(key).then((v) => {
       if (v !== '1') setPromoPopupVisible(true);
     });
-  }, [popupBanner]);
+  }, [popupBanner, merchantId]);
   const closePromoPopup = useCallback(() => {
     setPromoPopupVisible(false);
     hasShownPromoPopupRef.current = true;
-    AsyncStorage.setItem('promo_popup_shown_session', '1');
-  }, []);
+    if (merchantId) {
+      AsyncStorage.setItem(`promo_popup_shown_${merchantId}`, '1');
+    }
+  }, [merchantId]);
 
   const screenWidth = Dimensions.get('window').width;
   const searchTranslateX = useSharedValue(0);
@@ -338,7 +341,7 @@ export default function MenuScreen() {
       <StoreStatusBanner />
 
       {/* MAIN LIST */}
-      {loading ? (
+      {loading && sections.length === 0 ? (
         <View className="px-5 py-4 flex-1" style={{ backgroundColor }}><Text className="text-slate-500">Loading menu...</Text></View>
       ) : (
       <ScrollView
@@ -418,10 +421,6 @@ export default function MenuScreen() {
               <Search size={20} color="#94a3b8" />
               <TextInput placeholder="What are you craving?" className="flex-1 ml-2 text-slate-700 font-medium" value={searchQuery} onChangeText={setSearchQuery} />
             </View>
-            <TouchableOpacity onPress={() => { setIsSearchVisible(false); router.push('/cart'); }} className="ml-3 p-2 rounded-xl bg-slate-100 min-w-[44px] items-center justify-center">
-              <Text className="text-slate-700 font-bold">{totalItems}</Text>
-              <Text className="text-slate-500 text-[10px]">Cart</Text>
-            </TouchableOpacity>
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
             {products.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map((item) => (
@@ -459,10 +458,25 @@ export default function MenuScreen() {
         </Modal>
       )}
 
-      {/* FLOATING CART – hidden when store is closed */}
-      {!!totalItems && !isClosed && (
+      {/* FLOATING CART – always visible when items exist; blocked on closed/busy with message */}
+      {!!totalItems && (
         <View className="absolute bottom-10 left-5 right-5 z-[120]">
-          <TouchableOpacity onPress={() => router.push('/cart')} className="p-5 rounded-[28px] flex-row justify-between items-center shadow-2xl" style={{ backgroundColor: accent }}>
+          <TouchableOpacity
+            onPress={() => {
+              if (isClosed || isBusy) {
+                Alert.alert(
+                  'Ordering Unavailable',
+                  isClosed
+                    ? 'Store is currently closed.'
+                    : 'Store is currently busy and not accepting new orders.'
+                );
+                return;
+              }
+              router.push('/cart');
+            }}
+            className="p-5 rounded-[28px] flex-row justify-between items-center shadow-2xl"
+            style={{ backgroundColor: (isClosed || isBusy) ? '#94a3b8' : accent }}
+          >
               <View className="flex-row items-center">
                 <View className="bg-white/20 px-3 py-1.5 rounded-xl mr-3"><Text className="text-white font-bold">{totalItems}</Text></View>
                 <Text className="text-white font-bold text-lg">Checkout Now</Text>

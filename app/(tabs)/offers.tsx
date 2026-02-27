@@ -40,6 +40,7 @@ export default function OffersScreen() {
   }, [merchantId]);
 
   const offerList = useMemo(() => {
+    const offerBanners = nooksBanners.filter((b) => b.placement === 'offers' || b.placement === 'slider' || !b.placement);
     if (nooksPromos.length > 0) {
       return nooksPromos.map((p) => ({
         id: p.id,
@@ -47,11 +48,11 @@ export default function OffersScreen() {
         description: p.description ?? `Use code ${p.code} at checkout`,
         code: p.code,
         expiry: formatExpiry(p.valid_until),
-        image: PLACEHOLDER_PROMO_IMAGE,
+        image: offerBanners[0]?.image_url || PLACEHOLDER_PROMO_IMAGE,
       }));
     }
     return DEFAULT_OFFERS;
-  }, [nooksPromos]);
+  }, [nooksPromos, nooksBanners]);
 
   return (
     <View className="flex-1" style={{ backgroundColor }}>
@@ -68,7 +69,9 @@ export default function OffersScreen() {
         ListHeaderComponent={
           nooksBanners.length > 0 ? (
             <View className="mb-4">
-              {nooksBanners.map((b) => (
+              {nooksBanners
+                .filter((b) => b.placement === 'offers' || b.placement === 'slider' || !b.placement)
+                .map((b) => (
                 <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden bg-white shadow-sm">
                   <Image source={{ uri: b.image_url }} className="w-full h-40 bg-slate-200" resizeMode="cover" />
                   {(b.title || b.subtitle) && (

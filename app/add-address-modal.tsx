@@ -7,6 +7,7 @@ import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useSavedAddresses, type SavedAddress } from '../src/context/SavedAddressesContext';
 import { ArrowLeft, MapPin, Search } from 'lucide-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -19,7 +20,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const MAP_HEIGHT = 200;
@@ -48,6 +49,10 @@ export default function AddAddressModal() {
   const [pinCoords, setPinCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [addressLoading, setAddressLoading] = useState(false);
+  const androidMapsEnabled =
+    ((Constants.expoConfig?.extra as { enableAndroidMaps?: string } | undefined)?.enableAndroidMaps === 'true') ||
+    process.env.EXPO_PUBLIC_ENABLE_ANDROID_MAPS === 'true';
+  const shouldRenderMap = Platform.OS !== 'android' || androidMapsEnabled;
   const mapRegion = useState({
     latitude: 24.7136,
     longitude: 46.6753,
@@ -252,44 +257,51 @@ export default function AddAddressModal() {
             </View>
           )}
 
-          <View className="rounded-2xl overflow-hidden border border-slate-200" style={{ height: MAP_HEIGHT }}>
-            <MapView
-              ref={mapRef}
-              provider={PROVIDER_GOOGLE}
-              style={{ width: '100%', height: MAP_HEIGHT }}
-              initialRegion={mapRegion}
-              onPress={async (e) => {
-                const { latitude, longitude } = e.nativeEvent.coordinate;
-                setPinCoords({ lat: latitude, lng: longitude });
-                setSelectedMapboxAddr(null);
-                mapRef.current?.animateToRegion({ latitude, longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }, 400);
-                const addr = await reverseGeocode(longitude, latitude);
-                if (addr) setManualAddressText(addr);
-              }}
-              mapType="standard"
-              showsUserLocation
-            >
-              {(() => {
-                const lat = pinCoords?.lat ?? selectedMapboxAddr?.lat ?? address?.lat;
-                const lng = pinCoords?.lng ?? selectedMapboxAddr?.lng ?? address?.lng;
-                if (lat == null || lng == null) return null;
-                return (
-                  <Marker
-                    coordinate={{ latitude: lat, longitude: lng }}
-                    pinColor={primaryColor}
-                    draggable
-                    onDragEnd={async (e) => {
-                      const { latitude, longitude } = e.nativeEvent.coordinate;
-                      setPinCoords({ lat: latitude, lng: longitude });
-                      setSelectedMapboxAddr(null);
-                      const addr = await reverseGeocode(longitude, latitude);
-                      if (addr) setManualAddressText(addr);
-                    }}
-                  />
-                );
-              })()}
-            </MapView>
-          </View>
+          {shouldRenderMap ? (
+            <View className="rounded-2xl overflow-hidden border border-slate-200" style={{ height: MAP_HEIGHT }}>
+              <MapView
+                ref={mapRef}
+                style={{ width: '100%', height: MAP_HEIGHT }}
+                initialRegion={mapRegion}
+                onPress={async (e) => {
+                  const { latitude, longitude } = e.nativeEvent.coordinate;
+                  setPinCoords({ lat: latitude, lng: longitude });
+                  setSelectedMapboxAddr(null);
+                  mapRef.current?.animateToRegion({ latitude, longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }, 400);
+                  const addr = await reverseGeocode(longitude, latitude);
+                  if (addr) setManualAddressText(addr);
+                }}
+                mapType="standard"
+                showsUserLocation
+              >
+                {(() => {
+                  const lat = pinCoords?.lat ?? selectedMapboxAddr?.lat ?? address?.lat;
+                  const lng = pinCoords?.lng ?? selectedMapboxAddr?.lng ?? address?.lng;
+                  if (lat == null || lng == null) return null;
+                  return (
+                    <Marker
+                      coordinate={{ latitude: lat, longitude: lng }}
+                      pinColor={primaryColor}
+                      draggable
+                      onDragEnd={async (e) => {
+                        const { latitude, longitude } = e.nativeEvent.coordinate;
+                        setPinCoords({ lat: latitude, lng: longitude });
+                        setSelectedMapboxAddr(null);
+                        const addr = await reverseGeocode(longitude, latitude);
+                        if (addr) setManualAddressText(addr);
+                      }}
+                    />
+                  );
+                })()}
+              </MapView>
+            </View>
+          ) : (
+            <View className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
+              <Text className="text-slate-500 text-sm">
+                Map is temporarily disabled on this Android build. Use search/current location to save delivery address.
+              </Text>
+            </View>
+          )}
 
           {!isDeliveryMode && (
             <TouchableOpacity

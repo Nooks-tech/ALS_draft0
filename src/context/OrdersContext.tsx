@@ -191,6 +191,14 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         setOrders((prev) =>
           prev.map((o) => (o.id === orderId ? { ...o, status: 'On Hold' as OrderStatus } : o))
         );
+        return result;
+      }
+      // If backend row has not been committed yet, allow local edit flow as fallback.
+      if ((result.error || '').toLowerCase().includes('not found')) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? { ...o, status: 'On Hold' as OrderStatus } : o))
+        );
+        return { success: true };
       }
       return result;
     } catch (err: any) {

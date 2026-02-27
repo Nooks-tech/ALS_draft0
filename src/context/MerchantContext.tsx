@@ -12,6 +12,7 @@ import Constants from 'expo-constants';
 
 const ENV_MERCHANT_ID =
   Constants.expoConfig?.extra?.merchantId ??
+  Constants.expoConfig?.extra?.merchant_id ??
   process.env.EXPO_PUBLIC_MERCHANT_ID ??
   '';
 

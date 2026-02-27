@@ -18,7 +18,7 @@ export default function OrderTypeScreen() {
   const { primaryColor } = useMerchantBranding();
   const { orderType, setOrderType, selectedBranch, setSelectedBranch, setDeliveryAddress } = useCart();
   const { branches } = useMenuContext();
-  const { isClosed, isPickupOnly } = useOperations();
+  const { isClosed, isBusy, isPickupOnly } = useOperations();
   const { addresses: savedAddresses, setDefault, updateAddress, removeAddress } = useSavedAddresses();
   const [step, setStep] = useState<'choice' | 'branch' | 'map'>('choice');
 
@@ -173,17 +173,21 @@ export default function OrderTypeScreen() {
         {step === 'choice' && (
           <View>
             <Text className="text-2xl font-bold text-slate-900 mb-6">How'll you have it?</Text>
-            {isClosed && (
+            {(isClosed || isBusy) && (
               <View className="mb-4 p-4 rounded-2xl bg-amber-50 border border-amber-200">
-                <Text className="font-bold text-amber-800">Store is currently closed</Text>
-                <Text className="text-amber-700 text-sm mt-1">You can still browse the menu. Orders will be available when we reopen.</Text>
+                <Text className="font-bold text-amber-800">{isClosed ? 'Store is currently closed' : 'Store is currently busy'}</Text>
+                <Text className="text-amber-700 text-sm mt-1">
+                  {isClosed
+                    ? 'You can still browse the menu. Orders will be available when we reopen.'
+                    : 'You can still browse the menu. New orders are temporarily paused.'}
+                </Text>
               </View>
             )}
             {!isPickupOnly && (
               <TouchableOpacity
                 onPress={handleDelivery}
-                disabled={isClosed}
-                className={`flex-row items-center p-5 rounded-[28px] mb-4 border border-slate-100 shadow-sm ${isClosed ? 'bg-slate-100 opacity-60' : 'bg-slate-50'}`}
+                disabled={isClosed || isBusy}
+                className={`flex-row items-center p-5 rounded-[28px] mb-4 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'bg-slate-100 opacity-60' : 'bg-slate-50'}`}
               >
                 <View className="p-4 rounded-2xl" style={{ backgroundColor: `${primaryColor}20` }}><Bike size={28} color={primaryColor} /></View>
                 <View className="ml-4 flex-1">
@@ -194,8 +198,8 @@ export default function OrderTypeScreen() {
             )}
             <TouchableOpacity
               onPress={() => { setOrderType('pickup'); setStep('branch'); }}
-              disabled={isClosed}
-              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${isClosed ? 'opacity-60' : ''}`}
+              disabled={isClosed || isBusy}
+              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
             >
               <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
               <View className="ml-4 flex-1">

@@ -46,7 +46,7 @@ export default function OrderConfirmedScreen() {
     if (timerRef.current) clearInterval(timerRef.current);
 
     const result = await holdOrderForEdit(order.id);
-    if (result.success) {
+    if (result.success || (result.error?.toLowerCase().includes('not found') ?? false)) {
       setCartFromOrder({
         items: order.items,
         orderType: order.orderType,

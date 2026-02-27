@@ -1,5 +1,6 @@
-import { Dimensions, StyleSheet, View } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import Constants from 'expo-constants';
+import { Dimensions, Platform, StyleSheet, Text, View } from 'react-native';
+import MapView, { Marker } from 'react-native-maps';
 
 const DEFAULT_ACCENT = '#0D9488';
 
@@ -27,6 +28,11 @@ export function OrderTrackingMap({
   branchName,
   accentColor = DEFAULT_ACCENT,
 }: OrderTrackingMapProps) {
+  const androidMapsEnabled =
+    ((Constants.expoConfig?.extra as { enableAndroidMaps?: string } | undefined)?.enableAndroidMaps === 'true') ||
+    process.env.EXPO_PUBLIC_ENABLE_ANDROID_MAPS === 'true';
+  const shouldRenderMap = Platform.OS !== 'android' || androidMapsEnabled;
+
   const hasDelivery = deliveryLat != null && deliveryLng != null;
   const hasDriver = driverLat != null && driverLon != null;
 
@@ -46,10 +52,19 @@ export function OrderTrackingMap({
   const latDelta = Math.max(maxLat - minLat, 0.02);
   const lngDelta = Math.max(maxLng - minLng, 0.02);
 
+  if (!shouldRenderMap) {
+    return (
+      <View style={[styles.container, { height: MAP_HEIGHT, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 }]}>
+        <Text style={{ color: '#64748b', textAlign: 'center' }}>
+          Live map is temporarily disabled on this Android build.
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.container, { height: MAP_HEIGHT }]}>
       <MapView
-        provider={PROVIDER_GOOGLE}
         style={StyleSheet.absoluteFill}
         initialRegion={{
           latitude: centerLat,

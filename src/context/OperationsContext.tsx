@@ -4,6 +4,7 @@
  */
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
+import { AppState } from 'react-native';
 import { supabase } from '../api/supabase';
 import { fetchNooksOperations, type NooksOperations } from '../api/nooksOperations';
 import { useMerchant } from './MerchantContext';
@@ -16,6 +17,7 @@ type OperationsContextType = {
   isBusy: boolean;
   isPickupOnly: boolean;
   prepTimeMinutes: number;
+  busySecondsLeft: number;
 };
 
 const defaultOps: NooksOperations = {
@@ -32,22 +34,32 @@ const OperationsContext = createContext<OperationsContextType>({
   isBusy: false,
   isPickupOnly: false,
   prepTimeMinutes: 0,
+  busySecondsLeft: 0,
 });
 
-const POLL_MS = 60 * 1000;
+const POLL_MS = 15 * 1000;
 
 export function OperationsProvider({ children }: { children: ReactNode }) {
   const { merchantId } = useMerchant();
   const [operations, setOperations] = useState<NooksOperations | null>(null);
   const [loading, setLoading] = useState(false);
+  const [busySecondsLeft, setBusySecondsLeft] = useState(0);
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const busyStartedAtRef = useRef<number | null>(null);
 
   const refetch = useCallback(async () => {
     if (!merchantId.trim()) return;
     setLoading(true);
     try {
       const data = await fetchNooksOperations(merchantId);
-      setOperations(data ?? defaultOps);
+      const next = data ?? defaultOps;
+      setOperations(next);
+      if (next.store_status === 'busy') {
+        if (!busyStartedAtRef.current) busyStartedAtRef.current = Date.now();
+      } else {
+        busyStartedAtRef.current = null;
+        setBusySecondsLeft(0);
+      }
     } catch {
       setOperations(defaultOps);
     } finally {
@@ -58,7 +70,13 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refetch();
     const t = setInterval(refetch, POLL_MS);
-    return () => clearInterval(t);
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') refetch();
+    });
+    return () => {
+      clearInterval(t);
+      appStateSub.remove();
+    };
   }, [refetch]);
 
   useEffect(() => {
@@ -80,6 +98,12 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
             prep_time_minutes: typeof row.prep_time_minutes === 'number' ? row.prep_time_minutes : 0,
             delivery_mode: (row.delivery_mode as NooksOperations['delivery_mode']) ?? 'delivery_and_pickup',
           });
+          if ((row.store_status as string) === 'busy') {
+            busyStartedAtRef.current = Date.now();
+          } else {
+            busyStartedAtRef.current = null;
+            setBusySecondsLeft(0);
+          }
         }
       )
       .subscribe();
@@ -95,8 +119,24 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const isPickupOnly = operations?.delivery_mode === 'pickup_only';
   const prepTimeMinutes = operations?.prep_time_minutes ?? 0;
 
+  useEffect(() => {
+    if (!isBusy) {
+      setBusySecondsLeft(0);
+      return;
+    }
+    const tick = () => {
+      const prepSeconds = Math.max(0, (operations?.prep_time_minutes ?? 0) * 60);
+      const start = busyStartedAtRef.current ?? Date.now();
+      const elapsed = Math.floor((Date.now() - start) / 1000);
+      setBusySecondsLeft(Math.max(0, prepSeconds - elapsed));
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [isBusy, operations?.prep_time_minutes]);
+
   return (
-    <OperationsContext.Provider value={{ operations, loading, refetch, isClosed, isBusy, isPickupOnly, prepTimeMinutes }}>
+    <OperationsContext.Provider value={{ operations, loading, refetch, isClosed, isBusy, isPickupOnly, prepTimeMinutes, busySecondsLeft }}>
       {children}
     </OperationsContext.Provider>
   );

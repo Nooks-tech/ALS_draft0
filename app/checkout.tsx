@@ -31,12 +31,13 @@ import {
   PaymentStatus,
   isMoyasarError,
 } from 'react-native-moyasar-sdk';
-import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from '../src/api/config';
+import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { foodicsApi } from '../src/api/foodics';
 import { loyaltyApi } from '../src/api/loyalty';
 import { otoApi } from '../src/api/oto';
 import { paymentApi } from '../src/api/payment';
 import { buildNooksOrderPayload, submitOrderToNooks } from '../src/api/nooksOrders';
+import { calculateNooksPromoDiscount, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
 
@@ -55,6 +56,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useCart } from '../src/context/CartContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { useOperations } from '../src/context/OperationsContext';
 import { useOrders } from '../src/context/OrdersContext';
 import { useProfile } from '../src/context/ProfileContext';
 
@@ -75,12 +77,13 @@ export default function CheckoutScreen() {
   const { user } = useAuth();
   const { merchantId } = useMerchant();
   const { addOrder } = useOrders();
+  const { isClosed, isBusy } = useOperations();
   const { profile } = useProfile();
   const customerId = user?.id ?? profile?.phone ?? profile?.full_name ?? 'guest';
   const { primaryColor } = useMerchantBranding();
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
-    Platform.OS === 'ios' ? 'apple_pay' : 'samsung_pay'
+    Platform.OS === 'ios' ? 'apple_pay' : (SAMSUNG_PAY_ENABLED ? 'samsung_pay' : 'credit_card')
   );
   const [submitting, setSubmitting] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -140,6 +143,21 @@ export default function CheckoutScreen() {
     if (!code) return;
     setPromoValidating(true);
     try {
+      if (merchantId) {
+        const promos = await fetchNooksPromos(merchantId);
+        const matched = promos.find((p) => p.code?.toUpperCase() === code.toUpperCase());
+        if (matched) {
+          const discountAmount = calculateNooksPromoDiscount(matched, subtotalBeforePromo);
+          if (discountAmount > 0) {
+            setPromoDiscount(discountAmount);
+            setPromoApplied(true);
+            setPromoCode(matched.code);
+            setShowCouponInput(false);
+            setCouponInput('');
+            return;
+          }
+        }
+      }
       const result = await validatePromoCode(code, subtotalBeforePromo);
       if (result.valid) {
         setPromoDiscount(result.discountAmount);
@@ -329,6 +347,15 @@ export default function CheckoutScreen() {
   );
 
   const handlePay = async () => {
+    if (isClosed || isBusy) {
+      Alert.alert(
+        'Ordering Unavailable',
+        isClosed
+          ? 'Store is currently closed.'
+          : 'Store is currently busy and not accepting new orders.'
+      );
+      return;
+    }
     if (orderType === 'delivery' && !deliveryAddress?.address) {
       Alert.alert('Address Required', 'Delivery address is required. Go back to add one.');
       return;
@@ -381,6 +408,10 @@ export default function CheckoutScreen() {
     }
     if (paymentMethod === 'samsung_pay' && Platform.OS !== 'android') {
       Alert.alert('Samsung Pay', 'Samsung Pay is only available on Android.');
+      return;
+    }
+    if (paymentMethod === 'samsung_pay' && !SAMSUNG_PAY_ENABLED) {
+      Alert.alert('Samsung Pay', 'Samsung Pay is not configured for this merchant yet. Please use card payment.');
       return;
     }
 
@@ -621,7 +652,7 @@ export default function CheckoutScreen() {
                 <Text className="ml-3 font-medium">Apple Pay</Text>
               </TouchableOpacity>
             )}
-            {Platform.OS === 'android' && (
+            {Platform.OS === 'android' && SAMSUNG_PAY_ENABLED && (
               <TouchableOpacity
                 onPress={() => { setPaymentMethod('samsung_pay'); setShowPaymentPicker(false); }}
                 className="flex-row items-center py-3 border-b border-slate-100"
