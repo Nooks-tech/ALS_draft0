@@ -53,7 +53,10 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     accent_color: accent_color != null ? String(accent_color) : '#0D9488',
     background_color: background_color != null ? String(background_color) : '#f5f5f4',
   };
-  if (use_test_builds === true || use_test_builds === 'true') {
+  // Default to test builds for CI (APK + iOS simulator) unless explicitly disabled.
+  const useTestBuilds =
+    !(use_test_builds === false || use_test_builds === 'false');
+  if (useTestBuilds) {
     inputs.use_test_builds = 'true';
   }
 
