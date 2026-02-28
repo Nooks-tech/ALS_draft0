@@ -11,12 +11,21 @@ const buildTimeLogoUrl = process.env.EXPO_PUBLIC_LOGO_URL || '';
 const buildTimePrimaryColor = process.env.EXPO_PUBLIC_PRIMARY_COLOR || '';
 const buildTimeAccentColor = process.env.EXPO_PUBLIC_ACCENT_COLOR || '';
 const buildTimeBackgroundColor = process.env.EXPO_PUBLIC_BACKGROUND_COLOR || '';
+const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 const config = {
   ...appJson,
 };
 
 config.expo = config.expo || {};
+config.expo.android = {
+  ...(config.expo.android || {}),
+  config: {
+    ...((config.expo.android && config.expo.android.config) || {}),
+    ...(googleMapsApiKey ? { googleMaps: { apiKey: googleMapsApiKey } } : {}),
+  },
+};
+
 config.expo.extra = {
   ...(config.expo.extra || {}),
   eas: {
@@ -27,6 +36,7 @@ config.expo.extra = {
   merchantId: process.env.EXPO_PUBLIC_MERCHANT_ID || '',
   skipAuthForDev: process.env.EXPO_PUBLIC_SKIP_AUTH_FOR_DEV === 'true',
   nooksApiBaseUrl: process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || '',
+  googleMapsApiKey: googleMapsApiKey || '',
   logoUrl: buildTimeLogoUrl || null,
   primaryColor: buildTimePrimaryColor || '',
   accentColor: buildTimeAccentColor || '',

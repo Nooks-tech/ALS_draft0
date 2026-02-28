@@ -49,10 +49,9 @@ export default function AddAddressModal() {
   const [pinCoords, setPinCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [addressLoading, setAddressLoading] = useState(false);
-  const androidMapsEnabled =
-    ((Constants.expoConfig?.extra as { enableAndroidMaps?: string } | undefined)?.enableAndroidMaps === 'true') ||
-    process.env.EXPO_PUBLIC_ENABLE_ANDROID_MAPS === 'true';
-  const shouldRenderMap = Platform.OS !== 'android' || androidMapsEnabled;
+  const runtimeGoogleMapsKey =
+    ((Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey || '').trim();
+  const shouldRenderNativeMap = Platform.OS !== 'android' || runtimeGoogleMapsKey.length > 0;
   const mapRegion = useState({
     latitude: 24.7136,
     longitude: 46.6753,
@@ -257,7 +256,7 @@ export default function AddAddressModal() {
             </View>
           )}
 
-          {shouldRenderMap ? (
+          {shouldRenderNativeMap ? (
             <View className="rounded-2xl overflow-hidden border border-slate-200" style={{ height: MAP_HEIGHT }}>
               <MapView
                 ref={mapRef}
@@ -296,9 +295,10 @@ export default function AddAddressModal() {
               </MapView>
             </View>
           ) : (
-            <View className="rounded-2xl border border-slate-200 p-4 bg-slate-50">
-              <Text className="text-slate-500 text-sm">
-                Map is temporarily disabled on this Android build. Use search/current location to save delivery address.
+            <View className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <Text className="text-slate-700 font-medium">Map preview is unavailable on this Android build.</Text>
+              <Text className="text-slate-500 text-sm mt-1">
+                You can still use "Use my current location" and address search above to save delivery addresses.
               </Text>
             </View>
           )}

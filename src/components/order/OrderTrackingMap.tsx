@@ -1,5 +1,5 @@
 import Constants from 'expo-constants';
-import { Dimensions, Platform, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 
 const DEFAULT_ACCENT = '#0D9488';
@@ -28,11 +28,9 @@ export function OrderTrackingMap({
   branchName,
   accentColor = DEFAULT_ACCENT,
 }: OrderTrackingMapProps) {
-  const androidMapsEnabled =
-    ((Constants.expoConfig?.extra as { enableAndroidMaps?: string } | undefined)?.enableAndroidMaps === 'true') ||
-    process.env.EXPO_PUBLIC_ENABLE_ANDROID_MAPS === 'true';
-  const shouldRenderMap = Platform.OS !== 'android' || androidMapsEnabled;
-
+  const runtimeGoogleMapsKey =
+    ((Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey || '').trim();
+  const shouldRenderNativeMap = runtimeGoogleMapsKey.length > 0;
   const hasDelivery = deliveryLat != null && deliveryLng != null;
   const hasDriver = driverLat != null && driverLon != null;
 
@@ -52,12 +50,23 @@ export function OrderTrackingMap({
   const latDelta = Math.max(maxLat - minLat, 0.02);
   const lngDelta = Math.max(maxLng - minLng, 0.02);
 
-  if (!shouldRenderMap) {
+  if (!shouldRenderNativeMap) {
     return (
-      <View style={[styles.container, { height: MAP_HEIGHT, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 }]}>
-        <Text style={{ color: '#64748b', textAlign: 'center' }}>
-          Live map is temporarily disabled on this Android build.
+      <View style={[styles.container, { height: MAP_HEIGHT, padding: 16, justifyContent: 'center' }]}>
+        <Text style={{ color: '#0f172a', fontWeight: '700', marginBottom: 8 }}>Live tracking map unavailable</Text>
+        <Text style={{ color: '#475569' }}>
+          Branch: {branchLat.toFixed(5)}, {branchLon.toFixed(5)}
         </Text>
+        {hasDelivery ? (
+          <Text style={{ color: '#475569', marginTop: 4 }}>
+            Delivery: {deliveryLat!.toFixed(5)}, {deliveryLng!.toFixed(5)}
+          </Text>
+        ) : null}
+        {hasDriver ? (
+          <Text style={{ color: '#475569', marginTop: 4 }}>
+            Driver: {driverLat!.toFixed(5)}, {driverLon!.toFixed(5)}
+          </Text>
+        ) : null}
       </View>
     );
   }
