@@ -57,7 +57,6 @@ jobs:
           API_URL: ${{ secrets.API_URL }}
           NOOKS_API_BASE_URL: ${{ secrets.NOOKS_API_BASE_URL }}
           MOYASAR_PUBLISHABLE_KEY: ${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
-          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
         run: |
           missing=0
           [ -z "$SUPABASE_URL" ] && echo "::error::SUPABASE_URL is not set in GitHub repo secrets." && missing=1
@@ -65,7 +64,6 @@ jobs:
           [ -z "$API_URL" ] && echo "::error::API_URL is not set in GitHub repo secrets." && missing=1
           [ -z "$NOOKS_API_BASE_URL" ] && echo "::error::NOOKS_API_BASE_URL is not set in GitHub repo secrets." && missing=1
           [ -z "$MOYASAR_PUBLISHABLE_KEY" ] && echo "::error::MOYASAR_PUBLISHABLE_KEY is not set in GitHub repo secrets." && missing=1
-          [ -z "$GOOGLE_MAPS_API_KEY" ] && echo "::error::GOOGLE_MAPS_API_KEY is not set in GitHub repo secrets." && missing=1
           if [ "$missing" -eq 1 ]; then
             echo "Set missing secrets in: Repo -> Settings -> Secrets and variables -> Actions"
             exit 1
@@ -101,7 +99,12 @@ jobs:
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env
           echo "EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}" >> .env
           echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}" >> .env
-          echo "GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}" >> .env
+          if [ -n "${{ secrets.GOOGLE_MAPS_API_KEY }}" ]; then
+            echo "GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}" >> .env
+          else
+            echo "GOOGLE_MAPS_API_KEY=" >> .env
+            echo "::warning::GOOGLE_MAPS_API_KEY is not set. Android maps will run in fallback mode."
+          fi
           echo "--- .env written ---"
           wc -l .env
           grep "PRIMARY_COLOR" .env
