@@ -30,6 +30,10 @@ export type MerchantBranding = {
   accentColor: string;
   /** Screen and card backgrounds; default #f5f5f4 */
   backgroundColor: string;
+  /** Menu and list card background; default #ffffff */
+  menuCardColor: string;
+  /** Global text color; default #1f2937 */
+  textColor: string;
 };
 
 const DEFAULT_BRANDING: MerchantBranding = {
@@ -37,6 +41,8 @@ const DEFAULT_BRANDING: MerchantBranding = {
   primaryColor: '#0D9488',
   accentColor: '#0D9488',
   backgroundColor: '#f5f5f4',
+  menuCardColor: '#ffffff',
+  textColor: '#1f2937',
 };
 
 /** Build-time branding from app.config.js extra (set by EAS workflow per merchant). */
@@ -55,11 +61,21 @@ function getBuildTimeBranding(): MerchantBranding {
     (typeof extra?.backgroundColor === 'string' && extra.backgroundColor) ||
     process.env.EXPO_PUBLIC_BACKGROUND_COLOR ||
     DEFAULT_BRANDING.backgroundColor;
+  const card =
+    (typeof extra?.menuCardColor === 'string' && extra.menuCardColor) ||
+    process.env.EXPO_PUBLIC_MENU_CARD_COLOR ||
+    DEFAULT_BRANDING.menuCardColor;
+  const text =
+    (typeof extra?.textColor === 'string' && extra.textColor) ||
+    process.env.EXPO_PUBLIC_TEXT_COLOR ||
+    DEFAULT_BRANDING.textColor;
   return {
     logoUrl: typeof logo === 'string' && logo ? logo : null,
     primaryColor: primary,
     accentColor: accent,
     backgroundColor: bg,
+    menuCardColor: card,
+    textColor: text,
   };
 }
 
@@ -92,17 +108,23 @@ export function MerchantBrandingProvider({
         const primary = data.primaryColor ?? data.primary_color;
         const accent = data.accentColor ?? data.accent_color;
         const bg = data.backgroundColor ?? data.background_color;
+        const card = data.menuCardColor ?? data.menu_card_color;
+        const text = data.textColor ?? data.text_color;
         const nextBranding = {
           logoUrl: typeof logo === 'string' && logo ? logo : branding.logoUrl,
           primaryColor: typeof primary === 'string' && primary ? primary : branding.primaryColor,
           accentColor: typeof accent === 'string' && accent ? accent : branding.accentColor,
           backgroundColor: typeof bg === 'string' && bg ? bg : branding.backgroundColor,
+          menuCardColor: typeof card === 'string' && card ? card : branding.menuCardColor,
+          textColor: typeof text === 'string' && text ? text : branding.textColor,
         };
         setBranding((prev) => ({
           logoUrl: typeof logo === 'string' && logo ? logo : prev.logoUrl,
           primaryColor: typeof primary === 'string' && primary ? primary : prev.primaryColor,
           accentColor: typeof accent === 'string' && accent ? accent : prev.accentColor,
           backgroundColor: typeof bg === 'string' && bg ? bg : prev.backgroundColor,
+          menuCardColor: typeof card === 'string' && card ? card : prev.menuCardColor,
+          textColor: typeof text === 'string' && text ? text : prev.textColor,
         }));
         await AsyncStorage.setItem(cacheKey, JSON.stringify(nextBranding));
       }
@@ -111,7 +133,17 @@ export function MerchantBrandingProvider({
     } finally {
       setLoading(false);
     }
-  }, [merchantId, baseUrl, cacheKey, branding.logoUrl, branding.primaryColor, branding.accentColor, branding.backgroundColor]);
+  }, [
+    merchantId,
+    baseUrl,
+    cacheKey,
+    branding.logoUrl,
+    branding.primaryColor,
+    branding.accentColor,
+    branding.backgroundColor,
+    branding.menuCardColor,
+    branding.textColor,
+  ]);
 
   useEffect(() => {
     AsyncStorage.getItem(cacheKey).then((raw) => {
@@ -124,6 +156,9 @@ export function MerchantBrandingProvider({
           accentColor: typeof cached.accentColor === 'string' && cached.accentColor ? cached.accentColor : prev.accentColor,
           backgroundColor:
             typeof cached.backgroundColor === 'string' && cached.backgroundColor ? cached.backgroundColor : prev.backgroundColor,
+          menuCardColor:
+            typeof cached.menuCardColor === 'string' && cached.menuCardColor ? cached.menuCardColor : prev.menuCardColor,
+          textColor: typeof cached.textColor === 'string' && cached.textColor ? cached.textColor : prev.textColor,
         }));
       } catch {
         // Ignore invalid cache payload

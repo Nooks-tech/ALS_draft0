@@ -26,7 +26,7 @@ import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, Status
 export default function MoreScreen() {
   const { t, i18n } = useTranslation();
   const router = useRouter();
-  const { primaryColor, backgroundColor } = useMerchantBranding();
+  const { primaryColor, backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const { profile } = useProfile();
   const { signOut } = useAuth();
 
@@ -65,13 +65,13 @@ export default function MoreScreen() {
   };
 
   const MenuItem = ({ icon: Icon, title, subtitle, onPress, isDestructive = false, accentColor }: any) => (
-    <TouchableOpacity onPress={onPress} className="flex-row items-center bg-white p-4 mb-[1px]">
+    <TouchableOpacity onPress={onPress} className="flex-row items-center p-4 mb-[1px]" style={{ backgroundColor: menuCardColor }}>
       <View style={!isDestructive && accentColor ? { backgroundColor: `${accentColor}18` } : undefined} className={`w-10 h-10 rounded-full justify-center items-center ${isDestructive ? 'bg-red-50' : accentColor ? '' : 'bg-slate-50'}`}>
         <Icon size={20} color={isDestructive ? '#EF4444' : (accentColor || '#0D9488')} />
       </View>
       <View className="flex-1 ml-4">
-        <Text className={`text-base font-bold ${isDestructive ? 'text-red-500' : 'text-slate-800'}`}>{title}</Text>
-        {subtitle && <Text className="text-slate-400 text-xs">{subtitle}</Text>}
+        <Text className="text-base font-bold" style={{ color: isDestructive ? '#ef4444' : textColor }}>{title}</Text>
+        {subtitle && <Text className="text-xs" style={{ color: textColor }}>{subtitle}</Text>}
       </View>
       {!isDestructive && <ChevronRight size={20} color="#94a3b8" />}
     </TouchableOpacity>
@@ -80,41 +80,41 @@ export default function MoreScreen() {
   return (
     <SafeAreaView style={{ flex: 1, paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0, backgroundColor }}>
       <ScrollView>
-        <View className="bg-white p-6 mb-4 items-center border-b border-slate-100">
+        <View className="p-6 mb-4 items-center border-b border-slate-100" style={{ backgroundColor }}>
           <View className="w-20 h-20 rounded-full mb-3 justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
             <Text className="text-2xl font-bold" style={{ color: primaryColor }}>
               {profile.fullName ? profile.fullName.slice(0, 2).toUpperCase() : 'AA'}
             </Text>
           </View>
-          <Text className="text-xl font-bold text-slate-800">
+          <Text className="text-xl font-bold" style={{ color: textColor }}>
             {profile.fullName || 'Your Name'}
           </Text>
-          <Text className="text-slate-500">{profile.phone || '+966 5X XXX XXXX'}</Text>
+          <Text style={{ color: textColor }}>{profile.phone || '+966 5X XXX XXXX'}</Text>
         </View>
 
-        <Text className="px-4 mb-2 text-slate-500 font-bold text-xs uppercase">Account</Text>
-        <View className="mb-6 bg-white rounded-2xl overflow-hidden mx-4">
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>Account</Text>
+        <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={User} title="Profile Info" subtitle="Edit your details" onPress={() => router.push('/profile-modal')} accentColor={primaryColor} />
           <MenuItem icon={MapPin} title="My Addresses" subtitle="Manage delivery locations" onPress={() => router.push('/address-modal')} accentColor={primaryColor} />
           <MenuItem icon={Bell} title="Notifications" subtitle="Offers & Updates" onPress={openNotificationSettings} accentColor={primaryColor} />
           <MenuItem icon={Heart} title="Favorites" subtitle="Your saved items" onPress={() => router.push('/favorites-modal')} accentColor={primaryColor} />
         </View>
 
-        <Text className="px-4 mb-2 text-slate-500 font-bold text-xs uppercase">Preferences</Text>
-        <View className="mb-6 bg-white rounded-2xl overflow-hidden mx-4">
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>Preferences</Text>
+        <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={CreditCard} title="Payment Method" subtitle="Cards & payment options" onPress={() => router.push('/payment-modal')} accentColor={primaryColor} />
           <MenuItem icon={Star} title="Loyalty Points" subtitle="Earn & redeem rewards" onPress={() => router.push('/loyalty-modal')} accentColor={primaryColor} />
         </View>
 
-        <Text className="px-4 mb-2 text-slate-500 font-bold text-xs uppercase">App Settings</Text>
-        <View className="mb-6 bg-white rounded-2xl overflow-hidden mx-4">
-          <TouchableOpacity onPress={toggleLanguage} className="flex-row items-center p-4">
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>App Settings</Text>
+        <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
+          <TouchableOpacity onPress={toggleLanguage} className="flex-row items-center p-4" style={{ backgroundColor: menuCardColor }}>
             <View className="w-10 h-10 rounded-full justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
               <Globe size={20} color={primaryColor} />
             </View>
             <View className="flex-1 ml-4">
-              <Text className="text-base font-bold text-slate-800">Language / اللغة</Text>
-              <Text className="text-slate-400 text-xs">{i18n.language === 'en' ? 'English' : 'العربية'}</Text>
+              <Text className="text-base font-bold" style={{ color: textColor }}>Language / اللغة</Text>
+              <Text className="text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? 'English' : 'العربية'}</Text>
             </View>
             <View className="bg-slate-100 px-3 py-1 rounded-full">
               <Text className="font-bold text-xs text-slate-600">{i18n.language === 'en' ? 'AR' : 'EN'}</Text>
@@ -122,8 +122,8 @@ export default function MoreScreen() {
           </TouchableOpacity>
         </View>
 
-        <Text className="px-4 mb-2 text-slate-500 font-bold text-xs uppercase">Support & Legal</Text>
-        <View className="mb-6 bg-white rounded-2xl overflow-hidden mx-4">
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>Support & Legal</Text>
+        <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={HelpCircle} title="Support" subtitle="Get help" onPress={() => router.push('/support-modal')} />
           <MenuItem icon={Mail} title="Contact Us" subtitle="Reach out to us" onPress={() => router.push('/contact-modal')} />
           <MenuItem icon={Info} title="About" subtitle="Learn about ALS Coffee" onPress={() => router.push('/about-modal')} />
@@ -131,11 +131,11 @@ export default function MoreScreen() {
           <MenuItem icon={FileText} title="Terms & Conditions" onPress={() => router.push('/terms-modal')} />
         </View>
 
-        <View className="mb-6 bg-white rounded-2xl overflow-hidden mx-4">
+        <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={LogOut} title="Log Out" isDestructive onPress={handleLogout} />
         </View>
 
-        <Text className="text-center text-slate-400 text-xs mb-8">Version 1.0.0</Text>
+        <Text className="text-center text-xs mb-8" style={{ color: textColor }}>Version 1.0.0</Text>
       </ScrollView>
     </SafeAreaView>
   );

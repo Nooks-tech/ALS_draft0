@@ -32,7 +32,17 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const { merchant_id, logo_url, primary_color, accent_color, background_color, platforms, use_test_builds } = req.body || {};
+  const {
+    merchant_id,
+    logo_url,
+    primary_color,
+    accent_color,
+    background_color,
+    menu_card_color,
+    text_color,
+    platforms,
+    use_test_builds,
+  } = req.body || {};
   if (!merchant_id || typeof merchant_id !== 'string') {
     return res.status(400).json({ error: 'Missing merchant_id' });
   }
@@ -52,6 +62,8 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     primary_color: primary_color != null ? String(primary_color) : '#0D9488',
     accent_color: accent_color != null ? String(accent_color) : '#0D9488',
     background_color: background_color != null ? String(background_color) : '#f5f5f4',
+    menu_card_color: menu_card_color != null ? String(menu_card_color) : '#ffffff',
+    text_color: text_color != null ? String(text_color) : '#1f2937',
   };
   // Default to test builds for CI (APK + iOS simulator) unless explicitly disabled.
   const useTestBuilds =

@@ -10,7 +10,7 @@ export default function OrdersScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const { orders, loading } = useOrders();
-  const { primaryColor, backgroundColor } = useMerchantBranding();
+  const { primaryColor, backgroundColor, textColor } = useMerchantBranding();
 
   const orderItemsSummary = (order: (typeof orders)[0]) =>
     order.items.map((i) => `${i.name}${i.quantity > 1 ? ` x${i.quantity}` : ''}`).join(', ');
@@ -18,16 +18,19 @@ export default function OrdersScreen() {
   return (
     <View className="flex-1" style={{ backgroundColor }}>
       <StatusBar barStyle="dark-content" />
-      <View className="pt-14 pb-4 px-5 bg-white border-b border-slate-100 flex-row items-center">
+      <View
+        className="pt-14 pb-4 px-5 flex-row items-center"
+        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}
+      >
         <TouchableOpacity onPress={() => router.replace('/(tabs)/menu')} className="mr-4 p-2 -ml-2">
-          <ArrowLeft size={24} color="#334155" />
+          <ArrowLeft size={24} color={textColor} />
         </TouchableOpacity>
-        <Text className="text-xl font-bold text-slate-800">Orders</Text>
+        <Text className="text-xl font-bold" style={{ color: textColor }}>Orders</Text>
       </View>
       {loading ? (
         <View className="flex-1 items-center justify-center py-12">
           <ActivityIndicator size="large" color={primaryColor} />
-          <Text className="text-slate-500 mt-3">{t('orders_loading')}</Text>
+          <Text className="mt-3" style={{ color: textColor }}>{t('orders_loading')}</Text>
         </View>
       ) : (
         <FlatList
@@ -46,8 +49,8 @@ export default function OrdersScreen() {
           contentContainerStyle={{ padding: 16 }}
           ListEmptyComponent={
             <View className="items-center py-12">
-              <Text className="text-slate-500">{t('no_orders_yet')}</Text>
-              <Text className="text-slate-400 text-sm mt-1">{t('no_orders_hint')}</Text>
+              <Text style={{ color: textColor }}>{t('no_orders_yet')}</Text>
+              <Text className="text-sm mt-1" style={{ color: textColor }}>{t('no_orders_hint')}</Text>
             </View>
           }
         />

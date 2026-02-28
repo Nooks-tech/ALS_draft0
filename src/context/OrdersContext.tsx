@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { customerCancelOrder, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
 import { notifyOrderStatusUpdate } from '../utils/orderNotifications';
 import type { CartItem } from './CartContext';
@@ -33,7 +34,11 @@ export type PlacedOrder = {
 export type OrdersContextType = {
   orders: PlacedOrder[];
   loading: boolean;
-  addOrder: (order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string }, generatedId?: string) => void;
+  addOrder: (
+    order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string },
+    generatedId?: string,
+    initialStatus?: OrderStatus
+  ) => void;
   cancelOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
   holdOrderForEdit: (orderId: string) => Promise<{ success: boolean; error?: string }>;
   resumeHeldOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
@@ -89,14 +94,16 @@ function rowToOrder(row: OrderRow): PlacedOrder {
 }
 
 export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
-  const { user } = useAuth();
+  const { user, loading: authLoading, initialized } = useAuth();
   const [orders, setOrders] = useState<PlacedOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const channelRef = useRef<RealtimeChannel | null>(null);
 
   const customerId = user?.id ?? null;
+  const cacheKey = `@als_orders_${customerId ?? 'guest'}`;
 
   useEffect(() => {
+    if (!initialized || authLoading) return;
     if (!customerId) {
       setOrders([]);
       setLoading(false);
@@ -104,16 +111,36 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     }
     let cancelled = false;
     setLoading(true);
+    AsyncStorage.getItem(cacheKey)
+      .then((raw) => {
+        if (!raw || cancelled) return;
+        try {
+          const cached = JSON.parse(raw) as PlacedOrder[];
+          if (Array.isArray(cached) && cached.length > 0) {
+            setOrders(cached);
+            setLoading(false);
+          }
+        } catch {
+          // Ignore malformed cache
+        }
+      })
+      .catch(() => {});
     fetchOrdersForCustomer(customerId).then((rows) => {
       if (!cancelled) {
         setOrders(rows.map(rowToOrder));
+        AsyncStorage.setItem(cacheKey, JSON.stringify(rows.map(rowToOrder))).catch(() => {});
       }
       setLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [customerId]);
+  }, [customerId, initialized, authLoading, cacheKey]);
+
+  useEffect(() => {
+    if (!customerId) return;
+    AsyncStorage.setItem(cacheKey, JSON.stringify(orders)).catch(() => {});
+  }, [orders, customerId, cacheKey]);
 
   useEffect(() => {
     if (!customerId) return;
@@ -132,11 +159,15 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
   }, [customerId]);
 
   const addOrder = useCallback(
-    (order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string }, generatedId?: string) => {
+    (
+      order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string },
+      generatedId?: string,
+      initialStatus: OrderStatus = 'Preparing'
+    ) => {
       const id = generatedId ?? `order-${Date.now()}`;
       const now = new Date().toISOString();
       const date = formatOrderDate(now);
-      const status: OrderStatus = 'Preparing';
+      const status: OrderStatus = initialStatus;
       const placed: PlacedOrder = {
         ...order,
         id,

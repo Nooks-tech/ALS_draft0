@@ -22,6 +22,14 @@ on:
         required: false
         type: string
         default: "#f5f5f4"
+      menu_card_color:
+        required: false
+        type: string
+        default: "#ffffff"
+      text_color:
+        required: false
+        type: string
+        default: "#1f2937"
       use_test_builds:
         description: "Use preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed"
         required: false
@@ -49,6 +57,7 @@ jobs:
           API_URL: ${{ secrets.API_URL }}
           NOOKS_API_BASE_URL: ${{ secrets.NOOKS_API_BASE_URL }}
           MOYASAR_PUBLISHABLE_KEY: ${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
         run: |
           missing=0
           [ -z "$SUPABASE_URL" ] && echo "::error::SUPABASE_URL is not set in GitHub repo secrets." && missing=1
@@ -56,6 +65,7 @@ jobs:
           [ -z "$API_URL" ] && echo "::error::API_URL is not set in GitHub repo secrets." && missing=1
           [ -z "$NOOKS_API_BASE_URL" ] && echo "::error::NOOKS_API_BASE_URL is not set in GitHub repo secrets." && missing=1
           [ -z "$MOYASAR_PUBLISHABLE_KEY" ] && echo "::error::MOYASAR_PUBLISHABLE_KEY is not set in GitHub repo secrets." && missing=1
+          [ -z "$GOOGLE_MAPS_API_KEY" ] && echo "::error::GOOGLE_MAPS_API_KEY is not set in GitHub repo secrets." && missing=1
           if [ "$missing" -eq 1 ]; then
             echo "Set missing secrets in: Repo -> Settings -> Secrets and variables -> Actions"
             exit 1
@@ -84,11 +94,14 @@ jobs:
           echo "EXPO_PUBLIC_PRIMARY_COLOR=${{ github.event.inputs.primary_color }}" >> .env
           echo "EXPO_PUBLIC_ACCENT_COLOR=${{ github.event.inputs.accent_color }}" >> .env
           echo "EXPO_PUBLIC_BACKGROUND_COLOR=${{ github.event.inputs.background_color }}" >> .env
+          echo "EXPO_PUBLIC_MENU_CARD_COLOR=${{ github.event.inputs.menu_card_color }}" >> .env
+          echo "EXPO_PUBLIC_TEXT_COLOR=${{ github.event.inputs.text_color }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env
           echo "EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}" >> .env
           echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}" >> .env
+          echo "GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}" >> .env
           echo "--- .env written ---"
           wc -l .env
           grep "PRIMARY_COLOR" .env

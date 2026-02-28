@@ -34,7 +34,6 @@ import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useMenuContext } from '../../src/context/MenuContext';
 import { useOperations } from '../../src/context/OperationsContext';
-import { PROMOS } from '../../src/data/menu';
 
 type SliderItem = { id: string; image: string; title: string; subtitle: string };
 
@@ -42,7 +41,7 @@ export default function MenuScreen() {
   const { totalItems, totalPrice, orderType, selectedBranch, deliveryAddress } = useCart();
   const { merchantId } = useMerchant();
   const { products, categories, loading } = useMenuContext();
-  const { primaryColor, logoUrl, backgroundColor } = useMerchantBranding();
+  const { primaryColor, logoUrl, backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const { isClosed, isBusy, isPickupOnly } = useOperations();
   const router = useRouter();
   const headerBg = primaryColor;
@@ -53,7 +52,7 @@ export default function MenuScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [promoPopupVisible, setPromoPopupVisible] = useState(false);
   const [nooksBanners, setNooksBanners] = useState<NooksBanner[]>([]);
-  const hasShownPromoPopupRef = useRef(false);
+  const shownPopupVersionRef = useRef<string | null>(null);
 
   const displayCategories = useMemo(() => categories.filter((c) => c !== 'All'), [categories]);
   const sections = useMemo(() =>
@@ -78,7 +77,7 @@ export default function MenuScreen() {
   }, [merchantId]);
 
   const sliderItems: SliderItem[] = useMemo(() => {
-    const sliderBanners = nooksBanners.filter((b) => b.placement === 'slider' || !b.placement);
+    const sliderBanners = nooksBanners.filter((b) => b.placement === 'slider');
     if (sliderBanners.length > 0) {
       return sliderBanners.map((b) => ({
         id: b.id,
@@ -87,31 +86,37 @@ export default function MenuScreen() {
         subtitle: b.subtitle ?? '',
       }));
     }
-    return PROMOS.map((p) => ({ id: String(p.id), image: p.image, title: p.title, subtitle: p.subtitle }));
+    return [];
   }, [nooksBanners]);
 
   const popupBanner = useMemo(() => {
-    const popup = nooksBanners.find((b) => b.placement === 'popup');
-    if (popup) return { image: popup.image_url, title: popup.title ?? '', subtitle: popup.subtitle ?? '' };
-    if (PROMOS.length > 0) return { image: PROMOS[0].image, title: PROMOS[0].title, subtitle: PROMOS[0].subtitle };
+    const popupCandidates = nooksBanners.filter((b) => b.placement === 'popup');
+    const popup = popupCandidates.length > 0 ? popupCandidates[popupCandidates.length - 1] : null;
+    if (popup) return { id: popup.id, image: popup.image_url, title: popup.title ?? '', subtitle: popup.subtitle ?? '' };
     return null;
   }, [nooksBanners]);
 
-  // Promo popup: show once per merchant to avoid cross-merchant suppression.
+  // Popup: show once per uploaded popup version per device.
   useEffect(() => {
-    if (hasShownPromoPopupRef.current || !popupBanner || !merchantId) return;
-    const key = `promo_popup_shown_${merchantId}`;
-    AsyncStorage.getItem(key).then((v) => {
-      if (v !== '1') setPromoPopupVisible(true);
+    if (!popupBanner || !merchantId) return;
+    const popupVersion = `${popupBanner.id}:${popupBanner.image}`;
+    if (shownPopupVersionRef.current === popupVersion) return;
+    const key = `popup_last_version_${merchantId}`;
+    AsyncStorage.getItem(key).then((lastVersion) => {
+      if (lastVersion !== popupVersion) {
+        setPromoPopupVisible(true);
+      }
     });
   }, [popupBanner, merchantId]);
   const closePromoPopup = useCallback(() => {
     setPromoPopupVisible(false);
-    hasShownPromoPopupRef.current = true;
-    if (merchantId) {
-      AsyncStorage.setItem(`promo_popup_shown_${merchantId}`, '1');
+    if (popupBanner) {
+      shownPopupVersionRef.current = `${popupBanner.id}:${popupBanner.image}`;
     }
-  }, [merchantId]);
+    if (merchantId && popupBanner) {
+      AsyncStorage.setItem(`popup_last_version_${merchantId}`, `${popupBanner.id}:${popupBanner.image}`);
+    }
+  }, [merchantId, popupBanner]);
 
   const screenWidth = Dimensions.get('window').width;
   const searchTranslateX = useSharedValue(0);
@@ -136,7 +141,7 @@ export default function MenuScreen() {
   }, [selectedCategory, displayCategories, screenWidth]);
 
   // Match actual layout: promo (py-4 + h-40), section header (py-4 + text), product card (p-3 + h-24 + mb-4)
-  const LIST_HEADER_HEIGHT = 192;   // 32 + 160
+  const LIST_HEADER_HEIGHT = sliderItems.length > 0 ? 192 : 0;   // 32 + 160
   const SECTION_HEADER_HEIGHT = 56; // py-4 + text-xl
   const PRODUCT_ROW_HEIGHT = 136;   // card height + mb-4
 
@@ -148,7 +153,7 @@ export default function MenuScreen() {
       offset = bounds[bounds.length - 1].end;
     }
     return { bounds, estimatedTotal: offset };
-  }, [sections]);
+  }, [sections, LIST_HEADER_HEIGHT]);
 
   const onScrollMenu = useCallback(
     (e: {
@@ -246,42 +251,45 @@ export default function MenuScreen() {
     return () => clearInterval(interval);
   }, [promoItemWidth, sliderItems.length]);
 
-  const listHeaderComponent = useMemo(() => (
-    <View style={{ backgroundColor }}>
-      <View className="py-4">
-        <FlatList
-          ref={promoRef}
-          data={sliderItems}
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          snapToInterval={promoItemWidth}
-          snapToAlignment="start"
-          decelerationRate="fast"
-          contentContainerStyle={{ paddingHorizontal: 16 }}
-          onMomentumScrollEnd={(e) => { promoIndexRef.current = Math.round(e.nativeEvent.contentOffset.x / promoItemWidth); }}
-          renderItem={({ item: promo }) => (
-            <TouchableOpacity
-              onPress={() => router.replace('/(tabs)/offers')}
-              activeOpacity={1}
-              style={{ width: promoWidth, marginRight: 16 }}
-              className="rounded-2xl overflow-hidden shadow-md bg-white"
-            >
-              <ImageBackground
-                source={{ uri: promo.image }}
-                className="h-40 justify-end p-4"
-                imageStyle={{ borderRadius: 16 }}
+  const listHeaderComponent = useMemo(() => {
+    if (sliderItems.length === 0) return null;
+    return (
+      <View style={{ backgroundColor }}>
+        <View className="py-4">
+          <FlatList
+            ref={promoRef}
+            data={sliderItems}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            snapToInterval={promoItemWidth}
+            snapToAlignment="start"
+            decelerationRate="fast"
+            contentContainerStyle={{ paddingHorizontal: 16 }}
+            onMomentumScrollEnd={(e) => { promoIndexRef.current = Math.round(e.nativeEvent.contentOffset.x / promoItemWidth); }}
+            renderItem={({ item: promo }) => (
+              <TouchableOpacity
+                onPress={() => router.replace('/(tabs)/offers')}
+                activeOpacity={1}
+                style={{ width: promoWidth, marginRight: 16 }}
+                className="rounded-2xl overflow-hidden shadow-md bg-white"
               >
-                <View className="absolute inset-0 bg-black/40 rounded-2xl" />
-                <Text className="text-white font-bold text-2xl z-10">{promo.subtitle}</Text>
-                <Text className="text-gray-200 text-sm z-10">{promo.title}</Text>
-              </ImageBackground>
-            </TouchableOpacity>
-          )}
-        />
+                <ImageBackground
+                  source={{ uri: promo.image }}
+                  className="h-40 justify-end p-4"
+                  imageStyle={{ borderRadius: 16 }}
+                >
+                  <View className="absolute inset-0 bg-black/40 rounded-2xl" />
+                  <Text className="text-white font-bold text-2xl z-10">{promo.subtitle}</Text>
+                  <Text className="text-gray-200 text-sm z-10">{promo.title}</Text>
+                </ImageBackground>
+              </TouchableOpacity>
+            )}
+          />
+        </View>
       </View>
-    </View>
-  ), [promoWidth, promoItemWidth, sliderItems, backgroundColor]);
+    );
+  }, [promoWidth, promoItemWidth, sliderItems, backgroundColor, router]);
 
   const categoryBar = useMemo(() => (
     <View className="px-5 pb-3 pt-1" style={{ backgroundColor }}>
@@ -342,7 +350,7 @@ export default function MenuScreen() {
 
       {/* MAIN LIST */}
       {loading && sections.length === 0 ? (
-        <View className="px-5 py-4 flex-1" style={{ backgroundColor }}><Text className="text-slate-500">Loading menu...</Text></View>
+        <View className="px-5 py-4 flex-1" style={{ backgroundColor }}><Text style={{ color: textColor }}>Loading menu...</Text></View>
       ) : (
       <ScrollView
         ref={menuScrollRef}
@@ -363,20 +371,21 @@ export default function MenuScreen() {
               className="px-5 py-4"
               style={{ backgroundColor }}
             >
-              <Text className="text-xl font-bold text-slate-800">{section.title}</Text>
+              <Text className="text-xl font-bold" style={{ color: textColor }}>{section.title}</Text>
             </View>,
             ...section.data.map((product) => (
               <TouchableOpacity
                 key={product.id}
                 onPress={() => openProduct(product)}
                 activeOpacity={0.8}
-                className="mx-5 mb-4 bg-white rounded-[24px] shadow-sm p-3 flex-row border border-slate-100"
+                className="mx-5 mb-4 rounded-[24px] shadow-sm p-3 flex-row border border-slate-100"
+                style={{ backgroundColor: menuCardColor }}
               >
                 <Image source={{ uri: product.image }} className="w-24 h-24 rounded-[20px] bg-slate-200" />
                 <View className="flex-1 ml-4 justify-between py-1">
                   <View>
-                    <Text className="text-lg font-bold text-slate-800">{product.name}</Text>
-                    <Text className="text-slate-400 text-xs mt-1" numberOfLines={1}>{product.description}</Text>
+                    <Text className="text-lg font-bold" style={{ color: textColor }}>{product.name}</Text>
+                    <Text className="text-xs mt-1" style={{ color: textColor }} numberOfLines={1}>{product.description}</Text>
                   </View>
                   <View className="flex-row justify-between items-center mt-2">
                     <Text className="font-bold text-lg" style={{ color: accent }}>{product.price} SAR</Text>
@@ -416,20 +425,20 @@ export default function MenuScreen() {
           >
           <View className="p-5 pt-14">
           <View className="flex-row items-center mb-6">
-            <TouchableOpacity onPress={() => setIsSearchVisible(false)} className="mr-4"><ArrowLeft size={24} color="#334155" /></TouchableOpacity>
+            <TouchableOpacity onPress={() => setIsSearchVisible(false)} className="mr-4"><ArrowLeft size={24} color={textColor} /></TouchableOpacity>
             <View className="flex-1 bg-slate-100 rounded-2xl flex-row items-center px-4 h-12">
               <Search size={20} color="#94a3b8" />
-              <TextInput placeholder="What are you craving?" className="flex-1 ml-2 text-slate-700 font-medium" value={searchQuery} onChangeText={setSearchQuery} />
+              <TextInput placeholder="What are you craving?" className="flex-1 ml-2 font-medium" style={{ color: textColor }} value={searchQuery} onChangeText={setSearchQuery} />
             </View>
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
             {products.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map((item) => (
               <TouchableOpacity key={item.id} onPress={() => openProduct(item)} 
                 className="mb-4 p-3 rounded-2xl flex-row items-center border border-slate-100"
-                style={{ backgroundColor }}
+                style={{ backgroundColor: menuCardColor }}
               >
                 <Image source={{ uri: item.image }} className="w-16 h-16 rounded-xl bg-slate-200" />
-                <View className="ml-4 flex-1"><Text className="text-lg font-bold text-slate-800">{item.name}</Text><Text className="font-bold" style={{ color: accent }}>{item.price} SAR</Text></View>
+                <View className="ml-4 flex-1"><Text className="text-lg font-bold" style={{ color: textColor }}>{item.name}</Text><Text className="font-bold" style={{ color: accent }}>{item.price} SAR</Text></View>
                 <Plus size={16} color={accent} />
               </TouchableOpacity>
             ))}
@@ -440,7 +449,7 @@ export default function MenuScreen() {
         </GestureDetector>
       )}
 
-      {/* Promo popup: once per session (Nooks placement=popup or local PROMOS[0]) */}
+      {/* Promo popup: once per uploaded popup banner version */}
       {popupBanner && (
         <Modal visible={promoPopupVisible} transparent animationType="fade">
           <TouchableOpacity activeOpacity={1} onPress={closePromoPopup} className="flex-1 bg-black/60 justify-center items-center px-6">

@@ -1,4 +1,5 @@
-import React, { createContext, ReactNode, useContext, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 
 // 1. Define the item structure (Restored from your old code)
 export type CartItem = {
@@ -37,6 +38,39 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const [orderType, setOrderType] = useState<'delivery' | 'pickup'>('pickup');
   const [selectedBranch, setSelectedBranch] = useState<{ id: string; name: string; address: string; distance?: string } | null>(null);
   const [deliveryAddress, setDeliveryAddress] = useState<{ address: string; lat?: number; lng?: number; city?: string } | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  const CART_CACHE_KEY = '@als_cart_v1';
+
+  useEffect(() => {
+    AsyncStorage.getItem(CART_CACHE_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw) as {
+          cartItems?: CartItem[];
+          orderType?: 'delivery' | 'pickup';
+          selectedBranch?: { id: string; name: string; address: string; distance?: string } | null;
+          deliveryAddress?: { address: string; lat?: number; lng?: number; city?: string } | null;
+        };
+        if (Array.isArray(parsed.cartItems)) setCartItems(parsed.cartItems);
+        if (parsed.orderType === 'delivery' || parsed.orderType === 'pickup') setOrderType(parsed.orderType);
+        if (parsed.selectedBranch) setSelectedBranch(parsed.selectedBranch);
+        if (parsed.deliveryAddress) setDeliveryAddress(parsed.deliveryAddress);
+      })
+      .catch(() => {})
+      .finally(() => setHydrated(true));
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const payload = JSON.stringify({
+      cartItems,
+      orderType,
+      selectedBranch,
+      deliveryAddress,
+    });
+    AsyncStorage.setItem(CART_CACHE_KEY, payload).catch(() => {});
+  }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress]);
 
   // RESTORED: Your smart Unique ID generator
   const generateUniqueId = (product: any) => {

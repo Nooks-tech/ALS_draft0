@@ -8,12 +8,6 @@ import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 
-const DEFAULT_OFFERS = [
-  { id: '1', title: '50% OFF Your First Order', description: 'Get half price on everything for your first order. Max discount 50 SAR.', code: 'WELCOME50', expiry: 'Valid until 30 Dec', image: 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=600' },
-  { id: '2', title: 'Free Croissant 🥐', description: 'Buy any large coffee and get a free butter croissant.', code: 'MORNING', expiry: 'Valid 6am - 11am', image: 'https://images.unsplash.com/photo-1555507036-ab1f4038808a?w=600' },
-  { id: '3', title: 'Family Bundle Deal', description: '10 Coffees + 10 Cookies for only 199 SAR.', code: 'FAMILY', expiry: 'Weekends Only', image: 'https://images.unsplash.com/photo-1511920170033-f8396924c348?w=600' },
-];
-
 const PLACEHOLDER_PROMO_IMAGE = 'https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=600';
 
 function formatExpiry(validUntil?: string): string {
@@ -29,9 +23,9 @@ function formatExpiry(validUntil?: string): string {
 export default function OffersScreen() {
   const router = useRouter();
   const { merchantId } = useMerchant();
-  const { backgroundColor } = useMerchantBranding();
+  const { backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const [nooksBanners, setNooksBanners] = useState<NooksBanner[]>([]);
-  const [nooksPromos, setNooksPromos] = useState<Array<{ id: string; code: string; name: string; description?: string; valid_until?: string }>>([]);
+  const [nooksPromos, setNooksPromos] = useState<Array<{ id: string; code: string; name: string; description?: string; valid_until?: string; image_url?: string | null }>>([]);
 
   useEffect(() => {
     if (!merchantId) return;
@@ -48,20 +42,23 @@ export default function OffersScreen() {
         description: p.description ?? `Use code ${p.code} at checkout`,
         code: p.code,
         expiry: formatExpiry(p.valid_until),
-        image: offerBanners[0]?.image_url || PLACEHOLDER_PROMO_IMAGE,
+        image: p.image_url || offerBanners[0]?.image_url || PLACEHOLDER_PROMO_IMAGE,
       }));
     }
-    return DEFAULT_OFFERS;
+    return [];
   }, [nooksPromos, nooksBanners]);
 
   return (
     <View className="flex-1" style={{ backgroundColor }}>
       <StatusBar barStyle="dark-content" />
-      <View className="pt-14 pb-4 px-5 bg-white border-b border-slate-100 flex-row items-center">
+      <View
+        className="pt-14 pb-4 px-5 flex-row items-center"
+        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}
+      >
         <TouchableOpacity onPress={() => router.replace('/(tabs)/menu')} className="mr-4 p-2 -ml-2">
-          <ArrowLeft size={24} color="#334155" />
+          <ArrowLeft size={24} color={textColor} />
         </TouchableOpacity>
-        <Text className="text-xl font-bold text-slate-800">Offers</Text>
+        <Text className="text-xl font-bold" style={{ color: textColor }}>Offers</Text>
       </View>
       <FlatList
         data={offerList}
@@ -72,12 +69,12 @@ export default function OffersScreen() {
               {nooksBanners
                 .filter((b) => b.placement === 'offers' || b.placement === 'slider' || !b.placement)
                 .map((b) => (
-                <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden bg-white shadow-sm">
+                <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: menuCardColor }}>
                   <Image source={{ uri: b.image_url }} className="w-full h-40 bg-slate-200" resizeMode="cover" />
                   {(b.title || b.subtitle) && (
                     <View className="p-3">
-                      {b.subtitle ? <Text className="text-lg font-bold text-slate-800">{b.subtitle}</Text> : null}
-                      {b.title ? <Text className="text-slate-600">{b.title}</Text> : null}
+                      {b.subtitle ? <Text className="text-lg font-bold" style={{ color: textColor }}>{b.subtitle}</Text> : null}
+                      {b.title ? <Text style={{ color: textColor }}>{b.title}</Text> : null}
                     </View>
                   )}
                 </TouchableOpacity>

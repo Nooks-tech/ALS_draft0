@@ -11,6 +11,8 @@ const buildTimeLogoUrl = process.env.EXPO_PUBLIC_LOGO_URL || '';
 const buildTimePrimaryColor = process.env.EXPO_PUBLIC_PRIMARY_COLOR || '';
 const buildTimeAccentColor = process.env.EXPO_PUBLIC_ACCENT_COLOR || '';
 const buildTimeBackgroundColor = process.env.EXPO_PUBLIC_BACKGROUND_COLOR || '';
+const buildTimeMenuCardColor = process.env.EXPO_PUBLIC_MENU_CARD_COLOR || '';
+const buildTimeTextColor = process.env.EXPO_PUBLIC_TEXT_COLOR || '';
 const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 const config = {
@@ -41,6 +43,8 @@ config.expo.extra = {
   primaryColor: buildTimePrimaryColor || '',
   accentColor: buildTimeAccentColor || '',
   backgroundColor: buildTimeBackgroundColor || '',
+  menuCardColor: buildTimeMenuCardColor || '',
+  textColor: buildTimeTextColor || '',
 };
 
 // Add Apple Pay entitlement (required for iOS). Update merchantId once you have Apple Developer account.
