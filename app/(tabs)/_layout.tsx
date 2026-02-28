@@ -12,7 +12,7 @@ export default function TabLayout() {
   const router = useRouter();
   const { user } = useAuth();
   const { profile, profileLoaded } = useProfile();
-  const { primaryColor } = useMerchantBranding();
+  const { primaryColor, textColor } = useMerchantBranding();
 
   useEffect(() => {
     if (user && profileLoaded && !profile.phone?.trim()) {
@@ -24,8 +24,8 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: '#FFFFFF',
-        tabBarInactiveTintColor: 'rgba(255,255,255,0.7)',
+        tabBarActiveTintColor: textColor,
+        tabBarInactiveTintColor: textColor,
         tabBarStyle: {
           backgroundColor: primaryColor,
           borderTopWidth: 0,

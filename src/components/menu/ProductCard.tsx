@@ -19,7 +19,7 @@ interface ProductCardProps {
 }
 
 export const ProductCard = ({ product, onAdd, index = 0 }: ProductCardProps) => {
-  const { primaryColor } = useMerchantBranding();
+  const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
 
@@ -48,17 +48,17 @@ export const ProductCard = ({ product, onAdd, index = 0 }: ProductCardProps) => 
         transform: [{ translateY: slideAnim }] 
       }}
     >
-      <View className="flex-row bg-white rounded-3xl p-3 mb-4 mx-4 shadow-sm border border-gray-100 items-center">
+      <View className="flex-row rounded-3xl p-3 mb-4 mx-4 shadow-sm border border-gray-100 items-center" style={{ backgroundColor: menuCardColor }}>
         <Image 
           source={{ uri: product.image }} 
           className="w-24 h-24 rounded-2xl bg-gray-200"
         />
         <View className="flex-1 ml-4 justify-center py-2">
-          <Text className="text-lg font-bold text-gray-900 font-[Poppins-Bold]">{product.name}</Text>
-          <Text className="text-gray-500 text-xs mt-1 font-[Poppins-Regular]" numberOfLines={2}>
+          <Text className="text-lg font-bold font-[Poppins-Bold]" style={{ color: textColor }}>{product.name}</Text>
+          <Text className="text-xs mt-1 font-[Poppins-Regular]" style={{ color: textColor }} numberOfLines={2}>
             {product.description}
           </Text>
-          <Text className="font-bold mt-2 text-base font-[Poppins-Bold]" style={{ color: primaryColor }}>
+          <Text className="font-bold mt-2 text-base font-[Poppins-Bold]" style={{ color: textColor }}>
             {product.price} SAR
           </Text>
         </View>

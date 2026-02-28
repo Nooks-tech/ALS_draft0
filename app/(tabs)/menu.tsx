@@ -301,12 +301,12 @@ export default function MenuScreen() {
             style={selectedCategory === cat ? { backgroundColor: accent, borderColor: accent } : undefined}
             className={`mr-3 px-6 py-2.5 rounded-full border ${selectedCategory === cat ? '' : 'bg-white border-slate-200'}`}
           >
-            <Text className={`font-bold ${selectedCategory === cat ? 'text-white' : 'text-slate-500'}`}>{cat}</Text>
+            <Text className="font-bold" style={{ color: textColor }}>{cat}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
     </View>
-  ), [selectedCategory, displayCategories, scrollToCategory, backgroundColor, accent]);
+  ), [selectedCategory, displayCategories, scrollToCategory, backgroundColor, accent, textColor]);
 
   return (
     <View className="flex-1 relative" style={{ backgroundColor }}> 
@@ -316,22 +316,22 @@ export default function MenuScreen() {
       <View className="pt-14 pb-6 px-5 shadow-md flex-row justify-between items-center rounded-b-[40px]" style={{ backgroundColor: headerBg }}>
         <TouchableOpacity onPress={openOrderType} className="flex-row items-center flex-1 min-w-0 mr-2" accessibilityLabel={orderType === 'delivery' ? 'Delivering to' : 'Pickup from'} accessibilityRole="button">
           <View className="bg-white/20 p-2.5 rounded-2xl mr-3 border border-white/30 shadow-sm shrink-0">
-            {orderType === 'delivery' ? <Bike size={20} color="white" /> : <Store size={20} color="white" />}
+            {orderType === 'delivery' ? <Bike size={20} color={textColor} /> : <Store size={20} color={textColor} />}
           </View>
           <View className="flex-1 min-w-0">
             <View className="flex-row items-center">
-              <Text className="text-white/80 text-[10px] font-bold uppercase tracking-widest mr-1">
+              <Text className="text-[10px] font-bold uppercase tracking-widest mr-1" style={{ color: textColor }}>
                 {orderType === 'delivery' ? 'Delivering To' : 'Pickup From'}
               </Text>
-              <ChevronDown size={12} color="white" />
+              <ChevronDown size={12} color={textColor} />
             </View>
-            <Text className="text-white font-bold text-lg" numberOfLines={1} ellipsizeMode="tail">
+            <Text className="font-bold text-lg" style={{ color: textColor }} numberOfLines={1} ellipsizeMode="tail">
               {orderType === 'delivery' ? (deliveryAddress?.address || 'Add address') : selectedBranch?.name || 'Select branch'}
             </Text>
           </View>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setIsSearchVisible(true)} className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0 mr-2" accessibilityLabel="Search menu" accessibilityRole="button">
-          <Search size={22} color="white" />
+          <Search size={22} color={textColor} />
         </TouchableOpacity>
         <View className="ml-1" style={{ width: 40, height: 40 }} accessibilityLabel="Merchant logo" accessibilityRole="image">
           {logoUrl ? (
@@ -388,7 +388,7 @@ export default function MenuScreen() {
                     <Text className="text-xs mt-1" style={{ color: textColor }} numberOfLines={1}>{product.description}</Text>
                   </View>
                   <View className="flex-row justify-between items-center mt-2">
-                    <Text className="font-bold text-lg" style={{ color: accent }}>{product.price} SAR</Text>
+                    <Text className="font-bold text-lg" style={{ color: textColor }}>{product.price} SAR</Text>
                     <View className="p-1.5 rounded-lg" style={{ backgroundColor: accent }}><Plus size={18} color="white" /></View>
                   </View>
                 </View>
@@ -438,8 +438,8 @@ export default function MenuScreen() {
                 style={{ backgroundColor: menuCardColor }}
               >
                 <Image source={{ uri: item.image }} className="w-16 h-16 rounded-xl bg-slate-200" />
-                <View className="ml-4 flex-1"><Text className="text-lg font-bold" style={{ color: textColor }}>{item.name}</Text><Text className="font-bold" style={{ color: accent }}>{item.price} SAR</Text></View>
-                <Plus size={16} color={accent} />
+                <View className="ml-4 flex-1"><Text className="text-lg font-bold" style={{ color: textColor }}>{item.name}</Text><Text className="font-bold" style={{ color: textColor }}>{item.price} SAR</Text></View>
+                <Plus size={16} color={textColor} />
               </TouchableOpacity>
             ))}
           </ScrollView>
