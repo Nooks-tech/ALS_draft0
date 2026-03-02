@@ -66,21 +66,28 @@ export default function MoreScreen() {
 
   const MenuItem = ({ icon: Icon, title, subtitle, onPress, isDestructive = false, accentColor }: any) => (
     <TouchableOpacity onPress={onPress} className="flex-row items-center p-4 mb-[1px]" style={{ backgroundColor: menuCardColor }}>
-      <View style={!isDestructive && accentColor ? { backgroundColor: `${accentColor}18` } : undefined} className={`w-10 h-10 rounded-full justify-center items-center ${isDestructive ? 'bg-red-50' : accentColor ? '' : 'bg-slate-50'}`}>
+      <View
+        style={
+          isDestructive
+            ? undefined
+            : { backgroundColor: `${accentColor || primaryColor}18` }
+        }
+        className={`w-10 h-10 rounded-full justify-center items-center ${isDestructive ? 'bg-red-50' : ''}`}
+      >
         <Icon size={20} color={isDestructive ? '#EF4444' : (accentColor || '#0D9488')} />
       </View>
       <View className="flex-1 ml-4">
         <Text className="text-base font-bold" style={{ color: isDestructive ? '#ef4444' : textColor }}>{title}</Text>
         {subtitle && <Text className="text-xs" style={{ color: textColor }}>{subtitle}</Text>}
       </View>
-      {!isDestructive && <ChevronRight size={20} color="#94a3b8" />}
+      {!isDestructive && <ChevronRight size={20} color={textColor} />}
     </TouchableOpacity>
   );
 
   return (
     <SafeAreaView style={{ flex: 1, paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0, backgroundColor }}>
       <ScrollView>
-        <View className="p-6 mb-4 items-center border-b border-slate-100" style={{ backgroundColor }}>
+        <View className="p-6 mb-4 items-center" style={{ backgroundColor }}>
           <View className="w-20 h-20 rounded-full mb-3 justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
             <Text className="text-2xl font-bold" style={{ color: primaryColor }}>
               {profile.fullName ? profile.fullName.slice(0, 2).toUpperCase() : 'AA'}
@@ -116,8 +123,8 @@ export default function MoreScreen() {
               <Text className="text-base font-bold" style={{ color: textColor }}>Language / اللغة</Text>
               <Text className="text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? 'English' : 'العربية'}</Text>
             </View>
-            <View className="bg-slate-100 px-3 py-1 rounded-full">
-              <Text className="font-bold text-xs text-slate-600">{i18n.language === 'en' ? 'AR' : 'EN'}</Text>
+            <View className="px-3 py-1 rounded-full" style={{ backgroundColor: menuCardColor }}>
+              <Text className="font-bold text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? 'AR' : 'EN'}</Text>
             </View>
           </TouchableOpacity>
         </View>

@@ -12,7 +12,7 @@ interface OfferProps {
 }
 
 export const OfferCard = ({ title, description, code, image, expiry }: OfferProps) => {
-  const { primaryColor } = useMerchantBranding();
+  const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
 
   const copyToClipboard = async () => {
     await ExpoClipboard.setStringAsync(code);
@@ -20,7 +20,7 @@ export const OfferCard = ({ title, description, code, image, expiry }: OfferProp
   };
 
   return (
-    <View className="mb-6 rounded-2xl overflow-hidden shadow-md bg-white">
+    <View className="mb-6 rounded-2xl overflow-hidden shadow-md" style={{ backgroundColor: menuCardColor }}>
       <ImageBackground 
         source={{ uri: image }} 
         className="h-40 justify-end p-4"
@@ -33,7 +33,7 @@ export const OfferCard = ({ title, description, code, image, expiry }: OfferProp
 
       <View className="p-4 flex-row justify-between items-center">
         <View className="flex-1 pr-4">
-          <Text className="text-gray-600 leading-5">{description}</Text>
+          <Text className="leading-5" style={{ color: textColor }}>{description}</Text>
         </View>
 
         <TouchableOpacity 

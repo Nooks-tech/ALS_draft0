@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { AlertTriangle, Map, MapPin, RefreshCw, Store, Truck, X, XCircle } from 'lucide-react-native';
+import { AlertTriangle, Map, MapPin, RefreshCw, Store, Truck, X } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
@@ -10,38 +10,15 @@ import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 
-const CANCEL_WINDOW_MS = 2 * 60 * 1000;
-
 export default function OrderDetailModal() {
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
   const router = useRouter();
-  const { orders, cancelOrder } = useOrders();
+  const { orders } = useOrders();
   const { setCartFromOrder } = useCart();
   const order = orders.find((o) => o.id === orderId);
   const { primaryColor } = useMerchantBranding();
   const [otoStatus, setOtoStatus] = useState<OTOOrderStatusResponse | null>(null);
-  const [cancelTimeLeft, setCancelTimeLeft] = useState(0);
-  const [cancelling, setCancelling] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const driverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    if (!order?.createdAt || order.status !== 'Preparing') return;
-    const updateTimer = () => {
-      const elapsed = Date.now() - new Date(order.createdAt!).getTime();
-      const remaining = Math.max(0, CANCEL_WINDOW_MS - elapsed);
-      setCancelTimeLeft(remaining);
-      if (remaining <= 0 && timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
-    updateTimer();
-    timerRef.current = setInterval(updateTimer, 1000);
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [order?.createdAt, order?.status]);
 
   useEffect(() => {
     if (!order?.otoId) return;
@@ -60,29 +37,6 @@ export default function OrderDetailModal() {
       if (driverPollRef.current) clearInterval(driverPollRef.current);
     };
   }, [order?.otoId, order?.status]);
-
-  const handleCancel = useCallback(async () => {
-    if (!order) return;
-    Alert.alert(
-      'Cancel Order',
-      'Are you sure you want to cancel this order? You will receive a full refund.',
-      [
-        { text: 'No', style: 'cancel' },
-        {
-          text: 'Yes, Cancel',
-          style: 'destructive',
-          onPress: async () => {
-            setCancelling(true);
-            const result = await cancelOrder(order.id);
-            setCancelling(false);
-            if (!result.success) {
-              Alert.alert('Cannot Cancel', result.error || 'Failed to cancel order.');
-            }
-          },
-        },
-      ]
-    );
-  }, [order, cancelOrder]);
 
   const handleReorder = useCallback(() => {
     if (!order) return;
@@ -118,10 +72,6 @@ export default function OrderDetailModal() {
   const isOutForDelivery = order.status === 'Out for delivery';
   const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
   const canShowMap = branchLat != null && branchLon != null;
-  const canCancel = order.status === 'Preparing' && cancelTimeLeft > 0;
-  const cancelMinutes = Math.floor(cancelTimeLeft / 60000);
-  const cancelSeconds = Math.floor((cancelTimeLeft % 60000) / 1000);
-
   const statusBadgeColors: Record<string, { bg: string; text: string }> = {
     Preparing: { bg: 'bg-yellow-100', text: 'text-yellow-700' },
     Ready: { bg: 'bg-green-100', text: 'text-green-700' },
@@ -167,26 +117,6 @@ export default function OrderDetailModal() {
                 )}
               </View>
             </View>
-          )}
-
-          {/* Cancel button with countdown (2-min window) */}
-          {canCancel && (
-            <TouchableOpacity
-              onPress={handleCancel}
-              disabled={cancelling}
-              className="mb-4 py-3 px-4 rounded-xl border border-red-200 bg-red-50 flex-row items-center justify-center"
-            >
-              {cancelling ? (
-                <ActivityIndicator size="small" color="#EF4444" />
-              ) : (
-                <>
-                  <XCircle size={18} color="#EF4444" />
-                  <Text className="text-red-600 font-bold ml-2">
-                    Cancel Order ({cancelMinutes}:{cancelSeconds.toString().padStart(2, '0')})
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
           )}
 
           {order.status !== 'Cancelled' && order.status !== 'On Hold' && (

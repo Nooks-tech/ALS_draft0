@@ -10,7 +10,6 @@ import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABI
 
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import * as Device from 'expo-device';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
 
@@ -136,7 +135,6 @@ function PushTokenRegistrar() {
     let cancelled = false;
     const run = async () => {
       if (!user?.id || !merchantId) return;
-      if (!Device.isDevice) return;
       try {
         const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas?.projectId;
         const token = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
@@ -146,8 +144,9 @@ function PushTokenRegistrar() {
           customerId: user.id,
           token,
         });
-      } catch {
-        // Non-blocking: push registration can fail silently.
+      } catch (err: any) {
+        // Non-blocking: push registration failures are logged for diagnostics.
+        console.warn('[Push] Registration failed:', err?.message || 'unknown error');
       }
     };
     run();

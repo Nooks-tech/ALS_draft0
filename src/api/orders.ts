@@ -5,6 +5,30 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 import { api } from './client';
 import { supabase } from './supabase';
 
+function isCustomerOrdersMissing(message?: string) {
+  const m = (message || '').toLowerCase();
+  return m.includes('customer_orders') && (m.includes('does not exist') || m.includes('relation'));
+}
+
+function normalizeLegacy(row: Record<string, any>): OrderRow {
+  return {
+    ...row,
+    cancellation_reason: row.cancellation_reason ?? null,
+    cancelled_by: row.cancelled_by ?? null,
+    refund_status: row.refund_status ?? null,
+    delivery_fee: row.delivery_fee ?? null,
+    payment_id: row.payment_id ?? null,
+    branch_name: row.branch_name ?? null,
+    branch_id: row.branch_id ?? null,
+    merchant_id: row.merchant_id ?? null,
+    delivery_address: row.delivery_address ?? null,
+    delivery_lat: row.delivery_lat ?? null,
+    delivery_lng: row.delivery_lng ?? null,
+    delivery_city: row.delivery_city ?? null,
+    oto_id: row.oto_id ?? null,
+  } as OrderRow;
+}
+
 export type OrderRow = {
   id: string;
   merchant_id: string | null;
@@ -50,35 +74,51 @@ export type OrderInsert = {
 
 export async function fetchOrdersForCustomer(customerId: string): Promise<OrderRow[]> {
   if (!supabase) return [];
-  const { data, error } = await supabase
+  const primary = await supabase
     .from('customer_orders')
     .select('*')
     .eq('customer_id', customerId)
     .order('created_at', { ascending: false });
-  if (error) {
-    console.warn('[Orders] Fetch error:', error.message);
+  if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
+    console.warn('[Orders] Fetch error:', primary.error.message);
     return [];
   }
-  return (data ?? []) as OrderRow[];
+  if (!primary.error) return (primary.data ?? []) as OrderRow[];
+  const fallback = await supabase
+    .from('orders')
+    .select('*')
+    .eq('customer_id', customerId)
+    .order('created_at', { ascending: false });
+  if (fallback.error) {
+    console.warn('[Orders] Legacy fetch error:', fallback.error.message);
+    return [];
+  }
+  return (fallback.data ?? []).map((r) => normalizeLegacy(r as Record<string, any>));
 }
 
 export async function fetchOrderById(orderId: string): Promise<OrderRow | null> {
   if (!supabase || !orderId) return null;
-  const { data, error } = await supabase
+  const primary = await supabase
     .from('customer_orders')
     .select('*')
     .eq('id', orderId)
     .maybeSingle();
-  if (error) {
-    console.warn('[Orders] Fetch by id error:', error.message);
+  if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
+    console.warn('[Orders] Fetch by id error:', primary.error.message);
     return null;
   }
-  return (data as OrderRow | null) ?? null;
+  if (!primary.error) return (primary.data as OrderRow | null) ?? null;
+  const fallback = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
+  if (fallback.error) {
+    console.warn('[Orders] Legacy fetch by id error:', fallback.error.message);
+    return null;
+  }
+  return fallback.data ? normalizeLegacy(fallback.data as Record<string, any>) : null;
 }
 
 export async function insertOrder(row: OrderInsert): Promise<boolean> {
   if (!supabase) return false;
-  const { error } = await supabase.from('customer_orders').insert({
+  const payload = {
     id: row.id,
     merchant_id: row.merchant_id ?? null,
     branch_id: row.branch_id ?? null,
@@ -95,10 +135,18 @@ export async function insertOrder(row: OrderInsert): Promise<boolean> {
     oto_id: row.oto_id ?? null,
     delivery_fee: row.delivery_fee ?? null,
     payment_id: row.payment_id ?? null,
-  });
-  if (error) {
-    console.warn('[Orders] Insert error:', error.message);
+  };
+  const primary = await supabase.from('customer_orders').insert(payload);
+  if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
+    console.warn('[Orders] Insert error:', primary.error.message);
     return false;
+  }
+  if (primary.error && isCustomerOrdersMissing(primary.error.message)) {
+    const fallback = await supabase.from('orders').insert(payload);
+    if (fallback.error) {
+      console.warn('[Orders] Legacy insert error:', fallback.error.message);
+      return false;
+    }
   }
   return true;
 }
@@ -131,14 +179,15 @@ export function subscribeToOrders(
   onUpdate: (row: OrderRow) => void
 ): RealtimeChannel | null {
   if (!supabase) return null;
+  const table = 'customer_orders';
   const channel = supabase
-    .channel('customer_orders')
+    .channel(table)
     .on(
       'postgres_changes',
       {
         event: 'INSERT',
         schema: 'public',
-        table: 'customer_orders',
+        table,
         filter: `customer_id=eq.${customerId}`,
       },
       (payload) => {
@@ -150,7 +199,7 @@ export function subscribeToOrders(
       {
         event: 'UPDATE',
         schema: 'public',
-        table: 'customer_orders',
+        table,
         filter: `customer_id=eq.${customerId}`,
       },
       (payload) => {

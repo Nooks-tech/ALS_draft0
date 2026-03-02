@@ -298,15 +298,15 @@ export default function MenuScreen() {
           <TouchableOpacity
             key={cat}
             onPress={() => scrollToCategory(cat)}
-            style={selectedCategory === cat ? { backgroundColor: accent, borderColor: accent } : undefined}
-            className={`mr-3 px-6 py-2.5 rounded-full border ${selectedCategory === cat ? '' : 'bg-white border-slate-200'}`}
+            style={selectedCategory === cat ? { backgroundColor: accent, borderColor: accent } : { backgroundColor: menuCardColor, borderColor: menuCardColor }}
+            className="mr-3 px-6 py-2.5 rounded-full border"
           >
             <Text className="font-bold" style={{ color: textColor }}>{cat}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
     </View>
-  ), [selectedCategory, displayCategories, scrollToCategory, backgroundColor, accent, textColor]);
+  ), [selectedCategory, displayCategories, scrollToCategory, backgroundColor, accent, textColor, menuCardColor]);
 
   return (
     <View className="flex-1 relative" style={{ backgroundColor }}> 
@@ -333,11 +333,11 @@ export default function MenuScreen() {
         <TouchableOpacity onPress={() => setIsSearchVisible(true)} className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0 mr-2" accessibilityLabel="Search menu" accessibilityRole="button">
           <Search size={22} color={textColor} />
         </TouchableOpacity>
-        <View className="ml-1" style={{ width: 40, height: 40 }} accessibilityLabel="Merchant logo" accessibilityRole="image">
+        <View className="ml-1" style={{ width: 80, height: 80 }} accessibilityLabel="Merchant logo" accessibilityRole="image">
           {logoUrl ? (
-            <Image source={{ uri: logoUrl }} style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' }} resizeMode="contain" />
+            <Image source={{ uri: logoUrl }} style={{ width: 80, height: 80 }} resizeMode="contain" />
           ) : (
-            <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' }} />
+            <View style={{ width: 80, height: 80 }} />
           )}
         </View>
       </View>
@@ -378,7 +378,7 @@ export default function MenuScreen() {
                 key={product.id}
                 onPress={() => openProduct(product)}
                 activeOpacity={0.8}
-                className="mx-5 mb-4 rounded-[24px] shadow-sm p-3 flex-row border border-slate-100"
+                className="mx-5 mb-4 rounded-[24px] shadow-sm p-3 flex-row"
                 style={{ backgroundColor: menuCardColor }}
               >
                 <Image source={{ uri: product.image }} className="w-24 h-24 rounded-[20px] bg-slate-200" />
@@ -434,7 +434,7 @@ export default function MenuScreen() {
           <ScrollView showsVerticalScrollIndicator={false}>
             {products.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map((item) => (
               <TouchableOpacity key={item.id} onPress={() => openProduct(item)} 
-                className="mb-4 p-3 rounded-2xl flex-row items-center border border-slate-100"
+                className="mb-4 p-3 rounded-2xl flex-row items-center"
                 style={{ backgroundColor: menuCardColor }}
               >
                 <Image source={{ uri: item.image }} className="w-16 h-16 rounded-xl bg-slate-200" />
@@ -453,8 +453,8 @@ export default function MenuScreen() {
       {popupBanner && (
         <Modal visible={promoPopupVisible} transparent animationType="fade">
           <TouchableOpacity activeOpacity={1} onPress={closePromoPopup} className="flex-1 bg-black/60 justify-center items-center px-6">
-            <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-2xl overflow-hidden bg-white shadow-2xl">
-              <ImageBackground source={{ uri: popupBanner.image }} className="aspect-[4/3] justify-end p-4" imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
+            <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="w-[92%] max-w-xl rounded-2xl overflow-hidden bg-white shadow-2xl">
+              <ImageBackground source={{ uri: popupBanner.image }} className="h-[420px] justify-end p-4" imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
                 <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
                 <Text className="text-white font-bold text-2xl z-10">{popupBanner.subtitle}</Text>
                 <Text className="text-gray-200 z-10">{popupBanner.title}</Text>

@@ -34,6 +34,8 @@ buildRouter.post('/', async (req: Request, res: Response) => {
 
   const {
     merchant_id,
+    app_name,
+    app_icon_url,
     logo_url,
     primary_color,
     accent_color,
@@ -58,11 +60,16 @@ buildRouter.post('/', async (req: Request, res: Response) => {
 
   const inputs: Record<string, string> = {
     merchant_id: String(merchant_id).trim(),
+    app_name: app_name != null ? String(app_name) : 'Nooks App',
+    app_icon_url: app_icon_url != null ? String(app_icon_url) : '',
     logo_url: logo_url != null ? String(logo_url) : '',
     primary_color: primary_color != null ? String(primary_color) : '#0D9488',
     accent_color: accent_color != null ? String(accent_color) : '#0D9488',
     background_color: background_color != null ? String(background_color) : '#f5f5f4',
-    menu_card_color: menu_card_color != null ? String(menu_card_color) : '#ffffff',
+    menu_card_color:
+      menu_card_color != null
+        ? String(menu_card_color)
+        : (background_color != null ? String(background_color) : '#f5f5f4'),
     text_color: text_color != null ? String(text_color) : '#1f2937',
   };
   // Default to test builds for CI (APK + iOS simulator) unless explicitly disabled.

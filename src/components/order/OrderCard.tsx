@@ -12,7 +12,7 @@ interface OrderProps {
 }
 
 export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProps) => {
-  const { primaryColor } = useMerchantBranding();
+  const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
 
   const getStatusColor = () => {
     switch (status) {
@@ -30,9 +30,14 @@ export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProp
   const [bgClass, textClass] = statusStyle.split(' ');
 
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.8} className="bg-white p-4 mb-4 rounded-xl border border-gray-100 shadow-sm">
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.8}
+      className="p-4 mb-4 rounded-xl border border-gray-100 shadow-sm"
+      style={{ backgroundColor: menuCardColor }}
+    >
       <View className="flex-row justify-between items-center mb-3">
-        <Text className="text-gray-500 font-medium">Order #{id}</Text>
+        <Text className="font-medium" style={{ color: textColor }}>Order #{id}</Text>
         <View className={`px-3 py-1 rounded-full ${bgClass}`}>
           <Text className={`text-xs font-bold ${textClass}`}>{status}</Text>
         </View>
@@ -43,13 +48,13 @@ export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProp
           <Clock size={20} color={primaryColor} />
         </View>
         <View className="flex-1">
-          <Text className="font-bold text-gray-900 text-base" numberOfLines={1}>{items}</Text>
-          <Text className="text-gray-400 text-xs mt-1">{date}</Text>
+          <Text className="font-bold text-base" style={{ color: textColor }} numberOfLines={1}>{items}</Text>
+          <Text className="text-xs mt-1" style={{ color: textColor }}>{date}</Text>
         </View>
       </View>
 
       <View className="flex-row justify-between items-center pt-3 border-t border-gray-50">
-        <Text className="font-bold text-lg text-gray-900">{price} SAR</Text>
+        <Text className="font-bold text-lg" style={{ color: textColor }}>{price} SAR</Text>
         <TouchableOpacity onPress={onPress}>
           <Text className="font-bold text-sm" style={{ color: primaryColor }}>View Details</Text>
         </TouchableOpacity>

@@ -2,11 +2,13 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { customerCancelOrder, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
+import { submitOrderToNooks } from '../api/nooksOrders';
 import { notifyOrderStatusUpdate } from '../utils/orderNotifications';
 import type { CartItem } from './CartContext';
 import { useAuth } from './AuthContext';
 
 const ORDER_STATUSES = ['Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold'] as const;
+const MAX_HISTORY_ORDERS = 30;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 export type PlacedOrder = {
@@ -29,13 +31,14 @@ export type PlacedOrder = {
   createdAt?: string;
   deliveryFee?: number;
   paymentId?: string;
+  promoCode?: string;
 };
 
 export type OrdersContextType = {
   orders: PlacedOrder[];
   loading: boolean;
   addOrder: (
-    order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string },
+    order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string; promoCode?: string },
     generatedId?: string,
     initialStatus?: OrderStatus
   ) => void;
@@ -93,6 +96,18 @@ function rowToOrder(row: OrderRow): PlacedOrder {
   };
 }
 
+function mergeOrderHistory(primary: PlacedOrder[], secondary: PlacedOrder[]): PlacedOrder[] {
+  const byId = new Map<string, PlacedOrder>();
+  for (const order of [...primary, ...secondary]) {
+    byId.set(order.id, order);
+  }
+  return [...byId.values()].sort((a, b) => {
+    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+    return tb - ta;
+  }).slice(0, MAX_HISTORY_ORDERS);
+}
+
 export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
   const { user, loading: authLoading, initialized } = useAuth();
   const [orders, setOrders] = useState<PlacedOrder[]>([]);
@@ -101,16 +116,32 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
 
   const customerId = user?.id ?? null;
   const cacheKey = `@als_orders_${customerId ?? 'guest'}`;
+  const lastOrdersCacheKey = '@als_orders_last';
+
+  const persistOrdersCache = useCallback((nextOrders: PlacedOrder[]) => {
+    const capped = nextOrders.slice(0, MAX_HISTORY_ORDERS);
+    AsyncStorage.setItem(cacheKey, JSON.stringify(capped)).catch(() => {});
+    AsyncStorage.setItem(lastOrdersCacheKey, JSON.stringify(capped)).catch(() => {});
+  }, [cacheKey]);
 
   useEffect(() => {
     if (!initialized || authLoading) return;
-    if (!customerId) {
-      setOrders([]);
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
     setLoading(true);
+    AsyncStorage.getItem(lastOrdersCacheKey)
+      .then((raw) => {
+        if (!raw || cancelled) return;
+        try {
+          const cached = JSON.parse(raw) as PlacedOrder[];
+          if (Array.isArray(cached) && cached.length > 0) {
+            setOrders(cached);
+            setLoading(false);
+          }
+        } catch {
+          // Ignore malformed cache
+        }
+      })
+      .catch(() => {});
     AsyncStorage.getItem(cacheKey)
       .then((raw) => {
         if (!raw || cancelled) return;
@@ -125,22 +156,31 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         }
       })
       .catch(() => {});
+    if (!customerId) {
+      setLoading(false);
+      return;
+    }
     fetchOrdersForCustomer(customerId).then((rows) => {
       if (!cancelled) {
-        setOrders(rows.map(rowToOrder));
-        AsyncStorage.setItem(cacheKey, JSON.stringify(rows.map(rowToOrder))).catch(() => {});
+        const mapped = rows.map(rowToOrder);
+        if (mapped.length > 0) {
+          setOrders((prev) => {
+            const merged = mergeOrderHistory(mapped, prev);
+            persistOrdersCache(merged);
+            return merged;
+          });
+        }
       }
       setLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [customerId, initialized, authLoading, cacheKey]);
+  }, [customerId, initialized, authLoading, cacheKey, lastOrdersCacheKey, persistOrdersCache]);
 
   useEffect(() => {
-    if (!customerId) return;
-    AsyncStorage.setItem(cacheKey, JSON.stringify(orders)).catch(() => {});
-  }, [orders, customerId, cacheKey]);
+    persistOrdersCache(orders);
+  }, [orders, persistOrdersCache]);
 
   useEffect(() => {
     if (!customerId) return;
@@ -160,7 +200,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
 
   const addOrder = useCallback(
     (
-      order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string },
+      order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string; promoCode?: string },
       generatedId?: string,
       initialStatus: OrderStatus = 'Preparing'
     ) => {
@@ -175,30 +215,61 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         status,
         createdAt: now,
       };
-      setOrders((prev) => [placed, ...prev]);
+      setOrders((prev) => {
+        const next = [placed, ...prev];
+        persistOrdersCache(next);
+        return next;
+      });
 
-      if (customerId && customerId !== 'guest') {
-        insertOrder({
-          id,
-          merchant_id: order.merchantId ?? null,
-          branch_id: order.branchId ?? null,
-          branch_name: order.branchName ?? null,
-          customer_id: customerId,
-          total_sar: order.total,
-          status,
-          items: order.items,
-          order_type: order.orderType,
-          delivery_address: order.deliveryAddress ?? null,
-          delivery_lat: order.deliveryLat ?? null,
-          delivery_lng: order.deliveryLng ?? null,
-          delivery_city: null,
-          oto_id: order.otoId ?? null,
-          delivery_fee: order.deliveryFee ?? null,
-          payment_id: order.paymentId ?? null,
-        });
+      if (order.merchantId && order.branchId) {
+        void (async () => {
+          let inserted = false;
+          if (customerId && customerId !== 'guest') {
+            const insertPayload = {
+              id,
+              merchant_id: order.merchantId ?? null,
+              branch_id: order.branchId ?? null,
+              branch_name: order.branchName ?? null,
+              customer_id: customerId,
+              total_sar: order.total,
+              status,
+              items: order.items,
+              order_type: order.orderType,
+              delivery_address: order.deliveryAddress ?? null,
+              delivery_lat: order.deliveryLat ?? null,
+              delivery_lng: order.deliveryLng ?? null,
+              delivery_city: null,
+              oto_id: order.otoId ?? null,
+              delivery_fee: order.deliveryFee ?? null,
+              payment_id: order.paymentId ?? null,
+            };
+            inserted = await insertOrder(insertPayload);
+          }
+          if (!inserted) {
+            // Service-role fallback (and guest-mode path): send to nooksweb public orders API
+            // so dashboard pages still receive orders even when direct app insert is unavailable.
+            await submitOrderToNooks({
+              merchant_id: order.merchantId,
+              branch_id: order.branchId,
+              total_sar: order.total,
+              status,
+              items: order.items.map((i) => ({
+                product_id: i.id,
+                name: i.name,
+                quantity: i.quantity,
+                price_sar: i.price,
+              })),
+              ...(customerId && customerId !== 'guest' ? { customer_id: customerId } : {}),
+              ...(order.promoCode ? { promo_code: order.promoCode } : {}),
+              ...(order.deliveryAddress && { delivery_address: order.deliveryAddress }),
+              ...(order.deliveryLat != null && { delivery_lat: order.deliveryLat }),
+              ...(order.deliveryLng != null && { delivery_lng: order.deliveryLng }),
+            });
+          }
+        })();
       }
     },
-    [customerId]
+    [customerId, persistOrdersCache]
   );
 
   const cancelOrder = useCallback(async (orderId: string) => {

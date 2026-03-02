@@ -19,6 +19,7 @@ export type NooksOperations = {
   store_status: StoreStatus;
   prep_time_minutes: number;
   delivery_mode: DeliveryMode;
+  busy_started_at?: string | null;
 };
 
 export async function fetchNooksOperations(merchantId: string): Promise<NooksOperations | null> {
@@ -31,5 +32,6 @@ export async function fetchNooksOperations(merchantId: string): Promise<NooksOpe
   const store_status = (data.store_status as StoreStatus) ?? 'open';
   const prep_time_minutes = typeof data.prep_time_minutes === 'number' ? data.prep_time_minutes : 0;
   const delivery_mode = (data.delivery_mode as DeliveryMode) ?? 'delivery_and_pickup';
-  return { store_status, prep_time_minutes, delivery_mode };
+  const busy_started_at = typeof data.busy_started_at === 'string' ? data.busy_started_at : null;
+  return { store_status, prep_time_minutes, delivery_mode, busy_started_at };
 }

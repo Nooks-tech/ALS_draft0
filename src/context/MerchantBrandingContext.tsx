@@ -30,7 +30,7 @@ export type MerchantBranding = {
   accentColor: string;
   /** Screen and card backgrounds; default #f5f5f4 */
   backgroundColor: string;
-  /** Menu and list card background; default #ffffff */
+  /** Menu and list card background; defaults to screen background when not provided */
   menuCardColor: string;
   /** Global text color; default #1f2937 */
   textColor: string;
@@ -41,7 +41,7 @@ const DEFAULT_BRANDING: MerchantBranding = {
   primaryColor: '#0D9488',
   accentColor: '#0D9488',
   backgroundColor: '#f5f5f4',
-  menuCardColor: '#ffffff',
+  menuCardColor: '#f5f5f4',
   textColor: '#1f2937',
 };
 
@@ -64,7 +64,7 @@ function getBuildTimeBranding(): MerchantBranding {
   const card =
     (typeof extra?.menuCardColor === 'string' && extra.menuCardColor) ||
     process.env.EXPO_PUBLIC_MENU_CARD_COLOR ||
-    DEFAULT_BRANDING.menuCardColor;
+    bg;
   const text =
     (typeof extra?.textColor === 'string' && extra.textColor) ||
     process.env.EXPO_PUBLIC_TEXT_COLOR ||
@@ -110,20 +110,22 @@ export function MerchantBrandingProvider({
         const bg = data.backgroundColor ?? data.background_color;
         const card = data.menuCardColor ?? data.menu_card_color;
         const text = data.textColor ?? data.text_color;
+        const resolvedBg = typeof bg === 'string' && bg ? bg : branding.backgroundColor;
+        const resolvedCard = typeof card === 'string' && card ? card : resolvedBg;
         const nextBranding = {
           logoUrl: typeof logo === 'string' && logo ? logo : branding.logoUrl,
           primaryColor: typeof primary === 'string' && primary ? primary : branding.primaryColor,
           accentColor: typeof accent === 'string' && accent ? accent : branding.accentColor,
-          backgroundColor: typeof bg === 'string' && bg ? bg : branding.backgroundColor,
-          menuCardColor: typeof card === 'string' && card ? card : branding.menuCardColor,
+          backgroundColor: resolvedBg,
+          menuCardColor: resolvedCard,
           textColor: typeof text === 'string' && text ? text : branding.textColor,
         };
         setBranding((prev) => ({
           logoUrl: typeof logo === 'string' && logo ? logo : prev.logoUrl,
           primaryColor: typeof primary === 'string' && primary ? primary : prev.primaryColor,
           accentColor: typeof accent === 'string' && accent ? accent : prev.accentColor,
-          backgroundColor: typeof bg === 'string' && bg ? bg : prev.backgroundColor,
-          menuCardColor: typeof card === 'string' && card ? card : prev.menuCardColor,
+          backgroundColor: resolvedBg,
+          menuCardColor: resolvedCard,
           textColor: typeof text === 'string' && text ? text : prev.textColor,
         }));
         await AsyncStorage.setItem(cacheKey, JSON.stringify(nextBranding));

@@ -14,6 +14,15 @@ const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
+async function resolveOrdersTable() {
+  if (!supabaseAdmin) return 'customer_orders';
+  const probe = await supabaseAdmin.from('customer_orders').select('id').limit(1);
+  const missing =
+    !!probe.error?.message?.toLowerCase().includes('customer_orders') &&
+    probe.error.message.toLowerCase().includes('does not exist');
+  return missing ? 'orders' : 'customer_orders';
+}
+
 /** POST /api/orders/:id/merchant-cancel – merchant cancels order with refund + note */
 ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
   try {
@@ -97,32 +106,24 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
   }
 });
 
-/** POST /api/orders/:id/customer-cancel – customer cancels within 2-minute window */
+/** POST /api/orders/:id/customer-cancel – reserved for edit-flow hold cancellation only */
 ordersRouter.post('/:id/customer-cancel', async (req, res) => {
   try {
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+    const ordersTable = await resolveOrdersTable();
 
     const { data: order, error: fetchErr } = await supabaseAdmin
-      .from('customer_orders')
+      .from(ordersTable)
       .select('*')
       .eq('id', orderId)
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
-    if (order.status !== 'Preparing') {
-      return res.status(400).json({ error: 'Order can only be cancelled while Preparing' });
-    }
-
-    const createdAt = new Date(order.created_at).getTime();
-    const now = Date.now();
-    const twoMinutesMs = 2 * 60 * 1000;
-
-    if (now - createdAt > twoMinutesMs) {
-      return res.status(400).json({
-        error: 'Cancellation window expired. Orders can only be cancelled within 2 minutes.',
-        windowExpired: true,
-      });
+    // Customer cancellation is disabled for deployed orders.
+    // Keep this route only so "Edit your order" can stop an On Hold order before re-ordering.
+    if (order.status !== 'On Hold') {
+      return res.status(400).json({ error: 'Customer cancellation is disabled after order deployment.' });
     }
 
     let refundStatus = 'none';
@@ -156,7 +157,7 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
     }
 
     const { error: updateErr } = await supabaseAdmin
-      .from('customer_orders')
+      .from(ordersTable)
       .update({
         status: 'Cancelled',
         cancellation_reason: 'Cancelled by customer',
@@ -180,9 +181,10 @@ ordersRouter.post('/:id/hold', async (req, res) => {
   try {
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+    const ordersTable = await resolveOrdersTable();
 
     const { data: order, error: fetchErr } = await supabaseAdmin
-      .from('customer_orders')
+      .from(ordersTable)
       .select('*')
       .eq('id', orderId)
       .single();
@@ -202,7 +204,7 @@ ordersRouter.post('/:id/hold', async (req, res) => {
     }
 
     const { error: updateErr } = await supabaseAdmin
-      .from('customer_orders')
+      .from(ordersTable)
       .update({
         status: 'On Hold',
         updated_at: new Date().toISOString(),
@@ -222,9 +224,10 @@ ordersRouter.post('/:id/resume', async (req, res) => {
   try {
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+    const ordersTable = await resolveOrdersTable();
 
     const { error: updateErr } = await supabaseAdmin
-      .from('customer_orders')
+      .from(ordersTable)
       .update({ status: 'Preparing', updated_at: new Date().toISOString() })
       .eq('id', orderId)
       .eq('status', 'On Hold');
@@ -292,13 +295,10 @@ ordersRouter.get('/:id/status', async (req, res) => {
 
     const createdAt = new Date(order.created_at).getTime();
     const cancelWindowMs = 2 * 60 * 1000;
-    const canCustomerCancel = order.status === 'Preparing' && Date.now() - createdAt < cancelWindowMs;
-    const cancelTimeRemaining = canCustomerCancel ? Math.max(0, cancelWindowMs - (Date.now() - createdAt)) : 0;
-
     res.json({
       ...order,
-      canCustomerCancel,
-      cancelTimeRemaining,
+      canCustomerCancel: false,
+      cancelTimeRemaining: 0,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get order status' });

@@ -32,12 +32,8 @@ import {
   isMoyasarError,
 } from 'react-native-moyasar-sdk';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
-import { foodicsApi } from '../src/api/foodics';
-import { loyaltyApi } from '../src/api/loyalty';
-import { otoApi } from '../src/api/oto';
 import { paymentApi } from '../src/api/payment';
-import { buildNooksOrderPayload, submitOrderToNooks } from '../src/api/nooksOrders';
-import { calculateNooksPromoDiscount, fetchNooksPromos } from '../src/api/nooksPromos';
+import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
 
@@ -52,13 +48,11 @@ function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): num
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-import { useAuth } from '../src/context/AuthContext';
 import { useCart } from '../src/context/CartContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useOperations } from '../src/context/OperationsContext';
 import { useOrders } from '../src/context/OrdersContext';
-import { useProfile } from '../src/context/ProfileContext';
 
 export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card';
 
@@ -74,12 +68,9 @@ export default function CheckoutScreen() {
     deliveryAddress,
     clearCart,
   } = useCart();
-  const { user } = useAuth();
   const { merchantId } = useMerchant();
   const { addOrder } = useOrders();
   const { isClosed, isBusy } = useOperations();
-  const { profile } = useProfile();
-  const customerId = user?.id ?? profile?.phone ?? profile?.full_name ?? 'guest';
   const { primaryColor } = useMerchantBranding();
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
@@ -147,6 +138,15 @@ export default function CheckoutScreen() {
         const promos = await fetchNooksPromos(merchantId);
         const matched = promos.find((p) => p.code?.toUpperCase() === code.toUpperCase());
         if (matched) {
+          // Check expiry date
+          if (matched.valid_until) {
+            const expiry = new Date(matched.valid_until);
+            if (!isNaN(expiry.getTime()) && expiry < new Date()) {
+              Alert.alert('Expired Code', 'This promo code has expired.');
+              setPromoValidating(false);
+              return;
+            }
+          }
           const discountAmount = calculateNooksPromoDiscount(matched, subtotalBeforePromo);
           if (discountAmount > 0) {
             setPromoDiscount(discountAmount);
@@ -184,108 +184,20 @@ export default function CheckoutScreen() {
 
   const createOrderAfterPayment = useCallback(async () => {
     if (!selectedBranch?.id) return;
+    if (!merchantId) {
+      Alert.alert('Configuration Error', 'Merchant configuration is missing. Please restart the app and try again.');
+      return;
+    }
     setSubmitting(true);
     const orderId = `order-${Date.now()}`;
-    let foodicsOk = false;
     try {
-      const payload = {
-        branchId: selectedBranch.id,
-        orderType,
-        items: cartItems.map((item) => ({
-          productId: item.id,
-          quantity: item.quantity,
-          price: item.price,
-          options: {},
-        })),
-        deliveryAddress: orderType === 'delivery' && deliveryAddress ? deliveryAddress : undefined,
-        ...(promoApplied && promoDiscount > 0 && promoCode && {
-          discount: {
-            reference: promoCode,
-            amount: promoDiscount,
-            type: 'amount' as const,
-            name: 'App Promo',
-          },
-        }),
-      };
-      try {
-        await foodicsApi.createOrder(payload);
-        foodicsOk = true;
-      } catch (foodicsErr: any) {
-        console.warn('[Foodics] createOrder failed:', foodicsErr?.message);
-        if (foodicsErr?.message?.toLowerCase().includes('not found') || foodicsErr?.message?.toLowerCase().includes('unauthorized') || foodicsErr?.message?.toLowerCase().includes('token')) {
-          // Demo mode: Foodics not configured, continue with local order
-        } else {
-          throw foodicsErr;
-        }
-      }
-      let otoId: number | undefined;
-      // Request OTO delivery for delivery orders (driver dispatch)
-      if (orderType === 'delivery' && deliveryAddress?.address) {
-        console.log('[Checkout] Calling OTO requestDelivery...');
-        try {
-          const branchOto = getBranchOtoConfig(selectedBranch?.id ?? '', selectedBranch?.name);
-          const originCity = branchOto?.city ?? 'Madinah';
-          const destCity = deliveryAddress.city ?? originCity;
-          let deliveryOptionId: number | undefined;
-          let pickupLocationCode: string | undefined = branchOto?.otoPickupLocationCode;
-
-          if (branchOto) {
-            try {
-              const opts = await otoApi.getDeliveryOptions({
-                originCity,
-                destinationCity: destCity,
-                weight: 1,
-                originLat: branchOto.lat,
-                originLon: branchOto.lon,
-                destinationLat: deliveryAddress.lat,
-                destinationLon: deliveryAddress.lng,
-              });
-              if (opts?.options?.[0]) {
-                deliveryOptionId = opts.options[0].deliveryOptionId;
-              }
-            } catch (_) {}
-          }
-
-          const otoResult = await otoApi.requestDelivery({
-            orderId,
-            amount: finalTotal,
-            pickupLocationCode,
-            deliveryOptionId,
-            customer: {
-              name: profile?.fullName || 'Customer',
-              phone: profile?.phone || '500000000',
-              email: profile?.email,
-            },
-            deliveryAddress: {
-              address: deliveryAddress.address,
-              lat: deliveryAddress.lat,
-              lng: deliveryAddress.lng,
-              city: destCity,
-            },
-            branch: {
-              name: selectedBranch.name,
-              address: selectedBranch.address,
-            },
-            items: cartItems.map((i) => ({
-              name: i.name,
-              price: i.price,
-              quantity: i.quantity,
-            })),
-          });
-          if (otoResult?.otoId != null) otoId = otoResult.otoId;
-        } catch (otoErr: any) {
-          console.warn('[Checkout] OTO delivery failed:', otoErr?.message);
-          // Order is placed; OTO failure is non-blocking
-        }
-      } else {
-        console.log('[Checkout] Skipping OTO: orderType=', orderType, 'hasAddress=', !!deliveryAddress?.address);
-      }
+      const otoId: number | undefined = undefined;
       addOrder(
         {
           total: finalTotal,
           items: [...cartItems],
           orderType,
-          merchantId: merchantId || undefined,
+          merchantId,
           branchName: selectedBranch?.name,
           branchId: selectedBranch?.id,
           deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address : undefined,
@@ -294,27 +206,14 @@ export default function CheckoutScreen() {
           otoId,
           deliveryFee,
           paymentId: orderId,
+          promoCode: promoApplied ? promoCode : undefined,
         },
-        orderId
+        orderId,
+        'Preparing'
       );
-      if (customerId && customerId !== 'guest') {
-        const subtotalForPoints = Math.max(0, finalTotal - deliveryFee);
-        loyaltyApi.earn(customerId, orderId, subtotalForPoints).catch(() => {});
+      if (promoApplied && promoCode) {
+        await consumeNooksPromo(merchantId, promoCode);
       }
-      const nooksPayload = buildNooksOrderPayload(
-        {
-          merchantId: merchantId || undefined,
-          branchId: selectedBranch?.id,
-          total: finalTotal,
-          items: cartItems,
-          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address : undefined,
-          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat : undefined,
-          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng : undefined,
-        },
-        customerId,
-        orderType === 'delivery' ? deliveryAddress?.city : undefined
-      );
-      if (nooksPayload) submitOrderToNooks(nooksPayload);
       clearCart();
       setShowPaymentModal(false);
       setMoyasarWebUrl(null);
@@ -326,7 +225,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, addOrder, clearCart, promoApplied, promoDiscount, promoCode, profile]);
+  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, addOrder, promoApplied, promoCode, clearCart]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {
@@ -571,6 +470,12 @@ export default function CheckoutScreen() {
               <Text className="text-slate-900 font-medium">VAT</Text>
               <Text className="text-slate-900 font-bold">{vatAmount.toFixed(2)} SAR</Text>
             </View>
+            {promoApplied && discount > 0 && (
+              <View className="flex-row justify-between mt-1">
+                <Text className="text-slate-900 font-medium">Promo discount</Text>
+                <Text className="text-emerald-600 font-bold">- {discount.toFixed(2)} SAR</Text>
+              </View>
+            )}
             <View className="flex-row justify-between mt-3 pt-3 border-t border-slate-100">
               <Text className="text-slate-900 font-bold">Total VAT included</Text>
               <Text className="text-slate-900 font-bold text-lg">{finalTotal.toFixed(2)} SAR</Text>

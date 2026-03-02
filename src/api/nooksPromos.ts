@@ -20,6 +20,7 @@ export type NooksPromo = {
   valid_from?: string;
   valid_until?: string;
   description?: string;
+  image_url?: string | null;
 };
 
 export async function fetchNooksPromos(merchantId: string): Promise<NooksPromo[]> {
@@ -34,6 +35,20 @@ export async function fetchNooksPromos(merchantId: string): Promise<NooksPromo[]
     return [];
   } catch {
     return [];
+  }
+}
+
+export async function consumeNooksPromo(merchantId: string, code: string): Promise<void> {
+  if (!BASE_URL.trim() || !merchantId.trim() || !code.trim()) return;
+  const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/promos/use`;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+  } catch {
+    // Best-effort analytics counter; don't block checkout.
   }
 }
 

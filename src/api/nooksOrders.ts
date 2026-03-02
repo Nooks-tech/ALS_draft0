@@ -20,10 +20,11 @@ export type NooksOrderItem = {
 export type NooksOrderPayload = {
   merchant_id: string;
   branch_id: string;
-  customer_id: string;
+  customer_id?: string;
   total_sar: number;
   status: string;
   items: NooksOrderItem[];
+  promo_code?: string;
   delivery_address?: string;
   delivery_lat?: number;
   delivery_lng?: number;
@@ -36,18 +37,18 @@ export function buildNooksOrderPayload(
     branchId?: string;
     total: number;
     items: Array<{ id: string; name: string; price: number; quantity: number }>;
+    promoCode?: string;
     deliveryAddress?: string;
     deliveryLat?: number;
     deliveryLng?: number;
   },
-  customerId: string,
+  customerId?: string,
   deliveryCity?: string
 ): NooksOrderPayload | null {
   if (!order.merchantId || !order.branchId) return null;
   return {
     merchant_id: order.merchantId,
     branch_id: order.branchId,
-    customer_id: customerId,
     total_sar: order.total,
     status: 'pending',
     items: order.items.map((i) => ({
@@ -56,10 +57,12 @@ export function buildNooksOrderPayload(
       quantity: i.quantity,
       price_sar: i.price,
     })),
+    ...(order.promoCode && { promo_code: order.promoCode }),
     ...(order.deliveryAddress && { delivery_address: order.deliveryAddress }),
     ...(order.deliveryLat != null && { delivery_lat: order.deliveryLat }),
     ...(order.deliveryLng != null && { delivery_lng: order.deliveryLng }),
     ...(deliveryCity && { delivery_city: deliveryCity }),
+    ...(customerId ? { customer_id: customerId } : {}),
   };
 }
 

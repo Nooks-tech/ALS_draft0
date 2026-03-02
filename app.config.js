@@ -5,6 +5,8 @@ const appJson = require('./app.json');
 const withApplePayEntitlement = require('./plugins/withApplePay');
 
 const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.als';
+const buildTimeAppName = process.env.EXPO_PUBLIC_APP_NAME || '';
+const buildTimeAppIconFile = process.env.EXPO_PUBLIC_APP_ICON_FILE || '';
 
 // Option A: one build per merchant – branding baked in at build time (from EAS workflow / .env)
 const buildTimeLogoUrl = process.env.EXPO_PUBLIC_LOGO_URL || '';
@@ -20,8 +22,19 @@ const config = {
 };
 
 config.expo = config.expo || {};
+if (buildTimeAppName.trim()) {
+  config.expo.name = buildTimeAppName.trim();
+}
+if (buildTimeAppIconFile.trim()) {
+  config.expo.icon = buildTimeAppIconFile.trim();
+}
 config.expo.android = {
   ...(config.expo.android || {}),
+  adaptiveIcon: {
+    backgroundColor: config.expo.android?.adaptiveIcon?.backgroundColor || '#E6F4FE',
+    foregroundImage: buildTimeAppIconFile.trim() || config.expo.icon || './assets/images/icon.png',
+    monochromeImage: buildTimeAppIconFile.trim() || config.expo.icon || './assets/images/icon.png',
+  },
   config: {
     ...((config.expo.android && config.expo.android.config) || {}),
     ...(googleMapsApiKey ? { googleMaps: { apiKey: googleMapsApiKey } } : {}),
@@ -40,6 +53,8 @@ config.expo.extra = {
   nooksApiBaseUrl: process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || '',
   googleMapsApiKey: googleMapsApiKey || '',
   logoUrl: buildTimeLogoUrl || null,
+  appName: buildTimeAppName || '',
+  appIconFile: buildTimeAppIconFile || '',
   primaryColor: buildTimePrimaryColor || '',
   accentColor: buildTimeAccentColor || '',
   backgroundColor: buildTimeBackgroundColor || '',
