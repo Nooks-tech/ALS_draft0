@@ -52,7 +52,8 @@ export default function MenuScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [promoPopupVisible, setPromoPopupVisible] = useState(false);
   const [nooksBanners, setNooksBanners] = useState<NooksBanner[]>([]);
-  const shownPopupVersionRef = useRef<string | null>(null);
+  const [activePopup, setActivePopup] = useState<SliderItem | null>(null);
+  const popupSessionConsumedRef = useRef(false);
 
   const displayCategories = useMemo(() => categories.filter((c) => c !== 'All'), [categories]);
   const sections = useMemo(() =>
@@ -89,34 +90,66 @@ export default function MenuScreen() {
     return [];
   }, [nooksBanners]);
 
-  const popupBanner = useMemo(() => {
-    const popupCandidates = nooksBanners.filter((b) => b.placement === 'popup');
-    const popup = popupCandidates.length > 0 ? popupCandidates[popupCandidates.length - 1] : null;
-    if (popup) return { id: popup.id, image: popup.image_url, title: popup.title ?? '', subtitle: popup.subtitle ?? '' };
-    return null;
-  }, [nooksBanners]);
+  const popupItems = useMemo(
+    () =>
+      nooksBanners
+        .filter((b) => b.placement === 'popup')
+        .map((b) => ({
+          id: b.id,
+          image: b.image_url,
+          title: b.title ?? '',
+          subtitle: b.subtitle ?? '',
+        })),
+    [nooksBanners]
+  );
 
-  // Popup: show once per uploaded popup version per device.
+  // Popup queue behavior:
+  // - show at most one popup per app session
+  // - when multiple popup banners exist, show first unseen in upload order
+  // - after user closes app and opens a new session, show next unseen popup
   useEffect(() => {
-    if (!popupBanner || !merchantId) return;
-    const popupVersion = `${popupBanner.id}:${popupBanner.image}`;
-    if (shownPopupVersionRef.current === popupVersion) return;
-    const key = `popup_last_version_${merchantId}`;
-    AsyncStorage.getItem(key).then((lastVersion) => {
-      if (lastVersion !== popupVersion) {
+    if (!merchantId || popupItems.length === 0 || popupSessionConsumedRef.current) return;
+    let cancelled = false;
+    const seenKey = `popup_seen_ids_${merchantId}`;
+    AsyncStorage.getItem(seenKey).then((raw) => {
+      if (cancelled) return;
+      let seenIds: string[] = [];
+      try {
+        seenIds = raw ? (JSON.parse(raw) as string[]) : [];
+      } catch {
+        seenIds = [];
+      }
+      const nextPopup = popupItems.find((p) => !seenIds.includes(p.id));
+      if (nextPopup) {
+        setActivePopup(nextPopup);
         setPromoPopupVisible(true);
+        popupSessionConsumedRef.current = true;
       }
     });
-  }, [popupBanner, merchantId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [popupItems, merchantId]);
+
   const closePromoPopup = useCallback(() => {
     setPromoPopupVisible(false);
-    if (popupBanner) {
-      shownPopupVersionRef.current = `${popupBanner.id}:${popupBanner.image}`;
+    if (merchantId && activePopup) {
+      const seenKey = `popup_seen_ids_${merchantId}`;
+      AsyncStorage.getItem(seenKey).then((raw) => {
+        let seenIds: string[] = [];
+        try {
+          seenIds = raw ? (JSON.parse(raw) as string[]) : [];
+        } catch {
+          seenIds = [];
+        }
+        if (!seenIds.includes(activePopup.id)) {
+          seenIds.push(activePopup.id);
+          AsyncStorage.setItem(seenKey, JSON.stringify(seenIds));
+        }
+      });
     }
-    if (merchantId && popupBanner) {
-      AsyncStorage.setItem(`popup_last_version_${merchantId}`, `${popupBanner.id}:${popupBanner.image}`);
-    }
-  }, [merchantId, popupBanner]);
+    setActivePopup(null);
+  }, [merchantId, activePopup]);
 
   const screenWidth = Dimensions.get('window').width;
   const searchTranslateX = useSharedValue(0);
@@ -298,7 +331,11 @@ export default function MenuScreen() {
           <TouchableOpacity
             key={cat}
             onPress={() => scrollToCategory(cat)}
-            style={selectedCategory === cat ? { backgroundColor: accent, borderColor: accent } : { backgroundColor: menuCardColor, borderColor: menuCardColor }}
+            style={
+              selectedCategory === cat
+                ? { backgroundColor: headerBg, borderColor: headerBg }
+                : { backgroundColor: menuCardColor, borderColor: menuCardColor }
+            }
             className="mr-3 px-6 py-2.5 rounded-full border"
           >
             <Text className="font-bold" style={{ color: textColor }}>{cat}</Text>
@@ -306,7 +343,7 @@ export default function MenuScreen() {
         ))}
       </ScrollView>
     </View>
-  ), [selectedCategory, displayCategories, scrollToCategory, backgroundColor, accent, textColor, menuCardColor]);
+  ), [selectedCategory, displayCategories, scrollToCategory, backgroundColor, headerBg, textColor, menuCardColor]);
 
   return (
     <View className="flex-1 relative" style={{ backgroundColor }}> 
@@ -333,11 +370,11 @@ export default function MenuScreen() {
         <TouchableOpacity onPress={() => setIsSearchVisible(true)} className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0 mr-2" accessibilityLabel="Search menu" accessibilityRole="button">
           <Search size={22} color={textColor} />
         </TouchableOpacity>
-        <View className="ml-1" style={{ width: 80, height: 80 }} accessibilityLabel="Merchant logo" accessibilityRole="image">
+        <View className="ml-1" style={{ width: 54, height: 54 }} accessibilityLabel="Merchant logo" accessibilityRole="image">
           {logoUrl ? (
-            <Image source={{ uri: logoUrl }} style={{ width: 80, height: 80 }} resizeMode="contain" />
+            <Image source={{ uri: logoUrl }} style={{ width: 54, height: 54 }} resizeMode="contain" />
           ) : (
-            <View style={{ width: 80, height: 80 }} />
+            <View style={{ width: 54, height: 54 }} />
           )}
         </View>
       </View>
@@ -450,14 +487,14 @@ export default function MenuScreen() {
       )}
 
       {/* Promo popup: once per uploaded popup banner version */}
-      {popupBanner && (
+      {activePopup && (
         <Modal visible={promoPopupVisible} transparent animationType="fade">
           <TouchableOpacity activeOpacity={1} onPress={closePromoPopup} className="flex-1 bg-black/60 justify-center items-center px-6">
             <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="w-[92%] max-w-xl rounded-2xl overflow-hidden bg-white shadow-2xl">
-              <ImageBackground source={{ uri: popupBanner.image }} className="h-[420px] justify-end p-4" imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
+              <ImageBackground source={{ uri: activePopup.image }} className="h-[420px] justify-end p-4" imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
                 <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
-                <Text className="text-white font-bold text-2xl z-10">{popupBanner.subtitle}</Text>
-                <Text className="text-gray-200 z-10">{popupBanner.title}</Text>
+                <Text className="text-white font-bold text-2xl z-10">{activePopup.subtitle}</Text>
+                <Text className="text-gray-200 z-10">{activePopup.title}</Text>
               </ImageBackground>
               <TouchableOpacity onPress={closePromoPopup} className="py-4 items-center border-t border-slate-100" style={{ backgroundColor: accent }}>
                 <Text className="text-white font-bold">Close</Text>

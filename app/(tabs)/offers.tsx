@@ -8,8 +8,6 @@ import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 
-const PLACEHOLDER_PROMO_IMAGE = 'https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=600';
-
 function formatExpiry(validUntil?: string): string {
   if (!validUntil) return 'Valid for limited time';
   try {
@@ -41,7 +39,7 @@ export default function OffersScreen() {
         description: p.description ?? `Use code ${p.code} at checkout`,
         code: p.code,
         expiry: formatExpiry(p.valid_until),
-        image: p.image_url || PLACEHOLDER_PROMO_IMAGE,
+        image: typeof p.image_url === 'string' ? p.image_url.trim() : undefined,
       }));
     }
     return [];
@@ -68,7 +66,7 @@ export default function OffersScreen() {
         data={offerList}
         keyExtractor={(item) => item.id}
         ListHeaderComponent={
-          visibleBannerCards.length > 0 ? (
+          offerList.length === 0 && visibleBannerCards.length > 0 ? (
             <View className="mb-4">
               {visibleBannerCards.map((b) => (
                 <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: menuCardColor }}>

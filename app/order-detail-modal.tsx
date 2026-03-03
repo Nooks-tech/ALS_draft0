@@ -119,6 +119,25 @@ export default function OrderDetailModal() {
             </View>
           )}
 
+          {order.orderType === 'delivery' && order.otoDispatchStatus === 'failed' && (
+            <View className="mb-4 p-4 bg-amber-50 rounded-xl flex-row items-start">
+              <AlertTriangle size={18} color="#D97706" style={{ marginTop: 2 }} />
+              <View className="flex-1 ml-3">
+                <Text className="font-bold text-amber-700 text-sm">
+                  Delivery dispatch pending
+                </Text>
+                <Text className="text-amber-700 text-sm mt-1">
+                  We could not send this order to the delivery provider yet. The store has your order and can retry dispatch.
+                </Text>
+                {!!order.otoDispatchError && (
+                  <Text className="text-amber-800 text-xs mt-2">
+                    Details: {order.otoDispatchError}
+                  </Text>
+                )}
+              </View>
+            </View>
+          )}
+
           {order.status !== 'Cancelled' && order.status !== 'On Hold' && (
             <View className="mb-6">
               <Text className="font-bold text-slate-800 mb-3">Order status</Text>

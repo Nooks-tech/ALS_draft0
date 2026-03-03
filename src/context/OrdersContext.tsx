@@ -32,13 +32,22 @@ export type PlacedOrder = {
   deliveryFee?: number;
   paymentId?: string;
   promoCode?: string;
+  otoDispatchStatus?: 'success' | 'failed';
+  otoDispatchError?: string;
 };
 
 export type OrdersContextType = {
   orders: PlacedOrder[];
   loading: boolean;
   addOrder: (
-    order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string; promoCode?: string },
+    order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & {
+      otoId?: number;
+      deliveryFee?: number;
+      paymentId?: string;
+      promoCode?: string;
+      otoDispatchStatus?: 'success' | 'failed';
+      otoDispatchError?: string;
+    },
     generatedId?: string,
     initialStatus?: OrderStatus
   ) => void;
@@ -200,7 +209,14 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
 
   const addOrder = useCallback(
     (
-      order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & { otoId?: number; deliveryFee?: number; paymentId?: string; promoCode?: string },
+      order: Omit<PlacedOrder, 'id' | 'date' | 'status'> & {
+        otoId?: number;
+        deliveryFee?: number;
+        paymentId?: string;
+        promoCode?: string;
+        otoDispatchStatus?: 'success' | 'failed';
+        otoDispatchError?: string;
+      },
       generatedId?: string,
       initialStatus: OrderStatus = 'Preparing'
     ) => {
@@ -253,6 +269,29 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
               branch_id: order.branchId,
               total_sar: order.total,
               status,
+              ...(order.paymentId ? { payment_id: order.paymentId } : {}),
+              items: order.items.map((i) => ({
+                product_id: i.id,
+                name: i.name,
+                quantity: i.quantity,
+                price_sar: i.price,
+              })),
+              ...(customerId && customerId !== 'guest' ? { customer_id: customerId } : {}),
+              ...(order.promoCode ? { promo_code: order.promoCode } : {}),
+              ...(order.deliveryAddress && { delivery_address: order.deliveryAddress }),
+              ...(order.deliveryLat != null && { delivery_lat: order.deliveryLat }),
+              ...(order.deliveryLng != null && { delivery_lng: order.deliveryLng }),
+            });
+          }
+          if (inserted) {
+            // Even when direct insert succeeds, mirror to nooksweb API with payment_id dedupe
+            // so dashboard pages always receive orders from one canonical ingestion path.
+            await submitOrderToNooks({
+              merchant_id: order.merchantId,
+              branch_id: order.branchId,
+              total_sar: order.total,
+              status,
+              ...(order.paymentId ? { payment_id: order.paymentId } : {}),
               items: order.items.map((i) => ({
                 product_id: i.id,
                 name: i.name,

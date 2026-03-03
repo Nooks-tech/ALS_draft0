@@ -33,6 +33,7 @@ import {
 } from 'react-native-moyasar-sdk';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { paymentApi } from '../src/api/payment';
+import { otoApi } from '../src/api/oto';
 import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
@@ -53,6 +54,7 @@ import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useOperations } from '../src/context/OperationsContext';
 import { useOrders } from '../src/context/OrdersContext';
+import { useProfile } from '../src/context/ProfileContext';
 
 export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card';
 
@@ -70,6 +72,7 @@ export default function CheckoutScreen() {
   } = useCart();
   const { merchantId } = useMerchant();
   const { addOrder } = useOrders();
+  const { profile } = useProfile();
   const { isClosed, isBusy } = useOperations();
   const { primaryColor } = useMerchantBranding();
 
@@ -191,7 +194,50 @@ export default function CheckoutScreen() {
     setSubmitting(true);
     const orderId = `order-${Date.now()}`;
     try {
-      const otoId: number | undefined = undefined;
+      let otoId: number | undefined = undefined;
+      let otoDispatchStatus: 'success' | 'failed' | undefined;
+      let otoDispatchError: string | undefined;
+      if (orderType === 'delivery' && selectedBranch?.id && deliveryAddress?.address) {
+        const branchOto = getBranchOtoConfig(selectedBranch.id, selectedBranch.name);
+        try {
+          const deliveryRes = await otoApi.requestDelivery({
+            orderId,
+            amount: Number(finalTotal.toFixed(2)),
+            pickupLocationCode: branchOto?.otoPickupLocationCode,
+            customer: {
+              name: (profile.fullName || 'Customer').trim(),
+              phone: (profile.phone || '500000000').trim(),
+              email: profile.email || undefined,
+            },
+            deliveryAddress: {
+              address: deliveryAddress.address,
+              lat: deliveryAddress.lat,
+              lng: deliveryAddress.lng,
+              city: deliveryAddress.city,
+            },
+            branch: {
+              name: selectedBranch.name || 'Branch',
+              address: selectedBranch.address || undefined,
+            },
+            items: cartItems.map((i) => ({
+              name: i.name,
+              price: i.price,
+              quantity: i.quantity,
+            })),
+          });
+          if (deliveryRes?.success && typeof deliveryRes.otoId === 'number') {
+            otoId = deliveryRes.otoId;
+            otoDispatchStatus = 'success';
+          } else {
+            otoDispatchStatus = 'failed';
+            otoDispatchError = 'Dispatch request did not return OTO order id.';
+          }
+        } catch (err: any) {
+          otoDispatchStatus = 'failed';
+          otoDispatchError = err?.message || 'Failed to dispatch delivery.';
+          console.warn('[Checkout] OTO request failed:', err);
+        }
+      }
       addOrder(
         {
           total: finalTotal,
@@ -204,6 +250,8 @@ export default function CheckoutScreen() {
           deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat : undefined,
           deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng : undefined,
           otoId,
+          otoDispatchStatus,
+          otoDispatchError,
           deliveryFee,
           paymentId: orderId,
           promoCode: promoApplied ? promoCode : undefined,
@@ -225,7 +273,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, addOrder, promoApplied, promoCode, clearCart]);
+  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {

@@ -7,7 +7,7 @@ interface OfferProps {
   title: string;
   description: string;
   code: string;
-  image: string;
+  image?: string;
   expiry: string;
 }
 
@@ -21,15 +21,22 @@ export const OfferCard = ({ title, description, code, image, expiry }: OfferProp
 
   return (
     <View className="mb-6 rounded-2xl overflow-hidden shadow-md" style={{ backgroundColor: menuCardColor }}>
-      <ImageBackground 
-        source={{ uri: image }} 
-        className="h-40 justify-end p-4"
-        imageStyle={{ borderRadius: 16 }}
-      >
-        <View className="absolute inset-0 bg-black/40 rounded-2xl" /> 
-        <Text className="text-white font-bold text-2xl z-10">{title}</Text>
-        <Text className="text-gray-200 text-sm z-10">{expiry}</Text>
-      </ImageBackground>
+      {image ? (
+        <ImageBackground
+          source={{ uri: image }}
+          className="h-40 justify-end p-4"
+          imageStyle={{ borderRadius: 16 }}
+        >
+          <View className="absolute inset-0 bg-black/40 rounded-2xl" />
+          <Text className="text-white font-bold text-2xl z-10">{title}</Text>
+          <Text className="text-gray-200 text-sm z-10">{expiry}</Text>
+        </ImageBackground>
+      ) : (
+        <View className="h-28 justify-end p-4" style={{ backgroundColor: primaryColor }}>
+          <Text className="text-white font-bold text-2xl">{title}</Text>
+          <Text className="text-gray-100 text-sm">{expiry}</Text>
+        </View>
+      )}
 
       <View className="p-4 flex-row justify-between items-center">
         <View className="flex-1 pr-4">

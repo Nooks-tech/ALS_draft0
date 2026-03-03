@@ -23,6 +23,7 @@ export type NooksOrderPayload = {
   customer_id?: string;
   total_sar: number;
   status: string;
+  payment_id?: string;
   items: NooksOrderItem[];
   promo_code?: string;
   delivery_address?: string;
@@ -38,6 +39,7 @@ export function buildNooksOrderPayload(
     total: number;
     items: Array<{ id: string; name: string; price: number; quantity: number }>;
     promoCode?: string;
+    paymentId?: string;
     deliveryAddress?: string;
     deliveryLat?: number;
     deliveryLng?: number;
@@ -58,6 +60,7 @@ export function buildNooksOrderPayload(
       price_sar: i.price,
     })),
     ...(order.promoCode && { promo_code: order.promoCode }),
+    ...(order.paymentId && { payment_id: order.paymentId }),
     ...(order.deliveryAddress && { delivery_address: order.deliveryAddress }),
     ...(order.deliveryLat != null && { delivery_lat: order.deliveryLat }),
     ...(order.deliveryLng != null && { delivery_lng: order.deliveryLng }),

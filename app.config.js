@@ -7,6 +7,7 @@ const withApplePayEntitlement = require('./plugins/withApplePay');
 const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.als';
 const buildTimeAppName = process.env.EXPO_PUBLIC_APP_NAME || '';
 const buildTimeAppIconFile = process.env.EXPO_PUBLIC_APP_ICON_FILE || '';
+const resolvedAppIconFile = buildTimeAppIconFile.trim() || './assets/images/icon.png';
 
 // Option A: one build per merchant – branding baked in at build time (from EAS workflow / .env)
 const buildTimeLogoUrl = process.env.EXPO_PUBLIC_LOGO_URL || '';
@@ -28,18 +29,43 @@ if (buildTimeAppName.trim()) {
 if (buildTimeAppIconFile.trim()) {
   config.expo.icon = buildTimeAppIconFile.trim();
 }
+const resolvedIcon = config.expo.icon || resolvedAppIconFile;
 config.expo.android = {
   ...(config.expo.android || {}),
   adaptiveIcon: {
     backgroundColor: config.expo.android?.adaptiveIcon?.backgroundColor || '#E6F4FE',
-    foregroundImage: buildTimeAppIconFile.trim() || config.expo.icon || './assets/images/icon.png',
-    monochromeImage: buildTimeAppIconFile.trim() || config.expo.icon || './assets/images/icon.png',
+    foregroundImage: resolvedIcon,
+    monochromeImage: resolvedIcon,
   },
   config: {
     ...((config.expo.android && config.expo.android.config) || {}),
     ...(googleMapsApiKey ? { googleMaps: { apiKey: googleMapsApiKey } } : {}),
   },
 };
+
+// Ensure splash uses the merchant-selected app icon too (prevents red placeholder flash on startup).
+const existingPlugins = Array.isArray(config.expo.plugins) ? config.expo.plugins : [];
+let splashUpdated = false;
+config.expo.plugins = existingPlugins.map((pluginEntry) => {
+  if (Array.isArray(pluginEntry) && pluginEntry[0] === 'expo-splash-screen') {
+    splashUpdated = true;
+    const prevOptions = (pluginEntry[1] && typeof pluginEntry[1] === 'object') ? pluginEntry[1] : {};
+    return [
+      'expo-splash-screen',
+      {
+        ...prevOptions,
+        image: resolvedIcon,
+      },
+    ];
+  }
+  return pluginEntry;
+});
+if (!splashUpdated) {
+  config.expo.plugins = [
+    ...config.expo.plugins,
+    ['expo-splash-screen', { image: resolvedIcon, resizeMode: 'contain', backgroundColor: '#ffffff' }],
+  ];
+}
 
 config.expo.extra = {
   ...(config.expo.extra || {}),
