@@ -21,6 +21,7 @@ export type NooksPromo = {
   valid_until?: string;
   description?: string;
   image_url?: string | null;
+  imageUrl?: string | null;
 };
 
 export async function fetchNooksPromos(merchantId: string): Promise<NooksPromo[]> {
@@ -42,11 +43,15 @@ export async function consumeNooksPromo(merchantId: string, code: string): Promi
   if (!BASE_URL.trim() || !merchantId.trim() || !code.trim()) return;
   const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/promos/use`;
   try {
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code }),
     });
+    if (!res.ok) {
+      const msg = await res.text().catch(() => '');
+      console.warn('[Nooks] Promo usage increment failed:', res.status, msg);
+    }
   } catch {
     // Best-effort analytics counter; don't block checkout.
   }

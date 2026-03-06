@@ -23,7 +23,7 @@ export default function OffersScreen() {
   const { merchantId } = useMerchant();
   const { backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const [nooksBanners, setNooksBanners] = useState<NooksBanner[]>([]);
-  const [nooksPromos, setNooksPromos] = useState<Array<{ id: string; code: string; name: string; description?: string; valid_until?: string; image_url?: string | null }>>([]);
+  const [nooksPromos, setNooksPromos] = useState<Array<{ id: string; code: string; name: string; description?: string; valid_until?: string; image_url?: string | null; imageUrl?: string | null }>>([]);
 
   useEffect(() => {
     if (!merchantId) return;
@@ -39,7 +39,10 @@ export default function OffersScreen() {
         description: p.description ?? `Use code ${p.code} at checkout`,
         code: p.code,
         expiry: formatExpiry(p.valid_until),
-        image: typeof p.image_url === 'string' ? p.image_url.trim() : undefined,
+        image:
+          typeof p.image_url === 'string'
+            ? p.image_url.trim()
+            : (typeof p.imageUrl === 'string' ? p.imageUrl.trim() : undefined),
       }));
     }
     return [];

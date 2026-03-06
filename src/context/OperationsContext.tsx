@@ -41,14 +41,19 @@ const OperationsContext = createContext<OperationsContextType>({
 
 const POLL_MS = 15 * 1000;
 
-function withStableBusyStart(ops: NooksOperations, currentBusyStartMs: number | null): NooksOperations {
-  if (ops.store_status !== 'busy') return ops;
-  if (ops.busy_started_at) return ops;
-  if (!currentBusyStartMs) return ops;
-  return {
-    ...ops,
-    busy_started_at: new Date(currentBusyStartMs).toISOString(),
-  };
+function deriveBusySeconds(ops: NooksOperations | null): number {
+  if (!ops || ops.store_status !== 'busy') return 0;
+  if (typeof ops.busy_seconds_left === 'number' && Number.isFinite(ops.busy_seconds_left)) {
+    return Math.max(0, Math.floor(ops.busy_seconds_left));
+  }
+  if (typeof ops.busy_started_at === 'string') {
+    const startedAt = Date.parse(ops.busy_started_at);
+    if (Number.isFinite(startedAt)) {
+      const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      return Math.max(0, (ops.prep_time_minutes ?? 0) * 60 - elapsed);
+    }
+  }
+  return 0;
 }
 
 export function OperationsProvider({ children }: { children: ReactNode }) {
@@ -57,68 +62,37 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [busySecondsLeft, setBusySecondsLeft] = useState(0);
   const channelRef = useRef<RealtimeChannel | null>(null);
-  const busyStartedAtRef = useRef<number | null>(null);
   const cacheKey = `@als_operations_${merchantId || 'default'}`;
-  const busyAnchorCacheKey = `@als_busy_anchor_${merchantId || 'default'}`;
 
   useEffect(() => {
     if (!merchantId.trim()) return;
-    Promise.all([AsyncStorage.getItem(cacheKey), AsyncStorage.getItem(busyAnchorCacheKey)])
-      .then(([raw, busyAnchorRaw]) => {
-        if (busyAnchorRaw) {
-          const parsedAnchor = Number(busyAnchorRaw);
-          if (Number.isFinite(parsedAnchor) && parsedAnchor > 0) {
-            busyStartedAtRef.current = parsedAnchor;
-          }
-        }
+    AsyncStorage.getItem(cacheKey)
+      .then((raw) => {
         if (!raw) return;
         const cached = JSON.parse(raw) as NooksOperations;
         if (!cached || typeof cached !== 'object') return;
         setOperations(cached);
-        if (cached.store_status === 'busy') {
-          if (cached.busy_started_at) {
-            const startedAt = new Date(cached.busy_started_at).getTime();
-            if (Number.isFinite(startedAt) && startedAt > 0) {
-              busyStartedAtRef.current = startedAt;
-            }
-          }
-        }
+        setBusySecondsLeft(deriveBusySeconds(cached));
       })
       .catch(() => {});
-  }, [merchantId, cacheKey, busyAnchorCacheKey]);
+  }, [merchantId, cacheKey]);
 
   const refetch = useCallback(async () => {
     if (!merchantId.trim()) return;
     setLoading(true);
     try {
       const data = await fetchNooksOperations(merchantId);
-      const next = withStableBusyStart(data ?? defaultOps, busyStartedAtRef.current);
+      const next = data ?? defaultOps;
       setOperations(next);
+      setBusySecondsLeft(deriveBusySeconds(next));
       AsyncStorage.setItem(cacheKey, JSON.stringify(next)).catch(() => {});
-      if (next.store_status === 'busy') {
-        if (next.busy_started_at) {
-          const startedAt = new Date(next.busy_started_at).getTime();
-          if (Number.isFinite(startedAt)) {
-            busyStartedAtRef.current = startedAt;
-          }
-        } else if (!busyStartedAtRef.current) {
-          // Keep existing timer anchor if server did not send busy_started_at.
-          busyStartedAtRef.current = Date.now();
-        }
-        if (busyStartedAtRef.current) {
-          AsyncStorage.setItem(busyAnchorCacheKey, String(busyStartedAtRef.current)).catch(() => {});
-        }
-      } else {
-        busyStartedAtRef.current = null;
-        setBusySecondsLeft(0);
-        AsyncStorage.removeItem(busyAnchorCacheKey).catch(() => {});
-      }
     } catch {
       setOperations(defaultOps);
+      setBusySecondsLeft(0);
     } finally {
       setLoading(false);
     }
-  }, [merchantId, cacheKey, busyAnchorCacheKey]);
+  }, [merchantId, cacheKey]);
 
   useEffect(() => {
     refetch();
@@ -151,27 +125,11 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
             prep_time_minutes: typeof row.prep_time_minutes === 'number' ? row.prep_time_minutes : 0,
             delivery_mode: (row.delivery_mode as NooksOperations['delivery_mode']) ?? 'delivery_and_pickup',
             busy_started_at: typeof row.busy_started_at === 'string' ? row.busy_started_at : null,
+            busy_seconds_left: null,
           };
-          const stableRealtimeOps = withStableBusyStart(realtimeOps, busyStartedAtRef.current);
-          AsyncStorage.setItem(cacheKey, JSON.stringify(stableRealtimeOps)).catch(() => {});
-          setOperations(stableRealtimeOps);
-          if ((row.store_status as string) === 'busy') {
-            if (typeof stableRealtimeOps.busy_started_at === 'string') {
-              const startedAt = new Date(stableRealtimeOps.busy_started_at).getTime();
-              if (Number.isFinite(startedAt)) {
-                busyStartedAtRef.current = startedAt;
-              }
-            } else if (!busyStartedAtRef.current) {
-              busyStartedAtRef.current = Date.now();
-            }
-            if (busyStartedAtRef.current) {
-              AsyncStorage.setItem(busyAnchorCacheKey, String(busyStartedAtRef.current)).catch(() => {});
-            }
-          } else {
-            busyStartedAtRef.current = null;
-            setBusySecondsLeft(0);
-            AsyncStorage.removeItem(busyAnchorCacheKey).catch(() => {});
-          }
+          AsyncStorage.setItem(cacheKey, JSON.stringify(realtimeOps)).catch(() => {});
+          setOperations(realtimeOps);
+          setBusySecondsLeft(deriveBusySeconds(realtimeOps));
         }
       )
       .subscribe();
@@ -180,7 +138,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       channelRef.current?.unsubscribe();
       channelRef.current = null;
     };
-  }, [merchantId, cacheKey, busyAnchorCacheKey]);
+  }, [merchantId, cacheKey]);
 
   const isClosed = operations?.store_status === 'closed';
   const isBusy = operations?.store_status === 'busy';
@@ -192,16 +150,11 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       setBusySecondsLeft(0);
       return;
     }
-    const tick = () => {
-      const prepSeconds = Math.max(0, (operations?.prep_time_minutes ?? 0) * 60);
-      const start = busyStartedAtRef.current ?? Date.now();
-      const elapsed = Math.floor((Date.now() - start) / 1000);
-      setBusySecondsLeft(Math.max(0, prepSeconds - elapsed));
-    };
-    tick();
-    const t = setInterval(tick, 1000);
+    const t = setInterval(() => {
+      setBusySecondsLeft((prev) => Math.max(0, prev - 1));
+    }, 1000);
     return () => clearInterval(t);
-  }, [isBusy, operations?.prep_time_minutes]);
+  }, [isBusy]);
 
   return (
     <OperationsContext.Provider value={{ operations, loading, refetch, isClosed, isBusy, isPickupOnly, prepTimeMinutes, busySecondsLeft }}>

@@ -45,30 +45,39 @@ const DEFAULT_BRANDING: MerchantBranding = {
   textColor: '#1f2937',
 };
 
+function normalizeColor(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const value = input.trim();
+  if (!value) return null;
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value)) return value;
+  if (/^([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value)) return `#${value}`;
+  return null;
+}
+
+function sameColor(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 /** Build-time branding from app.config.js extra (set by EAS workflow per merchant). */
 function getBuildTimeBranding(): MerchantBranding {
   const extra = getExtra();
   const logo = extra?.logoUrl ?? process.env.EXPO_PUBLIC_LOGO_URL;
-  const primary =
-    (typeof extra?.primaryColor === 'string' && extra.primaryColor) ||
-    process.env.EXPO_PUBLIC_PRIMARY_COLOR ||
-    DEFAULT_BRANDING.primaryColor;
-  const accent =
-    (typeof extra?.accentColor === 'string' && extra.accentColor) ||
-    process.env.EXPO_PUBLIC_ACCENT_COLOR ||
-    DEFAULT_BRANDING.accentColor;
-  const bg =
-    (typeof extra?.backgroundColor === 'string' && extra.backgroundColor) ||
-    process.env.EXPO_PUBLIC_BACKGROUND_COLOR ||
-    DEFAULT_BRANDING.backgroundColor;
-  const card =
-    (typeof extra?.menuCardColor === 'string' && extra.menuCardColor) ||
-    process.env.EXPO_PUBLIC_MENU_CARD_COLOR ||
-    bg;
-  const text =
-    (typeof extra?.textColor === 'string' && extra.textColor) ||
-    process.env.EXPO_PUBLIC_TEXT_COLOR ||
-    DEFAULT_BRANDING.textColor;
+  const primary = normalizeColor(extra?.primaryColor)
+    ?? normalizeColor(process.env.EXPO_PUBLIC_PRIMARY_COLOR)
+    ?? DEFAULT_BRANDING.primaryColor;
+  const accent = normalizeColor(extra?.accentColor)
+    ?? normalizeColor(process.env.EXPO_PUBLIC_ACCENT_COLOR)
+    ?? DEFAULT_BRANDING.accentColor;
+  const bg = normalizeColor(extra?.backgroundColor)
+    ?? normalizeColor(process.env.EXPO_PUBLIC_BACKGROUND_COLOR)
+    ?? DEFAULT_BRANDING.backgroundColor;
+  const card = normalizeColor(extra?.menuCardColor)
+    ?? normalizeColor(process.env.EXPO_PUBLIC_MENU_CARD_COLOR)
+    ?? bg;
+  const text = normalizeColor(extra?.textColor)
+    ?? normalizeColor(process.env.EXPO_PUBLIC_TEXT_COLOR)
+    ?? DEFAULT_BRANDING.textColor;
   return {
     logoUrl: typeof logo === 'string' && logo ? logo : null,
     primaryColor: primary,
@@ -92,7 +101,12 @@ export function MerchantBrandingProvider({
   merchantId: string;
 }) {
   const baseUrl = useMemo(() => getBaseUrl(), []);
-  const [branding, setBranding] = useState<MerchantBranding>(() => getBuildTimeBranding());
+  const buildTimeBranding = useMemo(() => getBuildTimeBranding(), []);
+  const enforceBuildCardColor = useMemo(
+    () => !sameColor(buildTimeBranding.menuCardColor, buildTimeBranding.backgroundColor),
+    [buildTimeBranding.menuCardColor, buildTimeBranding.backgroundColor]
+  );
+  const [branding, setBranding] = useState<MerchantBranding>(() => buildTimeBranding);
   const [loading, setLoading] = useState(false);
   const cacheKey = useMemo(() => `@als_branding_${merchantId || 'default'}`, [merchantId]);
 
@@ -105,28 +119,30 @@ export function MerchantBrandingProvider({
       if (res.ok) {
         const data = (await res.json()) as Record<string, unknown>;
         const logo = data.logoUrl ?? data.logo_url;
-        const primary = data.primaryColor ?? data.primary_color;
-        const accent = data.accentColor ?? data.accent_color;
-        const bg = data.backgroundColor ?? data.background_color;
-        const card = data.menuCardColor ?? data.menu_card_color;
-        const text = data.textColor ?? data.text_color;
-        const resolvedBg = typeof bg === 'string' && bg ? bg : branding.backgroundColor;
-        const resolvedCard = typeof card === 'string' && card ? card : resolvedBg;
+        const primary = normalizeColor(data.primaryColor ?? data.primary_color);
+        const accent = normalizeColor(data.accentColor ?? data.accent_color);
+        const bg = normalizeColor(data.backgroundColor ?? data.background_color);
+        const card = normalizeColor(data.menuCardColor ?? data.menu_card_color);
+        const text = normalizeColor(data.textColor ?? data.text_color);
+        const resolvedBg = bg ?? branding.backgroundColor ?? buildTimeBranding.backgroundColor;
+        // Guard against API fallback that returns card == background.
+        const apiCard = card && !(enforceBuildCardColor && sameColor(card, resolvedBg)) ? card : null;
+        const resolvedCard = apiCard ?? buildTimeBranding.menuCardColor ?? branding.menuCardColor ?? resolvedBg;
         const nextBranding = {
           logoUrl: typeof logo === 'string' && logo ? logo : branding.logoUrl,
-          primaryColor: typeof primary === 'string' && primary ? primary : branding.primaryColor,
-          accentColor: typeof accent === 'string' && accent ? accent : branding.accentColor,
+          primaryColor: primary ?? branding.primaryColor,
+          accentColor: accent ?? branding.accentColor,
           backgroundColor: resolvedBg,
           menuCardColor: resolvedCard,
-          textColor: typeof text === 'string' && text ? text : branding.textColor,
+          textColor: text ?? branding.textColor,
         };
         setBranding((prev) => ({
           logoUrl: typeof logo === 'string' && logo ? logo : prev.logoUrl,
-          primaryColor: typeof primary === 'string' && primary ? primary : prev.primaryColor,
-          accentColor: typeof accent === 'string' && accent ? accent : prev.accentColor,
+          primaryColor: primary ?? prev.primaryColor,
+          accentColor: accent ?? prev.accentColor,
           backgroundColor: resolvedBg,
           menuCardColor: resolvedCard,
-          textColor: typeof text === 'string' && text ? text : prev.textColor,
+          textColor: text ?? prev.textColor,
         }));
         await AsyncStorage.setItem(cacheKey, JSON.stringify(nextBranding));
       }
@@ -145,6 +161,9 @@ export function MerchantBrandingProvider({
     branding.backgroundColor,
     branding.menuCardColor,
     branding.textColor,
+    buildTimeBranding.backgroundColor,
+    buildTimeBranding.menuCardColor,
+    enforceBuildCardColor,
   ]);
 
   useEffect(() => {
@@ -152,22 +171,26 @@ export function MerchantBrandingProvider({
       if (!raw) return;
       try {
         const cached = JSON.parse(raw) as Partial<MerchantBranding>;
+        const cachedBg = normalizeColor(cached.backgroundColor);
+        const cachedCard = normalizeColor(cached.menuCardColor);
+        const safeCachedCard =
+          cachedCard && !(enforceBuildCardColor && sameColor(cachedCard, cachedBg ?? buildTimeBranding.backgroundColor))
+            ? cachedCard
+            : (enforceBuildCardColor ? buildTimeBranding.menuCardColor : null);
         setBranding((prev) => ({
           logoUrl: typeof cached.logoUrl === 'string' ? cached.logoUrl : prev.logoUrl,
-          primaryColor: typeof cached.primaryColor === 'string' && cached.primaryColor ? cached.primaryColor : prev.primaryColor,
-          accentColor: typeof cached.accentColor === 'string' && cached.accentColor ? cached.accentColor : prev.accentColor,
-          backgroundColor:
-            typeof cached.backgroundColor === 'string' && cached.backgroundColor ? cached.backgroundColor : prev.backgroundColor,
-          menuCardColor:
-            typeof cached.menuCardColor === 'string' && cached.menuCardColor ? cached.menuCardColor : prev.menuCardColor,
-          textColor: typeof cached.textColor === 'string' && cached.textColor ? cached.textColor : prev.textColor,
+          primaryColor: normalizeColor(cached.primaryColor) ?? prev.primaryColor,
+          accentColor: normalizeColor(cached.accentColor) ?? prev.accentColor,
+          backgroundColor: cachedBg ?? prev.backgroundColor,
+          menuCardColor: safeCachedCard ?? prev.menuCardColor,
+          textColor: normalizeColor(cached.textColor) ?? prev.textColor,
         }));
       } catch {
         // Ignore invalid cache payload
       }
     });
     fetchBranding();
-  }, [fetchBranding, cacheKey]);
+  }, [fetchBranding, cacheKey, enforceBuildCardColor, buildTimeBranding.backgroundColor, buildTimeBranding.menuCardColor]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
