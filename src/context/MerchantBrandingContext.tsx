@@ -97,6 +97,12 @@ export function MerchantBrandingProvider({
 }) {
   const baseUrl = useMemo(() => getBaseUrl(), []);
   const buildTimeBranding = useMemo(() => getBuildTimeBranding(), []);
+  const hasBuildTimeColors = useMemo(
+    () => buildTimeBranding.primaryColor !== DEFAULT_BRANDING.primaryColor
+      || buildTimeBranding.backgroundColor !== DEFAULT_BRANDING.backgroundColor
+      || buildTimeBranding.menuCardColor !== DEFAULT_BRANDING.menuCardColor,
+    [buildTimeBranding],
+  );
   const [branding, setBranding] = useState<MerchantBranding>(() => buildTimeBranding);
   const [loading, setLoading] = useState(false);
   const cacheKey = useMemo(() => `@als_branding_${merchantId || 'default'}`, [merchantId]);
@@ -138,24 +144,30 @@ export function MerchantBrandingProvider({
   }, [merchantId, baseUrl, cacheKey]);
 
   useEffect(() => {
-    AsyncStorage.getItem(cacheKey).then((raw) => {
-      if (!raw) return;
-      try {
-        const cached = JSON.parse(raw) as Partial<MerchantBranding>;
-        setBranding((prev) => ({
-          logoUrl: typeof cached.logoUrl === 'string' ? cached.logoUrl : prev.logoUrl,
-          primaryColor: normalizeColor(cached.primaryColor) ?? prev.primaryColor,
-          accentColor: normalizeColor(cached.accentColor) ?? prev.accentColor,
-          backgroundColor: normalizeColor(cached.backgroundColor) ?? prev.backgroundColor,
-          menuCardColor: normalizeColor(cached.menuCardColor) ?? prev.menuCardColor,
-          textColor: normalizeColor(cached.textColor) ?? prev.textColor,
-        }));
-      } catch {
-        // Ignore invalid cache payload
-      }
-    });
+    if (!hasBuildTimeColors) {
+      // No build-time colors (manual/dev build) — load cache for faster initial render
+      AsyncStorage.getItem(cacheKey).then((raw) => {
+        if (!raw) return;
+        try {
+          const cached = JSON.parse(raw) as Partial<MerchantBranding>;
+          setBranding((prev) => ({
+            logoUrl: typeof cached.logoUrl === 'string' ? cached.logoUrl : prev.logoUrl,
+            primaryColor: normalizeColor(cached.primaryColor) ?? prev.primaryColor,
+            accentColor: normalizeColor(cached.accentColor) ?? prev.accentColor,
+            backgroundColor: normalizeColor(cached.backgroundColor) ?? prev.backgroundColor,
+            menuCardColor: normalizeColor(cached.menuCardColor) ?? prev.menuCardColor,
+            textColor: normalizeColor(cached.textColor) ?? prev.textColor,
+          }));
+        } catch {
+          // Ignore invalid cache payload
+        }
+      });
+    } else {
+      // CI build with explicit colors — clear stale cache so it doesn't interfere on next launch
+      AsyncStorage.removeItem(cacheKey).catch(() => {});
+    }
     fetchBranding();
-  }, [fetchBranding, cacheKey]);
+  }, [fetchBranding, cacheKey, hasBuildTimeColors]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
