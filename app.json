@@ -29,7 +29,8 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "@react-native-community/datetimepicker","expo-router",
+      "@react-native-community/datetimepicker",
+      "expo-router",
       [
         "expo-splash-screen",
         {
@@ -43,7 +44,14 @@
         }
       ],
       "expo-localization",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find nearby branches and set delivery addresses.",
+          "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find nearby branches and set delivery addresses."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

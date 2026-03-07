@@ -40,7 +40,7 @@ export default function AddAddressModal() {
   const isDeliveryMode = from === 'delivery';
   const isEditMode = !!editId;
   const editingAddr = addresses.find((a) => a.id === editId);
-  const { address, fetchCurrentLocation } = useDeliveryAddress();
+  const { address, error: locationError, fetchCurrentLocation } = useDeliveryAddress();
   const [label, setLabel] = useState<SavedAddress['label']>('Home');
   const [customLabel, setCustomLabel] = useState('');
   const [manualAddressText, setManualAddressText] = useState('');
@@ -221,6 +221,9 @@ export default function AddAddressModal() {
             {addressLoading ? <ActivityIndicator size="small" color={primaryColor} /> : <MapPin size={20} color={primaryColor} />}
             <Text className="flex-1 ml-3 font-bold" style={{ color: primaryColor }}>{addressLoading ? 'Getting location...' : 'Use my current location'}</Text>
           </TouchableOpacity>
+          {locationError && !addressLoading && (
+            <Text className="text-red-500 text-sm mb-3 -mt-2 px-1">{locationError}</Text>
+          )}
           <View className="flex-row items-center bg-slate-100 rounded-2xl px-4 py-3 mb-4">
             <Search size={20} color="#94a3b8" />
             <TextInput
