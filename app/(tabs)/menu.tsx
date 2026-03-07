@@ -348,7 +348,7 @@ export default function MenuScreen() {
   return (
     <View className="flex-1 relative" style={{ backgroundColor }}> 
       <StatusBar barStyle="light-content" />
-      
+
       {/* HEADER (L→R): Pickup/branch | Search icon | Merchant logo (right-most) */}
       <View className="pt-14 pb-6 px-5 shadow-md flex-row justify-between items-center rounded-b-[40px]" style={{ backgroundColor: headerBg }}>
         <TouchableOpacity onPress={openOrderType} className="flex-row items-center flex-1 min-w-0 mr-2" accessibilityLabel={orderType === 'delivery' ? 'Delivering to' : 'Pickup from'} accessibilityRole="button">

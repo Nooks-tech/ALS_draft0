@@ -28,11 +28,8 @@ export type MerchantBranding = {
   logoUrl: string | null;
   primaryColor: string;
   accentColor: string;
-  /** Screen and card backgrounds; default #f5f5f4 */
   backgroundColor: string;
-  /** Menu and list card background; defaults to screen background when not provided */
   menuCardColor: string;
-  /** Global text color; default #1f2937 */
   textColor: string;
 };
 
@@ -54,7 +51,6 @@ function normalizeColor(input: unknown): string | null {
   return null;
 }
 
-/** Build-time branding from app.config.js extra (set by EAS workflow per merchant). */
 function getBuildTimeBranding(): MerchantBranding {
   const extra = getExtra();
   const logo = extra?.logoUrl ?? process.env.EXPO_PUBLIC_LOGO_URL;
@@ -69,7 +65,7 @@ function getBuildTimeBranding(): MerchantBranding {
     ?? DEFAULT_BRANDING.backgroundColor;
   const card = normalizeColor(extra?.menuCardColor)
     ?? normalizeColor(process.env.EXPO_PUBLIC_MENU_CARD_COLOR)
-    ?? bg;
+    ?? DEFAULT_BRANDING.menuCardColor;
   const text = normalizeColor(extra?.textColor)
     ?? normalizeColor(process.env.EXPO_PUBLIC_TEXT_COLOR)
     ?? DEFAULT_BRANDING.textColor;
@@ -80,6 +76,17 @@ function getBuildTimeBranding(): MerchantBranding {
     backgroundColor: bg,
     menuCardColor: card,
     textColor: text,
+  };
+}
+
+function mergeBranding(prev: MerchantBranding, partial: Partial<MerchantBranding>): MerchantBranding {
+  return {
+    logoUrl: typeof partial.logoUrl === 'string' && partial.logoUrl ? partial.logoUrl : prev.logoUrl,
+    primaryColor: normalizeColor(partial.primaryColor) ?? prev.primaryColor,
+    accentColor: normalizeColor(partial.accentColor) ?? prev.accentColor,
+    backgroundColor: normalizeColor(partial.backgroundColor) ?? prev.backgroundColor,
+    menuCardColor: normalizeColor(partial.menuCardColor) ?? prev.menuCardColor,
+    textColor: normalizeColor(partial.textColor) ?? prev.textColor,
   };
 }
 
@@ -106,78 +113,89 @@ export function MerchantBrandingProvider({
   const [branding, setBranding] = useState<MerchantBranding>(() => buildTimeBranding);
   const [loading, setLoading] = useState(false);
   const cacheKey = useMemo(() => `@als_branding_${merchantId || 'default'}`, [merchantId]);
-  const fetchIdRef = useRef(0);
+  const runIdRef = useRef(0);
 
-  const fetchBranding = useCallback(async () => {
+  const fetchFromApi = useCallback(async (signal: { cancelled: boolean }) => {
     if (!baseUrl.trim() || !merchantId.trim()) return;
-    const id = ++fetchIdRef.current;
-    setLoading(true);
-    try {
-      const url = `${baseUrl.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
-      const res = await fetch(url);
-      if (!res.ok || id !== fetchIdRef.current) return;
-      const data = (await res.json()) as Record<string, unknown>;
-      if (id !== fetchIdRef.current) return;
-      const logo = data.logoUrl ?? data.logo_url;
-      const primary = normalizeColor(data.primaryColor ?? data.primary_color);
-      const accent = normalizeColor(data.accentColor ?? data.accent_color);
-      const bg = normalizeColor(data.backgroundColor ?? data.background_color);
-      const card = normalizeColor(data.menuCardColor ?? data.menu_card_color);
-      const text = normalizeColor(data.textColor ?? data.text_color);
-      setBranding((prev) => {
-        const next: MerchantBranding = {
-          logoUrl: typeof logo === 'string' && logo ? logo : prev.logoUrl,
-          primaryColor: primary ?? prev.primaryColor,
-          accentColor: accent ?? prev.accentColor,
-          backgroundColor: bg ?? prev.backgroundColor,
-          menuCardColor: card ?? prev.menuCardColor,
-          textColor: text ?? prev.textColor,
-        };
-        AsyncStorage.setItem(cacheKey, JSON.stringify(next)).catch(() => {});
-        return next;
-      });
-    } catch {
-      // Keep current branding
-    } finally {
-      if (id === fetchIdRef.current) setLoading(false);
-    }
+    const url = `${baseUrl.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
+    const res = await fetch(url);
+    if (!res.ok || signal.cancelled) return;
+    const data = (await res.json()) as Record<string, unknown>;
+    if (signal.cancelled) return;
+    const fetched: Partial<MerchantBranding> = {
+      logoUrl: (data.logoUrl ?? data.logo_url) as string | undefined,
+      primaryColor: (data.primaryColor ?? data.primary_color) as string | undefined,
+      accentColor: (data.accentColor ?? data.accent_color) as string | undefined,
+      backgroundColor: (data.backgroundColor ?? data.background_color) as string | undefined,
+      menuCardColor: (data.menuCardColor ?? data.menu_card_color) as string | undefined,
+      textColor: (data.textColor ?? data.text_color) as string | undefined,
+    };
+    if (signal.cancelled) return;
+    setBranding((prev) => {
+      const next = mergeBranding(prev, fetched);
+      AsyncStorage.setItem(cacheKey, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
   }, [merchantId, baseUrl, cacheKey]);
 
+  /**
+   * Sequential load: cache first (fast), then API (authoritative).
+   * The API call always runs AFTER the cache load completes, so the API
+   * response always wins — no race condition.
+   */
   useEffect(() => {
-    if (!hasBuildTimeColors) {
-      // No build-time colors (manual/dev build) — load cache for faster initial render
-      AsyncStorage.getItem(cacheKey).then((raw) => {
-        if (!raw) return;
-        try {
-          const cached = JSON.parse(raw) as Partial<MerchantBranding>;
-          setBranding((prev) => ({
-            logoUrl: typeof cached.logoUrl === 'string' ? cached.logoUrl : prev.logoUrl,
-            primaryColor: normalizeColor(cached.primaryColor) ?? prev.primaryColor,
-            accentColor: normalizeColor(cached.accentColor) ?? prev.accentColor,
-            backgroundColor: normalizeColor(cached.backgroundColor) ?? prev.backgroundColor,
-            menuCardColor: normalizeColor(cached.menuCardColor) ?? prev.menuCardColor,
-            textColor: normalizeColor(cached.textColor) ?? prev.textColor,
-          }));
-        } catch {
-          // Ignore invalid cache payload
-        }
-      });
-    } else {
-      // CI build with explicit colors — clear stale cache so it doesn't interfere on next launch
-      AsyncStorage.removeItem(cacheKey).catch(() => {});
-    }
-    fetchBranding();
-  }, [fetchBranding, cacheKey, hasBuildTimeColors]);
+    const id = ++runIdRef.current;
+    const signal = { cancelled: false };
 
+    (async () => {
+      setLoading(true);
+
+      // Step 1: load from cache for fast initial render (only for local/dev builds)
+      if (!hasBuildTimeColors) {
+        try {
+          const raw = await AsyncStorage.getItem(cacheKey);
+          if (raw && !signal.cancelled) {
+            const cached = JSON.parse(raw) as Partial<MerchantBranding>;
+            setBranding((prev) => mergeBranding(prev, cached));
+          }
+        } catch {
+          // ignore bad cache
+        }
+      } else {
+        AsyncStorage.removeItem(cacheKey).catch(() => {});
+      }
+
+      // Step 2: ALWAYS fetch from API — runs after cache, so API values always win
+      if (!signal.cancelled) {
+        try {
+          await fetchFromApi(signal);
+        } catch {
+          // keep current branding on network error
+        }
+      }
+
+      if (id === runIdRef.current) setLoading(false);
+    })();
+
+    return () => { signal.cancelled = true; };
+  }, [fetchFromApi, cacheKey, hasBuildTimeColors]);
+
+  // Re-fetch when app comes back to foreground
   useEffect(() => {
+    const signal = { cancelled: false };
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') fetchBranding();
+      if (state === 'active') fetchFromApi(signal).catch(() => {});
     });
-    return () => sub.remove();
-  }, [fetchBranding]);
+    return () => {
+      signal.cancelled = true;
+      sub.remove();
+    };
+  }, [fetchFromApi]);
+
+  const value = useMemo(() => ({ ...branding, loading }), [branding, loading]);
 
   return (
-    <MerchantBrandingContext.Provider value={{ ...branding, loading }}>
+    <MerchantBrandingContext.Provider value={value}>
       {children}
     </MerchantBrandingContext.Provider>
   );
@@ -185,7 +203,6 @@ export function MerchantBrandingProvider({
 
 export const useMerchantBranding = () => useContext(MerchantBrandingContext);
 
-/** Use inside MerchantProvider. Wraps children with MerchantBrandingProvider using current merchantId. */
 export function MerchantBrandingWrapper({ children }: { children: ReactNode }) {
   const { merchantId } = useMerchant();
   return <MerchantBrandingProvider merchantId={merchantId}>{children}</MerchantBrandingProvider>;
