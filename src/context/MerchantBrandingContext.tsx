@@ -1,12 +1,10 @@
 /**
  * Merchant branding – Option A: one build per merchant.
- * Uses build-time values (from EAS/env: logoUrl, primaryColor, accentColor, backgroundColor in extra)
- * as initial state and fallback. When nooksweb API is configured, fetches and can override so
- * merchant can update branding without a new build.
- * See docs/NOOKSWEB_APIS_AND_BEHAVIOR.md and docs/MULTI_MERCHANT_ONE_APP_OR_MANY_BUILDS.md.
+ * Uses build-time values (from EAS/env) as initial state and fallback.
+ * When nooksweb API is configured, fetches and can override so merchant
+ * can update branding without a new build.
  */
 import Constants from 'expo-constants';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { useMerchant } from './MerchantContext';
@@ -104,15 +102,8 @@ export function MerchantBrandingProvider({
 }) {
   const baseUrl = useMemo(() => getBaseUrl(), []);
   const buildTimeBranding = useMemo(() => getBuildTimeBranding(), []);
-  const hasBuildTimeColors = useMemo(
-    () => buildTimeBranding.primaryColor !== DEFAULT_BRANDING.primaryColor
-      || buildTimeBranding.backgroundColor !== DEFAULT_BRANDING.backgroundColor
-      || buildTimeBranding.menuCardColor !== DEFAULT_BRANDING.menuCardColor,
-    [buildTimeBranding],
-  );
   const [branding, setBranding] = useState<MerchantBranding>(() => buildTimeBranding);
   const [loading, setLoading] = useState(false);
-  const cacheKey = useMemo(() => `@als_branding_${merchantId || 'default'}`, [merchantId]);
   const runIdRef = useRef(0);
 
   const fetchFromApi = useCallback(async (signal: { cancelled: boolean }) => {
@@ -122,6 +113,7 @@ export function MerchantBrandingProvider({
     if (!res.ok || signal.cancelled) return;
     const data = (await res.json()) as Record<string, unknown>;
     if (signal.cancelled) return;
+
     const fetched: Partial<MerchantBranding> = {
       logoUrl: (data.logoUrl ?? data.logo_url) as string | undefined,
       primaryColor: (data.primaryColor ?? data.primary_color) as string | undefined,
@@ -131,56 +123,26 @@ export function MerchantBrandingProvider({
       textColor: (data.textColor ?? data.text_color) as string | undefined,
     };
     if (signal.cancelled) return;
-    setBranding((prev) => {
-      const next = mergeBranding(prev, fetched);
-      AsyncStorage.setItem(cacheKey, JSON.stringify(next)).catch(() => {});
-      return next;
-    });
-  }, [merchantId, baseUrl, cacheKey]);
+    setBranding((prev) => mergeBranding(prev, fetched));
+  }, [merchantId, baseUrl]);
 
-  /**
-   * Sequential load: cache first (fast), then API (authoritative).
-   * The API call always runs AFTER the cache load completes, so the API
-   * response always wins — no race condition.
-   */
   useEffect(() => {
     const id = ++runIdRef.current;
     const signal = { cancelled: false };
 
     (async () => {
       setLoading(true);
-
-      // Step 1: load from cache for fast initial render (only for local/dev builds)
-      if (!hasBuildTimeColors) {
-        try {
-          const raw = await AsyncStorage.getItem(cacheKey);
-          if (raw && !signal.cancelled) {
-            const cached = JSON.parse(raw) as Partial<MerchantBranding>;
-            setBranding((prev) => mergeBranding(prev, cached));
-          }
-        } catch {
-          // ignore bad cache
-        }
-      } else {
-        AsyncStorage.removeItem(cacheKey).catch(() => {});
+      try {
+        await fetchFromApi(signal);
+      } catch {
+        // keep current branding on network error
       }
-
-      // Step 2: ALWAYS fetch from API — runs after cache, so API values always win
-      if (!signal.cancelled) {
-        try {
-          await fetchFromApi(signal);
-        } catch {
-          // keep current branding on network error
-        }
-      }
-
       if (id === runIdRef.current) setLoading(false);
     })();
 
     return () => { signal.cancelled = true; };
-  }, [fetchFromApi, cacheKey, hasBuildTimeColors]);
+  }, [fetchFromApi]);
 
-  // Re-fetch when app comes back to foreground
   useEffect(() => {
     const signal = { cancelled: false };
     const sub = AppState.addEventListener('change', (state) => {
