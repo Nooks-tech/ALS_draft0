@@ -7,7 +7,7 @@
  */
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { useMerchant } from './MerchantContext';
 
@@ -100,55 +100,42 @@ export function MerchantBrandingProvider({
   const [branding, setBranding] = useState<MerchantBranding>(() => buildTimeBranding);
   const [loading, setLoading] = useState(false);
   const cacheKey = useMemo(() => `@als_branding_${merchantId || 'default'}`, [merchantId]);
+  const fetchIdRef = useRef(0);
 
   const fetchBranding = useCallback(async () => {
     if (!baseUrl.trim() || !merchantId.trim()) return;
+    const id = ++fetchIdRef.current;
     setLoading(true);
     try {
       const url = `${baseUrl.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
       const res = await fetch(url);
-      if (res.ok) {
-        const data = (await res.json()) as Record<string, unknown>;
-        const logo = data.logoUrl ?? data.logo_url;
-        const primary = normalizeColor(data.primaryColor ?? data.primary_color);
-        const accent = normalizeColor(data.accentColor ?? data.accent_color);
-        const bg = normalizeColor(data.backgroundColor ?? data.background_color);
-        const card = normalizeColor(data.menuCardColor ?? data.menu_card_color);
-        const text = normalizeColor(data.textColor ?? data.text_color);
-        const nextBranding: MerchantBranding = {
-          logoUrl: typeof logo === 'string' && logo ? logo : branding.logoUrl,
-          primaryColor: primary ?? branding.primaryColor,
-          accentColor: accent ?? branding.accentColor,
-          backgroundColor: bg ?? branding.backgroundColor,
-          menuCardColor: card ?? branding.menuCardColor,
-          textColor: text ?? branding.textColor,
-        };
-        setBranding((prev) => ({
+      if (!res.ok || id !== fetchIdRef.current) return;
+      const data = (await res.json()) as Record<string, unknown>;
+      if (id !== fetchIdRef.current) return;
+      const logo = data.logoUrl ?? data.logo_url;
+      const primary = normalizeColor(data.primaryColor ?? data.primary_color);
+      const accent = normalizeColor(data.accentColor ?? data.accent_color);
+      const bg = normalizeColor(data.backgroundColor ?? data.background_color);
+      const card = normalizeColor(data.menuCardColor ?? data.menu_card_color);
+      const text = normalizeColor(data.textColor ?? data.text_color);
+      setBranding((prev) => {
+        const next: MerchantBranding = {
           logoUrl: typeof logo === 'string' && logo ? logo : prev.logoUrl,
           primaryColor: primary ?? prev.primaryColor,
           accentColor: accent ?? prev.accentColor,
           backgroundColor: bg ?? prev.backgroundColor,
           menuCardColor: card ?? prev.menuCardColor,
           textColor: text ?? prev.textColor,
-        }));
-        await AsyncStorage.setItem(cacheKey, JSON.stringify(nextBranding));
-      }
+        };
+        AsyncStorage.setItem(cacheKey, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
     } catch {
-      // Keep current (build-time) branding
+      // Keep current branding
     } finally {
-      setLoading(false);
+      if (id === fetchIdRef.current) setLoading(false);
     }
-  }, [
-    merchantId,
-    baseUrl,
-    cacheKey,
-    branding.logoUrl,
-    branding.primaryColor,
-    branding.accentColor,
-    branding.backgroundColor,
-    branding.menuCardColor,
-    branding.textColor,
-  ]);
+  }, [merchantId, baseUrl, cacheKey]);
 
   useEffect(() => {
     AsyncStorage.getItem(cacheKey).then((raw) => {
