@@ -8,37 +8,32 @@ import { Container } from '../../src/components/common/Container';
 import { Input } from '../../src/components/common/Input';
 import { authApi } from '../../src/api/auth';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
-import { useProfile } from '../../src/context/ProfileContext';
+import { useAuth } from '../../src/context/AuthContext';
 
 export default function OtpScreen() {
   const router = useRouter();
-  const { email } = useLocalSearchParams<{ email: string }>();
+  const { phone } = useLocalSearchParams<{ phone: string }>();
   const { t } = useTranslation();
   const { primaryColor } = useMerchantBranding();
-  const { profile, refetchProfile } = useProfile();
+  const { setServerSession } = useAuth();
 
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [timer, setTimer] = useState(60);
 
-  const sendOtp = useCallback(async () => {
-    const e = email?.trim().toLowerCase();
-    if (!e) return;
+  const resendOtp = useCallback(async () => {
+    if (!phone?.trim()) return;
     setSending(true);
     try {
-      await authApi.sendOtp(e);
+      await authApi.sendOtp(phone);
       setTimer(60);
     } catch (err) {
       Alert.alert('Error', err instanceof Error ? err.message : 'Could not send code.');
     } finally {
       setSending(false);
     }
-  }, [email]);
-
-  useEffect(() => {
-    if (email?.trim()) sendOtp();
-  }, [email]);
+  }, [phone]);
 
   useEffect(() => {
     const interval = setInterval(() => setTimer((prev) => (prev > 0 ? prev - 1 : 0)), 1000);
@@ -48,23 +43,25 @@ export default function OtpScreen() {
   const handleVerify = async () => {
     const c = code.replace(/\D/g, '');
     if (c.length !== 6) {
-      Alert.alert('Invalid Code', 'Please enter the 6-digit code from your email.');
+      Alert.alert('Invalid Code', 'Please enter the 6-digit code from your SMS.');
       return;
     }
-    const e = email?.trim().toLowerCase();
-    if (!e) {
-      Alert.alert('Error', 'Email is missing. Please go back and try again.');
+    if (!phone?.trim()) {
+      Alert.alert('Error', 'Phone number is missing. Please go back and try again.');
       return;
     }
     setLoading(true);
     try {
-      await authApi.verifyOtp(e, c);
-      const p = await refetchProfile();
-      if (!p?.phone?.trim()) {
-        router.replace('/(auth)/complete-profile');
-      } else {
-        router.replace('/(tabs)/menu');
+      const result = await authApi.verifyOtp(phone, c);
+      const { error } = await setServerSession(
+        result.session.access_token,
+        result.session.refresh_token,
+      );
+      if (error) {
+        Alert.alert('Error', error);
+        return;
       }
+      router.replace('/(tabs)/menu');
     } catch (err) {
       Alert.alert('Invalid Code', err instanceof Error ? err.message : 'Code is wrong or expired. Try again.');
     } finally {
@@ -72,7 +69,9 @@ export default function OtpScreen() {
     }
   };
 
-  const displayEmail = email ? String(email).replace(/(.{2})(.*)(@.*)/, '$1***$3') : '';
+  const maskedPhone = phone
+    ? phone.replace(/(\+966)(\d{2})(\d+)(\d{2})/, '$1 $2***$4')
+    : '';
 
   return (
     <Container className="justify-center">
@@ -80,10 +79,10 @@ export default function OtpScreen() {
         <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View className="mb-8">
             <Text className="text-3xl font-bold text-gray-900 mb-2">
-              {t('otp') || 'Verify your email'}
+              {t('otp') || 'Verify your phone'}
             </Text>
             <Text className="text-gray-500 text-base">
-              We sent a 6-digit code to {displayEmail || 'your email'}.
+              We sent a 6-digit code to {maskedPhone || 'your phone'}.
               {'\n'}Enter it below to continue.
             </Text>
           </View>
@@ -112,7 +111,7 @@ export default function OtpScreen() {
             {timer > 0 ? (
               <Text className="text-gray-400 font-bold">Resend in {timer}s</Text>
             ) : (
-              <TouchableOpacity onPress={sendOtp} disabled={sending}>
+              <TouchableOpacity onPress={resendOtp} disabled={sending}>
                 <Text className="font-bold text-lg" style={{ color: primaryColor }}>Resend Code</Text>
               </TouchableOpacity>
             )}

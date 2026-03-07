@@ -1,5 +1,10 @@
 /**
- * Supabase Auth – email/password sign in, sign up, sign out
+ * Auth context – phone-based SMS OTP authentication.
+ *
+ * After the server verifies the OTP it returns Supabase session tokens.
+ * We call supabase.auth.setSession() so the existing onAuthStateChange
+ * listener picks up the user, and session persistence via AsyncStorage
+ * works exactly as before.
  */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
@@ -13,8 +18,8 @@ interface AuthState {
 }
 
 interface AuthContextValue extends AuthState {
-  signIn: (email: string, password: string) => Promise<{ error: string | null }>;
-  signUp: (email: string, password: string) => Promise<{ error: string | null }>;
+  /** Set a Supabase session received from the server after OTP verification. */
+  setServerSession: (accessToken: string, refreshToken: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
 }
 
@@ -55,15 +60,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
+  const setServerSession = useCallback(async (accessToken: string, refreshToken: string) => {
     if (!supabase) return { error: 'Auth not configured. Add Supabase URL and anon key to .env' };
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error: error?.message ?? null };
-  }, []);
-
-  const signUp = useCallback(async (email: string, password: string) => {
-    if (!supabase) return { error: 'Auth not configured. Add Supabase URL and anon key to .env' };
-    const { error } = await supabase.auth.signUp({ email, password });
+    const { error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
     return { error: error?.message ?? null };
   }, []);
 
@@ -72,7 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ ...state, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ ...state, setServerSession, signOut }}>
       {children}
     </AuthContext.Provider>
   );

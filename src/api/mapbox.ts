@@ -1,17 +1,16 @@
 /**
- * Mapbox API - Geocoding for address search
- * Uses public token from EXPO_PUBLIC_MAPBOX_TOKEN
+ * Geocoding API – Google Maps Geocoding (replaces Mapbox)
+ * Uses EXPO_PUBLIC_GOOGLE_MAPS_API_KEY
+ *
+ * Exports keep the same interface so useMapboxSearch and add-address-modal
+ * continue working without changes.
  */
 import Constants from 'expo-constants';
 
-const MAPBOX_TOKEN = Constants.expoConfig?.extra?.mapboxToken || process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '';
-
-export interface MapboxPlace {
-  id: string;
-  place_name: string;
-  center: [number, number]; // [lng, lat]
-  address?: string;
-}
+const GOOGLE_MAPS_KEY =
+  (Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey ||
+  process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ||
+  '';
 
 export interface MapboxSearchResult {
   address: string;
@@ -19,34 +18,46 @@ export interface MapboxSearchResult {
   lng: number;
 }
 
+/**
+ * Forward geocode: search for addresses matching a query.
+ * Uses Google Geocoding API with region bias for Saudi Arabia.
+ */
 export async function searchAddresses(query: string, limit = 5): Promise<MapboxSearchResult[]> {
-  if (!MAPBOX_TOKEN) return [];
+  if (!GOOGLE_MAPS_KEY) return [];
   if (!query || query.trim().length < 3) return [];
 
   const encoded = encodeURIComponent(query.trim());
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encoded}.json?access_token=${MAPBOX_TOKEN}&limit=${limit}&types=address,place,locality,neighborhood`;
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encoded}&key=${GOOGLE_MAPS_KEY}&region=sa&language=en`;
 
-  const res = await fetch(url);
-  const data = await res.json();
-
-  if (!res.ok) return [];
-  const features = data.features || [];
-
-  return features.map((f: any) => ({
-    address: f.place_name,
-    lng: f.center[0],
-    lat: f.center[1],
-  }));
-}
-
-export async function reverseGeocode(lng: number, lat: number): Promise<string | null> {
-  if (!MAPBOX_TOKEN) return null;
-  const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${MAPBOX_TOKEN}&limit=1`;
   try {
     const res = await fetch(url);
     const data = await res.json();
-    const features = data.features || [];
-    return features[0]?.place_name ?? null;
+
+    if (data.status !== 'OK' || !data.results?.length) return [];
+
+    return data.results.slice(0, limit).map((r: any) => ({
+      address: r.formatted_address,
+      lat: r.geometry.location.lat,
+      lng: r.geometry.location.lng,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Reverse geocode: get a human-readable address from coordinates.
+ */
+export async function reverseGeocode(lng: number, lat: number): Promise<string | null> {
+  if (!GOOGLE_MAPS_KEY) return null;
+
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_MAPS_KEY}&language=en`;
+
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.status !== 'OK' || !data.results?.length) return null;
+    return data.results[0].formatted_address ?? null;
   } catch {
     return null;
   }

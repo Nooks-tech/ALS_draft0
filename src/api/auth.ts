@@ -1,12 +1,24 @@
 /**
- * Auth API - send & verify email OTP
+ * Auth API – phone-based SMS OTP
  */
 import { api } from './client';
 
-export const authApi = {
-  sendOtp: (email: string) =>
-    api.post<{ ok: boolean }>('/api/auth/send-otp', { email }),
+export interface VerifyOtpResponse {
+  ok: boolean;
+  session: {
+    access_token: string;
+    refresh_token: string;
+  };
+  user: {
+    id: string;
+    phone: string;
+  };
+}
 
-  verifyOtp: (email: string, code: string) =>
-    api.post<{ ok: boolean }>('/api/auth/verify-otp', { email, code }),
+export const authApi = {
+  sendOtp: (phone: string) =>
+    api.post<{ ok: boolean }>('/api/auth/send-otp', { phone }),
+
+  verifyOtp: (phone: string, code: string) =>
+    api.post<VerifyOtpResponse>('/api/auth/verify-otp', { phone, code }),
 };

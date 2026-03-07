@@ -1,24 +1,12 @@
-import { Tabs, useRouter } from 'expo-router';
+import { Tabs } from 'expo-router';
 import { ClipboardList, MoreHorizontal, Tag, Utensils } from 'lucide-react-native';
-import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Platform } from 'react-native';
-import { useAuth } from '../../src/context/AuthContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
-import { useProfile } from '../../src/context/ProfileContext';
 
 export default function TabLayout() {
   const { t } = useTranslation();
-  const router = useRouter();
-  const { user } = useAuth();
-  const { profile, profileLoaded } = useProfile();
   const { primaryColor, textColor } = useMerchantBranding();
-
-  useEffect(() => {
-    if (user && profileLoaded && !profile.phone?.trim()) {
-      router.replace('/(auth)/complete-profile');
-    }
-  }, [user, profileLoaded, profile.phone, router]);
 
   return (
     <Tabs
