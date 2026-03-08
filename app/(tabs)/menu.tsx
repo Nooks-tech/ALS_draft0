@@ -351,6 +351,11 @@ export default function MenuScreen() {
 
       {/* HEADER (L→R): Pickup/branch | Search icon | Merchant logo (right-most) */}
       <View className="pt-14 pb-6 px-5 shadow-md flex-row justify-between items-center rounded-b-[40px]" style={{ backgroundColor: headerBg }}>
+        {/* DEBUG: tiny square showing menuCardColor value - remove after fixing */}
+        <View style={{ position: 'absolute', top: 4, left: 4, zIndex: 999 }}>
+          <View style={{ width: 20, height: 20, backgroundColor: menuCardColor, borderWidth: 1, borderColor: '#fff' }} />
+          <Text style={{ color: '#fff', fontSize: 7 }}>{menuCardColor}</Text>
+        </View>
         <TouchableOpacity onPress={openOrderType} className="flex-row items-center flex-1 min-w-0 mr-2" accessibilityLabel={orderType === 'delivery' ? 'Delivering to' : 'Pickup from'} accessibilityRole="button">
           <View className="bg-white/20 p-2.5 rounded-2xl mr-3 border border-white/30 shadow-sm shrink-0">
             {orderType === 'delivery' ? <Bike size={20} color={textColor} /> : <Store size={20} color={textColor} />}
