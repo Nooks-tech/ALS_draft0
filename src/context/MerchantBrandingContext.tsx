@@ -1,11 +1,10 @@
 /**
- * Merchant branding – Option A: one build per merchant.
- * Uses build-time values (from EAS/env) as initial state and fallback.
- * When nooksweb API is configured, fetches and can override so merchant
- * can update branding without a new build.
+ * Merchant branding – fetches branding colors from the nooksweb API.
+ * Build-time values (from EAS/env) are used as initial state.
+ * Runtime fetch always overrides when nooksweb API is reachable.
  */
 import Constants from 'expo-constants';
-import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { useMerchant } from './MerchantContext';
 
@@ -77,14 +76,16 @@ function getBuildTimeBranding(): MerchantBranding {
   };
 }
 
-function mergeBranding(prev: MerchantBranding, partial: Partial<MerchantBranding>): MerchantBranding {
+function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding {
   return {
-    logoUrl: typeof partial.logoUrl === 'string' && partial.logoUrl ? partial.logoUrl : prev.logoUrl,
-    primaryColor: normalizeColor(partial.primaryColor) ?? prev.primaryColor,
-    accentColor: normalizeColor(partial.accentColor) ?? prev.accentColor,
-    backgroundColor: normalizeColor(partial.backgroundColor) ?? prev.backgroundColor,
-    menuCardColor: normalizeColor(partial.menuCardColor) ?? prev.menuCardColor,
-    textColor: normalizeColor(partial.textColor) ?? prev.textColor,
+    logoUrl: typeof data.logoUrl === 'string' ? data.logoUrl
+      : typeof data.logo_url === 'string' ? data.logo_url
+      : null,
+    primaryColor: normalizeColor(data.primaryColor) ?? normalizeColor(data.primary_color) ?? DEFAULT_BRANDING.primaryColor,
+    accentColor: normalizeColor(data.accentColor) ?? normalizeColor(data.accent_color) ?? DEFAULT_BRANDING.accentColor,
+    backgroundColor: normalizeColor(data.backgroundColor) ?? normalizeColor(data.background_color) ?? DEFAULT_BRANDING.backgroundColor,
+    menuCardColor: normalizeColor(data.menuCardColor) ?? normalizeColor(data.menu_card_color) ?? DEFAULT_BRANDING.menuCardColor,
+    textColor: normalizeColor(data.textColor) ?? normalizeColor(data.text_color) ?? DEFAULT_BRANDING.textColor,
   };
 }
 
@@ -93,66 +94,57 @@ const MerchantBrandingContext = createContext<MerchantBranding & { loading: bool
   loading: false,
 });
 
-export function MerchantBrandingProvider({
-  children,
-  merchantId,
-}: {
-  children: ReactNode;
-  merchantId: string;
-}) {
-  const baseUrl = useMemo(() => getBaseUrl(), []);
-  const buildTimeBranding = useMemo(() => getBuildTimeBranding(), []);
-  const [branding, setBranding] = useState<MerchantBranding>(() => buildTimeBranding);
+const BASE_URL = getBaseUrl().replace(/\/$/, '');
+
+export function MerchantBrandingProvider({ children }: { children: ReactNode }) {
+  const { merchantId } = useMerchant();
+  const [branding, setBranding] = useState<MerchantBranding>(getBuildTimeBranding);
   const [loading, setLoading] = useState(false);
   const runIdRef = useRef(0);
-
-  const fetchFromApi = useCallback(async (signal: { cancelled: boolean }) => {
-    if (!baseUrl.trim() || !merchantId.trim()) return;
-    const url = `${baseUrl.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
-    const res = await fetch(url);
-    if (!res.ok || signal.cancelled) return;
-    const data = (await res.json()) as Record<string, unknown>;
-    if (signal.cancelled) return;
-
-    const fetched: Partial<MerchantBranding> = {
-      logoUrl: (data.logoUrl ?? data.logo_url) as string | undefined,
-      primaryColor: (data.primaryColor ?? data.primary_color) as string | undefined,
-      accentColor: (data.accentColor ?? data.accent_color) as string | undefined,
-      backgroundColor: (data.backgroundColor ?? data.background_color) as string | undefined,
-      menuCardColor: (data.menuCardColor ?? data.menu_card_color) as string | undefined,
-      textColor: (data.textColor ?? data.text_color) as string | undefined,
-    };
-    if (signal.cancelled) return;
-    setBranding((prev) => mergeBranding(prev, fetched));
-  }, [merchantId, baseUrl]);
+  const merchantIdRef = useRef(merchantId);
+  merchantIdRef.current = merchantId;
 
   useEffect(() => {
+    if (!BASE_URL || !merchantId) return;
+
     const id = ++runIdRef.current;
-    const signal = { cancelled: false };
+    let cancelled = false;
 
-    (async () => {
-      setLoading(true);
-      try {
-        await fetchFromApi(signal);
-      } catch {
-        // keep current branding on network error
-      }
-      if (id === runIdRef.current) setLoading(false);
-    })();
+    const doFetch = async () => {
+      const url = `${BASE_URL}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
+      const res = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } });
+      if (!res.ok || cancelled) return;
+      const data = (await res.json()) as Record<string, unknown>;
+      if (cancelled) return;
+      const parsed = parseBrandingResponse(data);
+      setBranding(parsed);
+    };
 
-    return () => { signal.cancelled = true; };
-  }, [fetchFromApi]);
+    setLoading(true);
+    doFetch()
+      .catch(() => {})
+      .finally(() => { if (id === runIdRef.current) setLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [merchantId]);
 
   useEffect(() => {
-    const signal = { cancelled: false };
+    if (!BASE_URL) return;
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') fetchFromApi(signal).catch(() => {});
+      if (state !== 'active') return;
+      const mid = merchantIdRef.current;
+      if (!mid) return;
+      const url = `${BASE_URL}/api/public/merchants/${encodeURIComponent(mid)}/branding`;
+      fetch(url, { headers: { 'Cache-Control': 'no-cache' } })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (!data) return;
+          setBranding(parseBrandingResponse(data as Record<string, unknown>));
+        })
+        .catch(() => {});
     });
-    return () => {
-      signal.cancelled = true;
-      sub.remove();
-    };
-  }, [fetchFromApi]);
+    return () => sub.remove();
+  }, []);
 
   const value = useMemo(() => ({ ...branding, loading }), [branding, loading]);
 
@@ -166,6 +158,5 @@ export function MerchantBrandingProvider({
 export const useMerchantBranding = () => useContext(MerchantBrandingContext);
 
 export function MerchantBrandingWrapper({ children }: { children: ReactNode }) {
-  const { merchantId } = useMerchant();
-  return <MerchantBrandingProvider merchantId={merchantId}>{children}</MerchantBrandingProvider>;
+  return <MerchantBrandingProvider>{children}</MerchantBrandingProvider>;
 }
