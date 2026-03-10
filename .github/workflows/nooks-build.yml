@@ -14,6 +14,10 @@ on:
         required: false
         type: string
         default: ""
+      app_icon_bg_color:
+        required: false
+        type: string
+        default: ""
       logo_url:
         required: false
         type: string
@@ -118,6 +122,7 @@ jobs:
           echo "EXPO_PUBLIC_BACKGROUND_COLOR=${{ github.event.inputs.background_color }}" >> .env
           echo "EXPO_PUBLIC_MENU_CARD_COLOR=${{ github.event.inputs.menu_card_color }}" >> .env
           echo "EXPO_PUBLIC_TEXT_COLOR=${{ github.event.inputs.text_color }}" >> .env
+          echo "EXPO_PUBLIC_APP_ICON_BG_COLOR=${{ github.event.inputs.app_icon_bg_color }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env

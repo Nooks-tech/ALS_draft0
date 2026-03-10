@@ -16,6 +16,7 @@ const buildTimeAccentColor = process.env.EXPO_PUBLIC_ACCENT_COLOR || '';
 const buildTimeBackgroundColor = process.env.EXPO_PUBLIC_BACKGROUND_COLOR || '';
 const buildTimeMenuCardColor = process.env.EXPO_PUBLIC_MENU_CARD_COLOR || '';
 const buildTimeTextColor = process.env.EXPO_PUBLIC_TEXT_COLOR || '';
+const buildTimeAppIconBgColor = process.env.EXPO_PUBLIC_APP_ICON_BG_COLOR || '';
 const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 const config = {
@@ -33,7 +34,9 @@ const resolvedIcon = config.expo.icon || resolvedAppIconFile;
 config.expo.android = {
   ...(config.expo.android || {}),
   adaptiveIcon: {
-    backgroundColor: config.expo.android?.adaptiveIcon?.backgroundColor || '#E6F4FE',
+    backgroundColor: (buildTimeAppIconBgColor && buildTimeAppIconBgColor !== 'none')
+      ? buildTimeAppIconBgColor
+      : (config.expo.android?.adaptiveIcon?.backgroundColor || '#E6F4FE'),
     foregroundImage: resolvedIcon,
     monochromeImage: resolvedIcon,
   },
@@ -86,6 +89,7 @@ config.expo.extra = {
   backgroundColor: buildTimeBackgroundColor || '',
   menuCardColor: buildTimeMenuCardColor || '',
   textColor: buildTimeTextColor || '',
+  appIconBgColor: buildTimeAppIconBgColor || '',
 };
 
 // Add Apple Pay entitlement (required for iOS). Update merchantId once you have Apple Developer account.
