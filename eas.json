@@ -34,7 +34,7 @@
   },
   "submit": {
     "production": {
-      "ios": { "appleId": "your-apple-id@email.com", "ascAppId": "YOUR_APP_STORE_CONNECT_APP_ID" }
+      "ios": { "appleId": "abdullah.alsaedi.2003@gmail.com" }
     }
   }
 }

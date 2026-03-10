@@ -128,6 +128,7 @@ jobs:
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env
           echo "EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}" >> .env
           echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}" >> .env
+          echo "EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID=${{ secrets.APPLE_PAY_MERCHANT_ID }}" >> .env
           if [ -n "${{ secrets.GOOGLE_MAPS_API_KEY }}" ]; then
             echo "GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}" >> .env
           else
@@ -149,7 +150,7 @@ jobs:
       - name: Build iOS
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
-            eas build --platform ios --profile ios-simulator --non-interactive --no-wait
+            eas build --platform ios --profile preview --non-interactive --no-wait
           else
             eas build --platform ios --non-interactive --no-wait
           fi
