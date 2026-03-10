@@ -109,10 +109,12 @@ jobs:
             fi
           fi
           # Keep all startup/icon assets aligned with merchant icon to avoid cached red placeholder flash.
-          cp "$APP_ICON_FILE" ./assets/images/splash-icon.png
-          cp "$APP_ICON_FILE" ./assets/images/android-icon-foreground.png
-          cp "$APP_ICON_FILE" ./assets/images/android-icon-monochrome.png
-          cp "$APP_ICON_FILE" ./assets/images/icon.png
+          for target in splash-icon.png android-icon-foreground.png android-icon-monochrome.png icon.png; do
+            dest="./assets/images/$target"
+            if [ "$(realpath "$APP_ICON_FILE")" != "$(realpath "$dest")" ]; then
+              cp "$APP_ICON_FILE" "$dest"
+            fi
+          done
           echo "EXPO_PUBLIC_MERCHANT_ID=${{ github.event.inputs.merchant_id }}" > .env
           echo "EXPO_PUBLIC_APP_NAME=${{ github.event.inputs.app_name }}" >> .env
           echo "EXPO_PUBLIC_APP_ICON_FILE=$APP_ICON_FILE" >> .env
