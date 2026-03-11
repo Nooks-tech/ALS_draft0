@@ -30,6 +30,11 @@ async function requestNotificationPermissions() {
       importance: Notifications.AndroidImportance.HIGH,
       sound: 'default',
     });
+    await Notifications.setNotificationChannelAsync('marketing', {
+      name: 'Promotions & Updates',
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: 'default',
+    });
   }
   const { status } = await Notifications.getPermissionsAsync();
   if (status !== 'granted') {

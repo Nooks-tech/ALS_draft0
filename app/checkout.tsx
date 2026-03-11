@@ -23,6 +23,7 @@ import {
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
+  ApplePay as ApplePayButton,
   ApplePayConfig,
   CreditCard as CreditCardPayment,
   CreditCardConfig,
@@ -362,7 +363,11 @@ export default function CheckoutScreen() {
       return;
     }
 
-    if (paymentMethod === 'apple_pay' || paymentMethod === 'samsung_pay') {
+    if (paymentMethod === 'apple_pay') {
+      return;
+    }
+
+    if (paymentMethod === 'samsung_pay') {
       paymentSuccessHandled.current = false;
       setSubmitting(true);
       try {
@@ -390,7 +395,7 @@ export default function CheckoutScreen() {
 
   const paymentLabel =
     paymentMethod === 'apple_pay'
-      ? 'Apple Pay'
+      ? '\uF8FF Apple Pay'
       : paymentMethod === 'samsung_pay'
         ? 'Samsung Pay'
         : 'Credit / Debit Card';
@@ -539,7 +544,7 @@ export default function CheckoutScreen() {
             >
               {paymentMethod === 'apple_pay' ? (
                 <View className="w-12 h-8 bg-black rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
-                  <Text className="text-white font-bold text-xs"> Pay</Text>
+                  <Text className="text-white font-bold text-xs">{'\uF8FF'} Pay</Text>
                 </View>
               ) : paymentMethod === 'samsung_pay' ? (
                 <View className="w-12 h-8 bg-blue-900 rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
@@ -561,24 +566,32 @@ export default function CheckoutScreen() {
       <View className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-5 pt-4 pb-10">
         <View className="flex-row items-center justify-between mb-3">
           <Text className="text-2xl font-bold text-slate-900">{finalTotal.toFixed(2)} SAR</Text>
-          <TouchableOpacity
-            onPress={handlePay}
-            disabled={submitting}
-            className="px-8 py-4 rounded-2xl min-w-[160px] items-center"
-            style={{ backgroundColor: primaryColor }}
-          >
-            {submitting ? (
-              <ActivityIndicator size="small" color="white" />
-            ) : (
-              <Text className="text-white font-bold text-base">
-                {paymentMethod === 'apple_pay'
-                  ? 'Pay with  Pay'
-                  : paymentMethod === 'samsung_pay'
+          {paymentMethod === 'apple_pay' && Platform.OS === 'ios' && paymentConfig ? (
+            <View style={{ width: 180, height: 50 }}>
+              <ApplePayButton
+                paymentConfig={paymentConfig}
+                onPaymentResult={handlePaymentResult}
+                style={{ buttonType: 'buy', buttonStyle: 'black', height: 50, width: '100%', cornerRadius: 16 }}
+              />
+            </View>
+          ) : (
+            <TouchableOpacity
+              onPress={handlePay}
+              disabled={submitting}
+              className="px-8 py-4 rounded-2xl min-w-[160px] items-center"
+              style={{ backgroundColor: primaryColor }}
+            >
+              {submitting ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <Text className="text-white font-bold text-base">
+                  {paymentMethod === 'samsung_pay'
                     ? 'Pay with Samsung Pay'
                     : `Pay ${finalTotal.toFixed(2)} SAR`}
-              </Text>
-            )}
-          </TouchableOpacity>
+                </Text>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
         <TouchableOpacity onPress={() => router.push('/terms-modal')} className="self-center">
           <Text className="text-slate-500 text-sm underline">Cancellation Policy</Text>
@@ -600,9 +613,9 @@ export default function CheckoutScreen() {
                 className="flex-row items-center py-3 border-b border-slate-100"
               >
                 <View className="w-12 h-8 bg-black rounded items-center justify-center">
-                  <Text className="text-white font-bold text-xs"> Pay</Text>
+                  <Text className="text-white font-bold text-xs">{'\uF8FF'} Pay</Text>
                 </View>
-                <Text className="ml-3 font-medium">Apple Pay</Text>
+                <Text className="ml-3 font-medium">{'\uF8FF'} Apple Pay</Text>
               </TouchableOpacity>
             )}
             {Platform.OS === 'android' && SAMSUNG_PAY_ENABLED && (
@@ -655,13 +668,11 @@ export default function CheckoutScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* Moyasar Web Page - Apple Pay (opens hosted checkout) */}
+      {/* Moyasar Web Page - Samsung Pay (opens hosted checkout) */}
       <Modal visible={!!moyasarWebUrl} animationType="slide" presentationStyle="pageSheet">
         <SafeAreaView className="flex-1 bg-white">
           <View className="flex-row items-center justify-between px-5 py-4 border-b border-slate-100">
-            <Text className="text-lg font-bold text-slate-800">
-              {paymentMethod === 'samsung_pay' ? 'Pay with Samsung Pay' : 'Pay with Apple Pay'}
-            </Text>
+            <Text className="text-lg font-bold text-slate-800">Pay with Samsung Pay</Text>
             <TouchableOpacity onPress={() => setMoyasarWebUrl(null)} className="p-2">
               <X size={24} color="#64748b" />
             </TouchableOpacity>
