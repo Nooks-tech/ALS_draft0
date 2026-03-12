@@ -1,38 +1,76 @@
 /**
- * Order management routes – merchant cancel/refund, customer cancel, edit-hold, commission
+ * Order management routes – merchant cancel/refund, customer cancel (60s grace),
+ * system cancel (no-driver), edit-hold, commission, status
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
+import { cancelPayment, calculateMoyasarFee } from '../services/payment';
+import { otoService } from '../services/oto';
 
 export const ordersRouter = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const MOYASAR_SECRET_KEY = process.env.MOYASAR_SECRET_KEY;
 const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
+const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
+const CUSTOMER_CANCEL_WINDOW_MS = 60_000; // 60 seconds
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
-async function resolveOrdersTable() {
-  if (!supabaseAdmin) return 'customer_orders';
-  const probe = await supabaseAdmin.from('customer_orders').select('id').limit(1);
-  const missing =
-    !!probe.error?.message?.toLowerCase().includes('customer_orders') &&
-    probe.error.message.toLowerCase().includes('does not exist');
-  return missing ? 'orders' : 'customer_orders';
+/* ── Push notification helper ── */
+async function sendPushToCustomer(customerId: string, title: string, body: string) {
+  if (!supabaseAdmin) return;
+  try {
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('expo_push_token')
+      .eq('user_id', customerId);
+    const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
+    if (tokens.length === 0) return;
+
+    const messages = tokens.map((token: string) => ({
+      to: token,
+      sound: 'default',
+      title,
+      body,
+      channelId: 'marketing',
+    }));
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
+
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(messages),
+    });
+  } catch (e: any) {
+    console.warn('[Push] Failed to send:', e?.message);
+  }
 }
 
-/** POST /api/orders/:id/merchant-cancel – merchant cancels order with refund + note */
+/* ── Cancel OTO if delivery order ── */
+async function cancelOtoIfDelivery(order: Record<string, any>) {
+  if (order.order_type !== 'delivery' || !order.oto_id) return;
+  const result = await otoService.cancelDelivery(order.oto_id);
+  if (result.warning) console.warn('[Orders] OTO cancel warning:', result.warning);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MERCHANT CANCEL – void-first refund + OTO cancel + fee tracking
+   ═══════════════════════════════════════════════════════════════════ */
 ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
   try {
     const orderId = req.params.id;
-    const { reason, refund } = req.body;
+    const { reason, refund, amount } = req.body;
     if (!orderId) return res.status(400).json({ error: 'Missing order ID' });
     if (!reason || typeof reason !== 'string') {
       return res.status(400).json({ error: 'Cancellation reason is required' });
     }
-
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: order, error: fetchErr } = await supabaseAdmin
@@ -46,35 +84,26 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
       return res.status(400).json({ error: `Cannot cancel order with status: ${order.status}` });
     }
 
+    // Cancel OTO delivery
+    await cancelOtoIfDelivery(order);
+
     const shouldRefund = refund !== false;
     let refundStatus = 'none';
-    let moyasarRefundId: string | null = null;
+    let refundId: string | null = null;
+    let refundFee = 0;
+    let refundMethod: string | null = null;
+    const refundAmountSAR = amount != null ? Number(amount) : order.total_sar;
+    const refundAmountHalals = amount != null ? Math.round(Number(amount) * 100) : undefined;
 
-    if (shouldRefund && order.payment_id && MOYASAR_SECRET_KEY) {
-      try {
-        const refundRes = await fetch(
-          `https://api.moyasar.com/v1/payments/${order.payment_id}/refund`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ amount: Math.round(order.total_sar * 100) }),
-          }
-        );
-        const refundData = await refundRes.json();
-        if (refundRes.ok) {
-          refundStatus = 'refunded';
-          moyasarRefundId = refundData?.id ?? null;
-          console.log('[Orders] Moyasar refund success:', moyasarRefundId);
-        } else {
-          refundStatus = 'refund_failed';
-          console.error('[Orders] Moyasar refund failed:', refundData);
-        }
-      } catch (e: any) {
+    if (shouldRefund && order.payment_id) {
+      const result = await cancelPayment(order.payment_id, refundAmountHalals);
+      if (result.method === 'failed') {
         refundStatus = 'refund_failed';
-        console.error('[Orders] Refund error:', e?.message);
+      } else {
+        refundStatus = result.method === 'void' ? 'voided' : 'refunded';
+        refundId = result.moyasarId ?? null;
+        refundFee = result.fee;
+        refundMethod = result.method;
       }
     } else if (shouldRefund) {
       refundStatus = 'pending_manual';
@@ -87,104 +116,202 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
         cancellation_reason: reason,
         cancelled_by: 'merchant',
         refund_status: refundStatus,
-        refund_id: moyasarRefundId,
+        refund_id: refundId,
+        refund_amount: refundAmountSAR,
+        refund_fee: refundFee,
+        refund_fee_absorbed_by: 'merchant',
+        refund_method: refundMethod,
         updated_at: new Date().toISOString(),
       })
       .eq('id', orderId);
 
     if (updateErr) return res.status(500).json({ error: updateErr.message });
 
-    res.json({
-      success: true,
-      orderId,
-      refundStatus,
-      refundId: moyasarRefundId,
-    });
+    // Push notification to customer
+    if (refundStatus === 'refunded' || refundStatus === 'voided') {
+      sendPushToCustomer(
+        order.customer_id,
+        'Order Cancelled',
+        `Your order has been cancelled by the store. A refund of ${refundAmountSAR} SAR has been initiated and will reflect in your account within 3–14 business days.`,
+      );
+    }
+
+    res.json({ success: true, orderId, refundStatus, refundId: refundId, refundFee, refundMethod });
   } catch (err: any) {
     console.error('[Orders] merchant-cancel error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to cancel order' });
   }
 });
 
-/** POST /api/orders/:id/customer-cancel – reserved for edit-flow hold cancellation only */
+/* ═══════════════════════════════════════════════════════════════════
+   CUSTOMER CANCEL – 60-second grace period, hard block after
+   ═══════════════════════════════════════════════════════════════════ */
 ordersRouter.post('/:id/customer-cancel', async (req, res) => {
   try {
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-    const ordersTable = await resolveOrdersTable();
 
     const { data: order, error: fetchErr } = await supabaseAdmin
-      .from(ordersTable)
+      .from('customer_orders')
       .select('*')
       .eq('id', orderId)
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
-    // Customer cancellation is disabled for deployed orders.
-    // Keep this route only so "Edit your order" can stop an On Hold order before re-ordering.
-    if (order.status !== 'On Hold') {
-      return res.status(400).json({ error: 'Customer cancellation is disabled after order deployment.' });
+
+    // Allow On Hold cancellations (edit-flow) without time restriction
+    if (order.status === 'On Hold') {
+      // Original edit-flow cancel — no time restriction
+    } else {
+      // 60-second grace period
+      const createdAt = new Date(order.created_at).getTime();
+      const elapsed = Date.now() - createdAt;
+      if (elapsed > CUSTOMER_CANCEL_WINDOW_MS) {
+        return res.status(400).json({
+          error: 'Cancellation window has expired. Please contact the store.',
+          windowExpired: true,
+        });
+      }
+      if (order.status !== 'Preparing') {
+        return res.status(400).json({
+          error: 'Cannot cancel — order preparation has already progressed.',
+        });
+      }
     }
 
-    let refundStatus = 'none';
-    let moyasarRefundId: string | null = null;
+    // Cancel OTO delivery
+    await cancelOtoIfDelivery(order);
 
-    if (order.payment_id && MOYASAR_SECRET_KEY) {
-      try {
-        const refundRes = await fetch(
-          `https://api.moyasar.com/v1/payments/${order.payment_id}/refund`,
-          {
-            method: 'POST',
-            headers: {
-              Authorization: `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ amount: Math.round(order.total_sar * 100) }),
-          }
-        );
-        const refundData = await refundRes.json();
-        if (refundRes.ok) {
-          refundStatus = 'refunded';
-          moyasarRefundId = refundData?.id ?? null;
-        } else {
-          refundStatus = 'refund_failed';
-        }
-      } catch {
+    let refundStatus = 'none';
+    let refundId: string | null = null;
+    let refundFee = 0;
+    let refundMethod: string | null = null;
+
+    if (order.payment_id) {
+      const result = await cancelPayment(order.payment_id);
+      if (result.method === 'failed') {
         refundStatus = 'refund_failed';
+      } else {
+        refundStatus = result.method === 'void' ? 'voided' : 'refunded';
+        refundId = result.moyasarId ?? null;
+        refundFee = result.fee;
+        refundMethod = result.method;
       }
     } else {
       refundStatus = 'pending_manual';
     }
 
     const { error: updateErr } = await supabaseAdmin
-      .from(ordersTable)
+      .from('customer_orders')
       .update({
         status: 'Cancelled',
         cancellation_reason: 'Cancelled by customer',
         cancelled_by: 'customer',
         refund_status: refundStatus,
-        refund_id: moyasarRefundId,
+        refund_id: refundId,
+        refund_amount: order.total_sar,
+        refund_fee: refundFee,
+        refund_fee_absorbed_by: refundFee > 0 ? 'platform' : null,
+        refund_method: refundMethod,
         updated_at: new Date().toISOString(),
       })
       .eq('id', orderId);
 
     if (updateErr) return res.status(500).json({ error: updateErr.message });
 
-    res.json({ success: true, orderId, refundStatus });
+    if (refundStatus === 'refunded' || refundStatus === 'voided') {
+      sendPushToCustomer(
+        order.customer_id,
+        'Order Cancelled',
+        `Your order has been cancelled. A refund of ${order.total_sar} SAR has been initiated.`,
+      );
+    }
+
+    res.json({ success: true, orderId, refundStatus, refundFee, refundMethod });
   } catch (err: any) {
+    console.error('[Orders] customer-cancel error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to cancel order' });
   }
 });
 
-/** POST /api/orders/:id/hold – withhold payment (5-second edit window after payment) */
+/* ═══════════════════════════════════════════════════════════════════
+   SYSTEM CANCEL – no-driver timeout / auto-cancel
+   ═══════════════════════════════════════════════════════════════════ */
+ordersRouter.post('/:id/system-cancel', async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const reason = (req.body.reason as string) || 'No delivery driver found within time limit';
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { data: order, error: fetchErr } = await supabaseAdmin
+      .from('customer_orders')
+      .select('*')
+      .eq('id', orderId)
+      .single();
+
+    if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
+    if (order.status === 'Cancelled' || order.status === 'Delivered') {
+      return res.status(400).json({ error: `Cannot cancel order with status: ${order.status}` });
+    }
+
+    await cancelOtoIfDelivery(order);
+
+    let refundStatus = 'none';
+    let refundId: string | null = null;
+    let refundFee = 0;
+    let refundMethod: string | null = null;
+
+    if (order.payment_id) {
+      const result = await cancelPayment(order.payment_id);
+      if (result.method === 'failed') {
+        refundStatus = 'refund_failed';
+      } else {
+        refundStatus = result.method === 'void' ? 'voided' : 'refunded';
+        refundId = result.moyasarId ?? null;
+        refundFee = result.fee;
+        refundMethod = result.method;
+      }
+    }
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('customer_orders')
+      .update({
+        status: 'Cancelled',
+        cancellation_reason: reason,
+        cancelled_by: 'system',
+        refund_status: refundStatus,
+        refund_id: refundId,
+        refund_amount: order.total_sar,
+        refund_fee: refundFee,
+        refund_fee_absorbed_by: refundFee > 0 ? 'platform' : null,
+        refund_method: refundMethod,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId);
+
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+    sendPushToCustomer(
+      order.customer_id,
+      'Order Cancelled',
+      `We're sorry — we couldn't find a delivery driver for your order. A full refund of ${order.total_sar} SAR has been initiated.`,
+    );
+
+    res.json({ success: true, orderId, refundStatus, refundFee, refundMethod });
+  } catch (err: any) {
+    console.error('[Orders] system-cancel error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to cancel order' });
+  }
+});
+
+/* ── Hold / Resume (edit window) ── */
 ordersRouter.post('/:id/hold', async (req, res) => {
   try {
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-    const ordersTable = await resolveOrdersTable();
 
     const { data: order, error: fetchErr } = await supabaseAdmin
-      .from(ordersTable)
+      .from('customer_orders')
       .select('*')
       .eq('id', orderId)
       .single();
@@ -192,42 +319,33 @@ ordersRouter.post('/:id/hold', async (req, res) => {
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
 
     const createdAt = new Date(order.created_at).getTime();
-    const now = Date.now();
     const holdWindowMs = 5000;
-
-    if (now - createdAt > holdWindowMs) {
+    if (Date.now() - createdAt > holdWindowMs) {
       return res.status(400).json({ error: 'Edit window expired', windowExpired: true });
     }
-
     if (order.status !== 'Preparing') {
       return res.status(400).json({ error: 'Order is no longer editable' });
     }
 
     const { error: updateErr } = await supabaseAdmin
-      .from(ordersTable)
-      .update({
-        status: 'On Hold',
-        updated_at: new Date().toISOString(),
-      })
+      .from('customer_orders')
+      .update({ status: 'On Hold', updated_at: new Date().toISOString() })
       .eq('id', orderId);
 
     if (updateErr) return res.status(500).json({ error: updateErr.message });
-
     res.json({ success: true, orderId, status: 'On Hold' });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to hold order' });
   }
 });
 
-/** POST /api/orders/:id/resume – resume a held order */
 ordersRouter.post('/:id/resume', async (req, res) => {
   try {
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-    const ordersTable = await resolveOrdersTable();
 
     const { error: updateErr } = await supabaseAdmin
-      .from(ordersTable)
+      .from('customer_orders')
       .update({ status: 'Preparing', updated_at: new Date().toISOString() })
       .eq('id', orderId)
       .eq('status', 'On Hold');
@@ -239,7 +357,7 @@ ordersRouter.post('/:id/resume', async (req, res) => {
   }
 });
 
-/** GET /api/orders/:id/commission – get commission breakdown for an order */
+/* ── Commission ── */
 ordersRouter.get('/:id/commission', async (req, res) => {
   try {
     const orderId = req.params.id;
@@ -271,7 +389,6 @@ ordersRouter.get('/:id/commission', async (req, res) => {
   }
 });
 
-/** POST /api/orders/calculate-commission – calculate commission for a given amount */
 ordersRouter.post('/calculate-commission', async (req, res) => {
   const { subtotal } = req.body;
   if (subtotal == null) return res.status(400).json({ error: 'subtotal required' });
@@ -279,7 +396,7 @@ ordersRouter.post('/calculate-commission', async (req, res) => {
   res.json({ subtotal: Number(subtotal), commissionRate: NOOKS_COMMISSION_RATE, commissionAmount: amount });
 });
 
-/** GET /api/orders/:id/status – get order status with cancellation info */
+/* ── Order status with cancel-window info ── */
 ordersRouter.get('/:id/status', async (req, res) => {
   try {
     const orderId = req.params.id;
@@ -287,25 +404,28 @@ ordersRouter.get('/:id/status', async (req, res) => {
 
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, status, cancellation_reason, cancelled_by, refund_status, created_at, updated_at')
+      .select('id, status, cancellation_reason, cancelled_by, refund_status, refund_amount, refund_fee, refund_method, created_at, updated_at')
       .eq('id', orderId)
       .single();
 
     if (error || !order) return res.status(404).json({ error: 'Order not found' });
 
     const createdAt = new Date(order.created_at).getTime();
-    const cancelWindowMs = 2 * 60 * 1000;
-    res.json({
-      ...order,
-      canCustomerCancel: false,
-      cancelTimeRemaining: 0,
-    });
+    const elapsed = Date.now() - createdAt;
+    const canCustomerCancel =
+      (order.status === 'Preparing' && elapsed <= CUSTOMER_CANCEL_WINDOW_MS) ||
+      order.status === 'On Hold';
+    const cancelTimeRemaining = order.status === 'On Hold'
+      ? CUSTOMER_CANCEL_WINDOW_MS
+      : Math.max(0, CUSTOMER_CANCEL_WINDOW_MS - elapsed);
+
+    res.json({ ...order, canCustomerCancel, cancelTimeRemaining });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get order status' });
   }
 });
 
-/** PATCH /api/orders/:id/status – update order status from nooksweb dashboard */
+/* ── Update status (dashboard) ── */
 ordersRouter.patch('/:id/status', async (req, res) => {
   try {
     const orderId = req.params.id;
@@ -313,7 +433,7 @@ ordersRouter.patch('/:id/status', async (req, res) => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
     if (!status) return res.status(400).json({ error: 'status is required' });
 
-    const validStatuses = ['Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled'];
+    const validStatuses = ['Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold', 'Pending'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
     }
@@ -329,3 +449,6 @@ ordersRouter.patch('/:id/status', async (req, res) => {
     res.status(500).json({ error: err?.message || 'Failed to update status' });
   }
 });
+
+/* ── Export helpers for use in cron and complaints ── */
+export { sendPushToCustomer, cancelOtoIfDelivery, supabaseAdmin as ordersSupabaseAdmin };

@@ -255,6 +255,7 @@ export default function CheckoutScreen() {
           otoDispatchError,
           deliveryFee,
           paymentId: orderId,
+          paymentMethod: paymentMethod,
           promoCode: promoApplied ? promoCode : undefined,
         },
         orderId,

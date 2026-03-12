@@ -1,15 +1,15 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
-import { calculateCommission, paymentService } from '../services/payment';
+import { calculateCommission, calculateMoyasarFee, paymentService } from '../services/payment';
 
 export const paymentRouter = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
-/** Redirect for payment return - allows https success_url that redirects to app deep link */
 paymentRouter.get('/redirect', (req, res) => {
   const to = req.query.to as string;
   if (to && (to.startsWith('alsdraft0://') || to.startsWith('https://'))) {
@@ -52,17 +52,20 @@ paymentRouter.post('/initiate', async (req, res) => {
     res.json(session);
   } catch (error: any) {
     console.error('[Payment] Initiate error:', error?.message);
-    res.status(500).json({
-      error: error?.message || 'Failed to initiate payment',
-    });
+    res.status(500).json({ error: error?.message || 'Failed to initiate payment' });
   }
 });
 
 /** POST /api/payment/webhook – Moyasar payment status callback */
 paymentRouter.post('/webhook', async (req, res) => {
   try {
-    const { id, status, metadata } = req.body;
-    console.log('[Payment Webhook]', { id, status, orderId: metadata?.order_id });
+    const payload = req.body;
+    const id: string = payload.id ?? payload.data?.id ?? '';
+    const status: string = payload.status ?? payload.data?.status ?? '';
+    const metadata = payload.metadata ?? payload.data?.metadata ?? {};
+    const source = payload.source ?? payload.data?.source ?? {};
+
+    console.log('[Payment Webhook]', { id, status, orderId: metadata?.order_id, company: source?.company });
     if (!supabaseAdmin || !id) return res.json({ received: true });
 
     const orderId = metadata?.order_id;
@@ -70,11 +73,28 @@ paymentRouter.post('/webhook', async (req, res) => {
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
 
-    if (status === 'paid') {
+    if (status === 'paid' || status === 'captured') {
       updates.payment_id = id;
+
+      // Extract payment method from source.company (mada, visa, master, amex)
+      const company = (source?.company || '').toLowerCase();
+      if (company) {
+        updates.payment_method = company;
+        // Calculate and store the Moyasar gateway fee
+        const { data: order } = await supabaseAdmin
+          .from('customer_orders')
+          .select('total_sar')
+          .eq('id', orderId)
+          .single();
+        if (order) {
+          updates.moyasar_fee = calculateMoyasarFee(order.total_sar, company);
+        }
+      }
     } else if (status === 'refunded') {
       updates.refund_status = 'refunded';
       updates.refund_id = id;
+    } else if (status === 'voided') {
+      updates.refund_status = 'voided';
     } else if (status === 'failed') {
       updates.status = 'Cancelled';
       updates.cancellation_reason = 'Payment failed';

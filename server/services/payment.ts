@@ -14,6 +14,91 @@ const MOYASAR_SECRET_KEY = process.env.MOYASAR_SECRET_KEY;
 const PAYMENT_REDIRECT_BASE = process.env.PAYMENT_REDIRECT_BASE_URL;
 const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
 
+/* ── Moyasar fee rates (from signed offer) ── */
+const FEE_RATES = {
+  mada: 0.01,         // 1 %, capped at 200 SAR
+  visa: 0.0275,       // 2.75 %
+  master: 0.0275,
+  mastercard: 0.0275,
+  amex: 0.0275,
+  international: 0.0375, // 3.75 %
+} as const;
+const MADA_CAP_SAR = 200;
+const FRAUD_FEE_SAR = 1;
+const REFUND_FEE_SAR = 1;
+
+export { FEE_RATES, MADA_CAP_SAR, FRAUD_FEE_SAR, REFUND_FEE_SAR };
+
+/**
+ * Calculate estimated Moyasar fee for a payment.
+ * All amounts in SAR.  Fees are pre-VAT (Moyasar adds 15 % VAT separately).
+ */
+export function calculateMoyasarFee(amountSAR: number, paymentMethod?: string): number {
+  const method = (paymentMethod || '').toLowerCase();
+  const rate = (FEE_RATES as Record<string, number>)[method] ?? FEE_RATES.visa;
+  let fee = amountSAR * rate;
+  if (method === 'mada') fee = Math.min(fee, MADA_CAP_SAR);
+  return +(fee + FRAUD_FEE_SAR).toFixed(2);
+}
+
+export type CancelPaymentResult = {
+  method: 'void' | 'refund' | 'failed';
+  fee: number;
+  moyasarId?: string;
+  error?: string;
+};
+
+/**
+ * Void-first cancel: tries void (free) then refund (1 SAR).
+ * `amountHalals` is optional — omit for full refund/void.
+ */
+export async function cancelPayment(
+  paymentId: string,
+  amountHalals?: number,
+): Promise<CancelPaymentResult> {
+  if (!MOYASAR_SECRET_KEY) return { method: 'failed', fee: 0, error: 'MOYASAR_SECRET_KEY not set' };
+
+  const authHeader = `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`;
+
+  // 1) Try void (free — works only if not yet settled)
+  try {
+    const voidRes = await fetch(`https://api.moyasar.com/v1/payments/${paymentId}/void`, {
+      method: 'POST',
+      headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+    });
+    if (voidRes.ok) {
+      const data = await voidRes.json();
+      console.log('[Payment] Void success for', paymentId);
+      return { method: 'void', fee: 0, moyasarId: data?.id ?? paymentId };
+    }
+    const voidErr = await voidRes.json().catch(() => ({}));
+    console.log('[Payment] Void not possible:', voidRes.status, voidErr?.message ?? '');
+  } catch (e: any) {
+    console.warn('[Payment] Void request error:', e?.message);
+  }
+
+  // 2) Fallback: refund (1 SAR fee)
+  try {
+    const body: Record<string, unknown> = {};
+    if (amountHalals != null) body.amount = amountHalals;
+    const refundRes = await fetch(`https://api.moyasar.com/v1/payments/${paymentId}/refund`, {
+      method: 'POST',
+      headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const refundData = await refundRes.json();
+    if (refundRes.ok) {
+      console.log('[Payment] Refund success for', paymentId);
+      return { method: 'refund', fee: REFUND_FEE_SAR, moyasarId: refundData?.id ?? paymentId };
+    }
+    console.error('[Payment] Refund failed:', refundRes.status, refundData);
+    return { method: 'failed', fee: 0, error: refundData?.message || `Refund HTTP ${refundRes.status}` };
+  } catch (e: any) {
+    console.error('[Payment] Refund request error:', e?.message);
+    return { method: 'failed', fee: 0, error: e?.message };
+  }
+}
+
 export interface PaymentInitRequest {
   amount: number;
   currency?: string;

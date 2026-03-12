@@ -1,25 +1,79 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { AlertTriangle, Map, MapPin, RefreshCw, Store, Truck, X } from 'lucide-react-native';
+import { AlertTriangle, Camera, Clock, Flag, Map, MapPin, MessageSquare, RefreshCw, Store, Truck, X } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
+import { useAuth } from '../src/context/AuthContext';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
 import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
+import { customerCancelOrder, submitComplaint, getOrderComplaint, type ComplaintRow } from '../src/api/orders';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { supabase } from '../src/api/supabase';
+
+const CANCEL_WINDOW_MS = 60_000;
+const COMPLAINT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const COMPLAINT_TYPES = [
+  { value: 'missing_item', label: 'Missing Item' },
+  { value: 'wrong_item', label: 'Wrong Item' },
+  { value: 'quality_issue', label: 'Quality Issue' },
+  { value: 'other', label: 'Other' },
+] as const;
 
 export default function OrderDetailModal() {
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
   const router = useRouter();
   const { orders } = useOrders();
   const { setCartFromOrder } = useCart();
+  const { user } = useAuth();
   const order = orders.find((o) => o.id === orderId);
   const { primaryColor } = useMerchantBranding();
   const [otoStatus, setOtoStatus] = useState<OTOOrderStatusResponse | null>(null);
   const driverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Cancel countdown
+  const [cancelRemaining, setCancelRemaining] = useState(0);
+  const [cancelling, setCancelling] = useState(false);
+
+  // Complaint state
+  const [showComplaintModal, setShowComplaintModal] = useState(false);
+  const [complaintType, setComplaintType] = useState<string>('missing_item');
+  const [complaintDescription, setComplaintDescription] = useState('');
+  const [complaintPhotos, setComplaintPhotos] = useState<string[]>([]);
+  const [selectedItems, setSelectedItems] = useState<Record<string, boolean>>({});
+  const [submittingComplaint, setSubmittingComplaint] = useState(false);
+  const [existingComplaint, setExistingComplaint] = useState<ComplaintRow | null>(null);
+  const [loadingComplaint, setLoadingComplaint] = useState(false);
+
+  // Cancel countdown timer
+  useEffect(() => {
+    if (!order?.createdAt) return;
+    const created = new Date(order.createdAt).getTime();
+    const tick = () => {
+      const remaining = Math.max(0, CANCEL_WINDOW_MS - (Date.now() - created));
+      setCancelRemaining(remaining);
+    };
+    tick();
+    if (order.status === 'Preparing') {
+      const interval = setInterval(tick, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [order?.createdAt, order?.status]);
+
+  // Load existing complaint for delivered orders
+  useEffect(() => {
+    if (!orderId || order?.status !== 'Delivered') return;
+    setLoadingComplaint(true);
+    getOrderComplaint(orderId).then((c) => {
+      setExistingComplaint(c);
+      setLoadingComplaint(false);
+    }).catch(() => setLoadingComplaint(false));
+  }, [orderId, order?.status]);
+
+  // OTO polling
   useEffect(() => {
     if (!order?.otoId) return;
     let cancelled = false;
@@ -53,6 +107,78 @@ export default function OrderDetailModal() {
     router.replace('/(tabs)/menu');
   }, [order, setCartFromOrder, router]);
 
+  const handleCancel = useCallback(async () => {
+    if (!orderId) return;
+    setCancelling(true);
+    try {
+      const result = await customerCancelOrder(orderId);
+      if (result.success) {
+        Alert.alert('Order Cancelled', 'Your order has been cancelled. A refund has been initiated.');
+      } else {
+        Alert.alert('Cannot Cancel', result.error || 'Cancellation window expired.');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to cancel order');
+    }
+    setCancelling(false);
+  }, [orderId]);
+
+  const handlePickPhoto = async () => {
+    if (complaintPhotos.length >= 3) return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.7,
+      allowsMultipleSelection: true,
+      selectionLimit: 3 - complaintPhotos.length,
+    });
+    if (result.canceled) return;
+    for (const asset of result.assets) {
+      if (complaintPhotos.length >= 3) break;
+      if (!supabase) continue;
+      const ext = asset.uri.split('.').pop() || 'jpg';
+      const fileName = `${orderId}/${Date.now()}.${ext}`;
+      const response = await fetch(asset.uri);
+      const blob = await response.blob();
+      const { data, error } = await supabase.storage
+        .from('complaint-photos')
+        .upload(fileName, blob, { contentType: `image/${ext}` });
+      if (!error && data?.path) {
+        const { data: urlData } = supabase.storage.from('complaint-photos').getPublicUrl(data.path);
+        if (urlData?.publicUrl) {
+          setComplaintPhotos((prev) => [...prev, urlData.publicUrl]);
+        }
+      }
+    }
+  };
+
+  const handleSubmitComplaint = async () => {
+    if (!orderId || !user?.id) return;
+    setSubmittingComplaint(true);
+    const affectedItems = order?.items
+      .filter((item) => selectedItems[item.uniqueId])
+      .map((item) => ({ item_name: item.name, quantity: item.quantity, price: item.price })) ?? [];
+
+    try {
+      const result = await submitComplaint(orderId, {
+        complaint_type: complaintType as any,
+        description: complaintDescription || undefined,
+        photo_urls: complaintPhotos.length > 0 ? complaintPhotos : undefined,
+        items: affectedItems.length > 0 ? affectedItems : undefined,
+        customer_id: user.id,
+      });
+      if (result.success) {
+        setShowComplaintModal(false);
+        setExistingComplaint(result.complaint ?? null);
+        Alert.alert('Complaint Submitted', 'The merchant will review your complaint shortly.');
+      } else {
+        Alert.alert('Error', result.error || 'Failed to submit complaint');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to submit complaint');
+    }
+    setSubmittingComplaint(false);
+  };
+
   if (!order) {
     return (
       <View className="flex-1 justify-center items-center bg-black/60">
@@ -72,6 +198,14 @@ export default function OrderDetailModal() {
   const isOutForDelivery = order.status === 'Out for delivery';
   const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
   const canShowMap = branchLat != null && branchLon != null;
+
+  const showCancelButton = cancelRemaining > 0 && order.status === 'Preparing';
+  const cancelSeconds = Math.ceil(cancelRemaining / 1000);
+
+  const isDelivered = order.status === 'Delivered';
+  const deliveredAt = order.createdAt ? new Date(order.createdAt).getTime() : 0;
+  const canReportIssue = isDelivered && (Date.now() - deliveredAt < COMPLAINT_WINDOW_MS) && !existingComplaint;
+
   const statusBadgeColors: Record<string, { bg: string; text: string }> = {
     Preparing: { bg: 'bg-yellow-100', text: 'text-yellow-700' },
     Ready: { bg: 'bg-green-100', text: 'text-green-700' },
@@ -81,6 +215,30 @@ export default function OrderDetailModal() {
     'On Hold': { bg: 'bg-orange-100', text: 'text-orange-600' },
   };
   const badge = statusBadgeColors[order.status] ?? { bg: 'bg-slate-100', text: 'text-slate-600' };
+
+  // Refund/complaint status badges
+  const refundBadge = (() => {
+    if (order.refundStatus === 'refunded' || order.refundStatus === 'voided')
+      return { label: 'Refunded', bg: 'bg-green-100', text: 'text-green-700' };
+    if (order.refundStatus === 'refund_failed')
+      return { label: 'Refund Failed', bg: 'bg-red-100', text: 'text-red-600' };
+    if (order.refundStatus === 'pending_manual')
+      return { label: 'Refund Pending', bg: 'bg-amber-100', text: 'text-amber-700' };
+    return null;
+  })();
+
+  const complaintBadge = (() => {
+    if (!existingComplaint) return null;
+    if (existingComplaint.status === 'refunded')
+      return { label: 'Complaint Approved', bg: 'bg-green-100', text: 'text-green-700' };
+    if (existingComplaint.status === 'approved')
+      return { label: 'Refund Processing', bg: 'bg-amber-100', text: 'text-amber-700' };
+    if (existingComplaint.status === 'rejected')
+      return { label: 'Complaint Rejected', bg: 'bg-red-100', text: 'text-red-600' };
+    if (existingComplaint.status === 'pending')
+      return { label: 'Complaint Pending', bg: 'bg-orange-100', text: 'text-orange-600' };
+    return null;
+  })();
 
   return (
     <View className="flex-1">
@@ -93,46 +251,106 @@ export default function OrderDetailModal() {
           </TouchableOpacity>
         </View>
         <ScrollView className="flex-1 px-6 py-4" showsVerticalScrollIndicator={false}>
+          {/* Status + refund badges */}
           <View className="mb-4">
-            <View className={`self-start px-3 py-1 rounded-full ${badge.bg}`}>
-              <Text className={`text-xs font-bold ${badge.text}`}>{order.status}</Text>
+            <View className="flex-row flex-wrap gap-2">
+              <View className={`self-start px-3 py-1 rounded-full ${badge.bg}`}>
+                <Text className={`text-xs font-bold ${badge.text}`}>{order.status}</Text>
+              </View>
+              {refundBadge && (
+                <View className={`self-start px-3 py-1 rounded-full ${refundBadge.bg}`}>
+                  <Text className={`text-xs font-bold ${refundBadge.text}`}>{refundBadge.label}</Text>
+                </View>
+              )}
+              {complaintBadge && (
+                <View className={`self-start px-3 py-1 rounded-full ${complaintBadge.bg}`}>
+                  <Text className={`text-xs font-bold ${complaintBadge.text}`}>{complaintBadge.label}</Text>
+                </View>
+              )}
             </View>
             <Text className="text-slate-500 text-sm mt-2">{order.date}</Text>
           </View>
 
-          {/* Cancellation reason (shown when merchant cancels) */}
+          {/* Cancel countdown (60s grace period) */}
+          {showCancelButton && (
+            <View className="mb-4 p-4 bg-amber-50 rounded-xl">
+              <View className="flex-row items-center gap-2 mb-2">
+                <Clock size={16} color="#D97706" />
+                <Text className="font-bold text-amber-700 text-sm">Cancel within {cancelSeconds}s</Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleCancel}
+                disabled={cancelling}
+                className="py-3 rounded-xl items-center"
+                style={{ backgroundColor: '#EF4444' }}
+              >
+                {cancelling ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text className="text-white font-bold">Cancel Order</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Cancellation reason */}
           {order.status === 'Cancelled' && order.cancellationReason && (
             <View className="mb-4 p-4 bg-red-50 rounded-xl flex-row items-start">
               <AlertTriangle size={18} color="#EF4444" style={{ marginTop: 2 }} />
               <View className="flex-1 ml-3">
                 <Text className="font-bold text-red-700 text-sm">
-                  {order.cancelledBy === 'merchant' ? 'Cancelled by store' : 'You cancelled this order'}
+                  {order.cancelledBy === 'merchant' ? 'Cancelled by store' : order.cancelledBy === 'system' ? 'Cancelled by system' : 'You cancelled this order'}
                 </Text>
                 <Text className="text-red-600 text-sm mt-1">{order.cancellationReason}</Text>
-                {order.refundStatus === 'refunded' && (
-                  <Text className="text-green-600 text-xs mt-1 font-medium">Refund processed</Text>
+                {(order.refundStatus === 'refunded' || order.refundStatus === 'voided') && (
+                  <Text className="text-green-600 text-xs mt-1 font-medium">
+                    Refund of {order.refundAmount ?? order.total} SAR processed
+                    {order.refundMethod === 'void' ? ' (voided — no fee)' : ''}
+                  </Text>
                 )}
                 {order.refundStatus === 'pending_manual' && (
                   <Text className="text-amber-600 text-xs mt-1 font-medium">Refund being processed</Text>
+                )}
+                {order.refundStatus === 'refund_failed' && (
+                  <Text className="text-red-600 text-xs mt-1 font-medium">Refund failed — please contact support</Text>
                 )}
               </View>
             </View>
           )}
 
+          {/* OTO dispatch failure */}
           {order.orderType === 'delivery' && order.otoDispatchStatus === 'failed' && (
             <View className="mb-4 p-4 bg-amber-50 rounded-xl flex-row items-start">
               <AlertTriangle size={18} color="#D97706" style={{ marginTop: 2 }} />
               <View className="flex-1 ml-3">
-                <Text className="font-bold text-amber-700 text-sm">
-                  Delivery dispatch pending
-                </Text>
+                <Text className="font-bold text-amber-700 text-sm">Delivery dispatch pending</Text>
                 <Text className="text-amber-700 text-sm mt-1">
                   We could not send this order to the delivery provider yet. The store has your order and can retry dispatch.
                 </Text>
                 {!!order.otoDispatchError && (
-                  <Text className="text-amber-800 text-xs mt-2">
-                    Details: {order.otoDispatchError}
+                  <Text className="text-amber-800 text-xs mt-2">Details: {order.otoDispatchError}</Text>
+                )}
+              </View>
+            </View>
+          )}
+
+          {/* Existing complaint info */}
+          {existingComplaint && (
+            <View className="mb-4 p-4 bg-slate-50 rounded-xl flex-row items-start">
+              <Flag size={18} color="#6366F1" style={{ marginTop: 2 }} />
+              <View className="flex-1 ml-3">
+                <Text className="font-bold text-slate-700 text-sm">Complaint Filed</Text>
+                <Text className="text-slate-600 text-sm mt-1 capitalize">{existingComplaint.complaint_type.replace('_', ' ')}</Text>
+                {existingComplaint.status === 'refunded' && existingComplaint.approved_refund_amount && (
+                  <Text className="text-green-600 text-xs mt-1 font-medium">
+                    Refund of {existingComplaint.approved_refund_amount} SAR approved
                   </Text>
+                )}
+                {existingComplaint.status === 'rejected' && existingComplaint.merchant_notes && (
+                  <Text className="text-red-600 text-xs mt-1">{existingComplaint.merchant_notes}</Text>
+                )}
+                {existingComplaint.status === 'pending' && (
+                  <Text className="text-amber-600 text-xs mt-1 font-medium">Awaiting merchant review</Text>
                 )}
               </View>
             </View>
@@ -158,7 +376,7 @@ export default function OrderDetailModal() {
             </View>
           )}
 
-          {/* Live driver tracking map – shown for "Out for delivery" status */}
+          {/* Live driver tracking map */}
           {showDriverMap && (
             <View className="mb-6">
               <View className="flex-row items-center gap-2 mb-3">
@@ -194,9 +412,7 @@ export default function OrderDetailModal() {
                 )}
               </View>
               {otoStatus?.estimatedDeliveryTime && (
-                <Text className="text-slate-500 text-xs mt-2">
-                  ETA: {otoStatus.estimatedDeliveryTime}
-                </Text>
+                <Text className="text-slate-500 text-xs mt-2">ETA: {otoStatus.estimatedDeliveryTime}</Text>
               )}
             </View>
           )}
@@ -240,11 +456,31 @@ export default function OrderDetailModal() {
             <Text className="font-bold text-lg" style={{ color: primaryColor }}>{order.total} SAR</Text>
           </View>
 
-          {/* Re-order button for Delivered or Cancelled orders */}
+          {/* Report Issue (delivered orders, 24h window) */}
+          {canReportIssue && !loadingComplaint && (
+            <TouchableOpacity
+              onPress={() => setShowComplaintModal(true)}
+              className="mt-4 py-4 rounded-2xl items-center flex-row justify-center gap-2 border-2 border-red-200 bg-red-50"
+            >
+              <MessageSquare size={18} color="#EF4444" />
+              <Text className="text-red-600 font-bold text-base">Report Issue</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Support contact */}
+          {isDelivered && (
+            <View className="mt-3 p-3 bg-slate-50 rounded-xl">
+              <Text className="text-slate-500 text-xs text-center">
+                Need help? Contact support via WhatsApp or call us
+              </Text>
+            </View>
+          )}
+
+          {/* Re-order button */}
           {(order.status === 'Delivered' || order.status === 'Cancelled') && (
             <TouchableOpacity
               onPress={handleReorder}
-              className="mt-6 py-4 rounded-2xl items-center flex-row justify-center gap-2"
+              className="mt-4 py-4 rounded-2xl items-center flex-row justify-center gap-2"
               style={{ backgroundColor: primaryColor }}
             >
               <RefreshCw size={18} color="white" />
@@ -255,6 +491,104 @@ export default function OrderDetailModal() {
           <View className="h-6" />
         </ScrollView>
       </View>
+
+      {/* ── Complaint Modal ── */}
+      <Modal visible={showComplaintModal} animationType="slide" transparent>
+        <View className="flex-1 justify-end bg-black/50">
+          <View className="bg-white rounded-t-3xl p-6 max-h-[90%]">
+            <View className="flex-row items-center justify-between mb-4">
+              <Text className="text-lg font-bold text-slate-800">Report an Issue</Text>
+              <TouchableOpacity onPress={() => setShowComplaintModal(false)}>
+                <X size={24} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Issue type */}
+              <Text className="font-bold text-slate-700 mb-2">What went wrong?</Text>
+              <View className="flex-row flex-wrap gap-2 mb-4">
+                {COMPLAINT_TYPES.map((ct) => (
+                  <Pressable
+                    key={ct.value}
+                    onPress={() => setComplaintType(ct.value)}
+                    className={`px-4 py-2 rounded-full border ${complaintType === ct.value ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white'}`}
+                  >
+                    <Text className={complaintType === ct.value ? 'text-red-600 font-bold text-sm' : 'text-slate-600 text-sm'}>
+                      {ct.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+
+              {/* Description */}
+              <Text className="font-bold text-slate-700 mb-2">Description</Text>
+              <TextInput
+                value={complaintDescription}
+                onChangeText={setComplaintDescription}
+                placeholder="Describe the issue..."
+                multiline
+                numberOfLines={3}
+                className="border border-slate-200 rounded-xl p-3 text-slate-700 mb-4"
+                style={{ textAlignVertical: 'top', minHeight: 80 }}
+              />
+
+              {/* Photos */}
+              <Text className="font-bold text-slate-700 mb-2">Photos (optional, max 3)</Text>
+              <View className="flex-row gap-2 mb-4">
+                {complaintPhotos.map((url, i) => (
+                  <View key={i} className="relative">
+                    <Image source={{ uri: url }} className="w-20 h-20 rounded-xl" />
+                    <TouchableOpacity
+                      onPress={() => setComplaintPhotos((p) => p.filter((_, idx) => idx !== i))}
+                      className="absolute -top-1 -right-1 bg-red-500 rounded-full w-5 h-5 items-center justify-center"
+                    >
+                      <X size={12} color="white" />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                {complaintPhotos.length < 3 && (
+                  <TouchableOpacity
+                    onPress={handlePickPhoto}
+                    className="w-20 h-20 rounded-xl border-2 border-dashed border-slate-300 items-center justify-center"
+                  >
+                    <Camera size={24} color="#94a3b8" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Affected items */}
+              <Text className="font-bold text-slate-700 mb-2">Affected items</Text>
+              {order?.items.map((item) => (
+                <Pressable
+                  key={item.uniqueId}
+                  onPress={() => setSelectedItems((prev) => ({ ...prev, [item.uniqueId]: !prev[item.uniqueId] }))}
+                  className={`flex-row items-center p-3 mb-2 rounded-xl border ${selectedItems[item.uniqueId] ? 'border-red-300 bg-red-50' : 'border-slate-200 bg-white'}`}
+                >
+                  <View className={`w-5 h-5 rounded border mr-3 items-center justify-center ${selectedItems[item.uniqueId] ? 'bg-red-500 border-red-500' : 'border-slate-300'}`}>
+                    {selectedItems[item.uniqueId] && <Text className="text-white text-xs font-bold">✓</Text>}
+                  </View>
+                  <Text className="flex-1 text-slate-700">{item.name}</Text>
+                  <Text className="text-slate-500 text-sm">{item.price} SAR × {item.quantity}</Text>
+                </Pressable>
+              ))}
+
+              {/* Submit */}
+              <TouchableOpacity
+                onPress={handleSubmitComplaint}
+                disabled={submittingComplaint}
+                className="mt-4 py-4 rounded-2xl items-center"
+                style={{ backgroundColor: '#EF4444' }}
+              >
+                {submittingComplaint ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text className="text-white font-bold text-base">Submit Complaint</Text>
+                )}
+              </TouchableOpacity>
+              <View className="h-6" />
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

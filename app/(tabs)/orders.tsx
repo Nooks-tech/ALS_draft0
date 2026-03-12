@@ -43,6 +43,7 @@ export default function OrdersScreen() {
               price={item.total}
               date={item.date}
               items={orderItemsSummary(item)}
+              refundStatus={item.refundStatus}
               onPress={() => router.push({ pathname: '/order-detail-modal', params: { orderId: item.id } })}
             />
           )}

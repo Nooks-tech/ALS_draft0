@@ -44,6 +44,7 @@ export type OrdersContextType = {
       otoId?: number;
       deliveryFee?: number;
       paymentId?: string;
+      paymentMethod?: string;
       promoCode?: string;
       otoDispatchStatus?: 'success' | 'failed';
       otoDispatchError?: string;
@@ -99,9 +100,13 @@ function rowToOrder(row: OrderRow): PlacedOrder {
     cancellationReason: row.cancellation_reason ?? undefined,
     cancelledBy: row.cancelled_by ?? undefined,
     refundStatus: row.refund_status ?? undefined,
+    refundAmount: row.refund_amount ?? undefined,
+    refundFee: row.refund_fee ?? undefined,
+    refundMethod: row.refund_method ?? undefined,
     createdAt: row.created_at,
     deliveryFee: row.delivery_fee ?? undefined,
     paymentId: row.payment_id ?? undefined,
+    paymentMethod: row.payment_method ?? undefined,
   };
 }
 
@@ -258,6 +263,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
               oto_id: order.otoId ?? null,
               delivery_fee: order.deliveryFee ?? null,
               payment_id: order.paymentId ?? null,
+              payment_method: order.paymentMethod ?? null,
             };
             inserted = await insertOrder(insertPayload);
           }

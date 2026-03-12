@@ -16,8 +16,13 @@ function normalizeLegacy(row: Record<string, any>): OrderRow {
     cancellation_reason: row.cancellation_reason ?? null,
     cancelled_by: row.cancelled_by ?? null,
     refund_status: row.refund_status ?? null,
+    refund_amount: row.refund_amount ?? null,
+    refund_fee: row.refund_fee ?? null,
+    refund_method: row.refund_method ?? null,
     delivery_fee: row.delivery_fee ?? null,
     payment_id: row.payment_id ?? null,
+    payment_method: row.payment_method ?? null,
+    moyasar_fee: row.moyasar_fee ?? null,
     branch_name: row.branch_name ?? null,
     branch_id: row.branch_id ?? null,
     merchant_id: row.merchant_id ?? null,
@@ -47,8 +52,13 @@ export type OrderRow = {
   cancellation_reason: string | null;
   cancelled_by: string | null;
   refund_status: string | null;
+  refund_amount: number | null;
+  refund_fee: number | null;
+  refund_method: string | null;
   delivery_fee: number | null;
   payment_id: string | null;
+  payment_method: string | null;
+  moyasar_fee: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -70,6 +80,7 @@ export type OrderInsert = {
   oto_id?: number | null;
   delivery_fee?: number | null;
   payment_id?: string | null;
+  payment_method?: string | null;
 };
 
 export async function fetchOrdersForCustomer(customerId: string): Promise<OrderRow[]> {
@@ -135,6 +146,7 @@ export async function insertOrder(row: OrderInsert): Promise<boolean> {
     oto_id: row.oto_id ?? null,
     delivery_fee: row.delivery_fee ?? null,
     payment_id: row.payment_id ?? null,
+    payment_method: row.payment_method ?? null,
   };
   const primary = await supabase.from('customer_orders').insert(payload);
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
@@ -171,6 +183,44 @@ export async function getOrderStatus(orderId: string): Promise<{
   cancelTimeRemaining: number;
 }> {
   return api.get(`/api/orders/${orderId}/status`);
+}
+
+/* ── Complaints API ── */
+export type ComplaintInsert = {
+  complaint_type: 'missing_item' | 'wrong_item' | 'quality_issue' | 'other';
+  description?: string;
+  photo_urls?: string[];
+  items?: { item_name: string; quantity: number; price: number }[];
+  customer_id: string;
+};
+
+export type ComplaintRow = {
+  id: string;
+  order_id: string;
+  complaint_type: string;
+  description: string | null;
+  photo_urls: string[];
+  items: unknown;
+  requested_refund_amount: number | null;
+  approved_refund_amount: number | null;
+  status: string;
+  merchant_notes: string | null;
+  created_at: string;
+  resolved_at: string | null;
+};
+
+export async function submitComplaint(orderId: string, data: ComplaintInsert): Promise<{ success: boolean; complaint?: ComplaintRow; error?: string }> {
+  return api.post(`/api/complaints/${orderId}`, data);
+}
+
+export async function getOrderComplaint(orderId: string): Promise<ComplaintRow | null> {
+  if (!supabase) return null;
+  const { data } = await supabase
+    .from('order_complaints')
+    .select('*')
+    .eq('order_id', orderId)
+    .maybeSingle();
+  return (data as ComplaintRow | null) ?? null;
 }
 
 export function subscribeToOrders(

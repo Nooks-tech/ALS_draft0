@@ -8,10 +8,11 @@ interface OrderProps {
   price: number;
   date: string;
   items: string;
+  refundStatus?: string | null;
   onPress?: () => void;
 }
 
-export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProps) => {
+export const OrderCard = ({ id, status, price, date, items, refundStatus, onPress }: OrderProps) => {
   const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
 
   const getStatusColor = () => {
@@ -38,8 +39,25 @@ export const OrderCard = ({ id, status, price, date, items, onPress }: OrderProp
     >
       <View className="flex-row justify-between items-center mb-3">
         <Text className="font-medium" style={{ color: textColor }}>Order #{id}</Text>
-        <View className={`px-3 py-1 rounded-full ${bgClass}`}>
-          <Text className={`text-xs font-bold ${textClass}`}>{status}</Text>
+        <View className="flex-row gap-1.5">
+          <View className={`px-3 py-1 rounded-full ${bgClass}`}>
+            <Text className={`text-xs font-bold ${textClass}`}>{status}</Text>
+          </View>
+          {(refundStatus === 'refunded' || refundStatus === 'voided') && (
+            <View className="px-2 py-1 rounded-full bg-green-100">
+              <Text className="text-xs font-bold text-green-700">Refunded</Text>
+            </View>
+          )}
+          {refundStatus === 'refund_failed' && (
+            <View className="px-2 py-1 rounded-full bg-red-100">
+              <Text className="text-xs font-bold text-red-600">Refund Failed</Text>
+            </View>
+          )}
+          {refundStatus === 'pending_manual' && (
+            <View className="px-2 py-1 rounded-full bg-amber-100">
+              <Text className="text-xs font-bold text-amber-700">Refund Pending</Text>
+            </View>
+          )}
         </View>
       </View>
 

@@ -349,6 +349,58 @@ export const otoService = {
     return data?.getCities?.Cities ?? [];
   },
 
+  /**
+   * Cancel an OTO delivery order.  Tries cancelOrder first (works if no shipment yet),
+   * then cancelShipment (needs shipmentId, fails after "picked up").
+   * Returns { cancelled, warning? } — never throws.
+   */
+  async cancelDelivery(orderId: string | number, shipmentId?: string): Promise<{ cancelled: boolean; warning?: string }> {
+    // Try cancelOrder first (lightweight, no shipment needed)
+    try {
+      await otoRequest<{ success?: boolean }>('/cancelOrder', { orderId: String(orderId) });
+      console.log('[OTO] cancelOrder succeeded for', orderId);
+      return { cancelled: true };
+    } catch (e: any) {
+      console.log('[OTO] cancelOrder failed:', e?.message);
+    }
+
+    // If shipmentId provided, try cancelShipment
+    if (shipmentId) {
+      try {
+        await otoRequest<{ success?: boolean }>('/cancelShipment', {
+          orderId: String(orderId),
+          shipmentId,
+        });
+        console.log('[OTO] cancelShipment succeeded for', orderId, shipmentId);
+        return { cancelled: true };
+      } catch (e: any) {
+        const msg = e?.message || '';
+        console.warn('[OTO] cancelShipment failed:', msg);
+        return { cancelled: false, warning: `OTO shipment cancel failed: ${msg}` };
+      }
+    }
+
+    // No shipmentId — try to fetch it from orderDetails
+    try {
+      const details = await this.orderStatus(orderId);
+      const trackingNumber = details.trackingNumber;
+      if (trackingNumber) {
+        try {
+          await otoRequest<{ success?: boolean }>('/cancelShipment', {
+            orderId: String(orderId),
+            shipmentId: trackingNumber,
+          });
+          console.log('[OTO] cancelShipment (auto-fetched) succeeded for', orderId);
+          return { cancelled: true };
+        } catch (e: any) {
+          return { cancelled: false, warning: `OTO cancel failed: ${e?.message}` };
+        }
+      }
+    } catch { /* ignore */ }
+
+    return { cancelled: false, warning: 'Could not cancel OTO order (may already be picked up)' };
+  },
+
   async healthCheck(): Promise<boolean> {
     try {
       await getAccessToken();

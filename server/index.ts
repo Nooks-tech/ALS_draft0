@@ -9,6 +9,8 @@ import { loyaltyRouter } from './routes/loyalty';
 import { ordersRouter } from './routes/orders';
 import { otoRouter } from './routes/oto';
 import { paymentRouter } from './routes/payment';
+import { complaintsRouter } from './routes/complaints';
+import { startStaleOrdersCron } from './cron/staleOrders';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -33,7 +35,9 @@ app.use('/api/loyalty', loyaltyRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/oto', otoRouter);
 app.use('/api/payment', paymentRouter);
+app.use('/api/complaints', complaintsRouter);
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`ALS API running on port ${PORT}`);
+  startStaleOrdersCron();
 });
