@@ -4,7 +4,7 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import Constants from 'expo-constants';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
 
@@ -43,7 +43,7 @@ async function requestNotificationPermissions() {
 }
 import { AuthProvider } from '../src/context/AuthContext';
 import { CartProvider } from '../src/context/CartContext';
-import { MerchantBrandingWrapper } from '../src/context/MerchantBrandingContext';
+import { MerchantBrandingWrapper, useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { MerchantProvider } from '../src/context/MerchantContext';
 import { OperationsProvider } from '../src/context/OperationsContext';
 import { FavoritesProvider } from '../src/context/FavoritesContext';
@@ -59,6 +59,25 @@ import '../src/i18n';
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
+function SplashGate() {
+  const { loading } = useMerchantBranding();
+  const [minTimePassed, setMinTimePassed] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setMinTimePassed(true), 300);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (!loading && minTimePassed) {
+      SplashScreen.hideAsync();
+      requestNotificationPermissions();
+    }
+  }, [loading, minTimePassed]);
+
+  return null;
+}
+
 export default function RootLayout() {
   const [loaded, error] = useFonts({
     'Cairo-Regular': Cairo_400Regular,
@@ -66,13 +85,6 @@ export default function RootLayout() {
     'Poppins-Regular': Poppins_400Regular,
     'Poppins-Bold': Poppins_700Bold,
   });
-
-  useEffect(() => {
-    if (loaded || error) {
-      SplashScreen.hideAsync();
-      requestNotificationPermissions();
-    }
-  }, [loaded, error]);
 
   if (!loaded && !error) {
     return null;
@@ -85,6 +97,7 @@ export default function RootLayout() {
         <AuthProvider>
         <MerchantProvider>
         <MerchantBrandingWrapper>
+        <SplashGate />
         <OperationsProvider>
         <CartProvider>
           <MenuProvider>

@@ -108,6 +108,28 @@ jobs:
               echo "::warning::Failed to download app icon URL. Using default icon."
             fi
           fi
+          # Composite icon with background color for iOS (iOS uses the raw icon, no adaptive bg)
+          BG_COLOR="${{ github.event.inputs.app_icon_bg_color }}"
+          if [ -n "$BG_COLOR" ] && [ "$BG_COLOR" != "none" ] && [ "$BG_COLOR" != "null" ]; then
+            echo "Compositing icon with background color $BG_COLOR for iOS..."
+            npm install --no-save sharp 2>/dev/null || true
+            node -e "
+              const sharp = require('sharp');
+              const fs = require('fs');
+              (async () => {
+                const iconPath = '$APP_ICON_FILE';
+                const bgColor = '$BG_COLOR';
+                const icon = sharp(iconPath);
+                const meta = await icon.metadata();
+                const size = Math.max(meta.width || 1024, meta.height || 1024);
+                const bg = sharp({ create: { width: size, height: size, channels: 4, background: bgColor } }).png();
+                const bgBuf = await bg.toBuffer();
+                const iconBuf = await icon.resize(Math.round(size * 0.75), Math.round(size * 0.75), { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).toBuffer();
+                await sharp(bgBuf).composite([{ input: iconBuf, gravity: 'centre' }]).png().toFile(iconPath);
+                console.log('Icon composited with bg color:', bgColor);
+              })().catch(e => { console.error(e); process.exit(1); });
+            "
+          fi
           # Keep all startup/icon assets aligned with merchant icon to avoid cached red placeholder flash.
           for target in splash-icon.png android-icon-foreground.png android-icon-monochrome.png icon.png; do
             dest="./assets/images/$target"

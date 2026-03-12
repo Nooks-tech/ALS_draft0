@@ -2,11 +2,15 @@
  * Merchant branding – fetches branding colors from the nooksweb API.
  * Build-time values (from EAS/env) are used as initial state.
  * Runtime fetch always overrides when nooksweb API is reachable.
+ * Branding is cached in AsyncStorage so it loads instantly on subsequent opens.
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import React, { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { useMerchant } from './MerchantContext';
+
+const BRANDING_CACHE_PREFIX = '@als_branding_';
 
 function getExtra(): Record<string, unknown> | undefined {
   return Constants.expoConfig?.extra as Record<string, unknown> | undefined;
@@ -99,13 +103,36 @@ const BASE_URL = getBaseUrl().replace(/\/$/, '');
 export function MerchantBrandingProvider({ children }: { children: ReactNode }) {
   const { merchantId } = useMerchant();
   const [branding, setBranding] = useState<MerchantBranding>(getBuildTimeBranding);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const runIdRef = useRef(0);
   const merchantIdRef = useRef(merchantId);
+  const cacheLoaded = useRef(false);
   merchantIdRef.current = merchantId;
 
+  // Load cached branding instantly on mount
   useEffect(() => {
-    if (!BASE_URL || !merchantId) return;
+    if (!merchantId) return;
+    const key = `${BRANDING_CACHE_PREFIX}${merchantId}`;
+    AsyncStorage.getItem(key)
+      .then((cached) => {
+        if (cached && !cacheLoaded.current) {
+          try {
+            const parsed = JSON.parse(cached) as MerchantBranding;
+            if (parsed.primaryColor) {
+              setBranding(parsed);
+            }
+          } catch { /* ignore corrupt cache */ }
+        }
+        cacheLoaded.current = true;
+      })
+      .catch(() => { cacheLoaded.current = true; });
+  }, [merchantId]);
+
+  useEffect(() => {
+    if (!BASE_URL || !merchantId) {
+      setLoading(false);
+      return;
+    }
 
     const id = ++runIdRef.current;
     let cancelled = false;
@@ -118,6 +145,8 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
       if (cancelled) return;
       const parsed = parseBrandingResponse(data);
       setBranding(parsed);
+      const key = `${BRANDING_CACHE_PREFIX}${merchantId}`;
+      AsyncStorage.setItem(key, JSON.stringify(parsed)).catch(() => {});
     };
 
     setLoading(true);
@@ -139,7 +168,9 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
         .then((r) => r.ok ? r.json() : null)
         .then((data) => {
           if (!data) return;
-          setBranding(parseBrandingResponse(data as Record<string, unknown>));
+          const parsed = parseBrandingResponse(data as Record<string, unknown>);
+          setBranding(parsed);
+          AsyncStorage.setItem(`${BRANDING_CACHE_PREFIX}${mid}`, JSON.stringify(parsed)).catch(() => {});
         })
         .catch(() => {});
     });

@@ -143,16 +143,18 @@ export default function ProfileModal() {
               />
             </View>
           </View>
-          <View className="mb-4">
-            <Text className="text-slate-500 text-sm font-bold mb-2">Email</Text>
-            <View className="flex-row items-center bg-slate-50 rounded-2xl px-4 py-3">
-              <Mail size={20} color="#94a3b8" />
-              <Text className="flex-1 ml-3 text-slate-600 font-medium">
-                {user?.email || '—'}
-              </Text>
+          {user?.email && !user.email.endsWith('@phone.nooks.app') && (
+            <View className="mb-4">
+              <Text className="text-slate-500 text-sm font-bold mb-2">Email</Text>
+              <View className="flex-row items-center bg-slate-50 rounded-2xl px-4 py-3">
+                <Mail size={20} color="#94a3b8" />
+                <Text className="flex-1 ml-3 text-slate-600 font-medium">
+                  {user.email}
+                </Text>
+              </View>
+              <Text className="text-slate-400 text-xs mt-1">Email is from your account and cannot be changed here</Text>
             </View>
-            <Text className="text-slate-400 text-xs mt-1">Email is from your account and cannot be changed here</Text>
-          </View>
+          )}
           <View className="mb-6">
             <Text className="text-slate-500 text-sm font-bold mb-2">Date of Birth</Text>
             <TouchableOpacity
