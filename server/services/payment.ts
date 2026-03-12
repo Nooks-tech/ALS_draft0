@@ -52,6 +52,38 @@ export type CancelPaymentResult = {
  * Void-first cancel: tries void (free) then refund (1 SAR).
  * `amountHalals` is optional — omit for full refund/void.
  */
+/**
+ * Resolve the real Moyasar payment ID from whatever ID we have stored.
+ * If the stored ID is an invoice, fetch the invoice to get the payment ID.
+ */
+async function resolvePaymentId(storedId: string, authHeader: string): Promise<string> {
+  // First try to fetch as a payment — if it works, it's already correct
+  try {
+    const res = await fetch(`https://api.moyasar.com/v1/payments/${storedId}`, {
+      headers: { Authorization: authHeader },
+    });
+    if (res.ok) return storedId;
+  } catch {}
+
+  // If not a valid payment ID, try as an invoice and extract the payment
+  try {
+    const res = await fetch(`https://api.moyasar.com/v1/invoices/${storedId}`, {
+      headers: { Authorization: authHeader },
+    });
+    if (res.ok) {
+      const invoice = await res.json();
+      const payments = invoice?.payments ?? [];
+      const paid = payments.find((p: any) => p.status === 'paid' || p.status === 'captured');
+      if (paid?.id) {
+        console.log('[Payment] Resolved invoice', storedId, '-> payment', paid.id);
+        return paid.id;
+      }
+    }
+  } catch {}
+
+  return storedId;
+}
+
 export async function cancelPayment(
   paymentId: string,
   amountHalals?: number,
@@ -60,16 +92,19 @@ export async function cancelPayment(
 
   const authHeader = `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`;
 
+  // Resolve invoice ID -> payment ID if needed
+  const realPaymentId = await resolvePaymentId(paymentId, authHeader);
+
   // 1) Try void (free — works only if not yet settled)
   try {
-    const voidRes = await fetch(`https://api.moyasar.com/v1/payments/${paymentId}/void`, {
+    const voidRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}/void`, {
       method: 'POST',
       headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
     });
     if (voidRes.ok) {
       const data = await voidRes.json();
-      console.log('[Payment] Void success for', paymentId);
-      return { method: 'void', fee: 0, moyasarId: data?.id ?? paymentId };
+      console.log('[Payment] Void success for', realPaymentId);
+      return { method: 'void', fee: 0, moyasarId: data?.id ?? realPaymentId };
     }
     const voidErr = await voidRes.json().catch(() => ({}));
     console.log('[Payment] Void not possible:', voidRes.status, voidErr?.message ?? '');
@@ -81,15 +116,15 @@ export async function cancelPayment(
   try {
     const body: Record<string, unknown> = {};
     if (amountHalals != null) body.amount = amountHalals;
-    const refundRes = await fetch(`https://api.moyasar.com/v1/payments/${paymentId}/refund`, {
+    const refundRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}/refund`, {
       method: 'POST',
       headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const refundData = await refundRes.json();
     if (refundRes.ok) {
-      console.log('[Payment] Refund success for', paymentId);
-      return { method: 'refund', fee: REFUND_FEE_SAR, moyasarId: refundData?.id ?? paymentId };
+      console.log('[Payment] Refund success for', realPaymentId);
+      return { method: 'refund', fee: REFUND_FEE_SAR, moyasarId: refundData?.id ?? realPaymentId };
     }
     console.error('[Payment] Refund failed:', refundRes.status, refundData);
     return { method: 'failed', fee: 0, error: refundData?.message || `Refund HTTP ${refundRes.status}` };

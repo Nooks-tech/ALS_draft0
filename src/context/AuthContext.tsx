@@ -6,6 +6,7 @@
  * listener picks up the user, and session persistence via AsyncStorage
  * works exactly as before.
  */
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '../api/supabase';
@@ -68,6 +69,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(async () => {
     if (supabase) await supabase.auth.signOut();
+    try {
+      const keys = await AsyncStorage.getAllKeys();
+      const appKeys = keys.filter((k) => !k.startsWith('supabase.'));
+      if (appKeys.length > 0) await AsyncStorage.multiRemove(appKeys);
+    } catch {}
   }, []);
 
   return (
