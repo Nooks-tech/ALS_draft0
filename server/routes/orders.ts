@@ -187,10 +187,14 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
     let refundFee = 0;
     let refundMethod: string | null = null;
 
+    let refundError: string | undefined;
     if (order.payment_id) {
+      console.log('[Orders] customer-cancel: attempting refund for payment_id:', order.payment_id);
       const result = await cancelPayment(order.payment_id);
+      console.log('[Orders] customer-cancel: cancelPayment result:', JSON.stringify(result));
       if (result.method === 'failed') {
         refundStatus = 'refund_failed';
+        refundError = result.error;
       } else {
         refundStatus = result.method === 'void' ? 'voided' : 'refunded';
         refundId = result.moyasarId ?? null;
@@ -198,6 +202,7 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
         refundMethod = result.method;
       }
     } else {
+      console.log('[Orders] customer-cancel: no payment_id on order, marking pending_manual');
       refundStatus = 'pending_manual';
     }
 
@@ -227,7 +232,7 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
       );
     }
 
-    res.json({ success: true, orderId, refundStatus, refundFee, refundMethod });
+    res.json({ success: true, orderId, refundStatus, refundFee, refundMethod, refundError, paymentId: order.payment_id });
   } catch (err: any) {
     console.error('[Orders] customer-cancel error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to cancel order' });

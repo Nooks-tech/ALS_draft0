@@ -111,9 +111,13 @@ export default function OrderDetailModal() {
     if (!orderId) return;
     setCancelling(true);
     try {
-      const result = await customerCancelOrder(orderId);
+      const result = await customerCancelOrder(orderId) as any;
       if (result.success) {
-        Alert.alert('Order Cancelled', 'Your order has been cancelled. A refund has been initiated.');
+        if (result.refundStatus === 'refund_failed') {
+          Alert.alert('Order Cancelled', `Order cancelled but refund failed.\n\nPayment ID: ${result.paymentId ?? 'none'}\nError: ${result.refundError ?? 'unknown'}`);
+        } else {
+          Alert.alert('Order Cancelled', 'Your order has been cancelled. A refund has been initiated.');
+        }
       } else {
         Alert.alert('Cannot Cancel', result.error || 'Cancellation window expired.');
       }
