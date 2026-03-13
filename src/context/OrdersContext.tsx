@@ -130,32 +130,25 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
 
   const customerId = user?.id ?? null;
   const cacheKey = `@als_orders_${customerId ?? 'guest'}`;
-  const lastOrdersCacheKey = '@als_orders_last';
 
   const persistOrdersCache = useCallback((nextOrders: PlacedOrder[]) => {
     const capped = nextOrders.slice(0, MAX_HISTORY_ORDERS);
     AsyncStorage.setItem(cacheKey, JSON.stringify(capped)).catch(() => {});
-    AsyncStorage.setItem(lastOrdersCacheKey, JSON.stringify(capped)).catch(() => {});
   }, [cacheKey]);
+
+  // Reset orders when user changes
+  const prevCustomerRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevCustomerRef.current !== null && prevCustomerRef.current !== (customerId ?? 'guest')) {
+      setOrders([]);
+    }
+    prevCustomerRef.current = customerId ?? 'guest';
+  }, [customerId]);
 
   useEffect(() => {
     if (!initialized || authLoading) return;
     let cancelled = false;
     setLoading(true);
-    AsyncStorage.getItem(lastOrdersCacheKey)
-      .then((raw) => {
-        if (!raw || cancelled) return;
-        try {
-          const cached = JSON.parse(raw) as PlacedOrder[];
-          if (Array.isArray(cached) && cached.length > 0) {
-            setOrders(cached);
-            setLoading(false);
-          }
-        } catch {
-          // Ignore malformed cache
-        }
-      })
-      .catch(() => {});
     AsyncStorage.getItem(cacheKey)
       .then((raw) => {
         if (!raw || cancelled) return;
@@ -165,9 +158,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
             setOrders(cached);
             setLoading(false);
           }
-        } catch {
-          // Ignore malformed cache
-        }
+        } catch {}
       })
       .catch(() => {});
     if (!customerId) {
@@ -190,7 +181,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     return () => {
       cancelled = true;
     };
-  }, [customerId, initialized, authLoading, cacheKey, lastOrdersCacheKey, persistOrdersCache]);
+  }, [customerId, initialized, authLoading, cacheKey, persistOrdersCache]);
 
   useEffect(() => {
     persistOrdersCache(orders);

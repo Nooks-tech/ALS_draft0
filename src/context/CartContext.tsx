@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
+import React, { createContext, ReactNode, useContext, useEffect, useRef, useState } from 'react';
+import { useAuth } from './AuthContext';
 
 // 1. Define the item structure (Restored from your old code)
 export type CartItem = {
@@ -34,15 +35,31 @@ export type CartContextType = {
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
 export const CartProvider = ({ children }: { children: ReactNode }) => {
+  const { user } = useAuth();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [orderType, setOrderType] = useState<'delivery' | 'pickup'>('pickup');
   const [selectedBranch, setSelectedBranch] = useState<{ id: string; name: string; address: string; distance?: string } | null>(null);
   const [deliveryAddress, setDeliveryAddress] = useState<{ address: string; lat?: number; lng?: number; city?: string } | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const prevUserRef = useRef<string | null>(null);
 
-  const CART_CACHE_KEY = '@als_cart_v1';
+  const uid = user?.id ?? 'guest';
+  const CART_CACHE_KEY = `@als_cart_${uid}`;
+
+  // Reset cart state when user changes
+  useEffect(() => {
+    if (prevUserRef.current !== null && prevUserRef.current !== uid) {
+      setCartItems([]);
+      setOrderType('pickup');
+      setSelectedBranch(null);
+      setDeliveryAddress(null);
+      setHydrated(false);
+    }
+    prevUserRef.current = uid;
+  }, [uid]);
 
   useEffect(() => {
+    if (hydrated) return;
     AsyncStorage.getItem(CART_CACHE_KEY)
       .then((raw) => {
         if (!raw) return;
@@ -59,7 +76,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       })
       .catch(() => {})
       .finally(() => setHydrated(true));
-  }, []);
+  }, [CART_CACHE_KEY, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -70,7 +87,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       deliveryAddress,
     });
     AsyncStorage.setItem(CART_CACHE_KEY, payload).catch(() => {});
-  }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress]);
+  }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress, CART_CACHE_KEY]);
 
   // RESTORED: Your smart Unique ID generator
   const generateUniqueId = (product: any) => {
