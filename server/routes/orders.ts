@@ -455,5 +455,57 @@ ordersRouter.patch('/:id/status', async (req, res) => {
   }
 });
 
+/* ── Diagnostic: check order payment + Moyasar status ── */
+ordersRouter.get('/:id/debug-refund', async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { data: order, error } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, payment_id, payment_method, refund_status, refund_id, total_sar, status')
+      .eq('id', orderId)
+      .single();
+
+    if (error || !order) return res.status(404).json({ error: 'Order not found' });
+
+    const MOYASAR_SECRET_KEY = process.env.MOYASAR_SECRET_KEY;
+    const moyasarConfigured = !!MOYASAR_SECRET_KEY;
+    const result: Record<string, unknown> = {
+      order,
+      moyasarConfigured,
+      moyasarKeyPrefix: MOYASAR_SECRET_KEY ? MOYASAR_SECRET_KEY.substring(0, 10) + '...' : 'NOT SET',
+    };
+
+    if (order.payment_id && MOYASAR_SECRET_KEY) {
+      const authHeader = `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`;
+
+      // Try as payment
+      try {
+        const payRes = await fetch(`https://api.moyasar.com/v1/payments/${order.payment_id}`, {
+          headers: { Authorization: authHeader },
+        });
+        result.paymentLookup = { status: payRes.status, body: await payRes.json().catch(() => null) };
+      } catch (e: any) {
+        result.paymentLookup = { error: e?.message };
+      }
+
+      // Try as invoice
+      try {
+        const invRes = await fetch(`https://api.moyasar.com/v1/invoices/${order.payment_id}`, {
+          headers: { Authorization: authHeader },
+        });
+        result.invoiceLookup = { status: invRes.status, body: await invRes.json().catch(() => null) };
+      } catch (e: any) {
+        result.invoiceLookup = { error: e?.message };
+      }
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message });
+  }
+});
+
 /* ── Export helpers for use in cron and complaints ── */
 export { sendPushToCustomer, cancelOtoIfDelivery, supabaseAdmin as ordersSupabaseAdmin };
