@@ -68,27 +68,16 @@ paymentRouter.post('/webhook', async (req, res) => {
     console.log('[Payment Webhook]', { id, status, orderId: metadata?.order_id, company: source?.company });
     if (!supabaseAdmin || !id) return res.json({ received: true });
 
-    const orderId = metadata?.order_id;
-    if (!orderId) return res.json({ received: true });
+    const metaOrderId = metadata?.order_id;
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
 
     if (status === 'paid' || status === 'captured') {
       updates.payment_id = id;
 
-      // Extract payment method from source.company (mada, visa, master, amex)
       const company = (source?.company || '').toLowerCase();
       if (company) {
         updates.payment_method = company;
-        // Calculate and store the Moyasar gateway fee
-        const { data: order } = await supabaseAdmin
-          .from('customer_orders')
-          .select('total_sar')
-          .eq('id', orderId)
-          .single();
-        if (order) {
-          updates.moyasar_fee = calculateMoyasarFee(order.total_sar, company);
-        }
       }
     } else if (status === 'refunded') {
       updates.refund_status = 'refunded';
@@ -102,7 +91,35 @@ paymentRouter.post('/webhook', async (req, res) => {
     }
 
     if (Object.keys(updates).length > 1) {
-      await supabaseAdmin.from('customer_orders').update(updates).eq('id', orderId);
+      let matched = false;
+
+      // Try metadata.order_id first (matches the DB row id)
+      if (metaOrderId) {
+        const { error } = await supabaseAdmin.from('customer_orders').update(updates).eq('id', metaOrderId);
+        if (!error) matched = true;
+      }
+
+      // Fallback: match by payment_id column (stores the real Moyasar ID)
+      if (!matched && id) {
+        await supabaseAdmin.from('customer_orders').update(updates).eq('payment_id', id);
+      }
+
+      // Calculate Moyasar fee if payment succeeded
+      if ((status === 'paid' || status === 'captured') && updates.payment_method) {
+        const lookupId = metaOrderId || id;
+        const { data: order } = await supabaseAdmin
+          .from('customer_orders')
+          .select('id, total_sar')
+          .or(`id.eq.${lookupId},payment_id.eq.${id}`)
+          .limit(1)
+          .single();
+        if (order) {
+          await supabaseAdmin
+            .from('customer_orders')
+            .update({ moyasar_fee: calculateMoyasarFee(order.total_sar, updates.payment_method as string) })
+            .eq('id', order.id);
+        }
+      }
     }
 
     res.json({ received: true });

@@ -93,6 +93,7 @@ export default function CheckoutScreen() {
   const [promoValidating, setPromoValidating] = useState(false);
   const [moyasarWebUrl, setMoyasarWebUrl] = useState<string | null>(null);
   const paymentSuccessHandled = useRef(false);
+  const samsungPayInvoiceIdRef = useRef<string | null>(null);
 
   const deliveryFee = orderType === 'delivery' ? 15 : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
@@ -186,7 +187,7 @@ export default function CheckoutScreen() {
     setCouponInput('');
   };
 
-  const createOrderAfterPayment = useCallback(async () => {
+  const createOrderAfterPayment = useCallback(async (moyasarPaymentId?: string) => {
     if (!selectedBranch?.id) return;
     if (!merchantId) {
       Alert.alert('Configuration Error', 'Merchant configuration is missing. Please restart the app and try again.');
@@ -254,7 +255,7 @@ export default function CheckoutScreen() {
           otoDispatchStatus,
           otoDispatchError,
           deliveryFee,
-          paymentId: orderId,
+          paymentId: moyasarPaymentId || orderId,
           paymentMethod: paymentMethod,
           promoCode: promoApplied ? promoCode : undefined,
         },
@@ -285,7 +286,7 @@ export default function CheckoutScreen() {
         return;
       }
       if (result instanceof PaymentResponse && result.status === PaymentStatus.paid) {
-        createOrderAfterPayment();
+        createOrderAfterPayment(result.id);
       } else if (result instanceof PaymentResponse && result.status === PaymentStatus.failed) {
         Alert.alert('Payment Failed', 'Your payment was declined. Please try again.');
       } else {
@@ -378,6 +379,7 @@ export default function CheckoutScreen() {
           orderId: `order-${Date.now()}`,
           successUrl: 'alsdraft0://payment/success',
         });
+        samsungPayInvoiceIdRef.current = session.id;
         if (session.url) {
           setMoyasarWebUrl(session.url);
         } else {
@@ -687,7 +689,7 @@ export default function CheckoutScreen() {
                 if ((url.includes('alsdraft0://') || url.includes('/api/payment/redirect')) && !paymentSuccessHandled.current) {
                   paymentSuccessHandled.current = true;
                   setMoyasarWebUrl(null);
-                  createOrderAfterPayment();
+                  createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
                   return false;
                 }
                 return true;
@@ -697,14 +699,14 @@ export default function CheckoutScreen() {
                 if ((url.includes('alsdraft0://') || url.includes('/api/payment/redirect')) && !paymentSuccessHandled.current) {
                   paymentSuccessHandled.current = true;
                   setMoyasarWebUrl(null);
-                  createOrderAfterPayment();
+                  createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
                   return;
                 }
                 if (url.includes('moyasar') && (url.includes('callback') || url.includes('return') || url.includes('status=paid'))) {
                   if (!paymentSuccessHandled.current) {
                     paymentSuccessHandled.current = true;
                     setMoyasarWebUrl(null);
-                    createOrderAfterPayment();
+                    createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
                   }
                 }
               }}
@@ -732,7 +734,7 @@ export default function CheckoutScreen() {
                 if (e.nativeEvent?.data === 'PAYMENT_SUCCESS' && !paymentSuccessHandled.current) {
                   paymentSuccessHandled.current = true;
                   setMoyasarWebUrl(null);
-                  createOrderAfterPayment();
+                  createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
                 }
               }}
             />
