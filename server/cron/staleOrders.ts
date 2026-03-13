@@ -1,7 +1,7 @@
 /**
- * Stale delivery order auto-cancel cron.
- * Polls every 5 minutes.  If a delivery order has been in "Ready" status
- * for 15+ minutes and OTO has no driver assigned, system-cancels it with full refund.
+ * Delivery order cron – runs every 5 minutes:
+ * 1. Syncs OTO status for all active delivery orders (webhook safety net)
+ * 2. Auto-cancels stale orders with no driver after 15 minutes
  */
 import { createClient } from '@supabase/supabase-js';
 import { cancelPayment } from '../services/payment';
@@ -36,6 +36,58 @@ async function sendPush(customerId: string, title: string, body: string) {
       }))),
     });
   } catch { /* best-effort */ }
+}
+
+function mapOtoStatusToOrderStatus(otoStatus: string | undefined): string {
+  if (!otoStatus) return 'Preparing';
+  const s = (otoStatus || '').toLowerCase().replace(/_/g, '');
+  if (s.includes('delivered')) return 'Delivered';
+  if (s.includes('outfordelivery')) return 'Out for delivery';
+  if (s.includes('pickedup') || s.includes('ready')) return 'Ready';
+  if (s.includes('cancelled') || s.includes('canceled')) return 'Cancelled';
+  return 'Preparing';
+}
+
+const STATUS_RANK: Record<string, number> = {
+  'Pending': 0, 'Preparing': 1, 'Ready': 2, 'Out for delivery': 3, 'Delivered': 4, 'Cancelled': 5,
+};
+
+async function syncOtoStatuses() {
+  if (!supabaseAdmin) return;
+
+  const { data: activeOrders, error } = await supabaseAdmin
+    .from('customer_orders')
+    .select('id, status, customer_id, oto_id')
+    .eq('order_type', 'delivery')
+    .in('status', ['Preparing', 'Ready', 'Out for delivery'])
+    .not('oto_id', 'is', null)
+    .limit(50);
+
+  if (error || !activeOrders?.length) return;
+
+  for (const order of activeOrders) {
+    try {
+      const otoData = await otoService.orderStatus(order.oto_id);
+      const mapped = mapOtoStatusToOrderStatus(otoData?.status);
+
+      const currentRank = STATUS_RANK[order.status] ?? 0;
+      const newRank = STATUS_RANK[mapped] ?? 0;
+      if (newRank <= currentRank && mapped !== 'Cancelled') continue;
+
+      const updates: Record<string, unknown> = { status: mapped, updated_at: new Date().toISOString() };
+      await supabaseAdmin.from('customer_orders').update(updates).eq('id', order.id);
+
+      if (mapped === 'Out for delivery' && order.customer_id) {
+        sendPush(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.');
+      } else if (mapped === 'Delivered' && order.customer_id) {
+        sendPush(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!');
+      }
+
+      console.log(`[Cron] OTO sync: order ${order.id} ${order.status} -> ${mapped}`);
+    } catch (e: any) {
+      console.warn(`[Cron] OTO sync failed for order ${order.id}:`, e?.message);
+    }
+  }
 }
 
 async function checkStaleOrders() {
@@ -101,6 +153,7 @@ async function checkStaleOrders() {
           refund_fee: refundFee,
           refund_fee_absorbed_by: refundFee > 0 ? 'platform' : null,
           refund_method: refundMethod,
+          commission_status: 'cancelled',
           updated_at: new Date().toISOString(),
         })
         .eq('id', order.id);
@@ -118,9 +171,13 @@ async function checkStaleOrders() {
   }
 }
 
+async function runCronCycle() {
+  await syncOtoStatuses();
+  await checkStaleOrders();
+}
+
 export function startStaleOrdersCron() {
-  console.log('[Cron] Stale orders check started (every 5 min)');
-  setInterval(checkStaleOrders, POLL_INTERVAL_MS);
-  // Also run once at startup (after a short delay)
-  setTimeout(checkStaleOrders, 10_000);
+  console.log('[Cron] Delivery order cron started (every 5 min): OTO sync + stale order check');
+  setInterval(runCronCycle, POLL_INTERVAL_MS);
+  setTimeout(runCronCycle, 10_000);
 }

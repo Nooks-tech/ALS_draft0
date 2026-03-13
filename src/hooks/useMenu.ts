@@ -85,6 +85,7 @@ export function useMenu() {
             name: b.name,
             address: b.address ?? '',
             distance: b.distance,
+            oto_warehouse_id: b.oto_warehouse_id,
           }));
           setBranches(nextBranches);
           setSource('nooks');

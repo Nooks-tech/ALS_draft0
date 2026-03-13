@@ -121,6 +121,7 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
         refund_fee: refundFee,
         refund_fee_absorbed_by: 'merchant',
         refund_method: refundMethod,
+        commission_status: 'cancelled',
         updated_at: new Date().toISOString(),
       })
       .eq('id', orderId);
@@ -218,6 +219,7 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
         refund_fee: refundFee,
         refund_fee_absorbed_by: refundFee > 0 ? 'platform' : null,
         refund_method: refundMethod,
+        commission_status: 'cancelled',
         updated_at: new Date().toISOString(),
       })
       .eq('id', orderId);
@@ -290,6 +292,7 @@ ordersRouter.post('/:id/system-cancel', async (req, res) => {
         refund_fee: refundFee,
         refund_fee_absorbed_by: refundFee > 0 ? 'platform' : null,
         refund_method: refundMethod,
+        commission_status: 'cancelled',
         updated_at: new Date().toISOString(),
       })
       .eq('id', orderId);
@@ -443,12 +446,31 @@ ordersRouter.patch('/:id/status', async (req, res) => {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
     }
 
+    const { data: order } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, customer_id, status')
+      .eq('id', orderId)
+      .single();
+
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
     const { error } = await supabaseAdmin
       .from('customer_orders')
       .update({ status, updated_at: new Date().toISOString() })
       .eq('id', orderId);
 
     if (error) return res.status(500).json({ error: error.message });
+
+    if (order.customer_id) {
+      if (status === 'Ready') {
+        sendPushToCustomer(order.customer_id, 'Order Ready!', 'Your order is ready for pickup.');
+      } else if (status === 'Out for delivery') {
+        sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.');
+      } else if (status === 'Delivered') {
+        sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!');
+      }
+    }
+
     res.json({ success: true, orderId, status });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to update status' });

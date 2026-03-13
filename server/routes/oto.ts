@@ -9,9 +9,32 @@ export const otoRouter = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
+const OTO_WEBHOOK_SECRET = process.env.OTO_WEBHOOK_SECRET;
 const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
   : null;
+
+async function sendPushToCustomer(customerId: string, title: string, body: string) {
+  if (!supabaseAdmin) return;
+  try {
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('expo_push_token')
+      .eq('user_id', customerId);
+    const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
+    if (tokens.length === 0) return;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(tokens.map((t: string) => ({
+        to: t, sound: 'default', title, body, channelId: 'marketing',
+      }))),
+    });
+  } catch { /* best-effort */ }
+}
 
 /** Map OTO order status to customer_orders.status (Preparing | Ready | Out for delivery | Delivered | Cancelled) */
 function mapOtoStatusToOrderStatus(otoStatus: string | undefined): string {
@@ -183,6 +206,131 @@ otoRouter.get('/order-status', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/oto/webhook – OTO pushes order status changes here.
+ * Payload: { orderId, status, driverName, driverPhone, trackingNumber, deliveryCompany, timestamp, signature }
+ */
+otoRouter.post('/webhook', async (req, res) => {
+  try {
+    if (OTO_WEBHOOK_SECRET) {
+      const token =
+        (req.query.secret_token as string) ||
+        req.headers['authorization'] as string ||
+        req.headers['x-oto-secret'] as string;
+      if (token !== OTO_WEBHOOK_SECRET && token !== `Bearer ${OTO_WEBHOOK_SECRET}`) {
+        console.warn('[OTO Webhook] Invalid secret token');
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    }
+
+    const payload = req.body;
+    const otoOrderId = payload.orderId ?? payload.order_id;
+    const otoStatus = payload.status ?? payload.dcStatus;
+    const driverName = payload.driverName;
+    const driverPhone = payload.driverPhone;
+    const trackingNumber = payload.trackingNumber;
+
+    console.log('[OTO Webhook]', { otoOrderId, otoStatus, driverName, trackingNumber });
+
+    if (!supabaseAdmin || !otoOrderId) return res.json({ received: true });
+
+    const mappedStatus = mapOtoStatusToOrderStatus(otoStatus);
+
+    // Find the order by oto_id
+    const numericId = Number(otoOrderId);
+    const { data: order } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, status, customer_id, order_type')
+      .eq('oto_id', isNaN(numericId) ? otoOrderId : numericId)
+      .single();
+
+    if (!order) {
+      console.warn('[OTO Webhook] No order found for oto_id:', otoOrderId);
+      return res.json({ received: true, matched: false });
+    }
+
+    // Don't regress status (e.g. don't go from Delivered back to Out for delivery)
+    const STATUS_RANK: Record<string, number> = {
+      'Pending': 0, 'Preparing': 1, 'Ready': 2, 'Out for delivery': 3, 'Delivered': 4, 'Cancelled': 5,
+    };
+    const currentRank = STATUS_RANK[order.status] ?? 0;
+    const newRank = STATUS_RANK[mappedStatus] ?? 0;
+    if (newRank <= currentRank && mappedStatus !== 'Cancelled') {
+      console.log('[OTO Webhook] Skipping status regression:', order.status, '->', mappedStatus);
+      return res.json({ received: true, skipped: true, currentStatus: order.status });
+    }
+
+    const updates: Record<string, unknown> = {
+      status: mappedStatus,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error: updateErr } = await supabaseAdmin
+      .from('customer_orders')
+      .update(updates)
+      .eq('id', order.id);
+
+    if (updateErr) {
+      console.error('[OTO Webhook] DB update failed:', updateErr.message);
+    }
+
+    // Push notifications for key transitions
+    if (mappedStatus === 'Out for delivery' && order.customer_id) {
+      sendPushToCustomer(
+        order.customer_id,
+        'Order On The Way!',
+        `Your order is out for delivery${driverName ? ` with ${driverName}` : ''}.`,
+      );
+    } else if (mappedStatus === 'Delivered' && order.customer_id) {
+      sendPushToCustomer(
+        order.customer_id,
+        'Order Delivered',
+        'Your order has been delivered. Enjoy!',
+      );
+    } else if (mappedStatus === 'Cancelled' && order.customer_id) {
+      sendPushToCustomer(
+        order.customer_id,
+        'Delivery Cancelled',
+        'The delivery for your order has been cancelled. Please contact support.',
+      );
+    }
+
+    res.json({ received: true, orderId: order.id, newStatus: mappedStatus });
+  } catch (err: any) {
+    console.error('[OTO Webhook] Error:', err?.message);
+    res.json({ received: true, error: err?.message });
+  }
+});
+
+/** POST /api/oto/create-pickup – Create an OTO pickup location for a branch */
+otoRouter.post('/create-pickup', async (req, res) => {
+  try {
+    const { code, name, city, address, contactName, contactEmail, contactPhone, lat, lon } = req.body;
+    if (!code || !name || !city) {
+      return res.status(400).json({ error: 'code, name, and city are required' });
+    }
+    const result = await otoService.createPickupLocation({
+      code,
+      name,
+      mobile: contactPhone || '500000000',
+      address: address || name,
+      city,
+      country: 'SA',
+      contactName: contactName || name,
+      contactEmail: contactEmail || 'merchant@nooks.sa',
+      type: 'branch',
+      lat,
+      lon,
+      status: 'active',
+    });
+    console.log('[OTO] Pickup location created:', { code, success: result.success, pickupLocationCode: result.pickupLocationCode });
+    res.json(result);
+  } catch (err: any) {
+    console.error('[OTO] create-pickup error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to create pickup location' });
+  }
+});
+
 otoRouter.post('/request-delivery', async (req, res) => {
   console.log('[OTO] request-delivery received');
   try {
@@ -237,5 +385,18 @@ otoRouter.post('/request-delivery', async (req, res) => {
     res.status(500).json({
       error: err?.message || 'Failed to request delivery',
     });
+  }
+});
+
+/** POST /api/oto/register-webhook – Register this server's webhook URL with OTO */
+otoRouter.post('/register-webhook', async (req, res) => {
+  try {
+    const baseUrl = (req.body.baseUrl || '').replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`;
+    const webhookUrl = `${baseUrl}/api/oto/webhook`;
+    const result = await otoService.registerWebhook(webhookUrl, 'orderStatus');
+    console.log('[OTO] Webhook registration:', { webhookUrl, result });
+    res.json({ ...result, webhookUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to register webhook' });
   }
 });

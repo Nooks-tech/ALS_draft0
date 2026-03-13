@@ -436,4 +436,14 @@ export const otoService = {
       driverLon: typeof tracking?.lon === 'number' ? tracking.lon : (typeof tracking?.lon === 'string' ? parseFloat(tracking.lon) : undefined),
     };
   },
+
+  /** POST /webhook – register a webhook URL with OTO */
+  async registerWebhook(url: string, webhookType = 'orderStatus'): Promise<{ success: boolean; message?: string }> {
+    const data = await otoRequest<{ success?: boolean; message?: string }>('/webhook', {
+      method: 'post',
+      url,
+      webhookType,
+    });
+    return { success: data?.success !== false, message: data?.message };
+  },
 };

@@ -7,6 +7,7 @@ export const paymentRouter = Router();
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
+const MOYASAR_WEBHOOK_SECRET = process.env.MOYASAR_WEBHOOK_SECRET;
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
@@ -59,6 +60,18 @@ paymentRouter.post('/initiate', async (req, res) => {
 /** POST /api/payment/webhook – Moyasar payment status callback */
 paymentRouter.post('/webhook', async (req, res) => {
   try {
+    // Verify webhook secret (Moyasar sends it as query param or header)
+    if (MOYASAR_WEBHOOK_SECRET) {
+      const token =
+        (req.query.secret_token as string) ||
+        req.headers['x-moyasar-token'] as string ||
+        req.headers['x-webhook-secret'] as string;
+      if (token !== MOYASAR_WEBHOOK_SECRET) {
+        console.warn('[Payment Webhook] Invalid or missing secret token');
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    }
+
     const payload = req.body;
     const id: string = payload.id ?? payload.data?.id ?? '';
     const status: string = payload.status ?? payload.data?.status ?? '';

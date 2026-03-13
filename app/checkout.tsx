@@ -94,6 +94,7 @@ export default function CheckoutScreen() {
   const [moyasarWebUrl, setMoyasarWebUrl] = useState<string | null>(null);
   const paymentSuccessHandled = useRef(false);
   const samsungPayInvoiceIdRef = useRef<string | null>(null);
+  const orderIdRef = useRef(`order-${Date.now()}`);
 
   const deliveryFee = orderType === 'delivery' ? 15 : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
@@ -115,8 +116,8 @@ export default function CheckoutScreen() {
         amount: Math.max(amountHalals, 100),
         currency: 'SAR',
         merchantCountryCode: 'SA',
-        description: `Order #${Date.now()}`,
-        metadata: { order_id: `order-${Date.now()}` },
+        description: `Order ${orderIdRef.current}`,
+        metadata: { order_id: orderIdRef.current },
         supportedNetworks: ['mada', 'visa', 'mastercard', 'amex'],
         creditCard: new CreditCardConfig({ saveCard: false, manual: false }),
         applePay: Platform.OS === 'ios'
@@ -194,18 +195,19 @@ export default function CheckoutScreen() {
       return;
     }
     setSubmitting(true);
-    const orderId = `order-${Date.now()}`;
+    const orderId = orderIdRef.current;
     try {
       let otoId: number | undefined = undefined;
       let otoDispatchStatus: 'success' | 'failed' | undefined;
       let otoDispatchError: string | undefined;
       if (orderType === 'delivery' && selectedBranch?.id && deliveryAddress?.address) {
         const branchOto = getBranchOtoConfig(selectedBranch.id, selectedBranch.name);
+        const pickupCode = (selectedBranch as any).oto_warehouse_id || branchOto?.otoPickupLocationCode;
         try {
           const deliveryRes = await otoApi.requestDelivery({
             orderId,
             amount: Number(finalTotal.toFixed(2)),
-            pickupLocationCode: branchOto?.otoPickupLocationCode,
+            pickupLocationCode: pickupCode,
             customer: {
               name: (profile.fullName || 'Customer').trim(),
               phone: (profile.phone || '500000000').trim(),
@@ -269,6 +271,7 @@ export default function CheckoutScreen() {
       setShowPaymentModal(false);
       setMoyasarWebUrl(null);
       setShowPaymentPicker(false);
+      orderIdRef.current = `order-${Date.now()}`;
       router.dismissAll();
       setTimeout(() => router.replace({ pathname: '/order-confirmed', params: { orderId } }), 0);
     } catch (err: any) {

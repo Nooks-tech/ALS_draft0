@@ -95,21 +95,26 @@ export async function cancelPayment(
   // Resolve invoice ID -> payment ID if needed
   const realPaymentId = await resolvePaymentId(paymentId, authHeader);
 
-  // 1) Try void (free — works only if not yet settled)
-  try {
-    const voidRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}/void`, {
-      method: 'POST',
-      headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
-    });
-    if (voidRes.ok) {
-      const data = await voidRes.json();
-      console.log('[Payment] Void success for', realPaymentId);
-      return { method: 'void', fee: 0, moyasarId: data?.id ?? realPaymentId };
+  // 1) Try void (free — works only if not yet settled).
+  //    Skip void for partial refunds because void always reverses the FULL amount.
+  if (amountHalals == null) {
+    try {
+      const voidRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}/void`, {
+        method: 'POST',
+        headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+      });
+      if (voidRes.ok) {
+        const data = await voidRes.json();
+        console.log('[Payment] Void success for', realPaymentId);
+        return { method: 'void', fee: 0, moyasarId: data?.id ?? realPaymentId };
+      }
+      const voidErr = await voidRes.json().catch(() => ({}));
+      console.log('[Payment] Void not possible:', voidRes.status, voidErr?.message ?? '');
+    } catch (e: any) {
+      console.warn('[Payment] Void request error:', e?.message);
     }
-    const voidErr = await voidRes.json().catch(() => ({}));
-    console.log('[Payment] Void not possible:', voidRes.status, voidErr?.message ?? '');
-  } catch (e: any) {
-    console.warn('[Payment] Void request error:', e?.message);
+  } else {
+    console.log('[Payment] Partial amount specified, skipping void → going straight to refund');
   }
 
   // 2) Fallback: refund (1 SAR fee)
