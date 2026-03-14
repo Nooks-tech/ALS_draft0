@@ -2,9 +2,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { AlertTriangle, Camera, Flag, Map, MapPin, MessageSquare, RefreshCw, Store, Truck, X } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import * as FileSystem from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
-import { decode } from 'base64-arraybuffer';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
 import { useAuth } from '../src/context/AuthContext';
@@ -91,17 +89,37 @@ export default function OrderDetailModal() {
 
   const uploadPhoto = async (uri: string) => {
     if (!supabase) return;
-    const ext = uri.split('.').pop()?.split('?')[0] || 'jpg';
-    const fileName = `${orderId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
-    const { data, error } = await supabase.storage
-      .from('complaint-photos')
-      .upload(fileName, decode(base64), { contentType: `image/${ext}` });
-    if (!error && data?.path) {
-      const { data: urlData } = supabase.storage.from('complaint-photos').getPublicUrl(data.path);
-      if (urlData?.publicUrl) {
-        setComplaintPhotos((prev) => [...prev, urlData.publicUrl]);
+    try {
+      const ext = uri.split('.').pop()?.split('?')[0] || 'jpg';
+      const fileName = `${orderId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const formData = new FormData();
+      formData.append('', {
+        uri,
+        name: fileName.split('/').pop(),
+        type: `image/${ext}`,
+      } as any);
+      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+      const session = (await supabase.auth.getSession()).data.session;
+      const token = session?.access_token;
+      const uploadRes = await fetch(
+        `${supabaseUrl}/storage/v1/object/complaint-photos/${fileName}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'x-upsert': 'true',
+          },
+          body: formData,
+        }
+      );
+      if (uploadRes.ok) {
+        const { data: urlData } = supabase.storage.from('complaint-photos').getPublicUrl(fileName);
+        if (urlData?.publicUrl) {
+          setComplaintPhotos((prev) => [...prev, urlData.publicUrl]);
+        }
       }
+    } catch (err) {
+      console.warn('[Complaint] Photo upload failed:', err);
     }
   };
 
