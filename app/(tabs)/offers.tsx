@@ -395,15 +395,22 @@ export default function OffersScreen() {
                     const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
                     const download = await FileSystem.downloadAsync(url, filePath);
                     if (download.status !== 200) {
-                      Alert.alert('Error', 'Could not download wallet pass. Please try again.');
+                      const body = await FileSystem.readAsStringAsync(filePath).catch(() => '');
+                      let msg = 'Could not download wallet pass.';
+                      try { msg = JSON.parse(body).error || msg; } catch {}
+                      Alert.alert('Error', msg);
                       return;
                     }
-                    await Sharing.shareAsync(filePath, {
-                      mimeType: 'application/vnd.apple.pkpass',
-                      UTI: 'com.apple.pkpass',
-                    });
-                  } catch {
-                    Alert.alert('Error', 'Could not add wallet pass. Make sure Apple Wallet is set up.');
+                    if (await Sharing.isAvailableAsync()) {
+                      await Sharing.shareAsync(filePath, {
+                        mimeType: 'application/vnd.apple.pkpass',
+                        UTI: 'com.apple.pkpass',
+                      });
+                    } else {
+                      await Linking.openURL(url);
+                    }
+                  } catch (err: any) {
+                    Alert.alert('Error', err?.message || 'Could not add wallet pass.');
                   }
                 }}
                 className="mt-5 flex-row items-center justify-center py-3.5 rounded-2xl"
