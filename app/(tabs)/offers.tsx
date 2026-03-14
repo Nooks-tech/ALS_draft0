@@ -1,4 +1,6 @@
+import * as FileSystem from 'expo-file-system';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Sharing from 'expo-sharing';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Award, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -387,11 +389,22 @@ export default function OffersScreen() {
             {/* Add to Apple Wallet */}
             {appleWalletAvailable && user?.id && merchantId && (
               <TouchableOpacity
-                onPress={() => {
-                  const url = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
-                  Linking.openURL(url).catch(() =>
-                    Alert.alert('Error', 'Could not open wallet pass. Make sure Apple Wallet is set up.'),
-                  );
+                onPress={async () => {
+                  try {
+                    const url = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
+                    const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
+                    const download = await FileSystem.downloadAsync(url, filePath);
+                    if (download.status !== 200) {
+                      Alert.alert('Error', 'Could not download wallet pass. Please try again.');
+                      return;
+                    }
+                    await Sharing.shareAsync(filePath, {
+                      mimeType: 'application/vnd.apple.pkpass',
+                      UTI: 'com.apple.pkpass',
+                    });
+                  } catch {
+                    Alert.alert('Error', 'Could not add wallet pass. Make sure Apple Wallet is set up.');
+                  }
                 }}
                 className="mt-5 flex-row items-center justify-center py-3.5 rounded-2xl"
                 style={{ backgroundColor: '#000' }}
