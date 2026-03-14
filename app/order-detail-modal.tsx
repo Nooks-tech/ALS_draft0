@@ -2,7 +2,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { AlertTriangle, Camera, Flag, Map, MapPin, MessageSquare, RefreshCw, Store, Truck, X } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
+import { decode } from 'base64-arraybuffer';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
 import { useAuth } from '../src/context/AuthContext';
@@ -87,32 +89,57 @@ export default function OrderDetailModal() {
     router.replace('/(tabs)/menu');
   }, [order, setCartFromOrder, router]);
 
-  const handlePickPhoto = async () => {
-    if (complaintPhotos.length >= 3) return;
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-      allowsMultipleSelection: true,
-      selectionLimit: 3 - complaintPhotos.length,
-    });
-    if (result.canceled) return;
-    for (const asset of result.assets) {
-      if (complaintPhotos.length >= 3) break;
-      if (!supabase) continue;
-      const ext = asset.uri.split('.').pop() || 'jpg';
-      const fileName = `${orderId}/${Date.now()}.${ext}`;
-      const response = await fetch(asset.uri);
-      const blob = await response.blob();
-      const { data, error } = await supabase.storage
-        .from('complaint-photos')
-        .upload(fileName, blob, { contentType: `image/${ext}` });
-      if (!error && data?.path) {
-        const { data: urlData } = supabase.storage.from('complaint-photos').getPublicUrl(data.path);
-        if (urlData?.publicUrl) {
-          setComplaintPhotos((prev) => [...prev, urlData.publicUrl]);
-        }
+  const uploadPhoto = async (uri: string) => {
+    if (!supabase) return;
+    const ext = uri.split('.').pop()?.split('?')[0] || 'jpg';
+    const fileName = `${orderId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const base64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+    const { data, error } = await supabase.storage
+      .from('complaint-photos')
+      .upload(fileName, decode(base64), { contentType: `image/${ext}` });
+    if (!error && data?.path) {
+      const { data: urlData } = supabase.storage.from('complaint-photos').getPublicUrl(data.path);
+      if (urlData?.publicUrl) {
+        setComplaintPhotos((prev) => [...prev, urlData.publicUrl]);
       }
     }
+  };
+
+  const handlePickPhoto = () => {
+    if (complaintPhotos.length >= 3) return;
+    Alert.alert('Add Photo', 'Choose a source', [
+      {
+        text: 'Take Photo',
+        onPress: async () => {
+          const perm = await ImagePicker.requestCameraPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert('Permission Required', 'Camera access is needed to take photos.');
+            return;
+          }
+          const result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
+          if (!result.canceled && result.assets[0]) {
+            await uploadPhoto(result.assets[0].uri);
+          }
+        },
+      },
+      {
+        text: 'Choose from Library',
+        onPress: async () => {
+          const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            quality: 0.7,
+            allowsMultipleSelection: true,
+            selectionLimit: 3 - complaintPhotos.length,
+          });
+          if (result.canceled) return;
+          for (const asset of result.assets) {
+            if (complaintPhotos.length >= 3) break;
+            await uploadPhoto(asset.uri);
+          }
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const handleSubmitComplaint = async () => {
