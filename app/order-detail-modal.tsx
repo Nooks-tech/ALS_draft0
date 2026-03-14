@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { AlertTriangle, Camera, Clock, Flag, Map, MapPin, MessageSquare, RefreshCw, Store, Truck, X } from 'lucide-react-native';
+import { AlertTriangle, Camera, Flag, Map, MapPin, MessageSquare, RefreshCw, Store, Truck, X } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
@@ -14,7 +14,6 @@ import { customerCancelOrder, submitComplaint, getOrderComplaint, type Complaint
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { supabase } from '../src/api/supabase';
 
-const CANCEL_WINDOW_MS = 60_000;
 const COMPLAINT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const COMPLAINT_TYPES = [
   { value: 'missing_item', label: 'Missing Item' },
@@ -34,8 +33,6 @@ export default function OrderDetailModal() {
   const [otoStatus, setOtoStatus] = useState<OTOOrderStatusResponse | null>(null);
   const driverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Cancel countdown
-  const [cancelRemaining, setCancelRemaining] = useState(0);
   const [cancelling, setCancelling] = useState(false);
 
   // Complaint state
@@ -47,21 +44,6 @@ export default function OrderDetailModal() {
   const [submittingComplaint, setSubmittingComplaint] = useState(false);
   const [existingComplaint, setExistingComplaint] = useState<ComplaintRow | null>(null);
   const [loadingComplaint, setLoadingComplaint] = useState(false);
-
-  // Cancel countdown timer
-  useEffect(() => {
-    if (!order?.createdAt) return;
-    const created = new Date(order.createdAt).getTime();
-    const tick = () => {
-      const remaining = Math.max(0, CANCEL_WINDOW_MS - (Date.now() - created));
-      setCancelRemaining(remaining);
-    };
-    tick();
-    if (order.status === 'Preparing') {
-      const interval = setInterval(tick, 1000);
-      return () => clearInterval(interval);
-    }
-  }, [order?.createdAt, order?.status]);
 
   // Load existing complaint for delivered orders
   useEffect(() => {
@@ -203,8 +185,7 @@ export default function OrderDetailModal() {
   const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
   const canShowMap = branchLat != null && branchLon != null;
 
-  const showCancelButton = cancelRemaining > 0 && order.status === 'Preparing';
-  const cancelSeconds = Math.ceil(cancelRemaining / 1000);
+  const showCancelButton = order.status === 'Preparing';
 
   const isDelivered = order.status === 'Delivered';
   const deliveredAt = order.createdAt ? new Date(order.createdAt).getTime() : 0;
@@ -275,26 +256,19 @@ export default function OrderDetailModal() {
             <Text className="text-slate-500 text-sm mt-2">{order.date}</Text>
           </View>
 
-          {/* Cancel countdown (60s grace period) */}
           {showCancelButton && (
-            <View className="mb-4 p-4 bg-amber-50 rounded-xl">
-              <View className="flex-row items-center gap-2 mb-2">
-                <Clock size={16} color="#D97706" />
-                <Text className="font-bold text-amber-700 text-sm">Cancel within {cancelSeconds}s</Text>
-              </View>
-              <TouchableOpacity
-                onPress={handleCancel}
-                disabled={cancelling}
-                className="py-3 rounded-xl items-center"
-                style={{ backgroundColor: '#EF4444' }}
-              >
-                {cancelling ? (
-                  <ActivityIndicator color="white" />
-                ) : (
-                  <Text className="text-white font-bold">Cancel Order</Text>
-                )}
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              onPress={handleCancel}
+              disabled={cancelling}
+              className="mb-4 py-3 rounded-xl items-center"
+              style={{ backgroundColor: '#EF4444' }}
+            >
+              {cancelling ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text className="text-white font-bold">Cancel Order</Text>
+              )}
+            </TouchableOpacity>
           )}
 
           {/* Cancellation reason */}

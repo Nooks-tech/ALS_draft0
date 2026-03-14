@@ -6,9 +6,10 @@ import {
   MapPin,
   Percent,
   Pencil,
+  Star,
   X,
 } from 'lucide-react-native';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -56,6 +57,8 @@ import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useOperations } from '../src/context/OperationsContext';
 import { useOrders } from '../src/context/OrdersContext';
 import { useProfile } from '../src/context/ProfileContext';
+import { useAuth } from '../src/context/AuthContext';
+import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 
 export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card';
 
@@ -76,6 +79,7 @@ export default function CheckoutScreen() {
   const { profile } = useProfile();
   const { isClosed, isBusy } = useOperations();
   const { primaryColor } = useMerchantBranding();
+  const { user } = useAuth();
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     Platform.OS === 'ios' ? 'apple_pay' : (SAMSUNG_PAY_ENABLED ? 'samsung_pay' : 'credit_card')
@@ -96,10 +100,36 @@ export default function CheckoutScreen() {
   const samsungPayInvoiceIdRef = useRef<string | null>(null);
   const orderIdRef = useRef(`order-${Date.now()}`);
 
+  // Loyalty points redemption
+  const [usePoints, setUsePoints] = useState(false);
+  const [loyaltyBalance, setLoyaltyBalance] = useState<LoyaltyBalance | null>(null);
+  const [pointsLoading, setPointsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!user?.id || !merchantId) return;
+    setPointsLoading(true);
+    loyaltyApi.getBalance(user.id, merchantId)
+      .then((bal) => setLoyaltyBalance(bal))
+      .catch(() => {})
+      .finally(() => setPointsLoading(false));
+  }, [user?.id, merchantId]);
+
   const deliveryFee = orderType === 'delivery' ? 15 : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
   const discount = promoApplied ? promoDiscount : 0;
-  const subtotalAfterDiscount = Math.max(0, subtotalBeforePromo - discount);
+  const subtotalAfterPromo = Math.max(0, subtotalBeforePromo - discount);
+
+  // Points discount: applies to items only (not delivery), after promo
+  const itemsAfterPromo = Math.max(0, totalPrice - discount);
+  const maxPointsDiscountSar = loyaltyBalance
+    ? +(loyaltyBalance.points * loyaltyBalance.pointValueSar).toFixed(2)
+    : 0;
+  const pointsDiscount = usePoints ? Math.min(maxPointsDiscountSar, itemsAfterPromo) : 0;
+  const pointsToRedeem = usePoints && loyaltyBalance
+    ? Math.min(loyaltyBalance.points, Math.ceil(pointsDiscount / loyaltyBalance.pointValueSar))
+    : 0;
+
+  const subtotalAfterDiscount = Math.max(0, subtotalAfterPromo - pointsDiscount);
   const amountExclVAT = subtotalAfterDiscount / (1 + VAT_RATE);
   const deliveryExclVAT = (orderType === 'delivery' ? deliveryFee : 0) / (1 + VAT_RATE);
   const itemsExclVAT = amountExclVAT - deliveryExclVAT;
@@ -267,6 +297,13 @@ export default function CheckoutScreen() {
       if (promoApplied && promoCode) {
         await consumeNooksPromo(merchantId, promoCode);
       }
+      if (usePoints && pointsToRedeem > 0 && user?.id && merchantId) {
+        try {
+          await loyaltyApi.redeem(user.id, pointsToRedeem, orderId, merchantId);
+        } catch (err) {
+          console.warn('[Checkout] Points redemption failed:', err);
+        }
+      }
       clearCart();
       setShowPaymentModal(false);
       setMoyasarWebUrl(null);
@@ -279,7 +316,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart]);
+  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, user?.id]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {
@@ -514,6 +551,58 @@ export default function CheckoutScreen() {
             )}
           </View>
 
+          {/* Use Points Toggle */}
+          {user?.id && loyaltyBalance && loyaltyBalance.points > 0 && (
+            <TouchableOpacity
+              onPress={() => setUsePoints(!usePoints)}
+              className="mt-5 rounded-2xl p-4 flex-row items-center justify-between"
+              style={{
+                borderWidth: 2,
+                borderColor: usePoints ? primaryColor : '#e2e8f0',
+                backgroundColor: usePoints ? `${primaryColor}08` : 'transparent',
+              }}
+              activeOpacity={0.7}
+            >
+              <View className="flex-row items-center flex-1">
+                <View
+                  style={{
+                    width: 36, height: 36, borderRadius: 18,
+                    backgroundColor: usePoints ? primaryColor : '#f1f5f9',
+                    alignItems: 'center', justifyContent: 'center',
+                  }}
+                >
+                  <Star size={18} color={usePoints ? '#fff' : '#94a3b8'} fill={usePoints ? '#fff' : 'none'} />
+                </View>
+                <View className="ml-3 flex-1">
+                  <Text className="font-bold text-slate-900">
+                    Use {loyaltyBalance.points} points
+                  </Text>
+                  <Text className="text-slate-500 text-xs mt-0.5">
+                    Save up to {Math.min(maxPointsDiscountSar, itemsAfterPromo).toFixed(2)} SAR
+                  </Text>
+                </View>
+              </View>
+              <View
+                style={{
+                  width: 44, height: 26, borderRadius: 13,
+                  backgroundColor: usePoints ? primaryColor : '#cbd5e1',
+                  justifyContent: 'center',
+                  paddingHorizontal: 2,
+                }}
+              >
+                <View
+                  style={{
+                    width: 22, height: 22, borderRadius: 11,
+                    backgroundColor: '#fff',
+                    alignSelf: usePoints ? 'flex-end' : 'flex-start',
+                    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+                    shadowOpacity: 0.15, shadowRadius: 2, elevation: 2,
+                  }}
+                />
+              </View>
+            </TouchableOpacity>
+          )}
+
           {/* Order Summary */}
           <View className="mt-6">
             <Text className="text-slate-500 text-sm mb-1">Amount excl. VAT</Text>
@@ -533,6 +622,12 @@ export default function CheckoutScreen() {
               <View className="flex-row justify-between mt-1">
                 <Text className="text-slate-900 font-medium">Promo discount</Text>
                 <Text className="text-emerald-600 font-bold">- {discount.toFixed(2)} SAR</Text>
+              </View>
+            )}
+            {usePoints && pointsDiscount > 0 && (
+              <View className="flex-row justify-between mt-1">
+                <Text className="text-slate-900 font-medium">Points ({pointsToRedeem} pts)</Text>
+                <Text className="text-emerald-600 font-bold">- {pointsDiscount.toFixed(2)} SAR</Text>
               </View>
             )}
             <View className="flex-row justify-between mt-3 pt-3 border-t border-slate-100">
