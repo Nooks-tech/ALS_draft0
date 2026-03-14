@@ -1,6 +1,5 @@
-import * as FileSystem from 'expo-file-system';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as Sharing from 'expo-sharing';
+import * as WebBrowser from 'expo-web-browser';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Award, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -392,25 +391,9 @@ export default function OffersScreen() {
                 onPress={async () => {
                   try {
                     const url = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
-                    const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
-                    const download = await FileSystem.downloadAsync(url, filePath);
-                    if (download.status !== 200) {
-                      const body = await FileSystem.readAsStringAsync(filePath).catch(() => '');
-                      let msg = 'Could not download wallet pass.';
-                      try { msg = JSON.parse(body).error || msg; } catch {}
-                      Alert.alert('Error', msg);
-                      return;
-                    }
-                    if (await Sharing.isAvailableAsync()) {
-                      await Sharing.shareAsync(filePath, {
-                        mimeType: 'application/vnd.apple.pkpass',
-                        UTI: 'com.apple.pkpass',
-                      });
-                    } else {
-                      await Linking.openURL(url);
-                    }
+                    await WebBrowser.openBrowserAsync(url);
                   } catch (err: any) {
-                    Alert.alert('Error', err?.message || 'Could not add wallet pass.');
+                    Alert.alert('Error', err?.message || 'Could not open wallet pass.');
                   }
                 }}
                 className="mt-5 flex-row items-center justify-center py-3.5 rounded-2xl"
