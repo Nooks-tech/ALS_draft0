@@ -133,32 +133,26 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       backgroundColor: bgColor,
       foregroundColor: textColor,
       labelColor: textColor,
-      generic: {
-        headerFields: [
-          { key: 'points', label: 'POINTS', value: String(points) },
-        ],
-        primaryFields: [
-          { key: 'balance', label: cardLabel, value: `${points} points` },
-        ],
-        secondaryFields: [
-          { key: 'tier', label: 'TIER', value: tierName },
-          ...(config?.stamp_enabled && stampData
-            ? [{ key: 'stamps', label: 'STAMPS', value: `${stampData.stamps ?? 0} / ${config.stamp_target}` }]
-            : []),
-          { key: 'value', label: 'VALUE', value: `${(points * pointValueSar).toFixed(2)} SAR` },
-        ],
-        auxiliaryFields: secondaryLabel
-          ? [{ key: 'subtitle', label: 'MEMBER', value: secondaryLabel }]
-          : [],
-        backFields: [
-          { key: 'lifetime', label: 'Lifetime Points', value: String(lifetimePoints) },
-          { key: 'completed', label: 'Completed Stamp Cards', value: String(stampData?.completed_cards ?? 0) },
-        ],
-      },
-      barcodes: [
-        { format: 'PKBarcodeFormatQR', message: customerId, messageEncoding: 'iso-8859-1' },
-      ],
     });
+
+    pass.type = 'generic';
+
+    pass.headerFields.push({ key: 'points', label: 'POINTS', value: String(points) });
+    pass.primaryFields.push({ key: 'balance', label: cardLabel, value: `${points} points` });
+    pass.secondaryFields.push({ key: 'tier', label: 'TIER', value: tierName });
+    if (config?.stamp_enabled && stampData) {
+      pass.secondaryFields.push({ key: 'stamps', label: 'STAMPS', value: `${stampData.stamps ?? 0} / ${config.stamp_target}` });
+    }
+    pass.secondaryFields.push({ key: 'value', label: 'VALUE', value: `${(points * pointValueSar).toFixed(2)} SAR` });
+    if (secondaryLabel) {
+      pass.auxiliaryFields.push({ key: 'subtitle', label: 'MEMBER', value: secondaryLabel });
+    }
+    pass.backFields.push(
+      { key: 'lifetime', label: 'Lifetime Points', value: String(lifetimePoints) },
+      { key: 'completed', label: 'Completed Stamp Cards', value: String(stampData?.completed_cards ?? 0) },
+    );
+
+    pass.setBarcodes({ format: 'PKBarcodeFormatQR', message: customerId, messageEncoding: 'iso-8859-1' });
 
     const buffer = pass.getAsBuffer();
 
