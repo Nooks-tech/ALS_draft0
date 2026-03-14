@@ -62,7 +62,27 @@ create or replace function public.current_user_branch_ids() returns uuid[] as $$
   );
 $$ language sql security definer stable;
 
--- 5. Allow team members to read the merchant they belong to
+-- 5. Ensure owners can always read & update their own merchant row (safe if RLS is on)
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies where policyname = 'Owner can read own merchant' and tablename = 'merchants'
+  ) then
+    create policy "Owner can read own merchant"
+      on public.merchants for select
+      using (user_id = auth.uid());
+  end if;
+
+  if not exists (
+    select 1 from pg_policies where policyname = 'Owner can update own merchant' and tablename = 'merchants'
+  ) then
+    create policy "Owner can update own merchant"
+      on public.merchants for update
+      using (user_id = auth.uid());
+  end if;
+end $$;
+
+-- 6. Allow team members to read the merchant they belong to
 do $$
 begin
   if not exists (
