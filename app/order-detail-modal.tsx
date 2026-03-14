@@ -10,7 +10,7 @@ import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
 import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
-import { customerCancelOrder, submitComplaint, getOrderComplaint, type ComplaintRow } from '../src/api/orders';
+import { submitComplaint, getOrderComplaint, type ComplaintRow } from '../src/api/orders';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { supabase } from '../src/api/supabase';
 
@@ -32,8 +32,6 @@ export default function OrderDetailModal() {
   const { primaryColor } = useMerchantBranding();
   const [otoStatus, setOtoStatus] = useState<OTOOrderStatusResponse | null>(null);
   const driverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const [cancelling, setCancelling] = useState(false);
 
   // Complaint state
   const [showComplaintModal, setShowComplaintModal] = useState(false);
@@ -88,26 +86,6 @@ export default function OrderDetailModal() {
     router.back();
     router.replace('/(tabs)/menu');
   }, [order, setCartFromOrder, router]);
-
-  const handleCancel = useCallback(async () => {
-    if (!orderId) return;
-    setCancelling(true);
-    try {
-      const result = await customerCancelOrder(orderId) as any;
-      if (result.success) {
-        if (result.refundStatus === 'refund_failed') {
-          Alert.alert('Order Cancelled', `Order cancelled but refund failed.\n\nPayment ID: ${result.paymentId ?? 'none'}\nError: ${result.refundError ?? 'unknown'}`);
-        } else {
-          Alert.alert('Order Cancelled', 'Your order has been cancelled. A refund has been initiated.');
-        }
-      } else {
-        Alert.alert('Cannot Cancel', result.error || 'Cancellation window expired.');
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to cancel order');
-    }
-    setCancelling(false);
-  }, [orderId]);
 
   const handlePickPhoto = async () => {
     if (complaintPhotos.length >= 3) return;
@@ -185,8 +163,6 @@ export default function OrderDetailModal() {
   const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
   const canShowMap = branchLat != null && branchLon != null;
 
-  const showCancelButton = order.status === 'Preparing';
-
   const isDelivered = order.status === 'Delivered';
   const deliveredAt = order.createdAt ? new Date(order.createdAt).getTime() : 0;
   const canReportIssue = isDelivered && (Date.now() - deliveredAt < COMPLAINT_WINDOW_MS) && !existingComplaint;
@@ -255,21 +231,6 @@ export default function OrderDetailModal() {
             </View>
             <Text className="text-slate-500 text-sm mt-2">{order.date}</Text>
           </View>
-
-          {showCancelButton && (
-            <TouchableOpacity
-              onPress={handleCancel}
-              disabled={cancelling}
-              className="mb-4 py-3 rounded-xl items-center"
-              style={{ backgroundColor: '#EF4444' }}
-            >
-              {cancelling ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <Text className="text-white font-bold">Cancel Order</Text>
-              )}
-            </TouchableOpacity>
-          )}
 
           {/* Cancellation reason */}
           {order.status === 'Cancelled' && order.cancellationReason && (
