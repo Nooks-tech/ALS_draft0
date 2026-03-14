@@ -1,3 +1,4 @@
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Award, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -27,6 +28,27 @@ import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/.exec(hex);
+  if (!m) return null;
+  return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
+}
+
+function darkenColor(hex: string, amount: number): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const r = Math.max(0, Math.round(rgb.r * (1 - amount)));
+  const g = Math.max(0, Math.round(rgb.g * (1 - amount)));
+  const b = Math.max(0, Math.round(rgb.b * (1 - amount)));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+function isLightColor(hex: string): boolean {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return false;
+  return (rgb.r * 299 + rgb.g * 587 + rgb.b * 114) / 1000 > 160;
+}
 
 function formatExpiry(validUntil?: string): string {
   if (!validUntil) return 'Valid for limited time';
@@ -59,6 +81,8 @@ export default function OffersScreen() {
   const [loyaltyLoading, setLoyaltyLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [redeemingId, setRedeemingId] = useState<string | null>(null);
+  const [appleWalletAvailable, setAppleWalletAvailable] = useState(false);
+  const [googleWalletAvailable, setGoogleWalletAvailable] = useState(false);
 
   useEffect(() => {
     if (!merchantId) return;
@@ -80,6 +104,13 @@ export default function OffersScreen() {
       if (rw) setRewards(rw.rewards);
     } catch { /* best-effort */ }
     setLoyaltyLoading(false);
+
+    const checks = await Promise.all([
+      fetch(`${API_URL}/api/loyalty/wallet-pass/check`).then(r => r.ok).catch(() => false),
+      fetch(`${API_URL}/api/loyalty/google-wallet/check`).then(r => r.ok && r.json().then((d: any) => d.available)).catch(() => false),
+    ]);
+    setAppleWalletAvailable(Platform.OS === 'ios' && checks[0]);
+    setGoogleWalletAvailable(Platform.OS === 'android' && checks[1]);
   }, [user?.id, merchantId]);
 
   useEffect(() => {
@@ -214,29 +245,116 @@ export default function OffersScreen() {
         ) : (
           <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
             {/* Points Balance Card */}
-            <View className="p-6 rounded-3xl" style={{ backgroundColor: primaryColor }}>
-              <View className="flex-row items-center mb-3">
-                <Star size={22} color="white" fill="white" />
-                <Text className="text-white text-lg font-bold ml-2">Your Points</Text>
-              </View>
-              <Text className="text-white text-5xl font-bold">{balance?.points ?? 0}</Text>
-              <Text className="text-white/70 mt-1">
-                Worth {balance?.pointsValue?.toFixed(2) ?? '0.00'} SAR
-              </Text>
-              <View className="mt-4 flex-row items-center">
-                <Award size={16} color={tierColor} />
-                <Text className="text-white font-bold ml-2">{tierName} Member</Text>
-              </View>
-              <Text className="text-white/60 text-xs mt-2">
-                {balance?.earnMode === 'per_order'
-                  ? `Earn ${balance?.pointsPerOrder ?? 10} points per order`
-                  : `Earn ${balance?.pointsPerSar ?? 1} point per SAR spent`}
-              </Text>
-            </View>
+            {(() => {
+              const cardLight = isLightColor(primaryColor);
+              const gradientEnd = darkenColor(primaryColor, 0.35);
+              const cardTextColor = cardLight ? '#1f2937' : '#ffffff';
+              const cardSubTextColor = cardLight ? 'rgba(31,41,55,0.6)' : 'rgba(255,255,255,0.7)';
+              return (
+                <View
+                  style={{
+                    borderRadius: 24,
+                    overflow: 'hidden',
+                    shadowColor: '#000',
+                    shadowOffset: { width: 0, height: 8 },
+                    shadowOpacity: 0.2,
+                    shadowRadius: 16,
+                    elevation: 10,
+                  }}
+                >
+                  <LinearGradient
+                    colors={[primaryColor, gradientEnd]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={{ padding: 24, position: 'relative' }}
+                  >
+                    {/* Decorative circles */}
+                    <View
+                      style={{
+                        position: 'absolute', top: -30, right: -30,
+                        width: 120, height: 120, borderRadius: 60,
+                        backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)',
+                      }}
+                    />
+                    <View
+                      style={{
+                        position: 'absolute', bottom: -20, left: -20,
+                        width: 80, height: 80, borderRadius: 40,
+                        backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)',
+                      }}
+                    />
+
+                    {/* Header */}
+                    <View className="flex-row items-center justify-between mb-5">
+                      <View className="flex-row items-center">
+                        <View
+                          style={{
+                            width: 36, height: 36, borderRadius: 18,
+                            backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
+                            alignItems: 'center', justifyContent: 'center',
+                          }}
+                        >
+                          <Star size={18} color={cardTextColor} fill={cardTextColor} />
+                        </View>
+                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
+                          Your Points
+                        </Text>
+                      </View>
+                      <View
+                        style={{
+                          flexDirection: 'row', alignItems: 'center',
+                          backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
+                          paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
+                        }}
+                      >
+                        <Award size={14} color={tierColor} />
+                        <Text style={{ color: cardTextColor, fontSize: 12, fontWeight: '600', marginLeft: 4 }}>
+                          {tierName}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Points */}
+                    <Text style={{ color: cardTextColor, fontSize: 48, fontWeight: '800', lineHeight: 52 }}>
+                      {balance?.points ?? 0}
+                    </Text>
+                    <Text style={{ color: cardSubTextColor, fontSize: 14, marginTop: 4 }}>
+                      Worth {balance?.pointsValue?.toFixed(2) ?? '0.00'} SAR
+                    </Text>
+
+                    {/* Divider */}
+                    <View
+                      style={{
+                        height: 1, marginVertical: 16,
+                        backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
+                      }}
+                    />
+
+                    {/* Earn rate */}
+                    <View className="flex-row items-center">
+                      <TrendingUp size={14} color={cardSubTextColor} />
+                      <Text style={{ color: cardSubTextColor, fontSize: 13, marginLeft: 6 }}>
+                        {balance?.earnMode === 'per_order'
+                          ? `Earn ${balance?.pointsPerOrder ?? 10} points per order`
+                          : `Earn ${balance?.pointsPerSar ?? 1} point per SAR spent`}
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </View>
+              );
+            })()}
 
             {/* Stamp Card */}
             {balance?.stampEnabled && (
-              <View className="mt-5 p-5 rounded-2xl bg-slate-50">
+              <View
+                className="mt-5 p-5 rounded-2xl"
+                style={{
+                  backgroundColor: menuCardColor,
+                  borderWidth: 1, borderColor: '#e2e8f0',
+                  shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
+                }}
+              >
                 <Text className="font-bold text-slate-800 mb-3">Stamp Card</Text>
                 <View className="flex-row flex-wrap gap-2">
                   {Array.from({ length: balance.stampTarget }).map((_, i) => (
@@ -267,7 +385,7 @@ export default function OffersScreen() {
             )}
 
             {/* Add to Apple Wallet */}
-            {Platform.OS === 'ios' && user?.id && merchantId && (
+            {appleWalletAvailable && user?.id && merchantId && (
               <TouchableOpacity
                 onPress={() => {
                   const url = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
@@ -279,6 +397,31 @@ export default function OffersScreen() {
                 style={{ backgroundColor: '#000' }}
               >
                 <Text className="text-white text-base font-semibold">Add to Apple Wallet</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Add to Google Wallet */}
+            {googleWalletAvailable && user?.id && merchantId && (
+              <TouchableOpacity
+                onPress={async () => {
+                  try {
+                    const res = await fetch(
+                      `${API_URL}/api/loyalty/google-wallet?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`
+                    );
+                    const data = await res.json();
+                    if (data.saveUrl) {
+                      Linking.openURL(data.saveUrl);
+                    } else {
+                      Alert.alert('Error', data.error || 'Could not generate Google Wallet pass.');
+                    }
+                  } catch {
+                    Alert.alert('Error', 'Failed to connect to server.');
+                  }
+                }}
+                className="mt-5 flex-row items-center justify-center py-3.5 rounded-2xl"
+                style={{ backgroundColor: '#000' }}
+              >
+                <Text className="text-white text-base font-semibold">Add to Google Wallet</Text>
               </TouchableOpacity>
             )}
 

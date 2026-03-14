@@ -11,6 +11,7 @@ import { otoRouter } from './routes/oto';
 import { paymentRouter } from './routes/payment';
 import { complaintsRouter } from './routes/complaints';
 import { walletPassRouter } from './routes/walletPass';
+import { googleWalletRouter } from './routes/googleWallet';
 import { startStaleOrdersCron } from './cron/staleOrders';
 
 const app = express();
@@ -34,6 +35,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/foodics', foodicsRouter);
 app.use('/api/loyalty', loyaltyRouter);
 app.use('/api/loyalty', walletPassRouter);
+app.use('/api/loyalty', googleWalletRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/oto', otoRouter);
 app.use('/api/payment', paymentRouter);

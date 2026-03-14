@@ -28,6 +28,17 @@ const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE;
 const WWDR_BASE64 = process.env.APPLE_WWDR_CERT_BASE64;
 
 /**
+ * GET /api/loyalty/wallet-pass/check
+ * Returns 200 if Apple Wallet pass generation is configured, 501 otherwise.
+ */
+walletPassRouter.get('/wallet-pass/check', (_req, res) => {
+  if (!PKPass || !PASS_TYPE_ID || !TEAM_ID || !CERT_BASE64 || !KEY_BASE64) {
+    return res.status(501).json({ available: false });
+  }
+  res.json({ available: true });
+});
+
+/**
  * GET /api/loyalty/wallet-pass?customerId=X&merchantId=X
  * Returns a .pkpass file for the customer's loyalty card.
  */
