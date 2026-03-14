@@ -10,6 +10,7 @@ import { ordersRouter } from './routes/orders';
 import { otoRouter } from './routes/oto';
 import { paymentRouter } from './routes/payment';
 import { complaintsRouter } from './routes/complaints';
+import { walletPassRouter } from './routes/walletPass';
 import { startStaleOrdersCron } from './cron/staleOrders';
 
 const app = express();
@@ -32,6 +33,7 @@ app.use('/build', buildRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/foodics', foodicsRouter);
 app.use('/api/loyalty', loyaltyRouter);
+app.use('/api/loyalty', walletPassRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/oto', otoRouter);
 app.use('/api/payment', paymentRouter);

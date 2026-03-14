@@ -1,12 +1,32 @@
 import { useRouter } from 'expo-router';
-import { ArrowLeft } from 'lucide-react-native';
-import { useEffect, useMemo, useState } from 'react';
-import { FlatList, Image, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { ArrowLeft, Award, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  Linking,
+  Platform,
+  ScrollView,
+  StatusBar,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { API_URL } from '../../src/api/config';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
 import { fetchNooksPromos } from '../../src/api/nooksPromos';
+import {
+  loyaltyApi,
+  type LoyaltyBalance,
+  type LoyaltyReward,
+  type LoyaltyTransaction,
+} from '../../src/api/loyalty';
 import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
+import { useAuth } from '../../src/context/AuthContext';
 
 function formatExpiry(validUntil?: string): string {
   if (!validUntil) return 'Valid for limited time';
@@ -21,15 +41,75 @@ function formatExpiry(validUntil?: string): string {
 export default function OffersScreen() {
   const router = useRouter();
   const { merchantId } = useMerchant();
-  const { backgroundColor, menuCardColor, textColor } = useMerchantBranding();
+  const { backgroundColor, menuCardColor, textColor, primaryColor } = useMerchantBranding();
+  const { user } = useAuth();
+  const [tab, setTab] = useState<'offers' | 'points'>('offers');
+
+  // Offers data
   const [nooksBanners, setNooksBanners] = useState<NooksBanner[]>([]);
-  const [nooksPromos, setNooksPromos] = useState<Array<{ id: string; code: string; name: string; description?: string; valid_until?: string; image_url?: string | null; imageUrl?: string | null }>>([]);
+  const [nooksPromos, setNooksPromos] = useState<Array<{
+    id: string; code: string; name: string; description?: string;
+    valid_until?: string; image_url?: string | null; imageUrl?: string | null;
+  }>>([]);
+
+  // Loyalty data
+  const [balance, setBalance] = useState<LoyaltyBalance | null>(null);
+  const [rewards, setRewards] = useState<LoyaltyReward[]>([]);
+  const [transactions, setTransactions] = useState<LoyaltyTransaction[]>([]);
+  const [loyaltyLoading, setLoyaltyLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [redeemingId, setRedeemingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!merchantId) return;
     fetchNooksBanners(merchantId).then(setNooksBanners);
     fetchNooksPromos(merchantId).then(setNooksPromos);
   }, [merchantId]);
+
+  const loadLoyalty = useCallback(async () => {
+    if (!user?.id || !merchantId) return;
+    setLoyaltyLoading(true);
+    try {
+      const [bal, hist, rw] = await Promise.all([
+        loyaltyApi.getBalance(user.id, merchantId).catch(() => null),
+        loyaltyApi.getHistory(user.id, merchantId).catch(() => ({ transactions: [] as LoyaltyTransaction[] })),
+        loyaltyApi.getRewards(merchantId).catch(() => ({ rewards: [] as LoyaltyReward[] })),
+      ]);
+      if (bal) setBalance(bal);
+      if (hist) setTransactions(hist.transactions);
+      if (rw) setRewards(rw.rewards);
+    } catch { /* best-effort */ }
+    setLoyaltyLoading(false);
+  }, [user?.id, merchantId]);
+
+  useEffect(() => {
+    if (tab === 'points') loadLoyalty();
+  }, [tab, loadLoyalty]);
+
+  const handleRedeemReward = async (reward: LoyaltyReward) => {
+    if (!user?.id || !merchantId) return;
+    if ((balance?.points ?? 0) < reward.points_cost) {
+      Alert.alert('Not enough points', `You need ${reward.points_cost} points but only have ${balance?.points ?? 0}.`);
+      return;
+    }
+    Alert.alert('Redeem Reward', `Spend ${reward.points_cost} points for "${reward.name}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Redeem',
+        onPress: async () => {
+          setRedeemingId(reward.id);
+          try {
+            const result = await loyaltyApi.redeemReward(user.id, reward.id, merchantId);
+            Alert.alert('Redeemed!', `You redeemed "${result.reward}". Show this to the staff.`);
+            loadLoyalty();
+          } catch {
+            Alert.alert('Error', 'Failed to redeem reward.');
+          }
+          setRedeemingId(null);
+        },
+      },
+    ]);
+  };
 
   const offerList = useMemo(() => {
     if (nooksPromos.length > 0) {
@@ -39,10 +119,8 @@ export default function OffersScreen() {
         description: p.description ?? `Use code ${p.code} at checkout`,
         code: p.code,
         expiry: formatExpiry(p.valid_until),
-        image:
-          typeof p.image_url === 'string'
-            ? p.image_url.trim()
-            : (typeof p.imageUrl === 'string' ? p.imageUrl.trim() : undefined),
+        image: typeof p.image_url === 'string' ? p.image_url.trim()
+          : (typeof p.imageUrl === 'string' ? p.imageUrl.trim() : undefined),
       }));
     }
     return [];
@@ -50,44 +128,256 @@ export default function OffersScreen() {
 
   const visibleBannerCards = useMemo(
     () => nooksBanners.filter((b) => b.placement === 'offers' || b.placement === 'slider'),
-    [nooksBanners]
+    [nooksBanners],
   );
+
+  const tierName = !balance ? 'Bronze' :
+    balance.lifetimePoints >= 5000 ? 'Gold' :
+    balance.lifetimePoints >= 1000 ? 'Silver' : 'Bronze';
+  const tierColor = tierName === 'Gold' ? '#F59E0B' : tierName === 'Silver' ? '#94A3B8' : '#CD7F32';
 
   return (
     <View className="flex-1" style={{ backgroundColor }}>
       <StatusBar barStyle="dark-content" />
+      {/* Header */}
       <View
-        className="pt-14 pb-4 px-5 flex-row items-center"
+        className="pt-14 pb-3 px-5 flex-row items-center"
         style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}
       >
         <TouchableOpacity onPress={() => router.replace('/(tabs)/menu')} className="mr-4 p-2 -ml-2">
           <ArrowLeft size={24} color={textColor} />
         </TouchableOpacity>
-        <Text className="text-xl font-bold" style={{ color: textColor }}>Offers</Text>
+        <Text className="text-xl font-bold flex-1" style={{ color: textColor }}>
+          {tab === 'offers' ? 'Offers' : 'Points'}
+        </Text>
       </View>
-      <FlatList
-        data={offerList}
-        keyExtractor={(item) => item.id}
-        ListHeaderComponent={
-          offerList.length === 0 && visibleBannerCards.length > 0 ? (
-            <View className="mb-4">
-              {visibleBannerCards.map((b) => (
-                <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: menuCardColor }}>
-                  <Image source={{ uri: b.image_url }} className="w-full h-40 bg-slate-200" resizeMode="cover" />
-                  {(b.title || b.subtitle) && (
-                    <View className="p-3">
-                      {b.subtitle ? <Text className="text-lg font-bold" style={{ color: textColor }}>{b.subtitle}</Text> : null}
-                      {b.title ? <Text style={{ color: textColor }}>{b.title}</Text> : null}
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ))}
+
+      {/* Toggle */}
+      <View className="flex-row mx-5 mt-3 rounded-xl overflow-hidden" style={{ backgroundColor: menuCardColor, borderWidth: 1, borderColor: '#e2e8f0' }}>
+        <TouchableOpacity
+          onPress={() => setTab('offers')}
+          className="flex-1 py-2.5 items-center"
+          style={tab === 'offers' ? { backgroundColor: primaryColor } : {}}
+        >
+          <Text className="text-sm font-semibold" style={{ color: tab === 'offers' ? '#fff' : textColor }}>Offers</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setTab('points')}
+          className="flex-1 py-2.5 items-center"
+          style={tab === 'points' ? { backgroundColor: primaryColor } : {}}
+        >
+          <Text className="text-sm font-semibold" style={{ color: tab === 'points' ? '#fff' : textColor }}>Points</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Offers Tab */}
+      {tab === 'offers' && (
+        <FlatList
+          data={offerList}
+          keyExtractor={(item) => item.id}
+          ListHeaderComponent={
+            offerList.length === 0 && visibleBannerCards.length > 0 ? (
+              <View className="mb-4">
+                {visibleBannerCards.map((b) => (
+                  <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: menuCardColor }}>
+                    <Image source={{ uri: b.image_url }} className="w-full h-40 bg-slate-200" resizeMode="cover" />
+                    {(b.title || b.subtitle) && (
+                      <View className="p-3">
+                        {b.subtitle ? <Text className="text-lg font-bold" style={{ color: textColor }}>{b.subtitle}</Text> : null}
+                        {b.title ? <Text style={{ color: textColor }}>{b.title}</Text> : null}
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null
+          }
+          ListEmptyComponent={
+            visibleBannerCards.length === 0 ? (
+              <View className="items-center justify-center py-20">
+                <Gift size={48} color="#94a3b8" />
+                <Text className="text-slate-400 mt-3 text-center">No offers available right now.</Text>
+              </View>
+            ) : null
+          }
+          renderItem={({ item }) => <OfferCard {...item} />}
+          contentContainerStyle={{ padding: 16 }}
+        />
+      )}
+
+      {/* Points Tab */}
+      {tab === 'points' && (
+        loyaltyLoading && !balance ? (
+          <View className="flex-1 items-center justify-center">
+            <ActivityIndicator size="large" color={primaryColor} />
+          </View>
+        ) : (
+          <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+            {/* Points Balance Card */}
+            <View className="p-6 rounded-3xl" style={{ backgroundColor: primaryColor }}>
+              <View className="flex-row items-center mb-3">
+                <Star size={22} color="white" fill="white" />
+                <Text className="text-white text-lg font-bold ml-2">Your Points</Text>
+              </View>
+              <Text className="text-white text-5xl font-bold">{balance?.points ?? 0}</Text>
+              <Text className="text-white/70 mt-1">
+                Worth {balance?.pointsValue?.toFixed(2) ?? '0.00'} SAR
+              </Text>
+              <View className="mt-4 flex-row items-center">
+                <Award size={16} color={tierColor} />
+                <Text className="text-white font-bold ml-2">{tierName} Member</Text>
+              </View>
+              <Text className="text-white/60 text-xs mt-2">
+                {balance?.earnMode === 'per_order'
+                  ? `Earn ${balance?.pointsPerOrder ?? 10} points per order`
+                  : `Earn ${balance?.pointsPerSar ?? 1} point per SAR spent`}
+              </Text>
             </View>
-          ) : null
-        }
-        renderItem={({ item }) => <OfferCard {...item} />}
-        contentContainerStyle={{ padding: 16 }}
-      />
+
+            {/* Stamp Card */}
+            {balance?.stampEnabled && (
+              <View className="mt-5 p-5 rounded-2xl bg-slate-50">
+                <Text className="font-bold text-slate-800 mb-3">Stamp Card</Text>
+                <View className="flex-row flex-wrap gap-2">
+                  {Array.from({ length: balance.stampTarget }).map((_, i) => (
+                    <View
+                      key={i}
+                      className="w-9 h-9 rounded-full items-center justify-center"
+                      style={{
+                        backgroundColor: i < (balance.stamps ?? 0) ? primaryColor : '#e2e8f0',
+                      }}
+                    >
+                      {i < (balance.stamps ?? 0) ? (
+                        <Star size={16} color="white" fill="white" />
+                      ) : (
+                        <Text className="text-slate-400 text-xs">{i + 1}</Text>
+                      )}
+                    </View>
+                  ))}
+                </View>
+                <Text className="text-slate-500 text-xs mt-3">
+                  {(balance.stampTarget - (balance.stamps ?? 0))} more orders until: {balance.stampRewardDescription}
+                </Text>
+                {(balance.completedCards ?? 0) > 0 && (
+                  <Text className="text-emerald-600 text-xs mt-1 font-semibold">
+                    Cards completed: {balance.completedCards}
+                  </Text>
+                )}
+              </View>
+            )}
+
+            {/* Add to Apple Wallet */}
+            {Platform.OS === 'ios' && user?.id && merchantId && (
+              <TouchableOpacity
+                onPress={() => {
+                  const url = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
+                  Linking.openURL(url).catch(() =>
+                    Alert.alert('Error', 'Could not open wallet pass. Make sure Apple Wallet is set up.'),
+                  );
+                }}
+                className="mt-5 flex-row items-center justify-center py-3.5 rounded-2xl"
+                style={{ backgroundColor: '#000' }}
+              >
+                <Text className="text-white text-base font-semibold">Add to Apple Wallet</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* Rewards Catalog */}
+            {rewards.length > 0 && (
+              <View className="mt-5">
+                <Text className="text-lg font-bold mb-3" style={{ color: textColor }}>Rewards</Text>
+                {rewards.map((r) => (
+                  <View
+                    key={r.id}
+                    className="flex-row items-center mb-3 p-4 rounded-2xl"
+                    style={{ backgroundColor: menuCardColor, borderWidth: 1, borderColor: '#e2e8f0' }}
+                  >
+                    {r.image_url ? (
+                      <Image source={{ uri: r.image_url }} className="w-14 h-14 rounded-xl mr-3" resizeMode="cover" />
+                    ) : (
+                      <View className="w-14 h-14 rounded-xl mr-3 bg-slate-100 items-center justify-center">
+                        <Gift size={24} color={primaryColor} />
+                      </View>
+                    )}
+                    <View className="flex-1">
+                      <Text className="font-semibold text-sm" style={{ color: textColor }}>{r.name}</Text>
+                      {r.description && <Text className="text-xs text-slate-400 mt-0.5">{r.description}</Text>}
+                      <Text className="text-xs font-bold mt-1" style={{ color: primaryColor }}>
+                        {r.points_cost} points
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => handleRedeemReward(r)}
+                      disabled={redeemingId === r.id || (balance?.points ?? 0) < r.points_cost}
+                      className="px-4 py-2 rounded-xl"
+                      style={{
+                        backgroundColor: (balance?.points ?? 0) >= r.points_cost ? primaryColor : '#e2e8f0',
+                        opacity: redeemingId === r.id ? 0.5 : 1,
+                      }}
+                    >
+                      <Text
+                        className="text-xs font-bold"
+                        style={{ color: (balance?.points ?? 0) >= r.points_cost ? '#fff' : '#94a3b8' }}
+                      >
+                        {redeemingId === r.id ? '...' : 'Redeem'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Transaction History */}
+            <View className="mt-5">
+              <TouchableOpacity
+                onPress={() => setShowHistory(!showHistory)}
+                className="flex-row items-center justify-between mb-3"
+              >
+                <Text className="text-lg font-bold" style={{ color: textColor }}>Recent Activity</Text>
+                <ChevronDown
+                  size={20}
+                  color="#64748b"
+                  style={{ transform: [{ rotate: showHistory ? '180deg' : '0deg' }] }}
+                />
+              </TouchableOpacity>
+              {showHistory && (
+                transactions.length > 0 ? (
+                  transactions.map((tx) => (
+                    <View key={tx.id} className="flex-row items-center py-3 border-b border-slate-100">
+                      <View
+                        className="w-9 h-9 rounded-full items-center justify-center"
+                        style={{ backgroundColor: tx.type === 'earn' ? '#dcfce7' : '#fef3c7' }}
+                      >
+                        {tx.type === 'earn' ? (
+                          <TrendingUp size={16} color="#16a34a" />
+                        ) : (
+                          <Gift size={16} color="#d97706" />
+                        )}
+                      </View>
+                      <View className="flex-1 ml-3">
+                        <Text className="text-slate-800 font-medium text-sm">{tx.description}</Text>
+                        <Text className="text-slate-400 text-xs">
+                          {new Date(tx.created_at).toLocaleDateString()}
+                        </Text>
+                      </View>
+                      <Text
+                        className="font-bold"
+                        style={{ color: tx.type === 'earn' ? '#16a34a' : '#d97706' }}
+                      >
+                        {tx.type === 'earn' ? '+' : ''}{tx.points}
+                      </Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text className="text-slate-400 text-center py-4">
+                    No transactions yet. Make an order to earn points!
+                  </Text>
+                )
+              )}
+            </View>
+          </ScrollView>
+        )
+      )}
     </View>
   );
 }

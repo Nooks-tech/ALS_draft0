@@ -1,16 +1,18 @@
 import { useRouter } from 'expo-router';
 import { Award, ChevronDown, Gift, Star, TrendingUp, X } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { loyaltyApi, type LoyaltyBalance, type LoyaltyTransaction } from '../src/api/loyalty';
 import { useAuth } from '../src/context/AuthContext';
+import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 
 export default function LoyaltyModal() {
   const router = useRouter();
   const { primaryColor } = useMerchantBranding();
   const { user } = useAuth();
+  const { merchantId } = useMerchant();
   const [balance, setBalance] = useState<LoyaltyBalance | null>(null);
   const [transactions, setTransactions] = useState<LoyaltyTransaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,8 +22,8 @@ export default function LoyaltyModal() {
     if (!user?.id) return;
     let cancelled = false;
     Promise.all([
-      loyaltyApi.getBalance(user.id).catch(() => null),
-      loyaltyApi.getHistory(user.id).catch(() => ({ transactions: [] })),
+      loyaltyApi.getBalance(user.id, merchantId).catch(() => null),
+      loyaltyApi.getHistory(user.id, merchantId).catch(() => ({ transactions: [] as LoyaltyTransaction[] })),
     ]).then(([bal, hist]) => {
       if (cancelled) return;
       if (bal) setBalance(bal);
@@ -29,7 +31,7 @@ export default function LoyaltyModal() {
       setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [user?.id]);
+  }, [user?.id, merchantId]);
 
   const tierName = !balance ? 'Bronze' :
     balance.lifetimePoints >= 5000 ? 'Gold' :
@@ -90,7 +92,9 @@ export default function LoyaltyModal() {
                 <TrendingUp size={24} color={primaryColor} />
                 <Text className="text-slate-800 font-bold mt-2 text-center">Earn</Text>
                 <Text className="text-slate-500 text-xs text-center mt-1">
-                  {balance?.pointsPerSar ?? 1} point per SAR spent
+                  {balance?.earnMode === 'per_order'
+                    ? `${balance?.pointsPerOrder ?? 10} points per order`
+                    : `${balance?.pointsPerSar ?? 1} point per SAR spent`}
                 </Text>
               </View>
               <View className="flex-1 bg-slate-50 rounded-2xl p-4 items-center">
@@ -102,6 +106,31 @@ export default function LoyaltyModal() {
               </View>
             </View>
           </View>
+
+          {/* Stamp Card */}
+          {balance?.stampEnabled && (
+            <View className="mx-5 mt-6 bg-slate-50 rounded-2xl p-5">
+              <Text className="font-bold text-slate-800 mb-3">Stamp Card</Text>
+              <View className="flex-row flex-wrap gap-2">
+                {Array.from({ length: balance.stampTarget }).map((_, i) => (
+                  <View
+                    key={i}
+                    className="w-9 h-9 rounded-full items-center justify-center"
+                    style={{ backgroundColor: i < (balance.stamps ?? 0) ? primaryColor : '#e2e8f0' }}
+                  >
+                    {i < (balance.stamps ?? 0) ? (
+                      <Star size={16} color="white" fill="white" />
+                    ) : (
+                      <Text className="text-slate-400 text-xs">{i + 1}</Text>
+                    )}
+                  </View>
+                ))}
+              </View>
+              <Text className="text-slate-500 text-xs mt-3">
+                {balance.stampTarget - (balance.stamps ?? 0)} more for: {balance.stampRewardDescription}
+              </Text>
+            </View>
+          )}
 
           {/* Transaction History */}
           <View className="mx-5 mt-6">
@@ -149,6 +178,14 @@ export default function LoyaltyModal() {
               )
             )}
           </View>
+
+          {/* View full rewards */}
+          <TouchableOpacity
+            onPress={() => { router.back(); router.replace('/(tabs)/offers'); }}
+            className="mx-5 mt-6 bg-slate-50 rounded-2xl p-4 items-center"
+          >
+            <Text className="font-semibold" style={{ color: primaryColor }}>View Rewards Catalog</Text>
+          </TouchableOpacity>
 
           {/* Lifetime stats */}
           <View className="mx-5 mt-6 bg-slate-50 rounded-2xl p-5">

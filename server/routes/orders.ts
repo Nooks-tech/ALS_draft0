@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { cancelPayment, calculateMoyasarFee } from '../services/payment';
 import { otoService } from '../services/oto';
+import { earnPoints } from './loyalty';
 
 export const ordersRouter = Router();
 
@@ -448,7 +449,7 @@ ordersRouter.patch('/:id/status', async (req, res) => {
 
     const { data: order } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, status')
+      .select('id, customer_id, status, total_sar, merchant_id')
       .eq('id', orderId)
       .single();
 
@@ -468,6 +469,9 @@ ordersRouter.patch('/:id/status', async (req, res) => {
         sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.');
       } else if (status === 'Delivered') {
         sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!');
+        earnPoints(order.customer_id, orderId, order.total_sar ?? 0, order.merchant_id ?? '').catch(
+          (e: any) => console.warn('[Orders] Auto-earn loyalty failed:', e?.message),
+        );
       }
     }
 

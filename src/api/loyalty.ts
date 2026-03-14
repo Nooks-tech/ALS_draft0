@@ -1,5 +1,5 @@
 /**
- * Loyalty API client – points balance, earn, redeem, history
+ * Loyalty API client – balance, earn, redeem, rewards, config, history
  */
 import { api } from './client';
 
@@ -8,7 +8,15 @@ export interface LoyaltyBalance {
   lifetimePoints: number;
   pointsValue: number;
   pointsPerSar: number;
+  pointsPerOrder: number;
   pointValueSar: number;
+  earnMode: 'per_sar' | 'per_order';
+  expiryMonths: number | null;
+  stampEnabled: boolean;
+  stampTarget: number;
+  stampRewardDescription: string;
+  stamps: number;
+  completedCards: number;
 }
 
 export interface LoyaltyTransaction {
@@ -19,24 +27,58 @@ export interface LoyaltyTransaction {
   created_at: string;
 }
 
-export const loyaltyApi = {
-  getBalance: (customerId: string) =>
-    api.get<LoyaltyBalance>(`/api/loyalty/balance?customerId=${encodeURIComponent(customerId)}`),
+export interface LoyaltyReward {
+  id: string;
+  name: string;
+  description: string | null;
+  image_url: string | null;
+  points_cost: number;
+  is_active: boolean;
+}
 
-  earn: (customerId: string, orderId: string, orderSubtotal: number) =>
+export interface LoyaltyConfig {
+  earn_mode: 'per_sar' | 'per_order';
+  points_per_sar: number;
+  points_per_order: number;
+  point_value_sar: number;
+  expiry_months: number | null;
+  stamp_enabled: boolean;
+  stamp_target: number;
+  stamp_reward_description: string;
+}
+
+export const loyaltyApi = {
+  getBalance: (customerId: string, merchantId?: string) =>
+    api.get<LoyaltyBalance>(
+      `/api/loyalty/balance?customerId=${encodeURIComponent(customerId)}${merchantId ? `&merchantId=${encodeURIComponent(merchantId)}` : ''}`
+    ),
+
+  getConfig: (merchantId: string) =>
+    api.get<LoyaltyConfig>(`/api/loyalty/config?merchantId=${encodeURIComponent(merchantId)}`),
+
+  getRewards: (merchantId: string) =>
+    api.get<{ rewards: LoyaltyReward[] }>(`/api/loyalty/rewards?merchantId=${encodeURIComponent(merchantId)}`),
+
+  redeemReward: (customerId: string, rewardId: string, merchantId: string) =>
+    api.post<{ success: boolean; reward: string; pointsSpent: number; newBalance: number }>(
+      '/api/loyalty/redeem-reward',
+      { customerId, rewardId, merchantId }
+    ),
+
+  earn: (customerId: string, orderId: string, orderSubtotal: number, merchantId?: string) =>
     api.post<{ success: boolean; pointsEarned: number; newBalance: number }>(
       '/api/loyalty/earn',
-      { customerId, orderId, orderSubtotal }
+      { customerId, orderId, orderSubtotal, merchantId }
     ),
 
-  redeem: (customerId: string, points: number, orderId: string) =>
+  redeem: (customerId: string, points: number, orderId: string, merchantId?: string) =>
     api.post<{ success: boolean; pointsRedeemed: number; discountSar: number; newBalance: number }>(
       '/api/loyalty/redeem',
-      { customerId, points, orderId }
+      { customerId, points, orderId, merchantId }
     ),
 
-  getHistory: (customerId: string) =>
+  getHistory: (customerId: string, merchantId?: string) =>
     api.get<{ transactions: LoyaltyTransaction[] }>(
-      `/api/loyalty/history?customerId=${encodeURIComponent(customerId)}`
+      `/api/loyalty/history?customerId=${encodeURIComponent(customerId)}${merchantId ? `&merchantId=${encodeURIComponent(merchantId)}` : ''}`
     ),
 };

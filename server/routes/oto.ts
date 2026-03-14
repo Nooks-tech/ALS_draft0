@@ -4,6 +4,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { otoService } from '../services/oto';
+import { earnPoints } from './loyalty';
 
 export const otoRouter = Router();
 
@@ -240,7 +241,7 @@ otoRouter.post('/webhook', async (req, res) => {
     const numericId = Number(otoOrderId);
     const { data: order } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, status, customer_id, order_type')
+      .select('id, status, customer_id, order_type, total_sar, merchant_id')
       .eq('oto_id', isNaN(numericId) ? otoOrderId : numericId)
       .single();
 
@@ -286,6 +287,9 @@ otoRouter.post('/webhook', async (req, res) => {
         order.customer_id,
         'Order Delivered',
         'Your order has been delivered. Enjoy!',
+      );
+      earnPoints(order.customer_id, order.id, order.total_sar ?? 0, order.merchant_id ?? '').catch(
+        (e: any) => console.warn('[OTO Webhook] Auto-earn loyalty failed:', e?.message),
       );
     } else if (mappedStatus === 'Cancelled' && order.customer_id) {
       sendPushToCustomer(
