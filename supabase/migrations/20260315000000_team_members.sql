@@ -22,11 +22,20 @@ create unique index if not exists idx_team_members_merchant_email on public.team
 
 alter table public.team_members enable row level security;
 
+-- Helper functions to avoid infinite recursion between merchants ↔ team_members policies
+create or replace function public.current_owner_merchant_id() returns uuid as $$
+  select id from public.merchants where user_id = auth.uid() limit 1;
+$$ language sql security definer stable;
+
+create or replace function public.current_team_merchant_id() returns uuid as $$
+  select merchant_id from public.team_members where user_id = auth.uid() and status = 'active' limit 1;
+$$ language sql security definer stable;
+
 -- RLS: owners can manage their merchant's team; managers can read their own row
 create policy "Owner can manage team"
   on public.team_members for all
   using (
-    merchant_id in (select id from public.merchants where user_id = auth.uid())
+    merchant_id = public.current_owner_merchant_id()
   );
 
 create policy "Team member can read own"
@@ -82,7 +91,7 @@ begin
   end if;
 end $$;
 
--- 6. Allow team members to read the merchant they belong to
+-- 6. Allow team members to read the merchant they belong to (uses SECURITY DEFINER to avoid recursion)
 do $$
 begin
   if not exists (
@@ -90,9 +99,7 @@ begin
   ) then
     create policy "Team members can read merchant"
       on public.merchants for select
-      using (
-        id in (select merchant_id from public.team_members where user_id = auth.uid() and status = 'active')
-      );
+      using (id = public.current_team_merchant_id());
   end if;
 end $$;
 
