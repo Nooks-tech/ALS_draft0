@@ -166,6 +166,8 @@ export default function OffersScreen() {
 
   const cardTitle = balance?.walletCardLabel || 'Your Points';
   const cardLogoUrl = balance?.walletCardLogoUrl || null;
+  const cardBgColor = balance?.walletCardBgColor || primaryColor;
+  const cardTxtColor = balance?.walletCardTextColor || null;
 
   return (
     <View className="flex-1" style={{ backgroundColor }}>
@@ -246,9 +248,9 @@ export default function OffersScreen() {
           <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
             {/* Points Balance Card */}
             {(() => {
-              const cardLight = isLightColor(primaryColor);
-              const gradientEnd = darkenColor(primaryColor, 0.35);
-              const cardTextColor = cardLight ? '#1f2937' : '#ffffff';
+              const cardLight = isLightColor(cardBgColor);
+              const gradientEnd = darkenColor(cardBgColor, 0.35);
+              const cardTextColor = cardTxtColor || (cardLight ? '#1f2937' : '#ffffff');
               const cardSubTextColor = cardLight ? 'rgba(31,41,55,0.6)' : 'rgba(255,255,255,0.7)';
               return (
                 <View
@@ -263,7 +265,7 @@ export default function OffersScreen() {
                   }}
                 >
                   <LinearGradient
-                    colors={[primaryColor, gradientEnd]}
+                    colors={[cardBgColor, gradientEnd]}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
                     style={{ padding: 24, position: 'relative' }}
