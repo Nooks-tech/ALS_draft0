@@ -1,5 +1,5 @@
+import * as FileSystem from 'expo-file-system';
 import { LinearGradient } from 'expo-linear-gradient';
-import * as WebBrowser from 'expo-web-browser';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Award, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -386,14 +386,29 @@ export default function OffersScreen() {
             )}
 
             {/* Add to Apple Wallet */}
-            {appleWalletAvailable && user?.id && merchantId && (
+            {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && (
               <TouchableOpacity
                 onPress={async () => {
                   try {
+                    const PassKit = require('react-native-passkit-wallet').default;
+                    const canAdd = await PassKit.canAddPasses();
+                    if (!canAdd) {
+                      Alert.alert('Not Supported', 'Apple Wallet is not available on this device.');
+                      return;
+                    }
                     const url = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
-                    await WebBrowser.openBrowserAsync(url);
+                    const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
+                    const download = await FileSystem.downloadAsync(url, filePath);
+                    if (download.status !== 200) {
+                      Alert.alert('Error', 'Could not download wallet pass.');
+                      return;
+                    }
+                    const base64 = await FileSystem.readAsStringAsync(filePath, {
+                      encoding: FileSystem.EncodingType.Base64,
+                    });
+                    await PassKit.addPass(base64);
                   } catch (err: any) {
-                    Alert.alert('Error', err?.message || 'Could not open wallet pass.');
+                    Alert.alert('Error', err?.message || 'Could not add wallet pass.');
                   }
                 }}
                 className="mt-5 flex-row items-center justify-center py-3.5 rounded-2xl"
