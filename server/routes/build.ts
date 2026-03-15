@@ -5,29 +5,78 @@
  */
 import { Router, Request, Response } from 'express';
 
-const BUILD_SECRET = process.env.BUILD_WEBHOOK_SECRET || '';
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
-const GITHUB_REPO = process.env.GITHUB_REPO || ''; // e.g. "owner/ALS_draft0"
-const GITHUB_REF = process.env.GITHUB_BUILD_REF || 'master';
-const BUILD_WEBHOOK_BASE_URL = process.env.BUILD_WEBHOOK_BASE_URL || ''; // e.g. https://api.als.delivery
+const BUILD_WEBHOOK_BASE_URL = process.env.BUILD_WEBHOOK_BASE_URL || '';
 
 export const buildRouter = Router();
 
-/** GET /build – returns webhook URL for Nooks and whether server is configured (no secrets in response). */
 buildRouter.get('/', (req: Request, res: Response) => {
   const base = BUILD_WEBHOOK_BASE_URL || (req.get('host') ? `${req.protocol}://${req.get('host')}` : '');
   const webhook_url = base ? `${base.replace(/\/$/, '')}/build` : null;
-  const configured = !!(GITHUB_TOKEN && GITHUB_REPO);
+  const token = process.env.GITHUB_TOKEN || '';
+  const repo = process.env.GITHUB_REPO || '';
+  const configured = !!(token && repo);
   return res.json({
     webhook_url,
     configured,
+    token_length: token.length,
+    repo,
     message: configured
       ? (webhook_url ? `Give Nooks this URL: ${webhook_url}` : 'Set BUILD_WEBHOOK_BASE_URL for the public webhook URL.')
       : 'Set GITHUB_TOKEN and GITHUB_REPO in server env to enable build trigger.',
   });
 });
 
+/** GET /build/test – diagnostic: tries to dispatch a no-op and returns the GitHub API response */
+buildRouter.get('/test', async (req: Request, res: Response) => {
+  const token = process.env.GITHUB_TOKEN || '';
+  const repo = process.env.GITHUB_REPO || '';
+  const ref = process.env.GITHUB_BUILD_REF || 'master';
+
+  if (!token || !repo) {
+    return res.json({ error: 'GITHUB_TOKEN or GITHUB_REPO not set', token_length: token.length, repo });
+  }
+
+  try {
+    const url = `https://api.github.com/repos/${repo}/actions/workflows/nooks-build.yml/dispatches`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ref,
+        inputs: { merchant_id: 'diagnostic-test' },
+      }),
+    });
+
+    const text = await response.text().catch(() => '');
+    return res.json({
+      github_status: response.status,
+      github_ok: response.ok,
+      github_body: text || '(empty - 204 means success)',
+      token_prefix: token.substring(0, 10) + '...',
+      repo,
+      ref,
+    });
+  } catch (err: any) {
+    return res.json({
+      error: 'fetch threw',
+      message: err.message,
+      name: err.name,
+      token_prefix: token.substring(0, 10) + '...',
+    });
+  }
+});
+
 buildRouter.post('/', async (req: Request, res: Response) => {
+  const BUILD_SECRET = process.env.BUILD_WEBHOOK_SECRET || '';
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+  const GITHUB_REPO = process.env.GITHUB_REPO || '';
+  const GITHUB_REF = process.env.GITHUB_BUILD_REF || 'master';
+
   if (BUILD_SECRET && req.headers['x-nooks-secret'] !== BUILD_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -43,14 +92,11 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     background_color,
     menu_card_color,
     text_color,
-    platforms,
     use_test_builds,
   } = req.body || {};
   if (!merchant_id || typeof merchant_id !== 'string') {
     return res.status(400).json({ error: 'Missing merchant_id' });
   }
-  // platforms (e.g. ["android", "ios"]) is optional; we always trigger both
-  // use_test_builds: when true, use EAS preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed
 
   if (!GITHUB_TOKEN || !GITHUB_REPO) {
     console.warn('[Build] GITHUB_TOKEN or GITHUB_REPO not set');
@@ -71,14 +117,10 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     menu_card_color: menu_card_color != null ? String(menu_card_color) : '#f5f5f4',
     text_color: text_color != null ? String(text_color) : '#1f2937',
   };
-  // Default to test builds for CI (APK + iOS simulator) unless explicitly disabled.
-  const useTestBuilds =
-    !(use_test_builds === false || use_test_builds === 'false');
+  const useTestBuilds = !(use_test_builds === false || use_test_builds === 'false');
   if (useTestBuilds) {
     inputs.use_test_builds = 'true';
   }
-
-  res.status(202).json({ message: 'Builds triggered', merchant_id: inputs.merchant_id });
 
   try {
     const url = `https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/nooks-build.yml/dispatches`;
@@ -99,10 +141,20 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     if (!response.ok) {
       const text = await response.text();
       console.error('[Build] GitHub trigger failed:', response.status, text);
-    } else {
-      console.log('[Build] Triggered workflow for merchant:', inputs.merchant_id);
+      return res.status(502).json({
+        error: 'GitHub API rejected the dispatch',
+        github_status: response.status,
+        github_body: text,
+      });
     }
-  } catch (err) {
-    console.error('[Build] Error triggering workflow:', (err as Error).message);
+
+    console.log('[Build] Triggered workflow for merchant:', inputs.merchant_id);
+    return res.json({ success: true, merchant_id: inputs.merchant_id, github_status: response.status });
+  } catch (err: any) {
+    console.error('[Build] Error triggering workflow:', err.message);
+    return res.status(500).json({
+      error: 'Failed to call GitHub API',
+      message: err.message,
+    });
   }
 });
