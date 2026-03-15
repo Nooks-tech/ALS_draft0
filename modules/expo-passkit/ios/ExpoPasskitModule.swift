@@ -10,33 +10,33 @@ public class ExpoPasskitModule: Module {
       return PKAddPassesViewController.canAddPasses()
     }
 
-    AsyncFunction("addPass") { (base64: String) in
+    AsyncFunction("addPass") { (base64: String, promise: Promise) in
       guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
-        throw PasskitError.invalidData
+        promise.reject("ERR_INVALID_DATA", "Could not decode base64 pass data")
+        return
       }
 
       let pass: PKPass
       do {
         pass = try PKPass(data: data)
       } catch {
-        throw PasskitError.invalidPass(error.localizedDescription)
+        promise.reject("ERR_INVALID_PASS", "Invalid pass: \(error.localizedDescription)")
+        return
       }
 
-      return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Bool, Error>) in
-        DispatchQueue.main.async {
-          guard let vc = PKAddPassesViewController(pass: pass) else {
-            continuation.resume(throwing: PasskitError.noController)
-            return
-          }
+      DispatchQueue.main.async {
+        guard let vc = PKAddPassesViewController(pass: pass) else {
+          promise.reject("ERR_NO_CONTROLLER", "Could not create Add Pass controller")
+          return
+        }
 
-          guard let rootVC = Self.topViewController() else {
-            continuation.resume(throwing: PasskitError.noRootVC)
-            return
-          }
+        guard let rootVC = ExpoPasskitModule.topViewController() else {
+          promise.reject("ERR_NO_ROOT_VC", "Could not find root view controller")
+          return
+        }
 
-          rootVC.present(vc, animated: true) {
-            continuation.resume(returning: true)
-          }
+        rootVC.present(vc, animated: true) {
+          promise.resolve(true)
         }
       }
     }
@@ -54,25 +54,5 @@ public class ExpoPasskitModule: Module {
       top = presented
     }
     return top
-  }
-}
-
-enum PasskitError: Error, LocalizedError {
-  case invalidData
-  case invalidPass(String)
-  case noController
-  case noRootVC
-
-  var errorDescription: String? {
-    switch self {
-    case .invalidData:
-      return "Could not decode base64 pass data"
-    case .invalidPass(let detail):
-      return "Invalid pass: \(detail)"
-    case .noController:
-      return "Could not create Add Pass controller"
-    case .noRootVC:
-      return "Could not find root view controller"
-    }
   }
 }

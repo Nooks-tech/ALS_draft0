@@ -32,7 +32,7 @@ const WWDR_BASE64 = process.env.APPLE_WWDR_CERT_BASE64;
  * Returns 200 if Apple Wallet pass generation is configured, 501 otherwise.
  */
 walletPassRouter.get('/wallet-pass/check', (_req, res) => {
-  if (!PKPass || !PASS_TYPE_ID || !TEAM_ID || !CERT_BASE64 || !KEY_BASE64) {
+  if (!PKPass || !PASS_TYPE_ID || !TEAM_ID || !CERT_BASE64 || !KEY_BASE64 || !WWDR_BASE64) {
     return res.status(501).json({ available: false });
   }
   res.json({ available: true });
@@ -62,9 +62,9 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       return res.status(400).json({ error: 'customerId and merchantId required' });
     }
 
-    if (!PKPass || !PASS_TYPE_ID || !TEAM_ID || !CERT_BASE64 || !KEY_BASE64) {
+    if (!PKPass || !PASS_TYPE_ID || !TEAM_ID || !CERT_BASE64 || !KEY_BASE64 || !WWDR_BASE64) {
       return res.status(501).json({
-        error: 'Apple Wallet pass not configured. Required env vars: APPLE_PASS_TYPE_ID, APPLE_PASS_TEAM_ID, APPLE_PASS_CERT_BASE64, APPLE_PASS_KEY_BASE64',
+        error: 'Apple Wallet pass not configured. Required env vars: APPLE_PASS_TYPE_ID, APPLE_PASS_TEAM_ID, APPLE_PASS_CERT_BASE64, APPLE_PASS_KEY_BASE64, APPLE_WWDR_CERT_BASE64',
       });
     }
 
@@ -103,14 +103,13 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const pointsPerSar = config?.points_per_sar ?? 0.1;
     const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
-    // Decode certificates
+    // Decode certificates (WWDR is guaranteed by the guard above)
     const signerCert = Buffer.from(CERT_BASE64, 'base64');
     const signerKey = Buffer.from(KEY_BASE64, 'base64');
-    const wwdr = WWDR_BASE64 ? Buffer.from(WWDR_BASE64, 'base64') : undefined;
+    const wwdr = Buffer.from(WWDR_BASE64, 'base64');
 
-    const certConfig: Record<string, unknown> = { signerCert, signerKey };
+    const certConfig: Record<string, unknown> = { signerCert, signerKey, wwdr };
     if (KEY_PASSPHRASE) certConfig.signerKeyPassphrase = KEY_PASSPHRASE;
-    if (wwdr) certConfig.wwdr = wwdr;
 
     // Create a 1x1 transparent PNG as minimal icon
     const MINIMAL_PNG = Buffer.from(
@@ -170,7 +169,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     });
     res.send(buffer);
   } catch (err: any) {
-    console.error('[WalletPass] Error:', err?.message);
+    console.error('[WalletPass] Error:', err?.message, err?.details || '');
     res.status(500).json({ error: err?.message || 'Failed to generate wallet pass' });
   }
 });

@@ -384,7 +384,13 @@ export default function OffersScreen() {
                     const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
                     const download = await FileSystem.downloadAsync(passUrl, filePath);
                     if (download.status !== 200) {
-                      Alert.alert('Error', 'Could not download wallet pass.');
+                      let msg = `Server returned ${download.status}`;
+                      try {
+                        const body = await FileSystem.readAsStringAsync(filePath);
+                        const parsed = JSON.parse(body);
+                        if (parsed.error) msg = parsed.error;
+                      } catch { /* ignore parse errors */ }
+                      Alert.alert('Error', msg);
                       return;
                     }
                     const base64 = await FileSystem.readAsStringAsync(filePath, {
