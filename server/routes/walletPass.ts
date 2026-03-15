@@ -1,13 +1,15 @@
 /**
  * Apple Wallet Pass generation for loyalty cards.
- * Uses SHA-256 for manifest hashes and PKCS#7 signature (required by iOS 16+).
+ * Uses OpenSSL for PKCS#7 signing (most reliable for Apple Wallet).
+ * Uses SHA-1 for manifest hashes (Apple's specified format).
  */
 import { createHash } from 'crypto';
+import { execSync } from 'child_process';
+import { writeFileSync, readFileSync, mkdtempSync, rmSync } from 'fs';
+import path from 'path';
+import os from 'os';
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
-
-let forge: any;
-try { forge = require('node-forge'); } catch {}
 
 let doNotZip: any;
 try { doNotZip = require('do-not-zip'); } catch {}
@@ -27,7 +29,7 @@ const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE;
 const WWDR_BASE64 = process.env.APPLE_WWDR_CERT_BASE64;
 
 function isConfigured() {
-  return !!(forge && doNotZip && PASS_TYPE_ID && TEAM_ID && CERT_BASE64 && KEY_BASE64 && WWDR_BASE64);
+  return !!(doNotZip && PASS_TYPE_ID && TEAM_ID && CERT_BASE64 && KEY_BASE64 && WWDR_BASE64);
 }
 
 function ensurePem(buf: Buffer, type: string): Buffer {
@@ -38,32 +40,31 @@ function ensurePem(buf: Buffer, type: string): Buffer {
   return Buffer.from(`-----BEGIN ${type}-----\n${lines}\n-----END ${type}-----\n`);
 }
 
-function signManifest(manifestBuf: Buffer, certBuf: Buffer, keyBuf: Buffer, wwdrBuf: Buffer): Buffer {
-  const certPem = certBuf.toString('utf-8');
-  const keyPem = keyBuf.toString('utf-8');
-  const wwdrPem = wwdrBuf.toString('utf-8');
+function signWithOpenSSL(manifestBuf: Buffer, certBuf: Buffer, keyBuf: Buffer, wwdrBuf: Buffer): Buffer {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'pkpass-'));
+  const certPath = path.join(tmpDir, 'cert.pem');
+  const keyPath = path.join(tmpDir, 'key.pem');
+  const wwdrPath = path.join(tmpDir, 'wwdr.pem');
+  const manifestPath = path.join(tmpDir, 'manifest.json');
+  const sigPath = path.join(tmpDir, 'signature');
 
-  const cert = forge.pki.certificateFromPem(certPem);
-  const key = forge.pki.decryptRsaPrivateKey(keyPem, KEY_PASSPHRASE);
-  const wwdrCert = forge.pki.certificateFromPem(wwdrPem);
+  try {
+    writeFileSync(certPath, certBuf);
+    writeFileSync(keyPath, keyBuf);
+    writeFileSync(wwdrPath, wwdrBuf);
+    writeFileSync(manifestPath, manifestBuf);
 
-  const p7 = forge.pkcs7.createSignedData();
-  p7.content = new forge.util.ByteStringBuffer(manifestBuf);
-  p7.addCertificate(wwdrCert);
-  p7.addCertificate(cert);
-  p7.addSigner({
-    key,
-    certificate: cert,
-    digestAlgorithm: forge.pki.oids.sha256,
-    authenticatedAttributes: [
-      { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
-      { type: forge.pki.oids.messageDigest },
-      { type: forge.pki.oids.signingTime },
-    ],
-  });
-  p7.sign({ detached: true });
+    const passinArg = KEY_PASSPHRASE ? `-passin pass:${KEY_PASSPHRASE}` : '';
 
-  return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
+    execSync(
+      `openssl smime -binary -sign -certfile "${wwdrPath}" -signer "${certPath}" -inkey "${keyPath}" -in "${manifestPath}" -out "${sigPath}" -outform DER ${passinArg}`,
+      { stdio: 'pipe' }
+    );
+
+    return readFileSync(sigPath);
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 function buildPkpass(passJson: Record<string, unknown>, assets: Record<string, Buffer>, certBuf: Buffer, keyBuf: Buffer, wwdrBuf: Buffer): Buffer {
@@ -72,13 +73,13 @@ function buildPkpass(passJson: Record<string, unknown>, assets: Record<string, B
 
   const manifest: Record<string, string> = {};
   for (const [name, buf] of Object.entries(files)) {
-    manifest[name] = createHash('sha256').update(buf).digest('hex');
+    manifest[name] = createHash('sha1').update(buf).digest('hex');
   }
   const manifestBuf = Buffer.from(JSON.stringify(manifest));
-  const signatureBuf = signManifest(manifestBuf, certBuf, keyBuf, wwdrBuf);
+  const signatureBuf = signWithOpenSSL(manifestBuf, certBuf, keyBuf, wwdrBuf);
 
   const zipEntries = [
-    ...Object.entries(files).map(([path, data]) => ({ path, data })),
+    ...Object.entries(files).map(([p, data]) => ({ path: p, data })),
     { path: 'manifest.json', data: manifestBuf },
     { path: 'signature', data: signatureBuf },
   ];
@@ -101,26 +102,34 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     keyLength: KEY_BASE64 ? KEY_BASE64.length : 0,
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
-    forgeAvailable: !!forge,
-    doNotZipAvailable: !!doNotZip,
-    hashAlgorithm: 'SHA-256',
+    pkPassAvailable: isConfigured(),
+    manifestHash: 'SHA-1',
+    signatureMethod: 'OpenSSL smime',
   };
 
+  let forge: any;
+  try { forge = require('node-forge'); } catch {}
+
   try {
-    if (CERT_BASE64) {
-      const certStr = Buffer.from(CERT_BASE64, 'base64').toString('utf-8');
+    if (CERT_BASE64 && forge) {
+      const certBuf = ensurePem(Buffer.from(CERT_BASE64, 'base64'), 'CERTIFICATE');
+      const certStr = certBuf.toString('utf-8');
       info.certIsPem = certStr.includes('-----BEGIN');
+      info.certFirst20 = certStr.substring(0, 50);
       try {
         const cert = forge.pki.certificateFromPem(certStr);
         info.certSubject = cert.subject.getField('CN')?.value;
         info.certIssuer = cert.issuer.getField('CN')?.value;
+        info.certValidFrom = cert.validity.notBefore?.toISOString();
         info.certValidTo = cert.validity.notAfter?.toISOString();
         info.certExpired = new Date() > cert.validity.notAfter;
       } catch (e: any) { info.certParseError = e.message; }
     }
-    if (WWDR_BASE64) {
-      const wwdrStr = Buffer.from(WWDR_BASE64, 'base64').toString('utf-8');
+    if (WWDR_BASE64 && forge) {
+      const wwdrBuf = ensurePem(Buffer.from(WWDR_BASE64, 'base64'), 'CERTIFICATE');
+      const wwdrStr = wwdrBuf.toString('utf-8');
       info.wwdrIsPem = wwdrStr.includes('-----BEGIN');
+      info.wwdrFirst20 = wwdrStr.substring(0, 50);
       try {
         const cert = forge.pki.certificateFromPem(wwdrStr);
         info.wwdrSubject = cert.subject.getField('CN')?.value;
@@ -128,12 +137,87 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
       } catch (e: any) { info.wwdrParseError = e.message; }
     }
     if (KEY_BASE64) {
-      const keyStr = Buffer.from(KEY_BASE64, 'base64').toString('utf-8');
+      const keyBuf = ensurePem(Buffer.from(KEY_BASE64, 'base64'), 'PRIVATE KEY');
+      const keyStr = keyBuf.toString('utf-8');
       info.keyIsPem = keyStr.includes('-----BEGIN');
+      info.keyFirst20 = keyStr.substring(0, 50);
     }
   } catch { /* ignore */ }
 
+  // Test OpenSSL availability
+  try {
+    const ver = execSync('openssl version', { encoding: 'utf-8', stdio: 'pipe' }).trim();
+    info.opensslVersion = ver;
+  } catch (e: any) {
+    info.opensslAvailable = false;
+    info.opensslError = e.message;
+  }
+
   res.json(info);
+});
+
+walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
+  try {
+    if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
+
+    const certBuf = ensurePem(Buffer.from(CERT_BASE64!, 'base64'), 'CERTIFICATE');
+    const keyBuf = ensurePem(Buffer.from(KEY_BASE64!, 'base64'), 'PRIVATE KEY');
+    const wwdrBuf = ensurePem(Buffer.from(WWDR_BASE64!, 'base64'), 'CERTIFICATE');
+
+    const MINIMAL_PNG = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAABl0RVh0U29mdHdhcmUAcGFpbnQubmV0IDQuMC4xNkRECVkAAAANSURBVBhXY/j//z8DAAj8Av6IXwboAAAAAElFTkSuQmCC',
+      'base64'
+    );
+
+    const passJson = {
+      formatVersion: 1,
+      passTypeIdentifier: PASS_TYPE_ID,
+      teamIdentifier: TEAM_ID,
+      organizationName: 'Test',
+      serialNumber: `test-${Date.now()}`,
+      description: 'Test loyalty card',
+      backgroundColor: 'rgb(0, 148, 136)',
+      foregroundColor: 'rgb(255, 255, 255)',
+      labelColor: 'rgb(255, 255, 255)',
+      generic: {
+        headerFields: [{ key: 'points', label: 'POINTS', value: '0' }],
+        primaryFields: [{ key: 'balance', label: 'Loyalty Card', value: '0 points' }],
+        secondaryFields: [{ key: 'value', label: 'VALUE', value: '0.00 SAR' }],
+        backFields: [{ key: 'lifetime', label: 'Lifetime Points', value: '0' }],
+      },
+      barcodes: [{ format: 'PKBarcodeFormatQR', message: 'test-customer', messageEncoding: 'iso-8859-1' }],
+    };
+
+    const assets: Record<string, Buffer> = {
+      'icon.png': MINIMAL_PNG,
+      'icon@2x.png': MINIMAL_PNG,
+    };
+
+    const buffer = buildPkpass(passJson, assets, certBuf, keyBuf, wwdrBuf);
+
+    res.json({
+      success: true,
+      pkpassSize: buffer.length,
+      passJson,
+      manifestSample: (() => {
+        const files: Record<string, Buffer> = { ...assets };
+        files['pass.json'] = Buffer.from(JSON.stringify(passJson));
+        const m: Record<string, string> = {};
+        for (const [name, buf] of Object.entries(files)) {
+          m[name] = createHash('sha1').update(buf).digest('hex');
+        }
+        return m;
+      })(),
+      pkpassBase64: buffer.toString('base64'),
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stderr: err.stderr?.toString?.() || null,
+      stack: err.stack?.substring(0, 500),
+    });
+  }
 });
 
 walletPassRouter.get('/wallet-pass', async (req, res) => {
@@ -177,7 +261,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const pointsPerSar = config?.points_per_sar ?? 0.1;
     const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
-    // Decode and ensure PEM format
     const signerCert = ensurePem(Buffer.from(CERT_BASE64!, 'base64'), 'CERTIFICATE');
     const signerKey = ensurePem(Buffer.from(KEY_BASE64!, 'base64'), 'PRIVATE KEY');
     const wwdr = ensurePem(Buffer.from(WWDR_BASE64!, 'base64'), 'CERTIFICATE');
@@ -203,6 +286,16 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       } catch { /* use default */ }
     }
 
+    // Apple Wallet colors must be rgb() format, not hex
+    const hexToRgb = (hex: string): string => {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substring(0, 2), 16);
+      const g = parseInt(h.substring(2, 4), 16);
+      const b = parseInt(h.substring(4, 6), 16);
+      if (isNaN(r) || isNaN(g) || isNaN(b)) return hex;
+      return `rgb(${r}, ${g}, ${b})`;
+    };
+
     const passJson: Record<string, unknown> = {
       formatVersion: 1,
       passTypeIdentifier: PASS_TYPE_ID,
@@ -210,9 +303,9 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       organizationName: cardLabel,
       serialNumber: `loyalty-${merchantId}-${customerId}`,
       description: cardLabel,
-      backgroundColor: bgColor,
-      foregroundColor: textColor,
-      labelColor: textColor,
+      backgroundColor: hexToRgb(bgColor),
+      foregroundColor: hexToRgb(textColor),
+      labelColor: hexToRgb(textColor),
       generic: {
         headerFields: [{ key: 'points', label: 'POINTS', value: String(points) }],
         primaryFields: [{ key: 'balance', label: cardLabel, value: `${points} points` }],
@@ -236,7 +329,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     });
     res.send(buffer);
   } catch (err: any) {
-    console.error('[WalletPass] Error:', err?.message, err?.stack?.substring(0, 300));
+    console.error('[WalletPass] Error:', err?.message, err?.stderr?.toString?.() || '', err?.stack?.substring(0, 300));
     res.status(500).json({ error: err?.message || 'Failed to generate wallet pass' });
   }
 });
