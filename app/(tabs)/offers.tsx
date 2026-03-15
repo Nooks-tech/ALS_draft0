@@ -2,7 +2,7 @@ import { encode } from 'base64-arraybuffer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { addPass } from '../../modules/expo-passkit';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
+import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp, Wallet } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -399,10 +399,20 @@ export default function OffersScreen() {
                     Alert.alert('Error', err?.message || 'Could not add wallet pass.');
                   }
                 }}
-                className="mt-5 flex-row items-center justify-center py-3.5 rounded-2xl"
-                style={{ backgroundColor: '#000' }}
+                style={{
+                  backgroundColor: '#000',
+                  height: 48,
+                  borderRadius: 12,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginTop: 20,
+                }}
               >
-                <Text className="text-white text-base font-semibold">Add to Apple Wallet</Text>
+                <Wallet size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '600' }}>
+                  Add to Apple Wallet
+                </Text>
               </TouchableOpacity>
             )}
 
