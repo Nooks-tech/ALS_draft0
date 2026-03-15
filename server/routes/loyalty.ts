@@ -48,17 +48,20 @@ loyaltyRouter.get('/config', async (req, res) => {
 /* ── GET /api/loyalty/config/debug – check table columns ── */
 loyaltyRouter.get('/config/debug', async (_req, res) => {
   if (!supabaseAdmin) return res.json({ error: 'no supabaseAdmin' });
+  const results: Record<string, unknown> = {};
   try {
-    const { data, error } = await supabaseAdmin
-      .from('loyalty_config')
-      .select('*')
-      .limit(1);
-    if (error) return res.json({ selectError: error.message, code: error.code, hint: error.hint });
-    const columns = data && data.length > 0 ? Object.keys(data[0]) : 'no rows – cannot detect columns';
-    return res.json({ ok: true, columns, sampleRow: data?.[0] ?? null });
-  } catch (err: any) {
-    return res.json({ error: err?.message, cause: (err as any)?.cause?.message || String((err as any)?.cause || 'none') });
-  }
+    const { data: d1, error: e1 } = await supabaseAdmin.from('loyalty_points').select('*').limit(1);
+    results.loyalty_points = e1 ? { error: e1.message, code: e1.code } : { ok: true, cols: d1?.[0] ? Object.keys(d1[0]) : 'empty' };
+  } catch (err: any) { results.loyalty_points = { thrown: err?.message }; }
+  try {
+    const { data: d2, error: e2 } = await supabaseAdmin.from('loyalty_config').select('*').limit(1);
+    results.loyalty_config = e2 ? { error: e2.message, code: e2.code, hint: e2.hint, details: e2.details } : { ok: true, cols: d2?.[0] ? Object.keys(d2[0]) : 'empty' };
+  } catch (err: any) { results.loyalty_config = { thrown: err?.message }; }
+  try {
+    const { data: d3, error: e3 } = await supabaseAdmin.from('loyalty_transactions').select('*').limit(1);
+    results.loyalty_transactions = e3 ? { error: e3.message, code: e3.code } : { ok: true, cols: d3?.[0] ? Object.keys(d3[0]) : 'empty' };
+  } catch (err: any) { results.loyalty_transactions = { thrown: err?.message }; }
+  return res.json(results);
 });
 
 /* ── PUT /api/loyalty/config ── */
