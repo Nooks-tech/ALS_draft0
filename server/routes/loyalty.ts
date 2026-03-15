@@ -14,7 +14,7 @@ const supabaseAdmin =
 
 const DEFAULT_CONFIG = {
   earn_mode: 'per_sar' as const,
-  points_per_sar: 1,
+  points_per_sar: 0.1,
   points_per_order: 10,
   point_value_sar: 0.1,
   expiry_months: null as number | null,

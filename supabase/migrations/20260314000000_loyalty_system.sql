@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS public.loyalty_config (
   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
   merchant_id text NOT NULL UNIQUE,
   earn_mode text NOT NULL DEFAULT 'per_sar' CHECK (earn_mode IN ('per_sar', 'per_order')),
-  points_per_sar numeric NOT NULL DEFAULT 1,
+  points_per_sar numeric NOT NULL DEFAULT 0.1,
   points_per_order numeric NOT NULL DEFAULT 10,
   point_value_sar numeric NOT NULL DEFAULT 0.1,
   expiry_months integer,
