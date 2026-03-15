@@ -39,7 +39,7 @@ walletPassRouter.get('/wallet-pass/check', (_req, res) => {
 });
 
 walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
-  res.json({
+  const info: Record<string, unknown> = {
     passTypeId: PASS_TYPE_ID || '(not set)',
     teamId: TEAM_ID || '(not set)',
     certLength: CERT_BASE64 ? CERT_BASE64.length : 0,
@@ -47,7 +47,44 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     pkPassAvailable: !!PKPass,
-  });
+  };
+
+  try {
+    const forge = require('node-forge');
+    if (CERT_BASE64) {
+      const certBuf = Buffer.from(CERT_BASE64, 'base64');
+      const certStr = certBuf.toString('utf-8');
+      info.certIsPem = certStr.includes('-----BEGIN');
+      info.certFirst20 = certStr.substring(0, 40);
+      try {
+        const cert = forge.pki.certificateFromPem(certStr);
+        info.certSubject = cert.subject.getField('CN')?.value;
+        info.certIssuer = cert.issuer.getField('CN')?.value;
+        info.certValidFrom = cert.validity.notBefore?.toISOString();
+        info.certValidTo = cert.validity.notAfter?.toISOString();
+        info.certExpired = new Date() > cert.validity.notAfter;
+      } catch (e: any) { info.certParseError = e.message; }
+    }
+    if (WWDR_BASE64) {
+      const wwdrBuf = Buffer.from(WWDR_BASE64, 'base64');
+      const wwdrStr = wwdrBuf.toString('utf-8');
+      info.wwdrIsPem = wwdrStr.includes('-----BEGIN');
+      info.wwdrFirst20 = wwdrStr.substring(0, 40);
+      try {
+        const cert = forge.pki.certificateFromPem(wwdrStr);
+        info.wwdrSubject = cert.subject.getField('CN')?.value;
+        info.wwdrValidTo = cert.validity.notAfter?.toISOString();
+      } catch (e: any) { info.wwdrParseError = e.message; }
+    }
+    if (KEY_BASE64) {
+      const keyBuf = Buffer.from(KEY_BASE64, 'base64');
+      const keyStr = keyBuf.toString('utf-8');
+      info.keyIsPem = keyStr.includes('-----BEGIN');
+      info.keyFirst20 = keyStr.substring(0, 40);
+    }
+  } catch { /* forge not available */ }
+
+  res.json(info);
 });
 
 /**
@@ -103,10 +140,24 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const pointsPerSar = config?.points_per_sar ?? 0.1;
     const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
-    // Decode certificates (WWDR is guaranteed by the guard above)
-    const signerCert = Buffer.from(CERT_BASE64, 'base64');
-    const signerKey = Buffer.from(KEY_BASE64, 'base64');
-    const wwdr = Buffer.from(WWDR_BASE64, 'base64');
+    // Decode certificates and auto-convert DER to PEM if needed
+    const toPem = (buf: Buffer, type: string) => {
+      const str = buf.toString('utf-8');
+      if (str.includes('-----BEGIN')) return buf;
+      const b64 = buf.toString('base64');
+      const lines = b64.match(/.{1,64}/g)!.join('\n');
+      return Buffer.from(`-----BEGIN ${type}-----\n${lines}\n-----END ${type}-----\n`);
+    };
+    const signerCert = toPem(Buffer.from(CERT_BASE64, 'base64'), 'CERTIFICATE');
+    const signerKey = (() => {
+      const buf = Buffer.from(KEY_BASE64, 'base64');
+      const str = buf.toString('utf-8');
+      if (str.includes('-----BEGIN')) return buf;
+      const b64 = buf.toString('base64');
+      const lines = b64.match(/.{1,64}/g)!.join('\n');
+      return Buffer.from(`-----BEGIN RSA PRIVATE KEY-----\n${lines}\n-----END RSA PRIVATE KEY-----\n`);
+    })();
+    const wwdr = toPem(Buffer.from(WWDR_BASE64, 'base64'), 'CERTIFICATE');
 
     const certConfig: Record<string, unknown> = { signerCert, signerKey, wwdr };
     if (KEY_PASSPHRASE) certConfig.signerKeyPassphrase = KEY_PASSPHRASE;
