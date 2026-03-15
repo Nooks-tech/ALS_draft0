@@ -96,7 +96,6 @@ config.expo.extra = {
 config.expo.plugins = [
   ...(config.expo.plugins || []),
   [withApplePayEntitlement, { merchantId: applePayMerchantId }],
-  'expo-web-browser',
 ];
 
 module.exports = config;

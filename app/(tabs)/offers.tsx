@@ -1,5 +1,6 @@
 import * as FileSystem from 'expo-file-system';
 import { LinearGradient } from 'expo-linear-gradient';
+import { addPass } from '../../modules/expo-passkit';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -380,32 +381,16 @@ export default function OffersScreen() {
                 onPress={async () => {
                   try {
                     const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
-
-                    // Try native PassKit first
-                    let usedNative = false;
-                    try {
-                      const mod = require('react-native-passkit-wallet');
-                      const PassKit = mod.default || mod;
-                      if (PassKit && typeof PassKit.canAddPasses === 'function') {
-                        const canAdd = await PassKit.canAddPasses();
-                        if (canAdd) {
-                          const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
-                          const download = await FileSystem.downloadAsync(passUrl, filePath);
-                          if (download.status === 200) {
-                            const base64 = await FileSystem.readAsStringAsync(filePath, {
-                              encoding: FileSystem.EncodingType.Base64,
-                            });
-                            await PassKit.addPass(base64);
-                            usedNative = true;
-                          }
-                        }
-                      }
-                    } catch { /* native module not available */ }
-
-                    // Fallback: open in Safari — Safari handles .pkpass natively
-                    if (!usedNative) {
-                      await Linking.openURL(passUrl);
+                    const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
+                    const download = await FileSystem.downloadAsync(passUrl, filePath);
+                    if (download.status !== 200) {
+                      Alert.alert('Error', 'Could not download wallet pass.');
+                      return;
                     }
+                    const base64 = await FileSystem.readAsStringAsync(filePath, {
+                      encoding: FileSystem.EncodingType.Base64,
+                    });
+                    await addPass(base64);
                   } catch (err: any) {
                     Alert.alert('Error', err?.message || 'Could not add wallet pass.');
                   }
