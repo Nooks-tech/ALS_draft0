@@ -25,11 +25,12 @@ const DEFAULT_CONFIG = {
 
 async function getMerchantConfig(merchantId: string) {
   if (!supabaseAdmin || !merchantId) return DEFAULT_CONFIG;
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('loyalty_config')
     .select('*')
     .eq('merchant_id', merchantId)
     .single();
+  if (error) console.warn('[loyalty] getMerchantConfig error for', merchantId, ':', error.message);
   return data ?? DEFAULT_CONFIG;
 }
 
