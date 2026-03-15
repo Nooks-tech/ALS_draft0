@@ -66,8 +66,19 @@ buildRouter.get('/test', async (req: Request, res: Response) => {
       error: 'fetch threw',
       message: err.message,
       name: err.name,
+      cause: err.cause?.message || err.cause?.code || String(err.cause || 'none'),
       token_prefix: token.substring(0, 10) + '...',
     });
+  }
+});
+
+buildRouter.get('/ping-github', async (_req: Request, res: Response) => {
+  try {
+    const r = await fetch('https://api.github.com/zen');
+    const text = await r.text();
+    return res.json({ ok: true, status: r.status, body: text });
+  } catch (err: any) {
+    return res.json({ ok: false, error: err.message, cause: err.cause?.message || err.cause?.code || String(err.cause || 'none') });
   }
 });
 
