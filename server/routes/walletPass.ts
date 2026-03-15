@@ -89,7 +89,8 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
     const cardLabel = config?.wallet_card_label || 'Loyalty Card';
     const secondaryLabel = config?.wallet_card_secondary_label || '';
-    const pointValueSar = config?.point_value_sar ?? 0.1;
+    const pointsPerSar = config?.points_per_sar ?? 0.1;
+    const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
     // Decode certificates
     const signerCert = Buffer.from(CERT_BASE64, 'base64');

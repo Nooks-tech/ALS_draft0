@@ -337,7 +337,7 @@ export default function OffersScreen() {
                       <Text style={{ color: cardSubTextColor, fontSize: 13, marginLeft: 6 }}>
                         {balance?.earnMode === 'per_order'
                           ? `Earn ${balance?.pointsPerOrder ?? 10} points per order`
-                          : `Earn ${balance?.pointsPerSar ?? 1} point per SAR spent`}
+                          : `Earn ${Math.round((balance?.pointsPerSar ?? 0.1) * 100)}% back in points`}
                       </Text>
                     </View>
                   </LinearGradient>
