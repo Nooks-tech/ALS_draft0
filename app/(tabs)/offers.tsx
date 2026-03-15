@@ -390,7 +390,17 @@ export default function OffersScreen() {
               <TouchableOpacity
                 onPress={async () => {
                   try {
-                    const PassKit = require('react-native-passkit-wallet').default;
+                    let PassKit: any;
+                    try {
+                      PassKit = require('react-native-passkit-wallet').default;
+                    } catch {
+                      Alert.alert('Build Required', 'This feature requires a newer app build. Please update the app.');
+                      return;
+                    }
+                    if (!PassKit || typeof PassKit.canAddPasses !== 'function') {
+                      Alert.alert('Build Required', 'This feature requires a newer app build. Please update the app.');
+                      return;
+                    }
                     const canAdd = await PassKit.canAddPasses();
                     if (!canAdd) {
                       Alert.alert('Not Supported', 'Apple Wallet is not available on this device.');
