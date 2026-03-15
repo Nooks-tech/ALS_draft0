@@ -289,20 +289,18 @@ export default function OffersScreen() {
                       />
                     )}
 
-                    {/* Header */}
+                    {/* Header — star always shown + title */}
                     <View className="flex-row items-center mb-5">
-                      {!cardLogoUrl && (
-                        <View
-                          style={{
-                            width: 36, height: 36, borderRadius: 18,
-                            backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
-                            alignItems: 'center', justifyContent: 'center',
-                          }}
-                        >
-                          <Star size={18} color={cardTextColor} fill={cardTextColor} />
-                        </View>
-                      )}
-                      <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: cardLogoUrl ? 0 : 10 }}>
+                      <View
+                        style={{
+                          width: 36, height: 36, borderRadius: 18,
+                          backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
+                          alignItems: 'center', justifyContent: 'center',
+                        }}
+                      >
+                        <Star size={18} color={cardTextColor} fill={cardTextColor} />
+                      </View>
+                      <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
                         {cardTitle}
                       </Text>
                     </View>

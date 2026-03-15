@@ -99,7 +99,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const bgColor = config?.wallet_card_bg_color || '#0D9488';
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
     const cardLabel = config?.wallet_card_label || 'Loyalty Card';
-    const secondaryLabel = config?.wallet_card_secondary_label || '';
+    // secondary_label removed from design
     const pointsPerSar = config?.points_per_sar ?? 0.1;
     const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
@@ -154,9 +154,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     pass.secondaryFields.push({ key: 'value', label: 'VALUE', value: `${(points * pointValueSar).toFixed(2)} SAR` });
     if (config?.stamp_enabled && stampData) {
       pass.secondaryFields.push({ key: 'stamps', label: 'STAMPS', value: `${stampData.stamps ?? 0} / ${config.stamp_target}` });
-    }
-    if (secondaryLabel) {
-      pass.auxiliaryFields.push({ key: 'subtitle', label: 'MEMBER', value: secondaryLabel });
     }
     pass.backFields.push(
       { key: 'lifetime', label: 'Lifetime Points', value: String(lifetimePoints) },
