@@ -45,6 +45,22 @@ loyaltyRouter.get('/config', async (req, res) => {
   }
 });
 
+/* ── GET /api/loyalty/config/debug – check table columns ── */
+loyaltyRouter.get('/config/debug', async (_req, res) => {
+  if (!supabaseAdmin) return res.json({ error: 'no supabaseAdmin' });
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('loyalty_config')
+      .select('*')
+      .limit(1);
+    if (error) return res.json({ selectError: error.message, code: error.code, hint: error.hint });
+    const columns = data && data.length > 0 ? Object.keys(data[0]) : 'no rows – cannot detect columns';
+    return res.json({ ok: true, columns, sampleRow: data?.[0] ?? null });
+  } catch (err: any) {
+    return res.json({ error: err?.message, cause: (err as any)?.cause?.message || String((err as any)?.cause || 'none') });
+  }
+});
+
 /* ── PUT /api/loyalty/config ── */
 loyaltyRouter.put('/config', async (req, res) => {
   try {
@@ -63,13 +79,24 @@ loyaltyRouter.put('/config', async (req, res) => {
       if (k in fields) payload[k] = fields[k];
     }
 
-    const { error } = await supabaseAdmin
+    console.log('[loyalty] PUT config payload:', JSON.stringify(payload));
+    const { data, error } = await supabaseAdmin
       .from('loyalty_config')
-      .upsert(payload, { onConflict: 'merchant_id' });
-    if (error) return res.status(500).json({ error: error.message });
+      .upsert(payload, { onConflict: 'merchant_id' })
+      .select();
+    if (error) {
+      console.error('[loyalty] upsert error:', error.message, error.code, error.hint, error.details);
+      return res.status(500).json({ error: error.message, code: error.code, hint: error.hint });
+    }
+    console.log('[loyalty] upsert success:', JSON.stringify(data));
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to save config' });
+    const cause = (err as any)?.cause;
+    console.error('[loyalty] PUT config exception:', err?.message, 'cause:', cause?.message || cause?.code || String(cause || 'none'));
+    res.status(500).json({
+      error: err?.message || 'Failed to save config',
+      cause: cause?.message || cause?.code || String(cause || 'none'),
+    });
   }
 });
 
