@@ -1,5 +1,4 @@
 import * as FileSystem from 'expo-file-system';
-import * as WebBrowser from 'expo-web-browser';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
@@ -398,17 +397,14 @@ export default function OffersScreen() {
                             });
                             await PassKit.addPass(base64);
                             usedNative = true;
-                          } else {
-                            Alert.alert('Debug', `Download failed: status ${download.status}`);
                           }
                         }
                       }
-                    } catch (nativeErr: any) {
-                      console.log('[Wallet] Native failed:', nativeErr?.message);
-                    }
+                    } catch { /* native module not available */ }
 
+                    // Fallback: open in Safari — Safari handles .pkpass natively
                     if (!usedNative) {
-                      await WebBrowser.openBrowserAsync(passUrl);
+                      await Linking.openURL(passUrl);
                     }
                   } catch (err: any) {
                     Alert.alert('Error', err?.message || 'Could not add wallet pass.');
