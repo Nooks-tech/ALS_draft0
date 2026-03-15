@@ -382,7 +382,7 @@ export default function OffersScreen() {
                   try {
                     const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
 
-                    // Try native PassKit first (best UX — shows native Add dialog)
+                    // Try native PassKit first
                     let usedNative = false;
                     try {
                       const mod = require('react-native-passkit-wallet');
@@ -398,16 +398,17 @@ export default function OffersScreen() {
                             });
                             await PassKit.addPass(base64);
                             usedNative = true;
+                          } else {
+                            Alert.alert('Debug', `Download failed: status ${download.status}`);
                           }
                         }
                       }
-                    } catch { /* native module not available, fall through */ }
+                    } catch (nativeErr: any) {
+                      console.log('[Wallet] Native failed:', nativeErr?.message);
+                    }
 
-                    // Fallback: open in browser — iOS handles .pkpass natively
                     if (!usedNative) {
-                      await WebBrowser.openBrowserAsync(passUrl, {
-                        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
-                      });
+                      await WebBrowser.openBrowserAsync(passUrl);
                     }
                   } catch (err: any) {
                     Alert.alert('Error', err?.message || 'Could not add wallet pass.');
