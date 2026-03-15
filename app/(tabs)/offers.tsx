@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import { encode } from 'base64-arraybuffer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { addPass } from '../../modules/expo-passkit';
 import { useRouter } from 'expo-router';
@@ -383,21 +383,17 @@ export default function OffersScreen() {
                 onPress={async () => {
                   try {
                     const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
-                    const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
-                    const download = await FileSystem.downloadAsync(passUrl, filePath);
-                    if (download.status !== 200) {
-                      let msg = `Server returned ${download.status}`;
+                    const res = await fetch(passUrl);
+                    if (!res.ok) {
+                      let msg = `Server returned ${res.status}`;
                       try {
-                        const body = await FileSystem.readAsStringAsync(filePath);
-                        const parsed = JSON.parse(body);
-                        if (parsed.error) msg = parsed.error;
-                      } catch { /* ignore parse errors */ }
+                        const data = await res.json();
+                        if (data.error) msg = data.error;
+                      } catch { /* not JSON */ }
                       Alert.alert('Error', msg);
                       return;
                     }
-                    const base64 = await FileSystem.readAsStringAsync(filePath, {
-                      encoding: FileSystem.EncodingType.Base64,
-                    });
+                    const base64 = encode(await res.arrayBuffer());
                     await addPass(base64);
                   } catch (err: any) {
                     Alert.alert('Error', err?.message || 'Could not add wallet pass.');
