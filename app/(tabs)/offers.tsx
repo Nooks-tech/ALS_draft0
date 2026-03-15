@@ -1,6 +1,6 @@
 import { encode } from 'base64-arraybuffer';
 import { LinearGradient } from 'expo-linear-gradient';
-import { addPass } from '../../modules/expo-passkit';
+import ExpoWallet from '@giulio987/expo-wallet';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp, Wallet } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -394,7 +394,7 @@ export default function OffersScreen() {
                       return;
                     }
                     const base64 = encode(await res.arrayBuffer());
-                    await addPass(base64);
+                    await ExpoWallet.addPass(base64);
                   } catch (err: any) {
                     Alert.alert('Error', err?.message || 'Could not add wallet pass.');
                   }
