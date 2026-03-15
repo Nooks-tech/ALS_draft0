@@ -392,7 +392,8 @@ export default function OffersScreen() {
                   try {
                     let PassKit: any;
                     try {
-                      PassKit = require('react-native-passkit-wallet').default;
+                      const mod = require('react-native-passkit-wallet');
+                      PassKit = mod.default || mod;
                     } catch {
                       Alert.alert('Build Required', 'This feature requires a newer app build. Please update the app.');
                       return;
