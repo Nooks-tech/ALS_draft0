@@ -85,6 +85,7 @@ export default function OffersScreen() {
   const [redeemingId, setRedeemingId] = useState<string | null>(null);
   const [appleWalletAvailable, setAppleWalletAvailable] = useState(false);
   const [googleWalletAvailable, setGoogleWalletAvailable] = useState(false);
+  const [walletLoading, setWalletLoading] = useState(false);
 
   useEffect(() => {
     if (!merchantId) return;
@@ -380,7 +381,9 @@ export default function OffersScreen() {
             {/* Add to Apple Wallet */}
             {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && (
               <TouchableOpacity
+                disabled={walletLoading}
                 onPress={async () => {
+                  setWalletLoading(true);
                   try {
                     const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
                     const res = await fetch(passUrl);
@@ -393,10 +396,24 @@ export default function OffersScreen() {
                       Alert.alert('Error', msg);
                       return;
                     }
-                    const base64 = encode(await res.arrayBuffer());
+                    const ab = await res.arrayBuffer();
+                    if (!ab || ab.byteLength === 0) {
+                      Alert.alert('Error', 'Empty response from server.');
+                      return;
+                    }
+                    const base64 = encode(ab);
                     await ExpoWallet.addPass(base64);
                   } catch (err: any) {
-                    Alert.alert('Error', err?.message || 'Could not add wallet pass.');
+                    const msg = err?.message || '';
+                    if (msg.includes('E_PASS_LIBRARY_CANNOT_ADD')) {
+                      Alert.alert('Cancelled', 'Pass was not added.');
+                    } else if (msg.includes('E_PASS_LIBRARY_INVALID_DATA')) {
+                      Alert.alert('Error', 'The pass data is invalid. Please try again.');
+                    } else {
+                      Alert.alert('Error', msg || 'Could not add wallet pass.');
+                    }
+                  } finally {
+                    setWalletLoading(false);
                   }
                 }}
                 style={{
@@ -407,11 +424,16 @@ export default function OffersScreen() {
                   alignItems: 'center',
                   justifyContent: 'center',
                   marginTop: 20,
+                  opacity: walletLoading ? 0.6 : 1,
                 }}
               >
-                <Wallet size={20} color="#fff" style={{ marginRight: 8 }} />
+                {walletLoading ? (
+                  <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+                ) : (
+                  <Wallet size={20} color="#fff" style={{ marginRight: 8 }} />
+                )}
                 <Text style={{ color: '#fff', fontSize: 16, fontWeight: '600' }}>
-                  Add to Apple Wallet
+                  {walletLoading ? 'Adding...' : 'Add to Apple Wallet'}
                 </Text>
               </TouchableOpacity>
             )}

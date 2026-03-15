@@ -112,7 +112,7 @@ function buildPkpass(
 // ─── Routes ───
 
 walletPassRouter.get('/wallet-pass/check', (_req, res) => {
-  if (!isConfigured()) return res.status(501).json({ available: false });
+  if (!isConfigured() || !supabaseAdmin) return res.status(501).json({ available: false });
   res.json({ available: true });
 });
 
