@@ -38,6 +38,18 @@ walletPassRouter.get('/wallet-pass/check', (_req, res) => {
   res.json({ available: true });
 });
 
+walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
+  res.json({
+    passTypeId: PASS_TYPE_ID || '(not set)',
+    teamId: TEAM_ID || '(not set)',
+    certLength: CERT_BASE64 ? CERT_BASE64.length : 0,
+    keyLength: KEY_BASE64 ? KEY_BASE64.length : 0,
+    wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
+    keyPassphraseSet: !!KEY_PASSPHRASE,
+    pkPassAvailable: !!PKPass,
+  });
+});
+
 /**
  * GET /api/loyalty/wallet-pass?customerId=X&merchantId=X
  * Returns a .pkpass file for the customer's loyalty card.
