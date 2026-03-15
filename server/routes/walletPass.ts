@@ -158,7 +158,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
-      'Content-Disposition': `attachment; filename="loyalty-card.pkpass"`,
+      'Content-Disposition': `inline; filename="loyalty-card.pkpass"`,
       'Content-Length': String(buffer.length),
     });
     res.send(buffer);
