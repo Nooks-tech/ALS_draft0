@@ -80,7 +80,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     const points = pointsData?.points ?? 0;
     const lifetimePoints = pointsData?.lifetime_points ?? 0;
-    const tierName = lifetimePoints >= 5000 ? 'Gold' : lifetimePoints >= 1000 ? 'Silver' : 'Bronze';
 
     // Fetch stamp progress
     const { data: stampData } = await supabaseAdmin
@@ -152,17 +151,15 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     pass.headerFields.push({ key: 'points', label: 'POINTS', value: String(points) });
     pass.primaryFields.push({ key: 'balance', label: cardLabel, value: `${points} points` });
-    pass.secondaryFields.push({ key: 'tier', label: 'TIER', value: tierName });
+    pass.secondaryFields.push({ key: 'value', label: 'VALUE', value: `${(points * pointValueSar).toFixed(2)} SAR` });
     if (config?.stamp_enabled && stampData) {
       pass.secondaryFields.push({ key: 'stamps', label: 'STAMPS', value: `${stampData.stamps ?? 0} / ${config.stamp_target}` });
     }
-    pass.secondaryFields.push({ key: 'value', label: 'VALUE', value: `${(points * pointValueSar).toFixed(2)} SAR` });
     if (secondaryLabel) {
       pass.auxiliaryFields.push({ key: 'subtitle', label: 'MEMBER', value: secondaryLabel });
     }
     pass.backFields.push(
       { key: 'lifetime', label: 'Lifetime Points', value: String(lifetimePoints) },
-      { key: 'completed', label: 'Completed Stamp Cards', value: String(stampData?.completed_cards ?? 0) },
     );
 
     pass.setBarcodes({ format: 'PKBarcodeFormatQR', message: customerId, messageEncoding: 'iso-8859-1' });

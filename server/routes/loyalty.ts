@@ -153,6 +153,11 @@ loyaltyRouter.get('/balance', async (req, res) => {
       stampRewardDescription: config.stamp_reward_description,
       stamps,
       completedCards,
+      walletCardBgColor: config.wallet_card_bg_color || null,
+      walletCardTextColor: config.wallet_card_text_color || null,
+      walletCardLogoUrl: config.wallet_card_logo_url || null,
+      walletCardLabel: config.wallet_card_label || null,
+      walletCardSecondaryLabel: config.wallet_card_secondary_label || null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get loyalty balance' });

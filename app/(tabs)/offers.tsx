@@ -2,7 +2,7 @@ import * as FileSystem from 'expo-file-system';
 import * as WebBrowser from 'expo-web-browser';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, Award, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
+import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -164,10 +164,8 @@ export default function OffersScreen() {
     [nooksBanners],
   );
 
-  const tierName = !balance ? 'Bronze' :
-    balance.lifetimePoints >= 5000 ? 'Gold' :
-    balance.lifetimePoints >= 1000 ? 'Silver' : 'Bronze';
-  const tierColor = tierName === 'Gold' ? '#F59E0B' : tierName === 'Silver' ? '#94A3B8' : '#CD7F32';
+  const cardTitle = balance?.walletCardLabel || 'Your Points';
+  const cardLogoUrl = balance?.walletCardLogoUrl || null;
 
   return (
     <View className="flex-1" style={{ backgroundColor }}>
@@ -270,14 +268,7 @@ export default function OffersScreen() {
                     end={{ x: 1, y: 1 }}
                     style={{ padding: 24, position: 'relative' }}
                   >
-                    {/* Decorative circles */}
-                    <View
-                      style={{
-                        position: 'absolute', top: -30, right: -30,
-                        width: 120, height: 120, borderRadius: 60,
-                        backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)',
-                      }}
-                    />
+                    {/* Decorative circle */}
                     <View
                       style={{
                         position: 'absolute', bottom: -20, left: -20,
@@ -286,9 +277,21 @@ export default function OffersScreen() {
                       }}
                     />
 
+                    {/* Merchant logo top-right */}
+                    {cardLogoUrl && (
+                      <Image
+                        source={{ uri: cardLogoUrl }}
+                        style={{
+                          position: 'absolute', top: 16, right: 16,
+                          width: 48, height: 48, borderRadius: 14,
+                        }}
+                        resizeMode="cover"
+                      />
+                    )}
+
                     {/* Header */}
-                    <View className="flex-row items-center justify-between mb-5">
-                      <View className="flex-row items-center">
+                    <View className="flex-row items-center mb-5">
+                      {!cardLogoUrl && (
                         <View
                           style={{
                             width: 36, height: 36, borderRadius: 18,
@@ -298,22 +301,10 @@ export default function OffersScreen() {
                         >
                           <Star size={18} color={cardTextColor} fill={cardTextColor} />
                         </View>
-                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
-                          Your Points
-                        </Text>
-                      </View>
-                      <View
-                        style={{
-                          flexDirection: 'row', alignItems: 'center',
-                          backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
-                          paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
-                        }}
-                      >
-                        <Award size={14} color={tierColor} />
-                        <Text style={{ color: cardTextColor, fontSize: 12, fontWeight: '600', marginLeft: 4 }}>
-                          {tierName}
-                        </Text>
-                      </View>
+                      )}
+                      <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: cardLogoUrl ? 0 : 10 }}>
+                        {cardTitle}
+                      </Text>
                     </View>
 
                     {/* Points */}

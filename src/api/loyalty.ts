@@ -17,6 +17,11 @@ export interface LoyaltyBalance {
   stampRewardDescription: string;
   stamps: number;
   completedCards: number;
+  walletCardBgColor: string | null;
+  walletCardTextColor: string | null;
+  walletCardLogoUrl: string | null;
+  walletCardLabel: string | null;
+  walletCardSecondaryLabel: string | null;
 }
 
 export interface LoyaltyTransaction {
