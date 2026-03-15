@@ -1,4 +1,5 @@
 import * as FileSystem from 'expo-file-system';
+import * as WebBrowser from 'expo-web-browser';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Award, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
@@ -390,34 +391,35 @@ export default function OffersScreen() {
               <TouchableOpacity
                 onPress={async () => {
                   try {
-                    let PassKit: any;
+                    const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
+
+                    // Try native PassKit first (best UX — shows native Add dialog)
+                    let usedNative = false;
                     try {
                       const mod = require('react-native-passkit-wallet');
-                      PassKit = mod.default || mod;
-                    } catch {
-                      Alert.alert('Build Required', 'This feature requires a newer app build. Please update the app.');
-                      return;
+                      const PassKit = mod.default || mod;
+                      if (PassKit && typeof PassKit.canAddPasses === 'function') {
+                        const canAdd = await PassKit.canAddPasses();
+                        if (canAdd) {
+                          const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
+                          const download = await FileSystem.downloadAsync(passUrl, filePath);
+                          if (download.status === 200) {
+                            const base64 = await FileSystem.readAsStringAsync(filePath, {
+                              encoding: FileSystem.EncodingType.Base64,
+                            });
+                            await PassKit.addPass(base64);
+                            usedNative = true;
+                          }
+                        }
+                      }
+                    } catch { /* native module not available, fall through */ }
+
+                    // Fallback: open in browser — iOS handles .pkpass natively
+                    if (!usedNative) {
+                      await WebBrowser.openBrowserAsync(passUrl, {
+                        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+                      });
                     }
-                    if (!PassKit || typeof PassKit.canAddPasses !== 'function') {
-                      Alert.alert('Build Required', 'This feature requires a newer app build. Please update the app.');
-                      return;
-                    }
-                    const canAdd = await PassKit.canAddPasses();
-                    if (!canAdd) {
-                      Alert.alert('Not Supported', 'Apple Wallet is not available on this device.');
-                      return;
-                    }
-                    const url = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
-                    const filePath = `${FileSystem.cacheDirectory}loyalty-card.pkpass`;
-                    const download = await FileSystem.downloadAsync(url, filePath);
-                    if (download.status !== 200) {
-                      Alert.alert('Error', 'Could not download wallet pass.');
-                      return;
-                    }
-                    const base64 = await FileSystem.readAsStringAsync(filePath, {
-                      encoding: FileSystem.EncodingType.Base64,
-                    });
-                    await PassKit.addPass(base64);
                   } catch (err: any) {
                     Alert.alert('Error', err?.message || 'Could not add wallet pass.');
                   }
