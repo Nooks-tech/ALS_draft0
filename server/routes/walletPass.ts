@@ -152,6 +152,86 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
   res.json(info);
 });
 
+walletPassRouter.get('/wallet-pass/inspect', async (_req, res) => {
+  try {
+    if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
+
+    const certs = getCertificates();
+    const pass = new PKPass(
+      { 'icon.png': ICON_1X, 'icon@2x.png': ICON_2X, 'icon@3x.png': ICON_3X },
+      certs,
+      {
+        formatVersion: 1,
+        serialNumber: `inspect-${Date.now()}`,
+        description: 'Inspection pass',
+        organizationName: 'Test',
+        backgroundColor: 'rgb(0, 148, 136)',
+        foregroundColor: 'rgb(255, 255, 255)',
+        labelColor: 'rgb(255, 255, 255)',
+      },
+    );
+    pass.type = 'generic';
+    pass.primaryFields.push({ key: 'test', label: 'Test', value: 'OK' });
+    pass.setBarcodes({ format: 'PKBarcodeFormatQR', message: 'test', messageEncoding: 'iso-8859-1' });
+
+    const buf = pass.getAsBuffer();
+
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(buf);
+    const entries = zip.getEntries();
+    const result: Record<string, unknown> = {
+      totalSize: buf.length,
+      zipMagic: '0x' + buf.subarray(0, 4).toString('hex'),
+      fileCount: entries.length,
+      files: {} as Record<string, unknown>,
+    };
+
+    for (const entry of entries) {
+      const name = entry.entryName;
+      const data = entry.getData();
+      const fileInfo: Record<string, unknown> = { size: data.length };
+
+      if (name === 'pass.json') {
+        fileInfo.content = JSON.parse(data.toString('utf-8'));
+      } else if (name === 'manifest.json') {
+        fileInfo.content = JSON.parse(data.toString('utf-8'));
+      } else if (name === 'signature') {
+        fileInfo.firstBytes = '0x' + data.subarray(0, 10).toString('hex');
+        fileInfo.isDER = data[0] === 0x30;
+      } else {
+        fileInfo.firstBytes = '0x' + data.subarray(0, 8).toString('hex');
+        if (name.endsWith('.png')) {
+          fileInfo.isPNG = data[0] === 0x89 && data[1] === 0x50;
+        }
+      }
+
+      (result.files as Record<string, unknown>)[name] = fileInfo;
+    }
+
+    const crypto = require('crypto');
+    const manifestEntry = zip.getEntry('manifest.json');
+    if (manifestEntry) {
+      const manifestData = manifestEntry.getData();
+      const manifest = JSON.parse(manifestData.toString('utf-8'));
+      const hashChecks: Record<string, string> = {};
+      for (const [fileName, expectedHash] of Object.entries(manifest as Record<string, string>)) {
+        const fileEntry = zip.getEntry(fileName);
+        if (fileEntry) {
+          const actualHash = crypto.createHash('sha1').update(fileEntry.getData()).digest('hex');
+          hashChecks[fileName] = actualHash === expectedHash ? 'OK' : `MISMATCH (expected ${expectedHash}, got ${actualHash})`;
+        } else {
+          hashChecks[fileName] = 'MISSING FILE';
+        }
+      }
+      result.hashChecks = hashChecks;
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, stack: err.stack?.substring(0, 500) });
+  }
+});
+
 walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
   try {
     if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
