@@ -261,6 +261,24 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
       info.signatureVerification = 'FAIL - ' + (e.stderr?.toString() || e.message).substring(0, 200);
     }
 
+    // Verify the pass cert chain: signerCert must be signed by WWDR G4
+    try {
+      const chainResult = execFileSync('openssl', [
+        'verify', '-partial_chain', '-CAfile', wwdrPath, certPath,
+      ], { timeout: 5000 }).toString();
+      info.certChainVerification = chainResult.trim();
+    } catch (e: any) {
+      info.certChainVerification = 'FAIL - ' + (e.stderr?.toString() || e.message).substring(0, 300);
+    }
+
+    // Also get the signer cert fingerprint
+    try {
+      const fp = execFileSync('openssl', [
+        'x509', '-in', certPath, '-noout', '-fingerprint', '-sha256',
+      ], { timeout: 5000 }).toString();
+      info.signerCertFingerprint = fp.trim();
+    } catch { /* ignore */ }
+
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.rmSync(vDir, { recursive: true, force: true });
   } catch (e: any) {
