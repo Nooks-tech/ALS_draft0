@@ -150,10 +150,11 @@ function buildPassJson(opts: {
   points: number;
   lifetimePoints: number;
   pointValueSar: number;
+  earnRate: string;
   stamps?: { current: number; target: number } | null;
   customerId: string;
 }): Buffer {
-  return Buffer.from(JSON.stringify({
+  const pass: Record<string, unknown> = {
     formatVersion: 1,
     passTypeIdentifier: PASS_TYPE_ID,
     teamIdentifier: TEAM_ID,
@@ -163,18 +164,26 @@ function buildPassJson(opts: {
     backgroundColor: opts.bgColor,
     foregroundColor: opts.fgColor,
     labelColor: opts.labelColor,
-    generic: {
-      headerFields: [{ key: 'points', label: 'POINTS', value: String(opts.points) }],
-      primaryFields: [{ key: 'balance', label: opts.cardLabel, value: `${opts.points} points` }],
+    storeCard: {
+      headerFields: [
+        { key: 'points', label: 'POINTS', value: String(opts.points), textAlignment: 'PKTextAlignmentRight' },
+      ],
+      primaryFields: [
+        { key: 'title', label: '', value: opts.cardLabel },
+      ],
       secondaryFields: [
-        { key: 'value', label: 'VALUE', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
+        { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
         ...(opts.stamps ? [{ key: 'stamps', label: 'STAMPS', value: `${opts.stamps.current} / ${opts.stamps.target}` }] : []),
       ],
-      auxiliaryFields: [],
-      backFields: [{ key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) }],
+      auxiliaryFields: [
+        { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
+      ],
+      backFields: [
+        { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
+      ],
     },
-    barcodes: [{ format: 'PKBarcodeFormatQR', message: opts.customerId, messageEncoding: 'iso-8859-1' }],
-  }));
+  };
+  return Buffer.from(JSON.stringify(pass));
 }
 
 function signWithOpenSSL(manifestBuf: Buffer): Buffer {
@@ -286,6 +295,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
         labelColor: 'rgb(255,255,255)',
         cardLabel: 'Debug',
         points: 0, lifetimePoints: 0, pointValueSar: 0.1,
+        earnRate: '10% back in points',
         customerId: 'debug',
       }),
     });
@@ -353,15 +363,16 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
       'icon@3x.png': ICON_3X,
       'pass.json': buildPassJson({
         serialNumber: `test-${Date.now()}`,
-        description: 'Test loyalty card',
-        organizationName: 'Test',
-        bgColor: 'rgb(0, 148, 136)',
+        description: 'Loyalty Card',
+        organizationName: 'Nooks',
+        bgColor: 'rgb(99, 102, 241)',
         fgColor: 'rgb(255, 255, 255)',
         labelColor: 'rgb(255, 255, 255)',
-        cardLabel: 'Loyalty Card',
+        cardLabel: 'Your Points',
         points: 0,
         lifetimePoints: 0,
         pointValueSar: 0.1,
+        earnRate: '10% back in points',
         customerId: 'test-customer',
       }),
     };
@@ -401,11 +412,15 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       .from('loyalty_config').select('*')
       .eq('merchant_id', merchantId).maybeSingle();
 
-    const bgColor = config?.wallet_card_bg_color || '#0D9488';
+    const bgColor = config?.wallet_card_bg_color || '#6366F1';
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
-    const cardLabel = config?.wallet_card_label || 'Loyalty Card';
+    const cardLabel = config?.wallet_card_label || 'Your Points';
     const pointsPerSar = config?.points_per_sar ?? 0.1;
     const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
+
+    const earnRate = config?.earn_mode === 'per_order'
+      ? `${config?.points_per_order ?? 10} points per order`
+      : `${Math.round((pointsPerSar) * 100)}% back in points`;
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
@@ -435,6 +450,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       points,
       lifetimePoints,
       pointValueSar,
+      earnRate,
       stamps: (config?.stamp_enabled && stampData) ? { current: stampData.stamps ?? 0, target: config.stamp_target } : null,
       customerId,
     });
