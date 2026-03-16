@@ -80,6 +80,8 @@ async function createPass(opts: {
 
   const pass = new PKPass(buffers, getCertificates(), {
     formatVersion: 1,
+    passTypeIdentifier: PASS_TYPE_ID,
+    teamIdentifier: TEAM_ID,
     serialNumber: opts.serialNumber,
     description: opts.description,
     organizationName: opts.organizationName,
@@ -133,6 +135,8 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
       certs,
       {
         formatVersion: 1,
+        passTypeIdentifier: PASS_TYPE_ID,
+        teamIdentifier: TEAM_ID,
         serialNumber: 'debug-test',
         description: 'debug',
         organizationName: 'debug',
@@ -162,6 +166,8 @@ walletPassRouter.get('/wallet-pass/inspect', async (_req, res) => {
       certs,
       {
         formatVersion: 1,
+        passTypeIdentifier: PASS_TYPE_ID,
+        teamIdentifier: TEAM_ID,
         serialNumber: `inspect-${Date.now()}`,
         description: 'Inspection pass',
         organizationName: 'Test',
