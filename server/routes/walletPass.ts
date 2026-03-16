@@ -23,10 +23,38 @@ const TEAM_ID = process.env.APPLE_PASS_TEAM_ID || '';
 const CERT_BASE64 = process.env.APPLE_PASS_CERT_BASE64 || '';
 const KEY_BASE64 = process.env.APPLE_PASS_KEY_BASE64 || '';
 const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE || '';
-const WWDR_BASE64 = process.env.APPLE_WWDR_CERT_BASE64 || '';
+
+// Official Apple WWDR G4 certificate (downloaded from https://www.apple.com/certificateauthority/)
+// Hardcoded to prevent mismatched certificate issues.
+const APPLE_WWDR_G4_PEM = `-----BEGIN CERTIFICATE-----
+MIIEVTCCAz2gAwIBAgIUE9x3lVJx5T3GMujM/+Uh88zFztIwDQYJKoZIhvcNAQEL
+BQAwYjELMAkGA1UEBhMCVVMxEzARBgNVBAoTCkFwcGxlIEluYy4xJjAkBgNVBAsT
+HUFwcGxlIENlcnRpZmljYXRpb24gQXV0aG9yaXR5MRYwFAYDVQQDEw1BcHBsZSBS
+b290IENBMB4XDTIwMTIxNjE5MzYwNFoXDTMwMTIxMDAwMDAwMFowdTFEMEIGA1UE
+Aww7QXBwbGUgV29ybGR3aWRlIERldmVsb3BlciBSZWxhdGlvbnMgQ2VydGlmaWNh
+dGlvbiBBdXRob3JpdHkxCzAJBgNVBAsMAkc0MRMwEQYDVQQKDApBcHBsZSBJbmMu
+MQswCQYDVQQGEwJVUzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANAf
+eKp6JzKwRl/nF3bYoJ0OKY6tPTKlxGs3yeRBkWq3eXFdDDQEYHX3rkOPR8SGHgjo
+v9Y5Ui8eZ/xx8YJtPH4GUnadLLzVQ+mxtLxAOnhRXVGhJeG+bJGdayFZGEHVD41t
+QSo5SiHgkJ9OE0/QjJoyuNdqkh4laqQyziIZhQVg3AJK8lrrd3kCfcCXVGySjnYB
+5kaP5eYq+6KwrRitbTOFOCOL6oqW7Z+uZk+jDEAnbZXQYojZQykn/e2kv1MukBVl
+PNkuYmQzHWxq3Y4hqqRfFcYw7V/mjDaSlLfcOQIA+2SM1AyB8j/VNJeHdSbCb64D
+YyEMe9QbsWLFApy9/a8CAwEAAaOB7zCB7DASBgNVHRMBAf8ECDAGAQH/AgEAMB8G
+A1UdIwQYMBaAFCvQaUeUdgn+9GuNLkCm90dNfwheMEQGCCsGAQUFBwEBBDgwNjA0
+BggrBgEFBQcwAYYoaHR0cDovL29jc3AuYXBwbGUuY29tL29jc3AwMy1hcHBsZXJv
+b3RjYTAuBgNVHR8EJzAlMCOgIaAfhh1odHRwOi8vY3JsLmFwcGxlLmNvbS9yb290
+LmNybDAdBgNVHQ4EFgQUW9n6HeeaGgujmXYiUIY+kchbd6gwDgYDVR0PAQH/BAQD
+AgEGMBAGCiqGSIb3Y2QGAgEEAgUAMA0GCSqGSIb3DQEBCwUAA4IBAQA/Vj2e5bbD
+eeZFIGi9v3OLLBKeAuOugCKMBB7DUshwgKj7zqew1UJEggOCTwb8O0kU+9h0UoWv
+p50h5wESA5/NQFjQAde/MoMrU1goPO6cn1R2PWQnxn6NHThNLa6B5rmluJyJlPef
+x4elUWY0GzlxOSTjh2fvpbFoe4zuPfeutnvi0v/fYcZqdUmVIkSoBPyUuAsuORFJ
+EtHlgepZAE9bPFo22noicwkJac3AfOriJP6YRLj477JxPxpd1F1+M02cHSS+APCQ
+A1iZQT0xWmJArzmoUUOSqwSonMJNsUvSq3xKX+udO7xPiEAGE/+QF4oIRynoYpgp
+pU8RBWk6z/Kf
+-----END CERTIFICATE-----`;
 
 function isConfigured() {
-  return !!(PASS_TYPE_ID && TEAM_ID && CERT_BASE64 && KEY_BASE64 && WWDR_BASE64);
+  return !!(PASS_TYPE_ID && TEAM_ID && CERT_BASE64 && KEY_BASE64);
 }
 
 function decode(b64: string): Buffer {
@@ -102,7 +130,7 @@ function signWithOpenSSL(manifestBuf: Buffer): Buffer {
 
     fs.writeFileSync(certPath, decode(CERT_BASE64));
     fs.writeFileSync(keyPath, decode(KEY_BASE64));
-    fs.writeFileSync(wwdrPath, decode(WWDR_BASE64));
+    fs.writeFileSync(wwdrPath, APPLE_WWDR_G4_PEM);
     fs.writeFileSync(manifestPath, manifestBuf);
 
     const args = [
@@ -162,7 +190,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
     passTypeId: PASS_TYPE_ID,
     teamId: TEAM_ID,
     configured: isConfigured(),
-    version: 'v16-openssl-signing',
+    version: 'v17-correct-wwdr-g4',
   };
 
   try {
@@ -177,12 +205,12 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
     const wwdrPath = path.join(tmpDir, 'wwdr.pem');
     fs.writeFileSync(certPath, decode(CERT_BASE64));
     fs.writeFileSync(keyPath, decode(KEY_BASE64));
-    fs.writeFileSync(wwdrPath, decode(WWDR_BASE64));
+    fs.writeFileSync(wwdrPath, APPLE_WWDR_G4_PEM);
 
     const certInfo = execFileSync('openssl', ['x509', '-in', certPath, '-noout', '-subject', '-dates'], { timeout: 5000 }).toString();
     info.certInfo = certInfo.trim();
 
-    const wwdrInfo = execFileSync('openssl', ['x509', '-in', wwdrPath, '-noout', '-subject', '-dates'], { timeout: 5000 }).toString();
+    const wwdrInfo = execFileSync('openssl', ['x509', '-in', wwdrPath, '-noout', '-subject', '-dates', '-fingerprint', '-sha256'], { timeout: 5000 }).toString();
     info.wwdrInfo = wwdrInfo.trim();
 
     // Test signing
@@ -246,7 +274,6 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
 walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
   try {
     if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
-    if (!supabaseAdmin) return res.status(500).json({ error: 'DB not configured' });
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
@@ -269,47 +296,13 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
 
     const pkpass = await createPassBuffer(files);
 
-    // Upload to Supabase Storage for a clean static URL
-    const fileName = `passes/test-${Date.now()}.pkpass`;
-    const { error: uploadErr } = await supabaseAdmin.storage
-      .from('wallet-passes')
-      .upload(fileName, pkpass, {
-        contentType: 'application/vnd.apple.pkpass',
-        upsert: true,
-      });
-
-    if (uploadErr) {
-      // If bucket doesn't exist, try to create it first
-      if (uploadErr.message?.includes('not found') || uploadErr.message?.includes('Bucket')) {
-        await supabaseAdmin.storage.createBucket('wallet-passes', { public: true });
-        const { error: retryErr } = await supabaseAdmin.storage
-          .from('wallet-passes')
-          .upload(fileName, pkpass, { contentType: 'application/vnd.apple.pkpass', upsert: true });
-        if (retryErr) {
-          // Fall back to direct serve
-          res.set({
-            'Content-Type': 'application/vnd.apple.pkpass',
-            'Content-Disposition': 'attachment; filename="test.pkpass"',
-            'Content-Length': String(pkpass.length),
-          });
-          return res.end(pkpass);
-        }
-      } else {
-        res.set({
-          'Content-Type': 'application/vnd.apple.pkpass',
-          'Content-Disposition': 'attachment; filename="test.pkpass"',
-          'Content-Length': String(pkpass.length),
-        });
-        return res.end(pkpass);
-      }
-    }
-
-    const { data: urlData } = supabaseAdmin.storage
-      .from('wallet-passes')
-      .getPublicUrl(fileName);
-
-    // Redirect to the static file URL
-    res.redirect(urlData.publicUrl);
+    res.set({
+      'Content-Type': 'application/vnd.apple.pkpass',
+      'Content-Disposition': 'attachment; filename="test.pkpass"',
+      'Content-Length': String(pkpass.length),
+      'Cache-Control': 'no-cache, no-store',
+    });
+    res.end(pkpass);
   } catch (err: any) {
     console.error('[WalletPass/test]', err);
     res.status(500).json({ error: err.message, stack: err.stack?.substring(0, 500) });
