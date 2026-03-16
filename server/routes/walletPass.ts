@@ -259,6 +259,34 @@ walletPassRouter.get('/wallet-pass/inspect', async (_req, res) => {
       result.hashChecks = hashChecks;
     }
 
+    const sigEntry = zip.getEntry('signature');
+    if (sigEntry && manifestEntry) {
+      try {
+        const sigDer = sigEntry.getData();
+        const asn1 = forge.asn1.fromDer(new forge.util.ByteStringBuffer(sigDer.toString('binary')));
+        const p7 = forge.pkcs7.messageFromAsn1(asn1);
+        const sigInfo: Record<string, unknown> = { parsed: true };
+        if ('certificates' in p7 && Array.isArray((p7 as any).certificates)) {
+          sigInfo.certCount = (p7 as any).certificates.length;
+          sigInfo.certs = (p7 as any).certificates.map((c: any) => ({
+            CN: c.subject?.getField('CN')?.value,
+            issuerCN: c.issuer?.getField('CN')?.value,
+            OU: c.subject?.getField('OU')?.value,
+          }));
+        }
+        if ('signers' in p7 && Array.isArray((p7 as any).signers)) {
+          sigInfo.signerCount = (p7 as any).signers.length;
+          sigInfo.signerDigestAlg = (p7 as any).signers[0]?.digestAlgorithm;
+        }
+        if ('rawCapture' in p7) {
+          sigInfo.hasRawCapture = true;
+        }
+        result.signatureInfo = sigInfo;
+      } catch (sigErr: any) {
+        result.signatureError = sigErr.message;
+      }
+    }
+
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message, stack: err.stack?.substring(0, 500) });
