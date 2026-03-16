@@ -251,10 +251,11 @@ walletPassRouter.get('/wallet-pass/inspect', async (_req, res) => {
             OU: c.subject?.getField('OU')?.value,
           }));
         }
-        if ('signers' in p7 && Array.isArray((p7 as any).signers)) {
-          sigInfo.signerCount = (p7 as any).signers.length;
-          sigInfo.signerDigestAlg = (p7 as any).signers[0]?.digestAlgorithm;
-        }
+        sigInfo.signerCount = (p7 as any).signers?.length ?? 0;
+        sigInfo.signerInfosCount = (p7 as any).signerInfos?.length ?? 0;
+        const rc = (p7 as any).rawCapture || {};
+        sigInfo.rawSignerInfosCount = rc.signerInfos?.length ?? 0;
+        sigInfo.p7Keys = Object.keys(p7).filter(k => !k.startsWith('_')).join(',');
         if ('rawCapture' in p7) {
           sigInfo.hasRawCapture = true;
         }
