@@ -9,7 +9,6 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as zlib from 'zlib';
 import yazl from 'yazl';
 
 export const walletPassRouter = Router();
@@ -132,62 +131,6 @@ function hexToRgb(hex: string): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function parseRgb(rgb: string): [number, number, number] {
-  const m = rgb.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  return m ? [+m[1], +m[2], +m[3]] : [0, 0, 0];
-}
-
-function crc32(buf: Buffer): number {
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < buf.length; i++) {
-    crc ^= buf[i];
-    for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
-  }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
-}
-
-function pngChunk(type: string, data: Buffer): Buffer {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length, 0);
-  const typeAndData = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-  const checksum = Buffer.alloc(4);
-  checksum.writeUInt32BE(crc32(typeAndData), 0);
-  return Buffer.concat([len, typeAndData, checksum]);
-}
-
-function createStripPng(width: number, height: number, r: number, g: number, b: number): Buffer {
-  const darkerR = Math.max(0, Math.round(r * 0.7));
-  const darkerG = Math.max(0, Math.round(g * 0.7));
-  const darkerB = Math.max(0, Math.round(b * 0.7));
-
-  const rowSize = 1 + width * 3;
-  const raw = Buffer.alloc(height * rowSize);
-
-  for (let y = 0; y < height; y++) {
-    const t = y / (height - 1);
-    const pr = Math.round(r + (darkerR - r) * t);
-    const pg = Math.round(g + (darkerG - g) * t);
-    const pb = Math.round(b + (darkerB - b) * t);
-
-    const off = y * rowSize;
-    raw[off] = 0;
-    for (let x = 0; x < width; x++) {
-      const px = off + 1 + x * 3;
-      raw[px] = pr;
-      raw[px + 1] = pg;
-      raw[px + 2] = pb;
-    }
-  }
-
-  const compressed = zlib.deflateSync(raw, { level: 9 });
-  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; ihdr[9] = 2;
-  return Buffer.concat([sig, pngChunk('IHDR', ihdr), pngChunk('IDAT', compressed), pngChunk('IEND', Buffer.alloc(0))]);
-}
-
 const ICON_1X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAIAAADZ8fBYAAAAJUlEQVR4nGNgmNJBEzRq7qi5o+aOmjtq7qi5o+aOmjtq7qAyFwCzp6UqMm3T+QAAAABJRU5ErkJggg==', 'base64');
 const ICON_2X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADoAAAA6CAIAAABu2d1/AAAAZUlEQVR4nO3OAQkAMAzAsMm/gAm+jHZQiIDM7LuEH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXYsP2s6Uw9dI6msAAAAASUVORK5CYII=', 'base64');
 const ICON_3X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAFcAAABXCAIAAAD+qk47AAAA9ElEQVR4nO3OQQ0AIAADsclHAIKR0XuQVEC3e775QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfBDx2KM69DQL8FwAAAABJRU5ErkJggg==', 'base64');
@@ -210,7 +153,6 @@ function buildPassJson(opts: {
   earnRate: string;
   stamps?: { current: number; target: number } | null;
   customerId: string;
-  hasLogo: boolean;
 }): Buffer {
   const secondaryFields: Record<string, unknown>[] = [
     { key: 'worth', label: 'Worth', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
@@ -357,7 +299,6 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
         points: 0, lifetimePoints: 0, pointValueSar: 0.1,
         earnRate: '10% back in points',
         customerId: 'debug',
-        hasLogo: false,
       }),
     });
     info.testPassSize = testPass.length;
@@ -441,19 +382,12 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       }
     }
 
-    const [r, g, b] = parseRgb(bgColor);
-    const strip1x = createStripPng(375, 123, r, g, b);
-    const strip2x = createStripPng(750, 246, r, g, b);
-
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
       'icon@2x.png': ICON_2X,
       'icon@3x.png': ICON_3X,
-      'strip.png': strip1x,
-      'strip@2x.png': strip2x,
     };
 
-    let hasLogo = false;
     if (logoUrl) {
       try {
         const logoRes = await fetch(logoUrl);
@@ -461,7 +395,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
           const logoBuf = Buffer.from(await logoRes.arrayBuffer());
           files['logo.png'] = logoBuf;
           files['logo@2x.png'] = logoBuf;
-          hasLogo = true;
         }
       } catch { /* skip */ }
     }
@@ -479,7 +412,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       pointValueSar: 0.1,
       earnRate,
       customerId: 'test-customer',
-      hasLogo,
     });
 
     const pkpass = await createPassBuffer(files);
@@ -528,19 +460,13 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       : `${Math.round((pointsPerSar) * 100)}% back in points`;
 
     const bgRgb = hexToRgb(bgColor);
-    const [r, g, b] = parseRgb(bgRgb);
-    const strip1x = createStripPng(375, 123, r, g, b);
-    const strip2x = createStripPng(750, 246, r, g, b);
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
       'icon@2x.png': ICON_2X,
       'icon@3x.png': ICON_3X,
-      'strip.png': strip1x,
-      'strip@2x.png': strip2x,
     };
 
-    let hasLogo = false;
     if (config?.wallet_card_logo_url) {
       try {
         const logoRes = await fetch(config.wallet_card_logo_url);
@@ -548,7 +474,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
           const logoBuf = Buffer.from(await logoRes.arrayBuffer());
           files['logo.png'] = logoBuf;
           files['logo@2x.png'] = logoBuf;
-          hasLogo = true;
         }
       } catch { /* skip */ }
     }
@@ -567,7 +492,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       earnRate,
       stamps: (config?.stamp_enabled && stampData) ? { current: stampData.stamps ?? 0, target: config.stamp_target } : null,
       customerId,
-      hasLogo,
     });
 
     const pkpass = await createPassBuffer(files);
