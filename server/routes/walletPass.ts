@@ -1,6 +1,6 @@
 /**
- * Apple Wallet Pass generation — manual implementation using node-forge.
- * Signing approach matches @pkpass/build (a known working Apple Wallet library).
+ * Apple Wallet Pass generation — using node-forge for PKCS#7 signing.
+ * Signing approach mirrors passkit-generator v3 (github.com/alexandercerutti/passkit-generator).
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
@@ -49,32 +49,32 @@ function sha1Hex(buf: Buffer): string {
   return crypto.createHash('sha1').update(buf).digest('hex');
 }
 
-function getSignerKey(): forge.pki.rsa.PrivateKey {
-  const keyPem = decode(KEY_BASE64!).toString('utf-8');
-  if (keyPem.includes('-----BEGIN RSA PRIVATE KEY-----')) {
+function parseSignerKey(keyPem: string): forge.pki.rsa.PrivateKey {
+  if (keyPem.includes('ENCRYPTED') || keyPem.includes('BEGIN RSA PRIVATE KEY')) {
     const key = forge.pki.decryptRsaPrivateKey(keyPem, KEY_PASSPHRASE || undefined);
-    if (!key) throw new Error('Failed to decrypt RSA private key');
-    return key;
+    if (key) return key;
   }
-  return forge.pki.privateKeyFromPem(keyPem) as forge.pki.rsa.PrivateKey;
+  try { return forge.pki.privateKeyFromPem(keyPem) as forge.pki.rsa.PrivateKey; } catch {}
+  throw new Error('Could not parse private key (tried decrypt + PEM parse)');
 }
 
 function signManifest(manifestBuffer: Buffer): Buffer {
   const certPem = decode(CERT_BASE64!).toString('utf-8');
   const wwdrPem = decode(WWDR_BASE64!).toString('utf-8');
+  const keyPem = decode(KEY_BASE64!).toString('utf-8');
 
   const signerCert = forge.pki.certificateFromPem(certPem);
   const wwdrCert = forge.pki.certificateFromPem(wwdrPem);
-  const signerKey = getSignerKey();
+  const signerKey = parseSignerKey(keyPem);
 
   const p7 = forge.pkcs7.createSignedData();
-  p7.content = manifestBuffer.toString('binary');
+  p7.content = new forge.util.ByteStringBuffer(manifestBuffer);
 
-  p7.addCertificate(signerCert);
   p7.addCertificate(wwdrCert);
+  p7.addCertificate(signerCert);
 
   p7.addSigner({
-    key: forge.pki.privateKeyToPem(signerKey),
+    key: signerKey,
     certificate: signerCert,
     digestAlgorithm: forge.pki.oids.sha1,
     authenticatedAttributes: [
@@ -89,7 +89,7 @@ function signManifest(manifestBuffer: Buffer): Buffer {
   return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
 }
 
-function buildPkpass(files: Record<string, Buffer>): Buffer {
+function buildPkpass(files: Record<string, Buffer>): Promise<Buffer> {
   const manifest: Record<string, string> = {};
   for (const [name, buf] of Object.entries(files)) {
     manifest[name] = sha1Hex(buf);
@@ -103,12 +103,19 @@ function buildPkpass(files: Record<string, Buffer>): Buffer {
     'signature': signatureBuf,
   };
 
-  const AdmZip = require('adm-zip');
-  const zip = new AdmZip();
-  for (const [name, data] of Object.entries(allFiles)) {
-    zip.addFile(name, data);
-  }
-  return zip.toBuffer();
+  const yazl = require('yazl');
+  return new Promise<Buffer>((resolve, reject) => {
+    const zipfile = new yazl.ZipFile();
+    for (const [name, data] of Object.entries(allFiles)) {
+      zipfile.addBuffer(data, name, { compress: false });
+    }
+    zipfile.end();
+
+    const chunks: Buffer[] = [];
+    zipfile.outputStream.on('data', (chunk: Buffer) => chunks.push(chunk));
+    zipfile.outputStream.on('end', () => resolve(Buffer.concat(chunks)));
+    zipfile.outputStream.on('error', reject);
+  });
 }
 
 // ─── Routes ───
@@ -127,12 +134,14 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     configured: isConfigured(),
-    version: 'v10-nwpr-style',
+    version: 'v11-passkit-gen-style',
   };
 
   try {
-    const key = getSignerKey();
-    info.keyParsed = key ? 'OK' : 'FAILED';
+    const keyPem = decode(KEY_BASE64!).toString('utf-8');
+    info.keyFormat = keyPem.includes('ENCRYPTED') ? 'ENCRYPTED' :
+                     keyPem.includes('BEGIN RSA PRIVATE KEY') ? 'PKCS#1' : 'PKCS#8/other';
+    try { parseSignerKey(keyPem); info.keyParsed = 'OK'; } catch (kErr: any) { info.keyParsed = `FAILED: ${kErr.message}`; }
 
     const certPem = decode(CERT_BASE64!).toString('utf-8');
     const cert = forge.pki.certificateFromPem(certPem);
@@ -144,9 +153,20 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     const wwdrPem = decode(WWDR_BASE64!).toString('utf-8');
     const wwdr = forge.pki.certificateFromPem(wwdrPem);
     info.wwdrSubject = wwdr.subject.getField('CN')?.value || '(no CN)';
+    info.wwdrIssuer = wwdr.issuer.getField('CN')?.value || '(no CN)';
     info.wwdrOU = wwdr.subject.getField('OU')?.value || '(no OU)';
+    info.certIssuerCN = cert.issuer.getField('CN')?.value || '(no CN)';
+    info.certChainMatch = (cert.issuer.getField('CN')?.value === wwdr.subject.getField('CN')?.value) ? 'YES' : 'MISMATCH - WRONG WWDR!';
     info.wwdrValidFrom = wwdr.validity.notBefore?.toISOString();
     info.wwdrValidTo = wwdr.validity.notAfter?.toISOString();
+
+    const certOU = cert.subject.getField('OU')?.value || '';
+    info.certOU = certOU;
+    info.certPassTypeIdFromCert = cert.subject.getField({ type: '0.9.2342.19200300.100.1.1' })?.value || '(no UID field)';
+    info.envPassTypeId = PASS_TYPE_ID;
+    info.envTeamId = TEAM_ID;
+    info.passTypeIdMatch = info.certPassTypeIdFromCert === PASS_TYPE_ID ? 'YES' : 'MISMATCH!';
+    info.teamIdMatch = certOU === TEAM_ID ? 'YES' : 'MISMATCH!';
 
     info.digestAlgorithm = 'sha1';
 
@@ -238,7 +258,7 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
       'pass.json': passJson,
     };
 
-    const pkpass = buildPkpass(files);
+    const pkpass = await buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
@@ -314,7 +334,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     files['pass.json'] = passJson;
 
-    const pkpass = buildPkpass(files);
+    const pkpass = await buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
