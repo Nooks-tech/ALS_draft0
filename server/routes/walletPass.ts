@@ -153,7 +153,15 @@ function buildPassJson(opts: {
   earnRate: string;
   stamps?: { current: number; target: number } | null;
   customerId: string;
+  hasLogo: boolean;
 }): Buffer {
+  const secondaryFields: Record<string, unknown>[] = [
+    { key: 'worth', label: 'Worth', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
+  ];
+  if (opts.stamps) {
+    secondaryFields.push({ key: 'stamps', label: 'Stamps', value: `${opts.stamps.current} / ${opts.stamps.target}` });
+  }
+
   const pass: Record<string, unknown> = {
     formatVersion: 1,
     passTypeIdentifier: PASS_TYPE_ID,
@@ -164,19 +172,14 @@ function buildPassJson(opts: {
     backgroundColor: opts.bgColor,
     foregroundColor: opts.fgColor,
     labelColor: opts.labelColor,
+    logoText: opts.cardLabel,
     storeCard: {
-      headerFields: [
-        { key: 'points', label: 'POINTS', value: String(opts.points), textAlignment: 'PKTextAlignmentRight' },
-      ],
       primaryFields: [
-        { key: 'title', label: '', value: opts.cardLabel },
+        { key: 'points', label: 'POINTS', value: opts.points },
       ],
-      secondaryFields: [
-        { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
-        ...(opts.stamps ? [{ key: 'stamps', label: 'STAMPS', value: `${opts.stamps.current} / ${opts.stamps.target}` }] : []),
-      ],
+      secondaryFields,
       auxiliaryFields: [
-        { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
+        { key: 'earn', label: 'Earn Rate', value: opts.earnRate },
       ],
       backFields: [
         { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
@@ -297,6 +300,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
         points: 0, lifetimePoints: 0, pointValueSar: 0.1,
         earnRate: '10% back in points',
         customerId: 'debug',
+        hasLogo: false,
       }),
     });
     info.testPassSize = testPass.length;
@@ -353,29 +357,69 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
   res.json(info);
 });
 
-walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
+walletPassRouter.get('/wallet-pass/test', async (req, res) => {
   try {
     if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
+
+    let bgColor = 'rgb(79, 70, 229)';
+    let textColor = 'rgb(255, 255, 255)';
+    let cardLabel = 'Loyalty Card';
+    let earnRate = '10% back in points';
+    let logoUrl: string | null = null;
+
+    const merchantId = req.query.merchantId as string;
+    if (merchantId && supabaseAdmin) {
+      const { data: config } = await supabaseAdmin
+        .from('loyalty_config').select('*')
+        .eq('merchant_id', merchantId).maybeSingle();
+      if (config) {
+        bgColor = hexToRgb(config.wallet_card_bg_color || '#4F46E5');
+        textColor = hexToRgb(config.wallet_card_text_color || '#FFFFFF');
+        cardLabel = config.wallet_card_label || 'Loyalty Card';
+        logoUrl = config.wallet_card_logo_url || null;
+        const pps = config.points_per_sar ?? 0.1;
+        earnRate = config.earn_mode === 'per_order'
+          ? `${config.points_per_order ?? 10} points per order`
+          : `${Math.round(pps * 100)}% back in points`;
+      }
+    }
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
       'icon@2x.png': ICON_2X,
       'icon@3x.png': ICON_3X,
-      'pass.json': buildPassJson({
-        serialNumber: `test-${Date.now()}`,
-        description: 'Loyalty Card',
-        organizationName: 'Nooks',
-        bgColor: 'rgb(99, 102, 241)',
-        fgColor: 'rgb(255, 255, 255)',
-        labelColor: 'rgb(255, 255, 255)',
-        cardLabel: 'Your Points',
-        points: 0,
-        lifetimePoints: 0,
-        pointValueSar: 0.1,
-        earnRate: '10% back in points',
-        customerId: 'test-customer',
-      }),
     };
+
+    let hasLogo = false;
+    if (logoUrl) {
+      try {
+        const logoRes = await fetch(logoUrl);
+        if (logoRes.ok) {
+          const logoBuf = Buffer.from(await logoRes.arrayBuffer());
+          files['thumbnail.png'] = logoBuf;
+          files['thumbnail@2x.png'] = logoBuf;
+          files['logo.png'] = logoBuf;
+          files['logo@2x.png'] = logoBuf;
+          hasLogo = true;
+        }
+      } catch { /* skip */ }
+    }
+
+    files['pass.json'] = buildPassJson({
+      serialNumber: `test-${Date.now()}`,
+      description: cardLabel,
+      organizationName: cardLabel,
+      bgColor,
+      fgColor: textColor,
+      labelColor: textColor,
+      cardLabel,
+      points: 0,
+      lifetimePoints: 0,
+      pointValueSar: 0.1,
+      earnRate,
+      customerId: 'test-customer',
+      hasLogo,
+    });
 
     const pkpass = await createPassBuffer(files);
 
@@ -428,13 +472,17 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       'icon@3x.png': ICON_3X,
     };
 
+    let hasLogo = false;
     if (config?.wallet_card_logo_url) {
       try {
         const logoRes = await fetch(config.wallet_card_logo_url);
         if (logoRes.ok) {
           const logoBuf = Buffer.from(await logoRes.arrayBuffer());
+          files['thumbnail.png'] = logoBuf;
+          files['thumbnail@2x.png'] = logoBuf;
           files['logo.png'] = logoBuf;
           files['logo@2x.png'] = logoBuf;
+          hasLogo = true;
         }
       } catch { /* skip */ }
     }
@@ -453,6 +501,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       earnRate,
       stamps: (config?.stamp_enabled && stampData) ? { current: stampData.stamps ?? 0, target: config.stamp_target } : null,
       customerId,
+      hasLogo,
     });
 
     const pkpass = await createPassBuffer(files);
