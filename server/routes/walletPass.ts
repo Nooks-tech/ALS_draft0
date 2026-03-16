@@ -89,7 +89,7 @@ function signManifest(manifestBuffer: Buffer): Buffer {
   return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
 }
 
-function buildPkpass(files: Record<string, Buffer>): Buffer {
+async function buildPkpass(files: Record<string, Buffer>): Promise<Buffer> {
   const manifest: Record<string, string> = {};
   for (const [name, buf] of Object.entries(files)) {
     manifest[name] = sha1Hex(buf);
@@ -103,91 +103,18 @@ function buildPkpass(files: Record<string, Buffer>): Buffer {
     'signature': signatureBuf,
   };
 
-  const parts: Buffer[] = [];
-  const centralDir: Buffer[] = [];
-  let offset = 0;
-  const entries = Object.entries(allFiles);
-
-  for (const [name, data] of entries) {
-    const nameBytes = Buffer.from(name, 'utf-8');
-    const localHeader = Buffer.alloc(30 + nameBytes.length);
-    localHeader.writeUInt32LE(0x04034b50, 0); // local file header sig
-    localHeader.writeUInt16LE(20, 4);          // version needed (2.0)
-    localHeader.writeUInt16LE(0, 6);           // general purpose bit flag
-    localHeader.writeUInt16LE(0, 8);           // compression: stored
-    localHeader.writeUInt16LE(0, 10);          // mod time
-    localHeader.writeUInt16LE(0, 12);          // mod date
-    const crc = crc32(data);
-    localHeader.writeInt32LE(crc, 14);         // crc-32
-    localHeader.writeUInt32LE(data.length, 18); // compressed size
-    localHeader.writeUInt32LE(data.length, 22); // uncompressed size
-    localHeader.writeUInt16LE(nameBytes.length, 26); // file name length
-    localHeader.writeUInt16LE(0, 28);          // extra field length
-    nameBytes.copy(localHeader, 30);
-
-    const cdEntry = Buffer.alloc(46 + nameBytes.length);
-    cdEntry.writeUInt32LE(0x02014b50, 0);  // central directory header sig
-    cdEntry.writeUInt16LE(20, 4);           // version made by
-    cdEntry.writeUInt16LE(20, 6);           // version needed
-    cdEntry.writeUInt16LE(0, 8);            // general purpose bit flag
-    cdEntry.writeUInt16LE(0, 10);           // compression: stored
-    cdEntry.writeUInt16LE(0, 12);           // mod time
-    cdEntry.writeUInt16LE(0, 14);           // mod date
-    cdEntry.writeInt32LE(crc, 16);          // crc-32
-    cdEntry.writeUInt32LE(data.length, 20); // compressed size
-    cdEntry.writeUInt32LE(data.length, 24); // uncompressed size
-    cdEntry.writeUInt16LE(nameBytes.length, 28); // file name length
-    cdEntry.writeUInt16LE(0, 30);           // extra field length
-    cdEntry.writeUInt16LE(0, 32);           // file comment length
-    cdEntry.writeUInt16LE(0, 34);           // disk number start
-    cdEntry.writeUInt16LE(0, 36);           // internal attrs
-    cdEntry.writeUInt32LE(0, 38);           // external attrs
-    cdEntry.writeUInt32LE(offset, 42);      // relative offset
-    nameBytes.copy(cdEntry, 46);
-
-    parts.push(localHeader, data);
-    centralDir.push(cdEntry);
-    offset += localHeader.length + data.length;
-  }
-
-  const cdOffset = offset;
-  let cdSize = 0;
-  for (const cd of centralDir) {
-    parts.push(cd);
-    cdSize += cd.length;
-  }
-
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);        // end of central dir sig
-  eocd.writeUInt16LE(0, 4);                  // disk number
-  eocd.writeUInt16LE(0, 6);                  // disk with start of cd
-  eocd.writeUInt16LE(entries.length, 8);     // entries on this disk
-  eocd.writeUInt16LE(entries.length, 10);    // total entries
-  eocd.writeUInt32LE(cdSize, 12);            // size of central directory
-  eocd.writeUInt32LE(cdOffset, 16);          // offset of central directory
-  eocd.writeUInt16LE(0, 20);                 // comment length
-  parts.push(eocd);
-
-  return Buffer.concat(parts);
-}
-
-const CRC_TABLE = new Int32Array(256);
-(function initCrcTable() {
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) {
-      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+  const archiver = require('archiver');
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const archive = archiver('zip', { store: true });
+    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
+    archive.on('end', () => resolve(Buffer.concat(chunks)));
+    archive.on('error', reject);
+    for (const [name, data] of Object.entries(allFiles)) {
+      archive.append(data, { name });
     }
-    CRC_TABLE[n] = c;
-  }
-})();
-
-function crc32(buf: Buffer): number {
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < buf.length; i++) {
-    crc = CRC_TABLE[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xFFFFFFFF) | 0;
+    archive.finalize();
+  });
 }
 
 // ─── Routes ───
@@ -317,7 +244,7 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
       'pass.json': passJson,
     };
 
-    const pkpass = buildPkpass(files);
+    const pkpass = await buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
@@ -393,7 +320,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     files['pass.json'] = passJson;
 
-    const pkpass = buildPkpass(files);
+    const pkpass = await buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
