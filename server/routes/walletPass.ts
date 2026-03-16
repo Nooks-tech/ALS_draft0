@@ -298,9 +298,7 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
-      'Content-Disposition': 'attachment; filename="test.pkpass"',
       'Content-Length': String(pkpass.length),
-      'Cache-Control': 'no-cache, no-store',
     });
     res.end(pkpass);
   } catch (err: any) {
@@ -377,9 +375,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
-      'Content-Disposition': 'attachment; filename="loyalty-card.pkpass"',
       'Content-Length': String(pkpass.length),
-      'Cache-Control': 'no-cache, no-store',
     });
     res.end(pkpass);
   } catch (err: any) {
