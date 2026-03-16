@@ -396,6 +396,11 @@ export default function OffersScreen() {
                       Alert.alert('Error', msg);
                       return;
                     }
+                    const ct = res.headers.get('Content-Type') || '';
+                    if (!ct.includes('application/vnd.apple.pkpass')) {
+                      Alert.alert('Error', `Server returned unexpected content type: ${ct}`);
+                      return;
+                    }
                     const ab = await res.arrayBuffer();
                     if (!ab || ab.byteLength === 0) {
                       Alert.alert('Error', 'Empty response from server.');

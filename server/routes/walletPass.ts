@@ -3,9 +3,9 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
+import forge from 'node-forge';
 
 const { PKPass } = require('passkit-generator');
-const forge = require('node-forge');
 
 export const walletPassRouter = Router();
 
@@ -30,11 +30,14 @@ function decode(b64: string): Buffer {
 }
 
 function hexToRgb(hex: string): string {
-  const h = hex.replace('#', '');
+  if (!hex || typeof hex !== 'string') return 'rgb(0, 0, 0)';
+  if (hex.startsWith('rgb')) return hex;
+  let h = hex.replace('#', '').trim();
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  if (h.length !== 6 || !/^[0-9a-fA-F]{6}$/.test(h)) return 'rgb(0, 0, 0)';
   const r = parseInt(h.substring(0, 2), 16);
   const g = parseInt(h.substring(2, 4), 16);
   const b = parseInt(h.substring(4, 6), 16);
-  if (isNaN(r) || isNaN(g) || isNaN(b)) return hex;
   return `rgb(${r}, ${g}, ${b})`;
 }
 
