@@ -1,8 +1,12 @@
 /**
  * Apple Wallet Pass generation using passkit-generator v3.
+ * Key is pre-converted to encrypted PKCS#1 PEM because passkit-generator
+ * internally calls forge.pki.decryptRsaPrivateKey which returns null for
+ * unencrypted PKCS#8 keys.
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
+import * as forge from 'node-forge';
 import { PKPass } from 'passkit-generator';
 
 export const walletPassRouter = Router();
@@ -43,12 +47,35 @@ const ICON_1X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAIAAADZ8fBYAAAAJUl
 const ICON_2X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADoAAAA6CAIAAABu2d1/AAAAZUlEQVR4nO3OAQkAMAzAsMm/gAm+jHZQiIDM7LuEH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXYsP2s6Uw9dI6msAAAAASUVORK5CYII=', 'base64');
 const ICON_3X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAFcAAABXCAIAAAD+qk47AAAA9ElEQVR4nO3OQQ0AIAADsclHAIKR0XuQVEC3e775QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfBDx2KM69DQL8FwAAAABJRU5ErkJggg==', 'base64');
 
+const INTERNAL_PASSPHRASE = 'pkpass-internal-key';
+
+function getSignerKeyPem(): string {
+  const rawPem = decode(KEY_BASE64!).toString('utf-8');
+
+  let privateKey: forge.pki.rsa.PrivateKey | null = null;
+
+  if (KEY_PASSPHRASE) {
+    privateKey = forge.pki.decryptRsaPrivateKey(rawPem, KEY_PASSPHRASE);
+  }
+  if (!privateKey) {
+    try { privateKey = forge.pki.privateKeyFromPem(rawPem) as forge.pki.rsa.PrivateKey; } catch {}
+  }
+  if (!privateKey) {
+    privateKey = forge.pki.decryptRsaPrivateKey(rawPem, '');
+  }
+  if (!privateKey) {
+    throw new Error('Cannot parse private key from APPLE_PASS_KEY_BASE64');
+  }
+
+  return forge.pki.encryptRsaPrivateKey(privateKey, INTERNAL_PASSPHRASE);
+}
+
 function getCertificates() {
   return {
     wwdr: decode(WWDR_BASE64!),
     signerCert: decode(CERT_BASE64!),
-    signerKey: decode(KEY_BASE64!),
-    signerKeyPassphrase: KEY_PASSPHRASE || undefined,
+    signerKey: Buffer.from(getSignerKeyPem(), 'utf-8'),
+    signerKeyPassphrase: INTERNAL_PASSPHRASE,
   };
 }
 
