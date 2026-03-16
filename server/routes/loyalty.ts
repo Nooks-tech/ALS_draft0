@@ -29,7 +29,7 @@ async function getMerchantConfig(merchantId: string) {
     .from('loyalty_config')
     .select('*')
     .eq('merchant_id', merchantId)
-    .single();
+    .maybeSingle();
   if (error) console.warn('[loyalty] getMerchantConfig error for', merchantId, ':', error.message);
   return data ?? DEFAULT_CONFIG;
 }
