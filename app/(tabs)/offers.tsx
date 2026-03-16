@@ -407,17 +407,19 @@ export default function OffersScreen() {
                       return;
                     }
                     const base64 = encode(ab);
-                    await ExpoWallet.addPass(base64);
+                    console.log('[AppleWallet] pass size:', ab.byteLength, 'base64 length:', base64.length);
+                    const result = await ExpoWallet.addPass(base64);
+                    console.log('[AppleWallet] addPass result:', result);
                   } catch (err: any) {
                     const msg = err?.message || String(err);
+                    const code = err?.code || '';
+                    console.log('[AppleWallet] error code:', code, 'message:', msg);
                     if (msg.includes('E_PASS_LIBRARY_CANNOT_ADD')) {
                       Alert.alert('Not Added', 'Pass was not added to Wallet.');
                     } else if (msg.includes('E_PASS_LIBRARY_INVALID_DATA')) {
                       Alert.alert('Error', 'Invalid pass data received from server.');
                     } else if (msg.includes('E_PASS_LIBRARY_UNAVAILABLE')) {
                       Alert.alert('Error', 'Apple Wallet is not available on this device.');
-                    } else if (msg.includes('E_PASS_LIBRARY_GENERIC')) {
-                      Alert.alert('Error', 'Error while adding pass to wallet. The pass data may be invalid.');
                     } else {
                       Alert.alert('Error', msg || 'Could not add wallet pass.');
                     }

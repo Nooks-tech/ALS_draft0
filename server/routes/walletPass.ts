@@ -1,11 +1,15 @@
 /**
- * Apple Wallet Pass generation — manual implementation (no passkit-generator).
- * Uses node-forge for PKCS#7 signing and yazl for zip creation.
+ * Apple Wallet Pass generation — manual implementation.
+ * Uses openssl for PKCS#7 signing (same as Apple's reference implementation).
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import * as forge from 'node-forge';
 import * as crypto from 'crypto';
+import { execFileSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 export const walletPassRouter = Router();
 
@@ -50,45 +54,36 @@ function sha1Hex(buf: Buffer): string {
   return crypto.createHash('sha1').update(buf).digest('hex');
 }
 
-function getPrivateKey(): forge.pki.rsa.PrivateKey {
-  const keyPem = decode(KEY_BASE64!).toString('utf-8');
-  if (keyPem.includes('-----BEGIN RSA PRIVATE KEY-----')) {
-    const passphrase = KEY_PASSPHRASE || undefined;
-    const key = forge.pki.decryptRsaPrivateKey(keyPem, passphrase);
-    if (!key) throw new Error('Failed to parse RSA private key');
-    return key;
-  }
-  return forge.pki.privateKeyFromPem(keyPem);
-}
-
 function signManifest(manifestBuffer: Buffer): Buffer {
-  const certPem = decode(CERT_BASE64!).toString('utf-8');
-  const wwdrPem = decode(WWDR_BASE64!).toString('utf-8');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pkpass-'));
+  try {
+    const certPath = path.join(tmpDir, 'cert.pem');
+    const keyPath = path.join(tmpDir, 'key.pem');
+    const wwdrPath = path.join(tmpDir, 'wwdr.pem');
+    const manifestPath = path.join(tmpDir, 'manifest.json');
+    const sigPath = path.join(tmpDir, 'signature');
 
-  const signerCert = forge.pki.certificateFromPem(certPem);
-  const wwdrCert = forge.pki.certificateFromPem(wwdrPem);
-  const signerKey = getPrivateKey();
+    fs.writeFileSync(certPath, decode(CERT_BASE64!));
+    fs.writeFileSync(keyPath, decode(KEY_BASE64!));
+    fs.writeFileSync(wwdrPath, decode(WWDR_BASE64!));
+    fs.writeFileSync(manifestPath, manifestBuffer);
 
-  const p7 = forge.pkcs7.createSignedData();
-  p7.content = new forge.util.ByteStringBuffer(manifestBuffer.toString('binary'));
+    const args = [
+      'smime', '-sign', '-binary',
+      '-signer', certPath,
+      '-inkey', keyPath,
+      '-certfile', wwdrPath,
+      '-in', manifestPath,
+      '-out', sigPath,
+      '-outform', 'DER',
+      '-passin', `pass:${KEY_PASSPHRASE || ''}`,
+    ];
 
-  p7.addCertificate(wwdrCert);
-  p7.addCertificate(signerCert);
-
-  p7.addSigner({
-    key: signerKey,
-    certificate: signerCert,
-    digestAlgorithm: forge.pki.oids.sha256,
-    authenticatedAttributes: [
-      { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
-      { type: forge.pki.oids.messageDigest },
-      { type: forge.pki.oids.signingTime },
-    ],
-  });
-
-  p7.sign({ detached: true });
-
-  return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
+    execFileSync('openssl', args, { stdio: 'pipe' });
+    return fs.readFileSync(sigPath);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 function buildPkpass(files: Record<string, Buffer>): Buffer {
@@ -208,12 +203,12 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     configured: isConfigured(),
-    version: 'v6-manual-build',
+    version: 'v7-openssl-sign',
   };
 
   try {
-    const key = getPrivateKey();
-    info.keyParsed = key ? 'OK' : 'FAILED';
+    const opensslVersion = execFileSync('openssl', ['version'], { encoding: 'utf-8' }).trim();
+    info.openssl = opensslVersion;
 
     const certPem = decode(CERT_BASE64!).toString('utf-8');
     const cert = forge.pki.certificateFromPem(certPem);
