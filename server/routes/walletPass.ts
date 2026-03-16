@@ -41,10 +41,9 @@ function hexToRgb(hex: string): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-const MINIMAL_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAABl0RVh0U29mdHdhcmUAcGFpbnQubmV0IDQuMC4xNkRECVkAAAANSURBVBhXY/j//z8DAAj8Av6IXwboAAAAAElFTkSuQmCC',
-  'base64'
-);
+const ICON_1X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAIAAADZ8fBYAAAAJUlEQVR4nGNgmNJBEzRq7qi5o+aOmjtq7qi5o+aOmjtq7qAyFwCzp6UqMm3T+QAAAABJRU5ErkJggg==', 'base64');
+const ICON_2X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADoAAAA6CAIAAABu2d1/AAAAZUlEQVR4nO3OAQkAMAzAsMm/gAm+jHZQiIDM7LuEH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXYsP2s6Uw9dI6msAAAAASUVORK5CYII=', 'base64');
+const ICON_3X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAFcAAABXCAIAAAD+qk47AAAA9ElEQVR4nO3OQQ0AIAADsclHAIKR0XuQVEC3e775QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfBDx2KM69DQL8FwAAAABJRU5ErkJggg==', 'base64');
 
 function sha1Hex(buf: Buffer): string {
   return crypto.createHash('sha1').update(buf).digest('hex');
@@ -312,8 +311,9 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
     });
 
     const files: Record<string, Buffer> = {
-      'icon.png': MINIMAL_PNG,
-      'icon@2x.png': MINIMAL_PNG,
+      'icon.png': ICON_1X,
+      'icon@2x.png': ICON_2X,
+      'icon@3x.png': ICON_3X,
       'pass.json': passJson,
     };
 
@@ -360,8 +360,9 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
     const files: Record<string, Buffer> = {
-      'icon.png': MINIMAL_PNG,
-      'icon@2x.png': MINIMAL_PNG,
+      'icon.png': ICON_1X,
+      'icon@2x.png': ICON_2X,
+      'icon@3x.png': ICON_3X,
     };
 
     if (config?.wallet_card_logo_url) {
