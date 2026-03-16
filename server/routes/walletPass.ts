@@ -68,7 +68,7 @@ function signManifest(manifestBuffer: Buffer): Buffer {
   const signerKey = parseSignerKey(keyPem);
 
   const p7 = forge.pkcs7.createSignedData();
-  p7.content = new forge.util.ByteStringBuffer(manifestBuffer);
+  p7.content = new forge.util.ByteStringBuffer(manifestBuffer.toString('binary'));
 
   p7.addCertificate(wwdrCert);
   p7.addCertificate(signerCert);
