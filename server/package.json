@@ -6,7 +6,8 @@
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
     "start:prod": "tsx index.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "postinstall": "node scripts/patch-passkit-generator.js"
   },
   "dependencies": {
     "@nwpr/pass-js": "^7.0.2",
