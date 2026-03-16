@@ -234,6 +234,10 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       logoBuffer,
     });
 
+    if (req.query.format === 'base64') {
+      return res.json({ base64: pkpass.toString('base64'), size: pkpass.length });
+    }
+
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
       'Content-Disposition': 'inline; filename="loyalty-card.pkpass"',

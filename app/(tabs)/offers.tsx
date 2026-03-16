@@ -1,4 +1,3 @@
-import { encode } from 'base64-arraybuffer';
 import { LinearGradient } from 'expo-linear-gradient';
 import ExpoWallet from '@giulio987/expo-wallet';
 import { useRouter } from 'expo-router';
@@ -385,7 +384,7 @@ export default function OffersScreen() {
                 onPress={async () => {
                   setWalletLoading(true);
                   try {
-                    const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`;
+                    const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
                     const res = await fetch(passUrl);
                     if (!res.ok) {
                       let msg = `Server returned ${res.status}`;
@@ -396,18 +395,17 @@ export default function OffersScreen() {
                       Alert.alert('Error', msg);
                       return;
                     }
-                    const ct = res.headers.get('Content-Type') || '';
-                    if (!ct.includes('application/vnd.apple.pkpass')) {
-                      Alert.alert('Error', `Server returned unexpected content type: ${ct}`);
+                    const data = await res.json();
+                    if (data.error) {
+                      Alert.alert('Error', data.error);
                       return;
                     }
-                    const ab = await res.arrayBuffer();
-                    if (!ab || ab.byteLength === 0) {
-                      Alert.alert('Error', 'Empty response from server.');
+                    const base64: string = data.base64;
+                    if (!base64 || base64.length === 0) {
+                      Alert.alert('Error', 'Empty pass data from server.');
                       return;
                     }
-                    const base64 = encode(ab);
-                    console.log('[AppleWallet] pass size:', ab.byteLength, 'base64 length:', base64.length);
+                    console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
                     const result = await ExpoWallet.addPass(base64);
                     console.log('[AppleWallet] addPass result:', result);
                   } catch (err: any) {
