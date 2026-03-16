@@ -47,35 +47,22 @@ const ICON_1X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAIAAADZ8fBYAAAAJUl
 const ICON_2X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADoAAAA6CAIAAABu2d1/AAAAZUlEQVR4nO3OAQkAMAzAsMm/gAm+jHZQiIDM7LuEH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXYsP2s6Uw9dI6msAAAAASUVORK5CYII=', 'base64');
 const ICON_3X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAFcAAABXCAIAAAD+qk47AAAA9ElEQVR4nO3OQQ0AIAADsclHAIKR0XuQVEC3e775QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfBDx2KM69DQL8FwAAAABJRU5ErkJggg==', 'base64');
 
-const INTERNAL_PASSPHRASE = 'pkpass-internal-key';
-
-function getSignerKeyPem(): string {
-  const rawPem = decode(KEY_BASE64!).toString('utf-8');
-
-  let privateKey: forge.pki.rsa.PrivateKey | null = null;
-
-  if (KEY_PASSPHRASE) {
-    privateKey = forge.pki.decryptRsaPrivateKey(rawPem, KEY_PASSPHRASE);
-  }
-  if (!privateKey) {
-    try { privateKey = forge.pki.privateKeyFromPem(rawPem) as forge.pki.rsa.PrivateKey; } catch {}
-  }
-  if (!privateKey) {
-    privateKey = forge.pki.decryptRsaPrivateKey(rawPem, '');
-  }
-  if (!privateKey) {
-    throw new Error('Cannot parse private key from APPLE_PASS_KEY_BASE64');
-  }
-
-  return forge.pki.encryptRsaPrivateKey(privateKey, INTERNAL_PASSPHRASE);
-}
+// Monkey-patch forge.pki.decryptRsaPrivateKey so it handles PKCS#8 unencrypted keys.
+// passkit-generator always calls decryptRsaPrivateKey which returns null for PKCS#8 keys.
+const _origDecrypt = forge.pki.decryptRsaPrivateKey;
+(forge.pki as any).decryptRsaPrivateKey = function(pem: string, passphrase?: string) {
+  const result = _origDecrypt(pem, passphrase);
+  if (result) return result;
+  try { return forge.pki.privateKeyFromPem(pem); } catch {}
+  return null;
+};
 
 function getCertificates() {
   return {
     wwdr: decode(WWDR_BASE64!),
     signerCert: decode(CERT_BASE64!),
-    signerKey: Buffer.from(getSignerKeyPem(), 'utf-8'),
-    signerKeyPassphrase: INTERNAL_PASSPHRASE,
+    signerKey: decode(KEY_BASE64!),
+    signerKeyPassphrase: KEY_PASSPHRASE || undefined,
   };
 }
 
