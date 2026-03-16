@@ -68,14 +68,14 @@ function signManifest(manifestBuffer: Buffer): Buffer {
   const signerKey = getSignerKey();
 
   const p7 = forge.pkcs7.createSignedData();
-  p7.content = new forge.util.ByteStringBuffer(manifestBuffer.toString('binary'));
+  p7.content = manifestBuffer.toString('binary');
 
-  p7.addCertificate(wwdrCert);
   p7.addCertificate(signerCert);
+  p7.addCertificate(wwdrCert);
 
   p7.addSigner({
+    key: forge.pki.privateKeyToPem(signerKey),
     certificate: signerCert,
-    key: signerKey,
     digestAlgorithm: forge.pki.oids.sha1,
     authenticatedAttributes: [
       { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
@@ -127,7 +127,7 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     configured: isConfigured(),
-    version: 'v9-admzip',
+    version: 'v10-nwpr-style',
   };
 
   try {
