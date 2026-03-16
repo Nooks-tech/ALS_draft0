@@ -1,10 +1,5 @@
 {
-  "steps": {
-    "build": {
-      "commands": ["node scripts/patch-passkit-generator.js"]
-    }
-  },
   "deploy": {
-    "startCommand": "node scripts/patch-passkit-generator.js && npm run start:prod"
+    "startCommand": "npm run start:prod"
   }
 }
