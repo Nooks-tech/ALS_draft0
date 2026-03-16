@@ -174,7 +174,7 @@ jobs:
       - name: Build iOS
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
-            eas build --platform ios --profile preview --non-interactive --no-wait --clear-credentials
+            eas build --platform ios --profile preview --non-interactive --no-wait
           else
-            eas build --platform ios --non-interactive --no-wait --clear-credentials
+            eas build --platform ios --non-interactive --no-wait
           fi
