@@ -246,6 +246,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
 walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
   try {
     if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
+    if (!supabaseAdmin) return res.status(500).json({ error: 'DB not configured' });
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
@@ -268,13 +269,47 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
 
     const pkpass = await createPassBuffer(files);
 
-    res.set({
-      'Content-Type': 'application/vnd.apple.pkpass',
-      'Content-Disposition': 'attachment; filename="test.pkpass"',
-      'Content-Length': String(pkpass.length),
-      'Cache-Control': 'no-cache, no-store',
-    });
-    res.end(pkpass);
+    // Upload to Supabase Storage for a clean static URL
+    const fileName = `passes/test-${Date.now()}.pkpass`;
+    const { error: uploadErr } = await supabaseAdmin.storage
+      .from('wallet-passes')
+      .upload(fileName, pkpass, {
+        contentType: 'application/vnd.apple.pkpass',
+        upsert: true,
+      });
+
+    if (uploadErr) {
+      // If bucket doesn't exist, try to create it first
+      if (uploadErr.message?.includes('not found') || uploadErr.message?.includes('Bucket')) {
+        await supabaseAdmin.storage.createBucket('wallet-passes', { public: true });
+        const { error: retryErr } = await supabaseAdmin.storage
+          .from('wallet-passes')
+          .upload(fileName, pkpass, { contentType: 'application/vnd.apple.pkpass', upsert: true });
+        if (retryErr) {
+          // Fall back to direct serve
+          res.set({
+            'Content-Type': 'application/vnd.apple.pkpass',
+            'Content-Disposition': 'attachment; filename="test.pkpass"',
+            'Content-Length': String(pkpass.length),
+          });
+          return res.end(pkpass);
+        }
+      } else {
+        res.set({
+          'Content-Type': 'application/vnd.apple.pkpass',
+          'Content-Disposition': 'attachment; filename="test.pkpass"',
+          'Content-Length': String(pkpass.length),
+        });
+        return res.end(pkpass);
+      }
+    }
+
+    const { data: urlData } = supabaseAdmin.storage
+      .from('wallet-passes')
+      .getPublicUrl(fileName);
+
+    // Redirect to the static file URL
+    res.redirect(urlData.publicUrl);
   } catch (err: any) {
     console.error('[WalletPass/test]', err);
     res.status(500).json({ error: err.message, stack: err.stack?.substring(0, 500) });
