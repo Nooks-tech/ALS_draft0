@@ -1,15 +1,11 @@
 /**
- * Apple Wallet Pass generation — manual implementation.
- * Uses openssl for PKCS#7 signing (same as Apple's reference implementation).
+ * Apple Wallet Pass generation — manual implementation using node-forge.
+ * Signing approach matches @pkpass/build (a known working Apple Wallet library).
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import * as forge from 'node-forge';
 import * as crypto from 'crypto';
-import { execFileSync } from 'child_process';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 
 export const walletPassRouter = Router();
 
@@ -54,36 +50,44 @@ function sha1Hex(buf: Buffer): string {
   return crypto.createHash('sha1').update(buf).digest('hex');
 }
 
-function signManifest(manifestBuffer: Buffer): Buffer {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pkpass-'));
-  try {
-    const certPath = path.join(tmpDir, 'cert.pem');
-    const keyPath = path.join(tmpDir, 'key.pem');
-    const wwdrPath = path.join(tmpDir, 'wwdr.pem');
-    const manifestPath = path.join(tmpDir, 'manifest.json');
-    const sigPath = path.join(tmpDir, 'signature');
-
-    fs.writeFileSync(certPath, decode(CERT_BASE64!));
-    fs.writeFileSync(keyPath, decode(KEY_BASE64!));
-    fs.writeFileSync(wwdrPath, decode(WWDR_BASE64!));
-    fs.writeFileSync(manifestPath, manifestBuffer);
-
-    const args = [
-      'smime', '-sign', '-binary',
-      '-signer', certPath,
-      '-inkey', keyPath,
-      '-certfile', wwdrPath,
-      '-in', manifestPath,
-      '-out', sigPath,
-      '-outform', 'DER',
-      '-passin', `pass:${KEY_PASSPHRASE || ''}`,
-    ];
-
-    execFileSync('openssl', args, { stdio: 'pipe' });
-    return fs.readFileSync(sigPath);
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+function getSignerKey(): forge.pki.rsa.PrivateKey {
+  const keyPem = decode(KEY_BASE64!).toString('utf-8');
+  if (keyPem.includes('-----BEGIN RSA PRIVATE KEY-----')) {
+    const key = forge.pki.decryptRsaPrivateKey(keyPem, KEY_PASSPHRASE || undefined);
+    if (!key) throw new Error('Failed to decrypt RSA private key');
+    return key;
   }
+  return forge.pki.privateKeyFromPem(keyPem) as forge.pki.rsa.PrivateKey;
+}
+
+function signManifest(manifestBuffer: Buffer): Buffer {
+  const certPem = decode(CERT_BASE64!).toString('utf-8');
+  const wwdrPem = decode(WWDR_BASE64!).toString('utf-8');
+
+  const signerCert = forge.pki.certificateFromPem(certPem);
+  const wwdrCert = forge.pki.certificateFromPem(wwdrPem);
+  const signerKey = getSignerKey();
+
+  const p7 = forge.pkcs7.createSignedData();
+  p7.content = new forge.util.ByteStringBuffer(manifestBuffer.toString('binary'));
+
+  p7.addCertificate(wwdrCert);
+  p7.addCertificate(signerCert);
+
+  p7.addSigner({
+    certificate: signerCert,
+    key: signerKey,
+    digestAlgorithm: forge.pki.oids.sha1,
+    authenticatedAttributes: [
+      { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
+      { type: forge.pki.oids.messageDigest },
+      { type: forge.pki.oids.signingTime },
+    ],
+  });
+
+  p7.sign({ detached: true });
+
+  return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
 }
 
 function buildPkpass(files: Record<string, Buffer>): Buffer {
@@ -203,12 +207,12 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     configured: isConfigured(),
-    version: 'v7-openssl-sign',
+    version: 'v8-forge-sha1',
   };
 
   try {
-    const opensslVersion = execFileSync('openssl', ['version'], { encoding: 'utf-8' }).trim();
-    info.openssl = opensslVersion;
+    const key = getSignerKey();
+    info.keyParsed = key ? 'OK' : 'FAILED';
 
     const certPem = decode(CERT_BASE64!).toString('utf-8');
     const cert = forge.pki.certificateFromPem(certPem);
@@ -224,7 +228,16 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     info.wwdrValidFrom = wwdr.validity.notBefore?.toISOString();
     info.wwdrValidTo = wwdr.validity.notAfter?.toISOString();
 
-    info.digestAlgorithm = 'sha256';
+    info.digestAlgorithm = 'sha1';
+
+    try {
+      const testManifest = Buffer.from('{"test":"data"}', 'utf-8');
+      const testSig = signManifest(testManifest);
+      info.testSignatureSize = testSig.length;
+      info.testSignatureFirstByte = '0x' + testSig[0].toString(16);
+    } catch (sigErr: any) {
+      info.testSignatureError = sigErr.message;
+    }
   } catch (e: any) {
     info.error = e.message;
   }
