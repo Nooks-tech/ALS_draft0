@@ -7,7 +7,7 @@
 const { withEntitlementsPlist } = require('@expo/config-plugins');
 
 function withApplePayEntitlement(config, props = {}) {
-  const merchantId = props.merchantId || 'merchant.com.als';
+  const merchantId = props.merchantId || 'merchant.com.nooks';
   const passTypeId = props.passTypeId || 'pass.space.nooks.loyalty';
   return withEntitlementsPlist(config, (cfg) => {
     cfg.modResults['com.apple.developer.in-app-payments'] = [merchantId];

@@ -4,7 +4,7 @@ dotenv.config();
 const appJson = require('./app.json');
 const withApplePayEntitlement = require('./plugins/withApplePay');
 
-const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.als';
+const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.nooks';
 const buildTimeAppName = process.env.EXPO_PUBLIC_APP_NAME || '';
 const buildTimeAppIconFile = process.env.EXPO_PUBLIC_APP_ICON_FILE || '';
 const resolvedAppIconFile = buildTimeAppIconFile.trim() || './assets/images/icon.png';
