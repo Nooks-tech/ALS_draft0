@@ -46,8 +46,8 @@ const ICON_3X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAFcAAABXCAIAAAD+qk47AAAA9El
 
 // ─── Crypto helpers (mirrors passkit-generator's Signature.ts exactly) ───
 
-function sha1Hex(buf: Buffer): string {
-  const h = forge.md.sha1.create();
+function sha256Hex(buf: Buffer): string {
+  const h = forge.md.sha256.create();
   h.update(buf.toString('binary'));
   return h.digest().toHex();
 }
@@ -83,7 +83,7 @@ function signManifest(manifestBuffer: Buffer): Buffer {
   p7.addSigner({
     key: signerKey,
     certificate: signerCert,
-    digestAlgorithm: forge.pki.oids.sha1,
+    digestAlgorithm: forge.pki.oids.sha256,
     authenticatedAttributes: [
       { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
       { type: forge.pki.oids.messageDigest },
@@ -99,7 +99,7 @@ function signManifest(manifestBuffer: Buffer): Buffer {
 function buildPkpass(files: Record<string, Buffer>): Buffer {
   const manifest: Record<string, string> = {};
   for (const [name, buf] of Object.entries(files)) {
-    manifest[name] = sha1Hex(buf);
+    manifest[name] = sha256Hex(buf);
   }
   const manifestBuf = Buffer.from(JSON.stringify(manifest));
   const signatureBuf = signManifest(manifestBuf);
@@ -174,7 +174,7 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     passTypeId: PASS_TYPE_ID,
     teamId: TEAM_ID,
     configured: isConfigured(),
-    version: 'v13-manual-with-fixes',
+    version: 'v14-sha256-for-wwdr-g4',
   };
 
   try {
