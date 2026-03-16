@@ -7,7 +7,7 @@
     "start": "tsx index.ts",
     "start:prod": "tsx index.ts",
     "build": "tsc",
-    "postinstall": "node scripts/patch-passkit-generator.js"
+    "postinstall": "echo done"
   },
   "dependencies": {
     "@nwpr/pass-js": "^7.0.2",
