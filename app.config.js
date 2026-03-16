@@ -95,7 +95,7 @@ config.expo.extra = {
 // Add Apple Pay entitlement (required for iOS). Update merchantId once you have Apple Developer account.
 config.expo.plugins = [
   ...(config.expo.plugins || []),
-  [withApplePayEntitlement, { merchantId: applePayMerchantId }],
+  [withApplePayEntitlement, { merchantId: applePayMerchantId, passTypeId: 'pass.space.nooks.loyalty' }],
 ];
 
 module.exports = config;
