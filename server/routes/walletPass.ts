@@ -27,7 +27,7 @@ const PASS_TYPE_ID = process.env.APPLE_PASS_TYPE_ID || '';
 const TEAM_ID = process.env.APPLE_PASS_TEAM_ID || '';
 const CERT_BASE64 = process.env.APPLE_PASS_CERT_BASE64 || '';
 const KEY_BASE64 = process.env.APPLE_PASS_KEY_BASE64 || '';
-const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE || '';
+const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE || 'not-encrypted';
 const WWDR_BASE64 = process.env.APPLE_WWDR_CERT_BASE64 || '';
 
 function isConfigured() {
