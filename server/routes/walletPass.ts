@@ -89,7 +89,7 @@ function signManifest(manifestBuffer: Buffer): Buffer {
   return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
 }
 
-async function buildPkpass(files: Record<string, Buffer>): Promise<Buffer> {
+function buildPkpass(files: Record<string, Buffer>): Buffer {
   const manifest: Record<string, string> = {};
   for (const [name, buf] of Object.entries(files)) {
     manifest[name] = sha1Hex(buf);
@@ -103,18 +103,12 @@ async function buildPkpass(files: Record<string, Buffer>): Promise<Buffer> {
     'signature': signatureBuf,
   };
 
-  const archiver = require('archiver');
-  return new Promise<Buffer>((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    const archive = archiver('zip', { store: true });
-    archive.on('data', (chunk: Buffer) => chunks.push(chunk));
-    archive.on('end', () => resolve(Buffer.concat(chunks)));
-    archive.on('error', reject);
-    for (const [name, data] of Object.entries(allFiles)) {
-      archive.append(data, { name });
-    }
-    archive.finalize();
-  });
+  const AdmZip = require('adm-zip');
+  const zip = new AdmZip();
+  for (const [name, data] of Object.entries(allFiles)) {
+    zip.addFile(name, data);
+  }
+  return zip.toBuffer();
 }
 
 // ─── Routes ───
@@ -133,7 +127,7 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     configured: isConfigured(),
-    version: 'v8-forge-sha1',
+    version: 'v9-admzip',
   };
 
   try {
@@ -244,7 +238,7 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
       'pass.json': passJson,
     };
 
-    const pkpass = await buildPkpass(files);
+    const pkpass = buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
@@ -320,7 +314,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     files['pass.json'] = passJson;
 
-    const pkpass = await buildPkpass(files);
+    const pkpass = buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
