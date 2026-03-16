@@ -5,7 +5,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import * as forge from 'node-forge';
-import * as crypto from 'crypto';
 
 export const walletPassRouter = Router();
 
@@ -46,7 +45,9 @@ const ICON_2X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADoAAAA6CAIAAABu2d1/AAAAZUl
 const ICON_3X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAFcAAABXCAIAAAD+qk47AAAA9ElEQVR4nO3OQQ0AIAADsclHAIKR0XuQVEC3e775QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfBDx2KM69DQL8FwAAAABJRU5ErkJggg==', 'base64');
 
 function sha1Hex(buf: Buffer): string {
-  return crypto.createHash('sha1').update(buf).digest('hex');
+  const hashFlow = forge.md.sha1.create();
+  hashFlow.update(buf.toString('binary'));
+  return hashFlow.digest().toHex();
 }
 
 function parseSignerKey(keyPem: string): forge.pki.rsa.PrivateKey {
@@ -89,12 +90,12 @@ function signManifest(manifestBuffer: Buffer): Buffer {
   return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
 }
 
-function buildPkpass(files: Record<string, Buffer>): Promise<Buffer> {
+function buildPkpass(files: Record<string, Buffer>): Buffer {
   const manifest: Record<string, string> = {};
   for (const [name, buf] of Object.entries(files)) {
     manifest[name] = sha1Hex(buf);
   }
-  const manifestBuf = Buffer.from(JSON.stringify(manifest), 'utf-8');
+  const manifestBuf = Buffer.from(JSON.stringify(manifest));
   const signatureBuf = signManifest(manifestBuf);
 
   const allFiles: Record<string, Buffer> = {
@@ -103,19 +104,10 @@ function buildPkpass(files: Record<string, Buffer>): Promise<Buffer> {
     'signature': signatureBuf,
   };
 
-  const yazl = require('yazl');
-  return new Promise<Buffer>((resolve, reject) => {
-    const zipfile = new yazl.ZipFile();
-    for (const [name, data] of Object.entries(allFiles)) {
-      zipfile.addBuffer(data, name, { compress: false });
-    }
-    zipfile.end();
-
-    const chunks: Buffer[] = [];
-    zipfile.outputStream.on('data', (chunk: Buffer) => chunks.push(chunk));
-    zipfile.outputStream.on('end', () => resolve(Buffer.concat(chunks)));
-    zipfile.outputStream.on('error', reject);
-  });
+  const { toBuffer } = require('do-not-zip');
+  return toBuffer(
+    Object.entries(allFiles).map(([path, data]) => ({ path, data })),
+  );
 }
 
 // ─── Routes ───
@@ -230,7 +222,7 @@ function buildPassJson(opts: {
     ],
   };
 
-  return Buffer.from(JSON.stringify(passObj), 'utf-8');
+  return Buffer.from(JSON.stringify(passObj));
 }
 
 walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
@@ -258,7 +250,7 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
       'pass.json': passJson,
     };
 
-    const pkpass = await buildPkpass(files);
+    const pkpass = buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
@@ -334,7 +326,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     files['pass.json'] = passJson;
 
-    const pkpass = await buildPkpass(files);
+    const pkpass = buildPkpass(files);
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
