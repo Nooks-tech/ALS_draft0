@@ -92,6 +92,20 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
 
     const testKey = forge.pki.decryptRsaPrivateKey(convertedPem, undefined);
     info.decryptRsaResult = testKey ? 'key parsed OK' : 'NULL (broken)';
+
+    const certPem = decode(CERT_BASE64!).toString('utf-8');
+    const cert = forge.pki.certificateFromPem(certPem);
+    info.certSubject = cert.subject.getField('CN')?.value || '(no CN)';
+    info.certIssuer = cert.issuer.getField('CN')?.value || '(no CN)';
+    info.certValidFrom = cert.validity.notBefore?.toISOString();
+    info.certValidTo = cert.validity.notAfter?.toISOString();
+    const uidField = cert.subject.getField({ shortName: 'UID' }) || cert.subject.getField('0.9.2342.19200300.100.1.1');
+    info.certUID = uidField?.value || '(no UID)';
+
+    const wwdrPem = decode(WWDR_BASE64!).toString('utf-8');
+    const wwdr = forge.pki.certificateFromPem(wwdrPem);
+    info.wwdrSubject = wwdr.subject.getField('CN')?.value || '(no CN)';
+    info.wwdrIssuer = wwdr.issuer.getField('CN')?.value || '(no CN)';
   } catch (e: any) {
     info.keyConvertError = e.message;
   }
