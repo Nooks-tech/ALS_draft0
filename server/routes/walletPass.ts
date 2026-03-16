@@ -20,9 +20,71 @@ const supabaseAdmin =
 
 const PASS_TYPE_ID = process.env.APPLE_PASS_TYPE_ID || '';
 const TEAM_ID = process.env.APPLE_PASS_TEAM_ID || '';
-const CERT_BASE64 = process.env.APPLE_PASS_CERT_BASE64 || '';
-const KEY_BASE64 = process.env.APPLE_PASS_KEY_BASE64 || '';
-const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE || '';
+
+const SIGNER_CERT_PEM = `-----BEGIN CERTIFICATE-----
+MIIGIDCCBQigAwIBAgIQYSoGtD9Lx3AckALdz8XTEzANBgkqhkiG9w0BAQsFADB1
+MUQwQgYDVQQDDDtBcHBsZSBXb3JsZHdpZGUgRGV2ZWxvcGVyIFJlbGF0aW9ucyBD
+ZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTELMAkGA1UECwwCRzQxEzARBgNVBAoMCkFw
+cGxlIEluYy4xCzAJBgNVBAYTAlVTMB4XDTI2MDMxNjE3MjYzOVoXDTI3MDQxNTE3
+MjYzOFowgZgxKDAmBgoJkiaJk/IsZAEBDBhwYXNzLnNwYWNlLm5vb2tzLmxveWFs
+dHkxLzAtBgNVBAMMJlBhc3MgVHlwZSBJRDogcGFzcy5zcGFjZS5ub29rcy5sb3lh
+bHR5MRMwEQYDVQQLDAo0S1VKOURGWjhDMRkwFwYDVQQKDBBBYmR1bGxhaCBBbHNh
+ZWRpMQswCQYDVQQGEwJTQTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+AKZ/YrI0mhHB+zgO5IjLg47qp+Es62/SysK+JiSb5SvUYhr5rE/h3Xok84zlaANN
+lVmm9chbh1gY6pv3LVB3iR1q00zYNyBiSgl2C7p1mPE1dVJaKakF0tML069T3pGc
+8egSu0B7penRY8xX+ys9gP2tOCFq8tUzD4mYDHbFBEHtkeLq50T++JixfI2M6EOO
+AjHtvgIdkzWrPusXOOg3RNyJApsUFd9NTjYSOY/SokyLpsoT5djTaiSF1zYQBXvo
+cRwFTxPycXqzDTfxHJNcT5qbNFynQ0Cf3aGCPVubL8mPyHDQ5p3QuR1i0BHe5m6x
+rFd5yoD/sGl4bUxI3qmJZykCAwEAAaOCAoYwggKCMAwGA1UdEwEB/wQCMAAwHwYD
+VR0jBBgwFoAUW9n6HeeaGgujmXYiUIY+kchbd6gwcAYIKwYBBQUHAQEEZDBiMC0G
+CCsGAQUFBzAChiFodHRwOi8vY2VydHMuYXBwbGUuY29tL3d3ZHJnNC5kZXIwMQYI
+KwYBBQUHMAGGJWh0dHA6Ly9vY3NwLmFwcGxlLmNvbS9vY3NwMDMtd3dkcmc0MDQw
+ggEeBgNVHSAEggEVMIIBETCCAQ0GCSqGSIb3Y2QFATCB/zCBwwYIKwYBBQUHAgIw
+gbYMgbNSZWxpYW5jZSBvbiB0aGlzIGNlcnRpZmljYXRlIGJ5IGFueSBwYXJ0eSBh
+c3N1bWVzIGFjY2VwdGFuY2Ugb2YgdGhlIHRoZW4gYXBwbGljYWJsZSBzdGFuZGFy
+ZCB0ZXJtcyBhbmQgY29uZGl0aW9ucyBvZiB1c2UsIGNlcnRpZmljYXRlIHBvbGlj
+eSBhbmQgY2VydGlmaWNhdGlvbiBwcmFjdGljZSBzdGF0ZW1lbnRzLjA3BggrBgEF
+BQcCARYraHR0cHM6Ly93d3cuYXBwbGUuY29tL2NlcnRpZmljYXRlYXV0aG9yaXR5
+LzAeBgNVHSUEFzAVBggrBgEFBQcDAgYJKoZIhvdjZAQOMDIGA1UdHwQrMCkwJ6Al
+oCOGIWh0dHA6Ly9jcmwuYXBwbGUuY29tL3d3ZHJnNC02LmNybDAdBgNVHQ4EFgQU
+Eux5He8GBPhAMJfTfxL1c6mkEb0wDgYDVR0PAQH/BAQDAgeAMCgGCiqGSIb3Y2QG
+ARAEGgwYcGFzcy5zcGFjZS5ub29rcy5sb3lhbHR5MBAGCiqGSIb3Y2QGAwIEAgUA
+MA0GCSqGSIb3DQEBCwUAA4IBAQAwDRRWk5VQauU4RuvjeIs1XOFd1hgyy5L9zCPM
+c+sjThjernpKlFKo2bemlTjJ3XZNGbKBZ+NPC7YRrrQAk1hwzVnRHsnvDC28d+m8
+o0/XRwazi/WDjii7wOO/Cu9N8XXciDdqcXp6MgwiaZKjmhc8KLU4GyPQtggDAdsl
++1y3QS7FZKCLRwJMav2jsXkXpXqvRxjE63E3cX23BLu6HEQUnRYHZoxOk6ItuWHq
+vUZZ0ALxi8swUrLOE92usvoCcs7h7MfEWR7Y7449OR4T6162Y7Q94VKt8t1Wlg18
+7d8QaCyYE0Eodl5o9c4By7rk6lsJRQAL5BnxfDhT0ryP9+dW
+-----END CERTIFICATE-----`;
+
+const SIGNER_KEY_PEM = `-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCmf2KyNJoRwfs4
+DuSIy4OO6qfhLOtv0srCviYkm+Ur1GIa+axP4d16JPOM5WgDTZVZpvXIW4dYGOqb
+9y1Qd4kdatNM2DcgYkoJdgu6dZjxNXVSWimpBdLTC9OvU96RnPHoErtAe6Xp0WPM
+V/srPYD9rTghavLVMw+JmAx2xQRB7ZHi6udE/viYsXyNjOhDjgIx7b4CHZM1qz7r
+FzjoN0TciQKbFBXfTU42EjmP0qJMi6bKE+XY02okhdc2EAV76HEcBU8T8nF6sw03
+8RyTXE+amzRcp0NAn92hgj1bmy/Jj8hw0Oad0LkdYtAR3uZusaxXecqA/7BpeG1M
+SN6piWcpAgMBAAECggEACcjnuHhd65g+VtONO7rWHvKMbi/RIE+/icVaAYHF7Jb9
+Mv+kUEeCWBjO1WNwAu2uzseAn0c9w4AnXYYfvCBiRv/NrjDwwG72UesFkm4x0E8n
+d3EEDMJiWvPRe3bO2DjkgJKFPatmm0CqgEpVYPuq1n21FEWwQrZO/fOZG+vFLcib
+pcGCpLzp0Cwc2PWBYmHnKE9Io49rUB0Gm4Ye7BwB6pwHIR+02TgSJyB5Mlg8djTO
+O1hp98Qa0J2xt1AORefai0d2Tu3M4OWIUu3oaqpHL+Vs161+CQlMwVPkut7G0223
+vthc5grcjI8DoWfQSnNxzmemORUiYaQtlzjF+I/7eQKBgQDXk5DP0Y+FsWuptpMp
+ogLEgv0N6e2LUx3rJ4cK2adcD0DZrJ3haSWOXSoyb9TX1TvG6UGc71x2gR52Yaui
+P17MHMITBWdzw0zq8W4JfvAMOlfEwfOsRXCBFTsiDje80akREzvaotmwwLiXmu+J
+qOGjL/htWVGSdS8Wz6r+Nnf2jQKBgQDFt9ybgWxJyZmSS4DItVUIsc1dHrsW54w/
+wP0wu8gKIKtQTbAAFwukYg3LDOLq5/TzcWD4Ttst8u6Enzu0KdGQ2T4k3eom+s2T
+eOmLah60jwyVlW2m1PGggKtWAkeWDLPj5Qk3Sk9crnL5MVjd3lLTsO4YrY4uhQQH
+qbDXJ6nqDQKBgG24gaAEfRQCtVVvw38RIm96a+nFAk5DQ5sIR0dSeEf2y37+yGyN
+47uN14hMOvyPXxliZy7E9T6rgSGnnH+72Tfx+yVLPthAsslxkBvtK6hNmZZfUPKB
+dT193Nb8fYnw/CfgrjodYMcBj/I5vWlHN3CjXcHqEAaG9iyaDeHNP0mRAoGAC5dF
+xZAGyySYbi0i9aE7xPC3e1gL28HjRPGJZkv75CwaHvEO+lJfill9OYQd4WuLvqHM
+74Gf88ekF/5Fv8Ab2wQBUqP30CUv3A9gkZ29AxTHxhUmgntFVwV0BezISZGhEiEh
+My6WDHblopoz/X3FGUfsDWJPTYbav6BBD7vxiBkCgYBaocPX4174YfmGKagOG4o1
+eCoK5y+amr1grfIpBCsSs6p0k8rSVVPJqq5f5smnFUSdm0KnPzGM/qm/rwcyRIEj
+fct/NtIABfuQvOoEGBa9NVtvKQVLjVLc9LrkutfxaOQ2CuwLfTbH/fKLYFgA48/y
+tSAm7J4qGiK4u5h7RsN5LQ==
+-----END PRIVATE KEY-----`;
 
 // Official Apple WWDR G4 certificate (downloaded from https://www.apple.com/certificateauthority/)
 // Hardcoded to prevent mismatched certificate issues.
@@ -54,11 +116,7 @@ pU8RBWk6z/Kf
 -----END CERTIFICATE-----`;
 
 function isConfigured() {
-  return !!(PASS_TYPE_ID && TEAM_ID && CERT_BASE64 && KEY_BASE64);
-}
-
-function decode(b64: string): Buffer {
-  return Buffer.from(b64, 'base64');
+  return !!(PASS_TYPE_ID && TEAM_ID && SIGNER_CERT_PEM && SIGNER_KEY_PEM);
 }
 
 function hexToRgb(hex: string): string {
@@ -128,8 +186,8 @@ function signWithOpenSSL(manifestBuf: Buffer): Buffer {
     const manifestPath = path.join(tmpDir, 'manifest.json');
     const sigPath = path.join(tmpDir, 'signature');
 
-    fs.writeFileSync(certPath, decode(CERT_BASE64));
-    fs.writeFileSync(keyPath, decode(KEY_BASE64));
+    fs.writeFileSync(certPath, SIGNER_CERT_PEM);
+    fs.writeFileSync(keyPath, SIGNER_KEY_PEM);
     fs.writeFileSync(wwdrPath, APPLE_WWDR_G4_PEM);
     fs.writeFileSync(manifestPath, manifestBuf);
 
@@ -142,10 +200,6 @@ function signWithOpenSSL(manifestBuf: Buffer): Buffer {
       '-inkey', keyPath,
       '-certfile', wwdrPath,
     ];
-
-    if (KEY_PASSPHRASE) {
-      args.push('-passin', `pass:${KEY_PASSPHRASE}`);
-    }
 
     execFileSync('openssl', args, { timeout: 10000 });
     return fs.readFileSync(sigPath);
@@ -190,7 +244,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
     passTypeId: PASS_TYPE_ID,
     teamId: TEAM_ID,
     configured: isConfigured(),
-    version: 'v17-correct-wwdr-g4',
+    version: 'v18-hardcoded-cert-key',
   };
 
   try {
@@ -203,8 +257,8 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
     const certPath = path.join(tmpDir, 'cert.pem');
     const keyPath = path.join(tmpDir, 'key.pem');
     const wwdrPath = path.join(tmpDir, 'wwdr.pem');
-    fs.writeFileSync(certPath, decode(CERT_BASE64));
-    fs.writeFileSync(keyPath, decode(KEY_BASE64));
+    fs.writeFileSync(certPath, SIGNER_CERT_PEM);
+    fs.writeFileSync(keyPath, SIGNER_KEY_PEM);
     fs.writeFileSync(wwdrPath, APPLE_WWDR_G4_PEM);
 
     const certInfo = execFileSync('openssl', ['x509', '-in', certPath, '-noout', '-subject', '-dates'], { timeout: 5000 }).toString();
