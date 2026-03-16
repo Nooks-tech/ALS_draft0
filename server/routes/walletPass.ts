@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 
 const { PKPass } = require('passkit-generator');
+const forge = require('node-forge');
 
 export const walletPassRouter = Router();
 
@@ -42,11 +43,19 @@ const MINIMAL_PNG = Buffer.from(
   'base64'
 );
 
+function convertKeyToRsa(keyBuf: Buffer): Buffer {
+  const keyPem = keyBuf.toString('utf-8');
+  if (keyPem.includes('-----BEGIN RSA PRIVATE KEY-----')) return keyBuf;
+  const key = forge.pki.privateKeyFromPem(keyPem);
+  const rsaPem = forge.pki.privateKeyToPem(key);
+  return Buffer.from(rsaPem, 'utf-8');
+}
+
 function getCertificates() {
   return {
     wwdr: decode(WWDR_BASE64!),
     signerCert: decode(CERT_BASE64!),
-    signerKey: decode(KEY_BASE64!),
+    signerKey: convertKeyToRsa(decode(KEY_BASE64!)),
     signerKeyPassphrase: KEY_PASSPHRASE || undefined,
   };
 }
@@ -67,9 +76,23 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     configured: isConfigured(),
-    version: 'v4-passkit-generator',
+    version: 'v5-key-convert',
     library: 'passkit-generator',
   };
+
+  try {
+    const rawKeyPem = decode(KEY_BASE64!).toString('utf-8');
+    info.originalKeyHeader = rawKeyPem.split('\n')[0];
+    const converted = convertKeyToRsa(decode(KEY_BASE64!));
+    const convertedPem = converted.toString('utf-8');
+    info.convertedKeyHeader = convertedPem.split('\n')[0];
+
+    const testKey = forge.pki.decryptRsaPrivateKey(convertedPem, undefined);
+    info.decryptRsaResult = testKey ? 'key parsed OK' : 'NULL (broken)';
+  } catch (e: any) {
+    info.keyConvertError = e.message;
+  }
+
   res.json(info);
 });
 
