@@ -11,7 +11,8 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "build:ios": "eas build --profile development --platform ios",
-    "build:ios:preview": "eas build --profile preview --platform ios"
+    "build:ios:preview": "eas build --profile preview --platform ios",
+    "postinstall": "node scripts/patch-expo-wallet.js"
   },
   "dependencies": {
     "@expo-google-fonts/cairo": "^0.4.2",

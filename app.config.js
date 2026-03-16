@@ -3,6 +3,7 @@ dotenv.config();
 
 const appJson = require('./app.json');
 const withApplePayEntitlement = require('./plugins/withApplePay');
+const withExpoWalletPatch = require('./plugins/withExpoWalletPatch');
 
 const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.nooks';
 const buildTimeAppName = process.env.EXPO_PUBLIC_APP_NAME || '';
@@ -96,6 +97,7 @@ config.expo.extra = {
 config.expo.plugins = [
   ...(config.expo.plugins || []),
   [withApplePayEntitlement, { merchantId: applePayMerchantId }],
+  withExpoWalletPatch,
 ];
 
 module.exports = config;
