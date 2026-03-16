@@ -1,16 +1,10 @@
 /**
- * Apple Wallet Pass generation for loyalty cards.
- * Signing logic matches @nwpr/pass-js signManifest-forge.js exactly.
+ * Apple Wallet Pass generation using passkit-generator (80K+ weekly downloads).
  */
-import { createHash } from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 
-let forge: any;
-try { forge = require('node-forge'); } catch {}
-
-let doNotZip: any;
-try { doNotZip = require('do-not-zip'); } catch {}
+const { PKPass } = require('passkit-generator');
 
 export const walletPassRouter = Router();
 
@@ -23,91 +17,15 @@ const PASS_TYPE_ID = process.env.APPLE_PASS_TYPE_ID;
 const TEAM_ID = process.env.APPLE_PASS_TEAM_ID;
 const CERT_BASE64 = process.env.APPLE_PASS_CERT_BASE64;
 const KEY_BASE64 = process.env.APPLE_PASS_KEY_BASE64;
-const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE;
+const KEY_PASSPHRASE = process.env.APPLE_PASS_KEY_PASSPHRASE || '';
+const WWDR_BASE64 = process.env.APPLE_WWDR_CERT_BASE64;
 
 function isConfigured() {
-  return !!(forge && doNotZip && PASS_TYPE_ID && TEAM_ID && CERT_BASE64 && KEY_BASE64);
+  return !!(PKPass && PASS_TYPE_ID && TEAM_ID && CERT_BASE64 && KEY_BASE64 && WWDR_BASE64);
 }
 
-function decodePem(b64: string): string {
-  const buf = Buffer.from(b64, 'base64');
-  const str = buf.toString('utf-8');
-  if (str.includes('-----BEGIN')) return str;
-  const lines = buf.toString('base64').match(/.{1,64}/g)!.join('\n');
-  return `-----BEGIN CERTIFICATE-----\n${lines}\n-----END CERTIFICATE-----\n`;
-}
-
-function decodeKey(b64: string): string {
-  const buf = Buffer.from(b64, 'base64');
-  const str = buf.toString('utf-8');
-  if (str.includes('-----BEGIN')) return str;
-  const lines = buf.toString('base64').match(/.{1,64}/g)!.join('\n');
-  return `-----BEGIN PRIVATE KEY-----\n${lines}\n-----END PRIVATE KEY-----\n`;
-}
-
-/**
- * Signing logic copied from @nwpr/pass-js signManifest-forge.js
- * Key differences from our previous attempt:
- * - key is passed as PEM string (forge.pki.privateKeyToPem), not raw key object
- * - signer cert added FIRST, then WWDR cert
- * - WWDR G4 cert is built into @nwpr/pass-js; we use the same one
- */
-const WWDR_G4_PEM = `-----BEGIN CERTIFICATE-----
-MIIEVTCCAz2gAwIBAgIUE9x3lVJx5T3GMujM/+Uh88zFztIwDQYJKoZIhvcNAQEL
-BQAwYjELMAkGA1UEBhMCVVMxEzARBgNVBAoTCkFwcGxlIEluYy4xJjAkBgNVBAsT
-HUFwcGxlIENlcnRpZmljYXRpb24gQXV0aG9yaXR5MRYwFAYDVQQDEw1BcHBsZSBS
-b290IENBMB4XDTIwMTIxNjE5MzYwNFoXDTMwMTIxMDAwMDAwMFowdTFEMEIGA1UE
-Aww7QXBwbGUgV29ybGR3aWRlIERldmVsb3BlciBSZWxhdGlvbnMgQ2VydGlmaWNh
-dGlvbiBBdXRob3JpdHkxCzAJBgNVBAsMAkc0MRMwEQYDVQQKDApBcHBsZSBJbmMu
-MQswCQYDVQQGEwJVUzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBANAf
-eKp6JzKwRl/nF3bYoJ0OKY6tPTKlxGs3yeRBkWq3eXFdDDQEYHX3rkOPR8SGHgjo
-v9Y5Ui8eZ/xx8YJtPH4GUnadLLzVQ+mxtLxAOnhRXVGhJeG+bJGdayFZGEHVD41t
-QSo5SiHgkJ9OE0/QjJoyuNdqkh4laqQyziIZhQVg3AJK8lrrd3kCfcCXVGySjnYB
-5kaP5eYq+6KwrRitbTOFOCOL6oqW7Z+uZk+jDEAnbZXQYojZQykn/e2kv1MukBVl
-PNkuYmQzHWxq3Y4hqqRfFcYw7V/mjDaSlLfcOQIA+2SM1AyB8j/VNJeHdSbCb64D
-YyEMe9QbsWLFApy9/a8CAwEAAaOB7zCB7DASBgNVHRMBAf8ECDAGAQH/AgEAMB8G
-A1UdIwQYMBaAFCvQaUeUdgn+9GuNLkCm90dNfwheMEQGCCsGAQUFBwEBBDgwNjA0
-BggrBgEFBQcwAYYoaHR0cDovL29jc3AuYXBwbGUuY29tL29jc3AwMy1hcHBsZXJv
-b3RjYTAuBgNVHR8EJzAlMCOgIaAfhh1odHRwOi8vY3JsLmFwcGxlLmNvbS9yb290
-LmNybDAdBgNVHQ4EFgQUW9n6HeeaGgujmXYiUIY+kchbd6gwDgYDVR0PAQH/BAQD
-AgEGMBAGCiqGSIb3Y2QGAgEEAgUAMA0GCSqGSIb3DQEBCwUAA4IBAQA/Vj2e5bbD
-eeZFIGi9v3OLLBKeAuOugCKMBB7DUshwgKj7zqew1UJEggOCTwb8O0kU+9h0UoWv
-p50h5wESA5/NQFjQAde/MoMrU1goPO6cn1R2PWQnxn6NHThNLa6B5rmluJyJlPef
-x4elUWY0GzlxOSTjh2fvpbFoe4zuPfeutnvi0v/fYcZqdUmVIkSoBPyUuAsuORFJ
-EtHlgepZAE9bPFo22noicwkJac3AfOriJP6YRLj477JxPxpd1F1+M02cHSS+APCQ
-A1iZQT0xWmJArzmoUUOSqwSonMJNsUvSq3xKX+udO7xPiEAGE/+QF4oIRynoYpgp
-pU8RBWk6z/Kf
------END CERTIFICATE-----`;
-
-function signManifest(manifestJson: string, certPem: string, keyPem: string): Buffer {
-  const certificate = forge.pki.certificateFromPem(certPem);
-  const wwdrCert = forge.pki.certificateFromPem(WWDR_G4_PEM);
-
-  let key: any;
-  if (KEY_PASSPHRASE) {
-    key = forge.pki.decryptRsaPrivateKey(keyPem, KEY_PASSPHRASE);
-  } else {
-    key = forge.pki.privateKeyFromPem(keyPem);
-  }
-  if (!key) throw new Error('Failed to parse private key');
-
-  const p7 = forge.pkcs7.createSignedData();
-  p7.content = manifestJson;
-  p7.addCertificate(certificate);
-  p7.addCertificate(wwdrCert);
-  p7.addSigner({
-    key: forge.pki.privateKeyToPem(key),
-    certificate,
-    digestAlgorithm: forge.pki.oids.sha1,
-    authenticatedAttributes: [
-      { type: forge.pki.oids.contentType, value: forge.pki.oids.data },
-      { type: forge.pki.oids.messageDigest },
-      { type: forge.pki.oids.signingTime },
-    ],
-  });
-  p7.sign({ detached: true });
-
-  return Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
+function decode(b64: string): Buffer {
+  return Buffer.from(b64, 'base64');
 }
 
 function hexToRgb(hex: string): string {
@@ -119,36 +37,19 @@ function hexToRgb(hex: string): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function buildPkpass(
-  passJson: Record<string, unknown>,
-  assets: Record<string, Buffer>,
-  certPem: string,
-  keyPem: string,
-): Buffer {
-  const files: Record<string, Buffer> = { ...assets };
-  files['pass.json'] = Buffer.from(JSON.stringify(passJson));
-
-  const manifest: Record<string, string> = {};
-  for (const [name, buf] of Object.entries(files)) {
-    manifest[name] = createHash('sha1').update(buf).digest('hex');
-  }
-  const manifestJson = JSON.stringify(manifest);
-  const manifestBuf = Buffer.from(manifestJson);
-  const signatureBuf = signManifest(manifestJson, certPem, keyPem);
-
-  const zipEntries = [
-    ...Object.entries(files).map(([p, data]) => ({ path: p, data })),
-    { path: 'manifest.json', data: manifestBuf },
-    { path: 'signature', data: signatureBuf },
-  ];
-
-  return Buffer.from(doNotZip.toArray(zipEntries));
-}
-
 const MINIMAL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAABl0RVh0U29mdHdhcmUAcGFpbnQubmV0IDQuMC4xNkRECVkAAAANSURBVBhXY/j//z8DAAj8Av6IXwboAAAAAElFTkSuQmCC',
   'base64'
 );
+
+function getCertificates() {
+  return {
+    wwdr: decode(WWDR_BASE64!),
+    signerCert: decode(CERT_BASE64!),
+    signerKey: decode(KEY_BASE64!),
+    signerKeyPassphrase: KEY_PASSPHRASE || undefined,
+  };
+}
 
 // ─── Routes ───
 
@@ -163,27 +64,12 @@ walletPassRouter.get('/wallet-pass/debug', (_req, res) => {
     teamId: TEAM_ID || '(not set)',
     certLength: CERT_BASE64 ? CERT_BASE64.length : 0,
     keyLength: KEY_BASE64 ? KEY_BASE64.length : 0,
+    wwdrLength: WWDR_BASE64 ? WWDR_BASE64.length : 0,
     keyPassphraseSet: !!KEY_PASSPHRASE,
     configured: isConfigured(),
-    version: 'v3-nwpr-signing',
+    version: 'v4-passkit-generator',
+    library: 'passkit-generator',
   };
-
-  try {
-    const certPem = decodePem(CERT_BASE64!);
-    const keyPem = decodeKey(KEY_BASE64!);
-    const cert = forge.pki.certificateFromPem(certPem);
-    info.certSubject = cert.subject.getField('CN')?.value;
-    info.certValidTo = cert.validity.notAfter?.toISOString();
-    info.certExpired = new Date() > cert.validity.notAfter;
-
-    const key = KEY_PASSPHRASE
-      ? forge.pki.decryptRsaPrivateKey(keyPem, KEY_PASSPHRASE)
-      : forge.pki.privateKeyFromPem(keyPem);
-    info.keyParsed = !!key;
-    if (key) info.keyBits = key.n?.bitLength?.();
-    info.keyAsPem = !!forge.pki.privateKeyToPem(key);
-  } catch (e: any) { info.parseError = e.message; }
-
   res.json(info);
 });
 
@@ -191,29 +77,29 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
   try {
     if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
 
-    const certPem = decodePem(CERT_BASE64!);
-    const keyPem = decodeKey(KEY_BASE64!);
+    const pass = new PKPass(
+      { 'icon.png': MINIMAL_PNG, 'icon@2x.png': MINIMAL_PNG },
+      getCertificates(),
+      {
+        passTypeIdentifier: PASS_TYPE_ID,
+        teamIdentifier: TEAM_ID,
+        serialNumber: `test-${Date.now()}`,
+        description: 'Test loyalty card',
+        organizationName: 'Test',
+        backgroundColor: 'rgb(0, 148, 136)',
+        foregroundColor: 'rgb(255, 255, 255)',
+        labelColor: 'rgb(255, 255, 255)',
+      }
+    );
 
-    const passJson = {
-      formatVersion: 1,
-      passTypeIdentifier: PASS_TYPE_ID,
-      teamIdentifier: TEAM_ID,
-      organizationName: 'Test',
-      serialNumber: `test-${Date.now()}`,
-      description: 'Test loyalty card',
-      backgroundColor: 'rgb(0, 148, 136)',
-      foregroundColor: 'rgb(255, 255, 255)',
-      labelColor: 'rgb(255, 255, 255)',
-      generic: {
-        headerFields: [{ key: 'points', label: 'POINTS', value: '0' }],
-        primaryFields: [{ key: 'balance', label: 'Loyalty Card', value: '0 points' }],
-        secondaryFields: [{ key: 'value', label: 'VALUE', value: '0.00 SAR' }],
-        backFields: [{ key: 'lifetime', label: 'Lifetime Points', value: '0' }],
-      },
-      barcodes: [{ format: 'PKBarcodeFormatQR', message: 'test-customer', messageEncoding: 'iso-8859-1' }],
-    };
+    pass.type = 'generic';
+    pass.headerFields.push({ key: 'points', label: 'POINTS', value: '0' });
+    pass.primaryFields.push({ key: 'balance', label: 'Loyalty Card', value: '0 points' });
+    pass.secondaryFields.push({ key: 'value', label: 'VALUE', value: '0.00 SAR' });
+    pass.backFields.push({ key: 'lifetime', label: 'Lifetime Points', value: '0' });
+    pass.setBarcodes({ format: 'PKBarcodeFormatQR', message: 'test-customer', messageEncoding: 'iso-8859-1' });
 
-    const buffer = buildPkpass(passJson, { 'icon.png': MINIMAL_PNG, 'icon@2x.png': MINIMAL_PNG }, certPem, keyPem);
+    const buffer = pass.getAsBuffer();
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
@@ -222,8 +108,8 @@ walletPassRouter.get('/wallet-pass/test', async (_req, res) => {
     });
     res.send(buffer);
   } catch (err: any) {
-    console.error('[WalletPass/test]', err?.message, err?.stack?.substring(0, 500));
-    res.status(500).json({ error: err.message });
+    console.error('[WalletPass/test]', err);
+    res.status(500).json({ error: err.message, stack: err.stack?.substring(0, 500) });
   }
 });
 
@@ -255,47 +141,43 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const pointsPerSar = config?.points_per_sar ?? 0.1;
     const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
-    const certPem = decodePem(CERT_BASE64!);
-    const keyPem = decodeKey(KEY_BASE64!);
-
-    const assets: Record<string, Buffer> = { 'icon.png': MINIMAL_PNG, 'icon@2x.png': MINIMAL_PNG };
+    const buffers: Record<string, Buffer> = { 'icon.png': MINIMAL_PNG, 'icon@2x.png': MINIMAL_PNG };
 
     if (config?.wallet_card_logo_url) {
       try {
         const logoRes = await fetch(config.wallet_card_logo_url);
         if (logoRes.ok) {
           const logoBuf = Buffer.from(await logoRes.arrayBuffer());
-          assets['logo.png'] = logoBuf;
-          assets['logo@2x.png'] = logoBuf;
+          buffers['logo.png'] = logoBuf;
+          buffers['logo@2x.png'] = logoBuf;
         }
       } catch { /* skip */ }
     }
 
-    const passJson: Record<string, unknown> = {
-      formatVersion: 1,
+    const pass = new PKPass(buffers, getCertificates(), {
       passTypeIdentifier: PASS_TYPE_ID,
       teamIdentifier: TEAM_ID,
-      organizationName: cardLabel,
       serialNumber: `loyalty-${merchantId}-${customerId}`,
       description: cardLabel,
+      organizationName: cardLabel,
       backgroundColor: hexToRgb(bgColor),
       foregroundColor: hexToRgb(textColor),
       labelColor: hexToRgb(textColor),
-      generic: {
-        headerFields: [{ key: 'points', label: 'POINTS', value: String(points) }],
-        primaryFields: [{ key: 'balance', label: cardLabel, value: `${points} points` }],
-        secondaryFields: [
-          { key: 'value', label: 'VALUE', value: `${(points * pointValueSar).toFixed(2)} SAR` },
-          ...(config?.stamp_enabled && stampData
-            ? [{ key: 'stamps', label: 'STAMPS', value: `${stampData.stamps ?? 0} / ${config.stamp_target}` }]
-            : []),
-        ],
-        backFields: [{ key: 'lifetime', label: 'Lifetime Points', value: String(lifetimePoints) }],
-      },
-      barcodes: [{ format: 'PKBarcodeFormatQR', message: customerId, messageEncoding: 'iso-8859-1' }],
-    };
+    });
 
-    const buffer = buildPkpass(passJson, assets, certPem, keyPem);
+    pass.type = 'generic';
+    pass.headerFields.push({ key: 'points', label: 'POINTS', value: String(points) });
+    pass.primaryFields.push({ key: 'balance', label: cardLabel, value: `${points} points` });
+    pass.secondaryFields.push({ key: 'value', label: 'VALUE', value: `${(points * pointValueSar).toFixed(2)} SAR` });
+
+    if (config?.stamp_enabled && stampData) {
+      pass.secondaryFields.push({ key: 'stamps', label: 'STAMPS', value: `${stampData.stamps ?? 0} / ${config.stamp_target}` });
+    }
+
+    pass.backFields.push({ key: 'lifetime', label: 'Lifetime Points', value: String(lifetimePoints) });
+    pass.setBarcodes({ format: 'PKBarcodeFormatQR', message: customerId, messageEncoding: 'iso-8859-1' });
+
+    const buffer = pass.getAsBuffer();
 
     res.set({
       'Content-Type': 'application/vnd.apple.pkpass',
