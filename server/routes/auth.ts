@@ -16,6 +16,8 @@ const router = Router();
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const ALLOW_OTP_FALLBACK = process.env.ALLOW_OTP_FALLBACK === 'true';
+// SMS_VERIFICATION_DISABLED — set BYPASS_SMS=false in Railway env to re-enable
+const BYPASS_SMS = process.env.BYPASS_SMS === 'true';
 
 /** Admin client – used only for DB queries and admin.createUser(). Never for signInWithPassword. */
 const adminClient = SUPABASE_URL && SUPABASE_SERVICE_KEY
@@ -113,26 +115,30 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(500).json({ error: 'OTP service not configured' });
     }
 
-    // 1. Verify OTP from DB
-    const { data: otpRow, error: otpErr } = await adminClient
-      .from('sms_otp')
-      .select('id')
-      .eq('phone', normalised)
-      .eq('code', codeStr)
-      .gte('expires_at', new Date().toISOString())
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // 1. Verify OTP — skipped when BYPASS_SMS=true
+    if (!BYPASS_SMS) {
+      const { data: otpRow, error: otpErr } = await adminClient
+        .from('sms_otp')
+        .select('id')
+        .eq('phone', normalised)
+        .eq('code', codeStr)
+        .gte('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (otpErr) {
-      console.error('[Auth] verify DB error:', otpErr);
-      return res.status(500).json({ error: 'Verification failed. Try again.' });
-    }
-    if (!otpRow) {
-      return res.status(400).json({ error: 'Invalid or expired code' });
-    }
+      if (otpErr) {
+        console.error('[Auth] verify DB error:', otpErr);
+        return res.status(500).json({ error: 'Verification failed. Try again.' });
+      }
+      if (!otpRow) {
+        return res.status(400).json({ error: 'Invalid or expired code' });
+      }
 
-    await adminClient.from('sms_otp').delete().eq('id', otpRow.id);
+      await adminClient.from('sms_otp').delete().eq('id', otpRow.id);
+    } else {
+      console.log('[Auth] BYPASS_SMS enabled — skipping OTP check for', normalised);
+    }
 
     // 2. Find or create Supabase user for this phone number
     const email = phoneToEmail(normalised);

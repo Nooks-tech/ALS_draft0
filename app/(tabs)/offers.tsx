@@ -1,5 +1,11 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import ExpoWallet from '@giulio987/expo-wallet';
+
+let ExpoWallet: { addPass: (base64: string) => Promise<unknown> } | null = null;
+try {
+  ExpoWallet = require('@giulio987/expo-wallet').default;
+} catch {
+  // Native module not available in Expo Go — only works in device builds
+}
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp, Wallet } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -406,6 +412,7 @@ export default function OffersScreen() {
                       return;
                     }
                     console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
+                    if (!ExpoWallet) throw new Error('Apple Wallet not available on this device.');
                     const result = await ExpoWallet.addPass(base64);
                     console.log('[AppleWallet] addPass result:', result);
                   } catch (err: any) {
