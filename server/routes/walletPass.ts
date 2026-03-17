@@ -431,7 +431,7 @@ walletPassRouter.get(
       if (!verifyAuthHeader(req, serialNumber)) return res.sendStatus(401);
       if (!isConfigured() || !supabaseAdmin) return res.sendStatus(500);
 
-      const parts = serialNumber.match(/^loyalty-(.+?)-(.+)$/);
+      const parts = serialNumber.match(/^loyalty-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(.+)$/i);
       if (!parts) return res.sendStatus(404);
       const [, merchantId, customerId] = parts;
 
