@@ -452,8 +452,8 @@ walletPassRouter.get(
       const bgColor = config?.wallet_card_bg_color || '#6366F1';
       const textColor = config?.wallet_card_text_color || '#FFFFFF';
       const cardLabel = config?.wallet_card_label || 'Your Points';
+      const pointValueSar = config?.point_value_sar ?? 0.1;
       const pointsPerSar = config?.points_per_sar ?? 0.1;
-      const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
       const earnRate = config?.earn_mode === 'per_order'
         ? `${config?.points_per_order ?? 10} points per order`
         : `${Math.round(pointsPerSar * 100)}% back in points`;
@@ -817,12 +817,12 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const bgColor = config?.wallet_card_bg_color || '#6366F1';
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
     const cardLabel = config?.wallet_card_label || 'Your Points';
+    const pointValueSar = config?.point_value_sar ?? 0.1;
     const pointsPerSar = config?.points_per_sar ?? 0.1;
-    const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
 
     const earnRate = config?.earn_mode === 'per_order'
       ? `${config?.points_per_order ?? 10} points per order`
-      : `${Math.round((pointsPerSar) * 100)}% back in points`;
+      : `${Math.round(pointsPerSar * 100)}% back in points`;
 
     const bgRgb = hexToRgb(bgColor);
 
