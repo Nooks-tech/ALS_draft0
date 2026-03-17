@@ -309,7 +309,7 @@ function buildPassJson(opts: {
         altText: opts.barcodeMessage,
       },
     ],
-    storeCard: {
+    generic: {
       headerFields: [
         { key: 'member', label: 'MEMBER', value: opts.tier },
       ],
