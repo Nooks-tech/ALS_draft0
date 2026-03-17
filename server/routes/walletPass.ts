@@ -239,6 +239,7 @@ function buildPassJson(opts: {
         format: 'PKBarcodeFormatCode128',
         message: opts.barcodeMessage,
         messageEncoding: 'iso-8859-1',
+        altText: opts.barcodeMessage,
       },
     ],
     storeCard: {
