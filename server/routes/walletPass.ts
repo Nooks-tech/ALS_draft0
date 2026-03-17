@@ -128,23 +128,48 @@ function authTokenForSerial(serial: string): string {
   return crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(serial).digest('hex');
 }
 
-/* Tables wallet_pass_registrations and wallet_pass_updates must exist in Supabase.
-   Run the /wallet-pass/setup endpoint once, or create them via the Supabase dashboard SQL editor:
+async function ensureTables() {
+  if (!supabaseAdmin) return;
+  const { error } = await supabaseAdmin.from('wallet_pass_registrations').select('id').limit(1);
+  if (!error) {
+    console.log('[WalletPass] Registration tables OK');
+    return;
+  }
+  console.log('[WalletPass] Tables missing, attempting auto-create...');
+  const dbUrl = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
+  if (!dbUrl) {
+    console.warn('[WalletPass] Set DATABASE_URL env var or create tables via Supabase SQL editor. See server/migrations/001_wallet_pass_tables.sql');
+    return;
+  }
+  try {
+    const { Client } = require('pg');
+    const client = new Client({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
+    await client.connect();
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS wallet_pass_registrations (
+        id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+        device_library_id text NOT NULL,
+        push_token text NOT NULL,
+        pass_type_id text NOT NULL,
+        serial_number text NOT NULL,
+        created_at timestamptz DEFAULT now(),
+        UNIQUE(device_library_id, pass_type_id, serial_number)
+      );
+      CREATE TABLE IF NOT EXISTS wallet_pass_updates (
+        serial_number text PRIMARY KEY,
+        last_updated bigint NOT NULL DEFAULT (extract(epoch from now())::bigint)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wpr_serial ON wallet_pass_registrations(serial_number);
+      CREATE INDEX IF NOT EXISTS idx_wpr_device ON wallet_pass_registrations(device_library_id, pass_type_id);
+    `);
+    await client.end();
+    console.log('[WalletPass] Tables created via DATABASE_URL');
+  } catch (e: any) {
+    console.warn('[WalletPass] Auto-create failed:', e.message, '— create tables manually');
+  }
+}
 
-   CREATE TABLE IF NOT EXISTS wallet_pass_registrations (
-     id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-     device_library_id text NOT NULL,
-     push_token text NOT NULL,
-     pass_type_id text NOT NULL,
-     serial_number text NOT NULL,
-     created_at timestamptz DEFAULT now(),
-     UNIQUE(device_library_id, pass_type_id, serial_number)
-   );
-   CREATE TABLE IF NOT EXISTS wallet_pass_updates (
-     serial_number text PRIMARY KEY,
-     last_updated bigint NOT NULL DEFAULT (extract(epoch from now())::bigint)
-   );
-*/
+ensureTables();
 
 function hexToRgb(hex: string): string {
   if (!hex || typeof hex !== 'string') return 'rgb(0, 0, 0)';
@@ -560,9 +585,13 @@ walletPassRouter.get('/wallet-pass/check', (_req, res) => {
 });
 
 walletPassRouter.post('/wallet-pass/setup', async (_req, res) => {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return res.status(500).json({ error: 'No DB' });
+  const dbUrl = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
+  if (!dbUrl) return res.status(400).json({ error: 'Set DATABASE_URL env var first' });
   try {
-    const sql = `
+    const { Client } = require('pg');
+    const client = new Client({ connectionString: dbUrl, ssl: { rejectUnauthorized: false } });
+    await client.connect();
+    await client.query(`
       CREATE TABLE IF NOT EXISTS wallet_pass_registrations (
         id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
         device_library_id text NOT NULL,
@@ -576,21 +605,11 @@ walletPassRouter.post('/wallet-pass/setup', async (_req, res) => {
         serial_number text PRIMARY KEY,
         last_updated bigint NOT NULL DEFAULT (extract(epoch from now())::bigint)
       );
-    `;
-    const resp = await fetch(`${SUPABASE_URL}/rest/v1/rpc/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      },
-      body: JSON.stringify({ query: sql }),
-    });
-    if (!resp.ok) {
-      const txt = await resp.text();
-      return res.json({ note: 'RPC may not exist. Create tables manually via Supabase SQL editor.', sql, rpcResponse: txt });
-    }
-    res.json({ success: true });
+      CREATE INDEX IF NOT EXISTS idx_wpr_serial ON wallet_pass_registrations(serial_number);
+      CREATE INDEX IF NOT EXISTS idx_wpr_device ON wallet_pass_registrations(device_library_id, pass_type_id);
+    `);
+    await client.end();
+    res.json({ success: true, message: 'Tables created' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
