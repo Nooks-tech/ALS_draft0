@@ -6,19 +6,11 @@ import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } fro
 import { Button } from '../../src/components/common/Button';
 import { Container } from '../../src/components/common/Container';
 import { authApi } from '../../src/api/auth';
-import { useAuth } from '../../src/context/AuthContext';
 import { PHONE_PREFIX, ensurePrefix } from '../../src/utils/phone';
-
-// ─── SMS_VERIFICATION_DISABLED ───────────────────────────────────────────────
-// To re-enable: set SMS_DISABLED = false
-// The server must also have BYPASS_SMS=false (or the env var removed)
-const SMS_DISABLED = true;
-// ─────────────────────────────────────────────────────────────────────────────
 
 export default function LoginScreen() {
   const router = useRouter();
   const { t } = useTranslation();
-  const { setServerSession } = useAuth();
 
   const [digits, setDigits] = useState('');
   const [loading, setLoading] = useState(false);
@@ -31,21 +23,10 @@ export default function LoginScreen() {
     }
     setLoading(true);
     try {
-      if (SMS_DISABLED) {
-        // Bypass: skip OTP screen, sign in directly via server bypass
-        const result = await authApi.verifyOtp(phone, 'BYPASS');
-        const { error } = await setServerSession(
-          result.session.access_token,
-          result.session.refresh_token,
-        );
-        if (error) { Alert.alert(t('error') || 'Error', error); return; }
-        router.replace('/(tabs)/menu');
-      } else {
-        await authApi.sendOtp(phone);
-        router.push({ pathname: '/(auth)/otp', params: { phone } });
-      }
+      await authApi.sendOtp(phone);
+      router.push({ pathname: '/(auth)/otp', params: { phone } });
     } catch (err) {
-      Alert.alert(t('error') || 'Error', err instanceof Error ? err.message : 'Could not sign in.');
+      Alert.alert(t('error') || 'Error', err instanceof Error ? err.message : 'Could not send code.');
     } finally {
       setLoading(false);
     }
