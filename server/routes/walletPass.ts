@@ -1,12 +1,13 @@
 /**
- * Apple Wallet Pass generation — uses openssl for signing (gold standard).
- * ZIP created with yazl. No node-forge signing dependency.
+ * Apple Wallet Pass generation + web service for live updates.
+ * Signing via openssl, ZIP via yazl, push via HTTP/2 APNs.
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as http2 from 'http2';
 import * as os from 'os';
 import * as path from 'path';
 import yazl from 'yazl';
@@ -115,9 +116,35 @@ A1iZQT0xWmJArzmoUUOSqwSonMJNsUvSq3xKX+udO7xPiEAGE/+QF4oIRynoYpgp
 pU8RBWk6z/Kf
 -----END CERTIFICATE-----`;
 
+const WEB_SERVICE_URL = process.env.WALLET_WEB_SERVICE_URL
+  || 'https://alsdraft0-production.up.railway.app/api/loyalty';
+const AUTH_TOKEN_SECRET = process.env.WALLET_AUTH_SECRET || PASS_TYPE_ID + TEAM_ID;
+
 function isConfigured() {
   return !!(PASS_TYPE_ID && TEAM_ID && SIGNER_CERT_PEM && SIGNER_KEY_PEM);
 }
+
+function authTokenForSerial(serial: string): string {
+  return crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(serial).digest('hex');
+}
+
+/* Tables wallet_pass_registrations and wallet_pass_updates must exist in Supabase.
+   Run the /wallet-pass/setup endpoint once, or create them via the Supabase dashboard SQL editor:
+
+   CREATE TABLE IF NOT EXISTS wallet_pass_registrations (
+     id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+     device_library_id text NOT NULL,
+     push_token text NOT NULL,
+     pass_type_id text NOT NULL,
+     serial_number text NOT NULL,
+     created_at timestamptz DEFAULT now(),
+     UNIQUE(device_library_id, pass_type_id, serial_number)
+   );
+   CREATE TABLE IF NOT EXISTS wallet_pass_updates (
+     serial_number text PRIMARY KEY,
+     last_updated bigint NOT NULL DEFAULT (extract(epoch from now())::bigint)
+   );
+*/
 
 function hexToRgb(hex: string): string {
   if (!hex || typeof hex !== 'string') return 'rgb(0, 0, 0)';
@@ -172,6 +199,8 @@ function buildPassJson(opts: {
     foregroundColor: opts.fgColor,
     labelColor: opts.labelColor,
     logoText: opts.cardLabel,
+    webServiceURL: WEB_SERVICE_URL,
+    authenticationToken: authTokenForSerial(opts.serialNumber),
     storeCard: {
       primaryFields: [
         { key: 'points', label: 'POINTS', value: opts.points },
@@ -243,6 +272,286 @@ async function createPassBuffer(files: Record<string, Buffer>): Promise<Buffer> 
   });
 }
 
+// ─── Apple Wallet Web Service (v1) ───
+
+function verifyAuthHeader(req: any, serialNumber: string): boolean {
+  const header = req.headers['authorization'] || '';
+  const token = header.replace(/^ApplePass\s+/i, '');
+  return token === authTokenForSerial(serialNumber);
+}
+
+// POST /v1/devices/:deviceId/registrations/:passTypeId/:serialNumber
+walletPassRouter.post(
+  '/v1/devices/:deviceId/registrations/:passTypeId/:serialNumber',
+  async (req, res) => {
+    try {
+      const { deviceId, passTypeId, serialNumber } = req.params;
+      if (!verifyAuthHeader(req, serialNumber)) return res.sendStatus(401);
+      if (!supabaseAdmin) return res.sendStatus(500);
+
+      const pushToken = req.body?.pushToken;
+      if (!pushToken) return res.sendStatus(400);
+
+      const { data: existing } = await supabaseAdmin
+        .from('wallet_pass_registrations')
+        .select('id')
+        .eq('device_library_id', deviceId)
+        .eq('pass_type_id', passTypeId)
+        .eq('serial_number', serialNumber)
+        .maybeSingle();
+
+      if (existing) {
+        await supabaseAdmin
+          .from('wallet_pass_registrations')
+          .update({ push_token: pushToken })
+          .eq('id', existing.id);
+        return res.sendStatus(200);
+      }
+
+      await supabaseAdmin.from('wallet_pass_registrations').insert({
+        device_library_id: deviceId,
+        push_token: pushToken,
+        pass_type_id: passTypeId,
+        serial_number: serialNumber,
+      });
+
+      await supabaseAdmin.from('wallet_pass_updates').upsert({
+        serial_number: serialNumber,
+        last_updated: Math.floor(Date.now() / 1000),
+      }, { onConflict: 'serial_number' });
+
+      console.log(`[WalletPass] Device ${deviceId.substring(0, 8)}… registered for ${serialNumber}`);
+      return res.sendStatus(201);
+    } catch (err: any) {
+      console.error('[WalletPass] register error:', err?.message);
+      return res.sendStatus(500);
+    }
+  },
+);
+
+// DELETE /v1/devices/:deviceId/registrations/:passTypeId/:serialNumber
+walletPassRouter.delete(
+  '/v1/devices/:deviceId/registrations/:passTypeId/:serialNumber',
+  async (req, res) => {
+    try {
+      const { deviceId, passTypeId, serialNumber } = req.params;
+      if (!verifyAuthHeader(req, serialNumber)) return res.sendStatus(401);
+      if (!supabaseAdmin) return res.sendStatus(500);
+
+      await supabaseAdmin
+        .from('wallet_pass_registrations')
+        .delete()
+        .eq('device_library_id', deviceId)
+        .eq('pass_type_id', passTypeId)
+        .eq('serial_number', serialNumber);
+
+      console.log(`[WalletPass] Device ${deviceId.substring(0, 8)}… unregistered for ${serialNumber}`);
+      return res.sendStatus(200);
+    } catch (err: any) {
+      console.error('[WalletPass] unregister error:', err?.message);
+      return res.sendStatus(500);
+    }
+  },
+);
+
+// GET /v1/devices/:deviceId/registrations/:passTypeId?passesUpdatedSince=TAG
+walletPassRouter.get(
+  '/v1/devices/:deviceId/registrations/:passTypeId',
+  async (req, res) => {
+    try {
+      const { deviceId, passTypeId } = req.params;
+      if (!supabaseAdmin) return res.sendStatus(500);
+
+      const { data: regs } = await supabaseAdmin
+        .from('wallet_pass_registrations')
+        .select('serial_number')
+        .eq('device_library_id', deviceId)
+        .eq('pass_type_id', passTypeId);
+
+      if (!regs || regs.length === 0) return res.sendStatus(204);
+
+      const serials = regs.map((r: any) => r.serial_number);
+      const tag = req.query.passesUpdatedSince as string;
+
+      let query = supabaseAdmin
+        .from('wallet_pass_updates')
+        .select('serial_number, last_updated')
+        .in('serial_number', serials);
+
+      if (tag) {
+        query = query.gt('last_updated', Number(tag));
+      }
+
+      const { data: updated } = await query;
+      if (!updated || updated.length === 0) return res.sendStatus(204);
+
+      const maxTag = Math.max(...updated.map((u: any) => u.last_updated));
+      return res.json({
+        serialNumbers: updated.map((u: any) => u.serial_number),
+        lastUpdated: String(maxTag),
+      });
+    } catch (err: any) {
+      console.error('[WalletPass] serial list error:', err?.message);
+      return res.sendStatus(500);
+    }
+  },
+);
+
+// GET /v1/passes/:passTypeId/:serialNumber
+walletPassRouter.get(
+  '/v1/passes/:passTypeId/:serialNumber',
+  async (req, res) => {
+    try {
+      const { serialNumber } = req.params;
+      if (!verifyAuthHeader(req, serialNumber)) return res.sendStatus(401);
+      if (!isConfigured() || !supabaseAdmin) return res.sendStatus(500);
+
+      const parts = serialNumber.match(/^loyalty-(.+?)-(.+)$/);
+      if (!parts) return res.sendStatus(404);
+      const [, merchantId, customerId] = parts;
+
+      const { data: pointsData } = await supabaseAdmin
+        .from('loyalty_points').select('points, lifetime_points')
+        .eq('customer_id', customerId).eq('merchant_id', merchantId).single();
+      const points = pointsData?.points ?? 0;
+      const lifetimePoints = pointsData?.lifetime_points ?? 0;
+
+      const { data: stampData } = await supabaseAdmin
+        .from('loyalty_stamps').select('stamps, completed_cards')
+        .eq('customer_id', customerId).eq('merchant_id', merchantId).single();
+
+      const { data: config } = await supabaseAdmin
+        .from('loyalty_config').select('*')
+        .eq('merchant_id', merchantId).maybeSingle();
+
+      const bgColor = config?.wallet_card_bg_color || '#6366F1';
+      const textColor = config?.wallet_card_text_color || '#FFFFFF';
+      const cardLabel = config?.wallet_card_label || 'Your Points';
+      const pointsPerSar = config?.points_per_sar ?? 0.1;
+      const pointValueSar = pointsPerSar > 0 ? 1 : 0.1;
+      const earnRate = config?.earn_mode === 'per_order'
+        ? `${config?.points_per_order ?? 10} points per order`
+        : `${Math.round(pointsPerSar * 100)}% back in points`;
+
+      const files: Record<string, Buffer> = {
+        'icon.png': ICON_1X,
+        'icon@2x.png': ICON_2X,
+        'icon@3x.png': ICON_3X,
+      };
+
+      if (config?.wallet_card_logo_url) {
+        try {
+          const logoRes = await fetch(config.wallet_card_logo_url);
+          if (logoRes.ok) {
+            const logoBuf = Buffer.from(await logoRes.arrayBuffer());
+            files['logo.png'] = logoBuf;
+            files['logo@2x.png'] = logoBuf;
+          }
+        } catch { /* skip */ }
+      }
+
+      files['pass.json'] = buildPassJson({
+        serialNumber,
+        description: cardLabel,
+        organizationName: cardLabel,
+        bgColor: hexToRgb(bgColor),
+        fgColor: hexToRgb(textColor),
+        labelColor: hexToRgb(textColor),
+        cardLabel,
+        points,
+        lifetimePoints,
+        pointValueSar,
+        earnRate,
+        stamps: (config?.stamp_enabled && stampData)
+          ? { current: stampData.stamps ?? 0, target: config.stamp_target }
+          : null,
+        customerId,
+      });
+
+      const pkpass = await createPassBuffer(files);
+      const modTag = req.headers['if-modified-since'];
+      const { data: upd } = await supabaseAdmin
+        .from('wallet_pass_updates')
+        .select('last_updated')
+        .eq('serial_number', serialNumber)
+        .maybeSingle();
+      const lastMod = new Date((upd?.last_updated ?? Math.floor(Date.now() / 1000)) * 1000).toUTCString();
+
+      if (modTag && modTag === lastMod) return res.sendStatus(304);
+
+      res.set({
+        'Content-Type': 'application/vnd.apple.pkpass',
+        'Content-Length': String(pkpass.length),
+        'Last-Modified': lastMod,
+      });
+      return res.end(pkpass);
+    } catch (err: any) {
+      console.error('[WalletPass] updated pass error:', err?.message);
+      return res.sendStatus(500);
+    }
+  },
+);
+
+// ─── APNs Push ───
+
+async function sendApnsPush(pushToken: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const client = http2.connect('https://api.push.apple.com:443', {
+        cert: SIGNER_CERT_PEM,
+        key: SIGNER_KEY_PEM,
+      });
+      client.on('error', () => { client.close(); resolve(false); });
+
+      const req = client.request({
+        ':method': 'POST',
+        ':path': `/3/device/${pushToken}`,
+        'apns-topic': PASS_TYPE_ID,
+        'apns-push-type': 'background',
+        'apns-priority': '5',
+      });
+
+      req.end(JSON.stringify({}));
+
+      req.on('response', (headers) => {
+        const status = headers[':status'];
+        client.close();
+        resolve(status === 200);
+      });
+
+      req.on('error', () => { client.close(); resolve(false); });
+      setTimeout(() => { try { client.close(); } catch {} resolve(false); }, 10000);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+export async function notifyPassUpdate(customerId: string, merchantId: string): Promise<void> {
+  if (!supabaseAdmin || !isConfigured()) return;
+
+  const serialNumber = `loyalty-${merchantId}-${customerId}`;
+  const now = Math.floor(Date.now() / 1000);
+
+  await supabaseAdmin.from('wallet_pass_updates').upsert({
+    serial_number: serialNumber,
+    last_updated: now,
+  }, { onConflict: 'serial_number' });
+
+  const { data: regs } = await supabaseAdmin
+    .from('wallet_pass_registrations')
+    .select('push_token')
+    .eq('serial_number', serialNumber);
+
+  if (!regs || regs.length === 0) return;
+
+  const uniqueTokens = [...new Set(regs.map((r: any) => r.push_token))];
+  for (const token of uniqueTokens) {
+    const ok = await sendApnsPush(token);
+    console.log(`[WalletPass] APNs push to ${token.substring(0, 8)}…: ${ok ? 'OK' : 'FAIL'}`);
+  }
+}
+
 // ─── Routes ───
 
 walletPassRouter.get('/wallet-pass/check', (_req, res) => {
@@ -250,12 +559,49 @@ walletPassRouter.get('/wallet-pass/check', (_req, res) => {
   res.json({ available: true });
 });
 
+walletPassRouter.post('/wallet-pass/setup', async (_req, res) => {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) return res.status(500).json({ error: 'No DB' });
+  try {
+    const sql = `
+      CREATE TABLE IF NOT EXISTS wallet_pass_registrations (
+        id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+        device_library_id text NOT NULL,
+        push_token text NOT NULL,
+        pass_type_id text NOT NULL,
+        serial_number text NOT NULL,
+        created_at timestamptz DEFAULT now(),
+        UNIQUE(device_library_id, pass_type_id, serial_number)
+      );
+      CREATE TABLE IF NOT EXISTS wallet_pass_updates (
+        serial_number text PRIMARY KEY,
+        last_updated bigint NOT NULL DEFAULT (extract(epoch from now())::bigint)
+      );
+    `;
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/rpc/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      },
+      body: JSON.stringify({ query: sql }),
+    });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      return res.json({ note: 'RPC may not exist. Create tables manually via Supabase SQL editor.', sql, rpcResponse: txt });
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
   const info: Record<string, unknown> = {
     passTypeId: PASS_TYPE_ID,
     teamId: TEAM_ID,
     configured: isConfigured(),
-    version: 'v18-hardcoded-cert-key',
+    version: 'v19-auto-update',
   };
 
   try {

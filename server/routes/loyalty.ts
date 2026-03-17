@@ -3,6 +3,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
+import { notifyPassUpdate } from './walletPass';
 
 export const loyaltyRouter = Router();
 
@@ -281,6 +282,8 @@ export async function earnPoints(
     }
   }
 
+  notifyPassUpdate(customerId, merchantId).catch(() => {});
+
   return {
     success: true,
     pointsEarned,
@@ -331,6 +334,7 @@ loyaltyRouter.post('/redeem', async (req, res) => {
       description: `Redeemed ${pointsToRedeem} points for ${discountSar} SAR discount`,
     });
 
+    notifyPassUpdate(customerId, merchantId || '').catch(() => {});
     res.json({ success: true, pointsRedeemed: pointsToRedeem, discountSar, newBalance: balance.points - pointsToRedeem });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem points' });
@@ -377,6 +381,7 @@ loyaltyRouter.post('/redeem-reward', async (req, res) => {
       description: `Redeemed reward: ${reward.name}`,
     });
 
+    notifyPassUpdate(customerId, merchantId || reward.merchant_id).catch(() => {});
     res.json({ success: true, reward: reward.name, pointsSpent: reward.points_cost, newBalance: balance.points - reward.points_cost });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem reward' });
