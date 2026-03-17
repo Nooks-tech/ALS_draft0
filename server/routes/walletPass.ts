@@ -191,6 +191,19 @@ function sha1Hex(buf: Buffer): string {
   return crypto.createHash('sha1').update(buf).digest('hex');
 }
 
+function getTier(lifetimePoints: number): string {
+  if (lifetimePoints >= 2000) return 'Gold';
+  if (lifetimePoints >= 1000) return 'Silver';
+  return 'Bronze';
+}
+
+function formatExpiryDate(lastEarnDate: string | null, expiryMonths: number | null): string {
+  if (!expiryMonths) return 'Never';
+  const base = lastEarnDate ? new Date(lastEarnDate) : new Date();
+  base.setMonth(base.getMonth() + expiryMonths);
+  return base.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
 function buildPassJson(opts: {
   serialNumber: string;
   description: string;
@@ -203,16 +216,11 @@ function buildPassJson(opts: {
   lifetimePoints: number;
   pointValueSar: number;
   earnRate: string;
-  stamps?: { current: number; target: number } | null;
+  tier: string;
+  expiresLabel: string;
+  barcodeMessage: string;
   customerId: string;
 }): Buffer {
-  const secondaryFields: Record<string, unknown>[] = [
-    { key: 'worth', label: 'Worth', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
-  ];
-  if (opts.stamps) {
-    secondaryFields.push({ key: 'stamps', label: 'Stamps', value: `${opts.stamps.current} / ${opts.stamps.target}` });
-  }
-
   const pass: Record<string, unknown> = {
     formatVersion: 1,
     passTypeIdentifier: PASS_TYPE_ID,
@@ -226,13 +234,27 @@ function buildPassJson(opts: {
     logoText: opts.cardLabel,
     webServiceURL: WEB_SERVICE_URL,
     authenticationToken: authTokenForSerial(opts.serialNumber),
+    barcodes: [
+      {
+        format: 'PKBarcodeFormatCode128',
+        message: opts.barcodeMessage,
+        messageEncoding: 'iso-8859-1',
+      },
+    ],
     storeCard: {
-      primaryFields: [
-        { key: 'points', label: 'POINTS', value: opts.points },
+      headerFields: [
+        { key: 'member', label: 'MEMBER', value: opts.tier },
       ],
-      secondaryFields,
+      primaryFields: [
+        { key: 'points', label: 'POINTS BALANCE', value: opts.points },
+      ],
+      secondaryFields: [
+        { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
+        { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
+      ],
       auxiliaryFields: [
-        { key: 'earn', label: 'Earn Rate', value: opts.earnRate },
+        { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
+        { key: 'tier', label: 'TIER', value: opts.tier },
       ],
       backFields: [
         { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
@@ -436,14 +458,11 @@ walletPassRouter.get(
       const [, merchantId, customerId] = parts;
 
       const { data: pointsData } = await supabaseAdmin
-        .from('loyalty_points').select('points, lifetime_points')
+        .from('loyalty_points').select('points, lifetime_points, updated_at')
         .eq('customer_id', customerId).eq('merchant_id', merchantId).single();
       const points = pointsData?.points ?? 0;
       const lifetimePoints = pointsData?.lifetime_points ?? 0;
-
-      const { data: stampData } = await supabaseAdmin
-        .from('loyalty_stamps').select('stamps, completed_cards')
-        .eq('customer_id', customerId).eq('merchant_id', merchantId).single();
+      const lastEarnDate = pointsData?.updated_at ?? null;
 
       const { data: config } = await supabaseAdmin
         .from('loyalty_config').select('*')
@@ -455,8 +474,14 @@ walletPassRouter.get(
       const pointValueSar = config?.point_value_sar ?? 0.1;
       const pointsPerSar = config?.points_per_sar ?? 0.1;
       const earnRate = config?.earn_mode === 'per_order'
-        ? `${config?.points_per_order ?? 10} points per order`
-        : `${Math.round(pointsPerSar * 100)}% back in points`;
+        ? `${config?.points_per_order ?? 10} pts/order`
+        : `${Math.round(pointsPerSar * 100)}% back`;
+
+      const tier = getTier(lifetimePoints);
+      const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
+      const tierPrefix = tier.substring(0, 3).toUpperCase();
+      const custSuffix = customerId.replace(/-/g, '').substring(0, 7).toUpperCase();
+      const barcodeMessage = `MBR${tierPrefix}-${custSuffix}`;
 
       const files: Record<string, Buffer> = {
         'icon.png': ICON_1X,
@@ -487,9 +512,9 @@ walletPassRouter.get(
         lifetimePoints,
         pointValueSar,
         earnRate,
-        stamps: (config?.stamp_enabled && stampData)
-          ? { current: stampData.stamps ?? 0, target: config.stamp_target }
-          : null,
+        tier,
+        expiresLabel,
+        barcodeMessage,
         customerId,
       });
 
@@ -662,7 +687,10 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
         labelColor: 'rgb(255,255,255)',
         cardLabel: 'Debug',
         points: 0, lifetimePoints: 0, pointValueSar: 0.1,
-        earnRate: '10% back in points',
+        earnRate: '10% back',
+        tier: 'Bronze',
+        expiresLabel: 'Never',
+        barcodeMessage: 'MBRBRO-DEBUG00',
         customerId: 'debug',
       }),
     });
@@ -776,6 +804,9 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       lifetimePoints: 0,
       pointValueSar: 0.1,
       earnRate,
+      tier: 'Bronze',
+      expiresLabel: 'Never',
+      barcodeMessage: 'MBRBRO-TEST000',
       customerId: 'test-customer',
     });
 
@@ -801,14 +832,11 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: pointsData } = await supabaseAdmin
-      .from('loyalty_points').select('points, lifetime_points')
+      .from('loyalty_points').select('points, lifetime_points, updated_at')
       .eq('customer_id', customerId).eq('merchant_id', merchantId).single();
     const points = pointsData?.points ?? 0;
     const lifetimePoints = pointsData?.lifetime_points ?? 0;
-
-    const { data: stampData } = await supabaseAdmin
-      .from('loyalty_stamps').select('stamps, completed_cards')
-      .eq('customer_id', customerId).eq('merchant_id', merchantId).single();
+    const lastEarnDate = pointsData?.updated_at ?? null;
 
     const { data: config } = await supabaseAdmin
       .from('loyalty_config').select('*')
@@ -821,8 +849,14 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const pointsPerSar = config?.points_per_sar ?? 0.1;
 
     const earnRate = config?.earn_mode === 'per_order'
-      ? `${config?.points_per_order ?? 10} points per order`
-      : `${Math.round(pointsPerSar * 100)}% back in points`;
+      ? `${config?.points_per_order ?? 10} pts/order`
+      : `${Math.round(pointsPerSar * 100)}% back`;
+
+    const tier = getTier(lifetimePoints);
+    const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
+    const tierPrefix = tier.substring(0, 3).toUpperCase();
+    const custSuffix = customerId.replace(/-/g, '').substring(0, 7).toUpperCase();
+    const barcodeMessage = `MBR${tierPrefix}-${custSuffix}`;
 
     const bgRgb = hexToRgb(bgColor);
 
@@ -855,7 +889,9 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       lifetimePoints,
       pointValueSar,
       earnRate,
-      stamps: (config?.stamp_enabled && stampData) ? { current: stampData.stamps ?? 0, target: config.stamp_target } : null,
+      tier,
+      expiresLabel,
+      barcodeMessage,
       customerId,
     });
 
