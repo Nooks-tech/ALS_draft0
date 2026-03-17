@@ -11,6 +11,7 @@ import * as http2 from 'http2';
 import * as os from 'os';
 import * as path from 'path';
 import yazl from 'yazl';
+import * as zlib from 'zlib';
 
 export const walletPassRouter = Router();
 
@@ -181,6 +182,72 @@ function hexToRgb(hex: string): string {
   const g = parseInt(h.substring(2, 4), 16);
   const b = parseInt(h.substring(4, 6), 16);
   return `rgb(${r}, ${g}, ${b})`;
+}
+
+function crc32(buf: Buffer): number {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let j = 0; j < 8; j++) c = (c >>> 1) ^ ((c & 1) ? 0xEDB88320 : 0);
+  }
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function pngChunk(type: string, data: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const t = Buffer.from(type, 'ascii');
+  const crcBuf = Buffer.alloc(4);
+  crcBuf.writeUInt32BE(crc32(Buffer.concat([t, data])), 0);
+  return Buffer.concat([len, t, data, crcBuf]);
+}
+
+function hexToRgbValues(hex: string): { r: number; g: number; b: number } {
+  let h = (hex || '').replace('#', '').trim();
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  if (h.length !== 6) return { r: 99, g: 102, b: 241 };
+  return {
+    r: parseInt(h.substring(0, 2), 16),
+    g: parseInt(h.substring(2, 4), 16),
+    b: parseInt(h.substring(4, 6), 16),
+  };
+}
+
+function createStripPng(w: number, h: number, r: number, g: number, b: number): Buffer {
+  const lineH = 3;
+  const lr = Math.min(255, Math.round(r + (255 - r) * 0.35));
+  const lg = Math.min(255, Math.round(g + (255 - g) * 0.35));
+  const lb = Math.min(255, Math.round(b + (255 - b) * 0.35));
+
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    const off = y * (w * 3 + 1);
+    raw[off] = 0;
+    const isLine = y >= h - lineH;
+    const pr = isLine ? lr : r;
+    const pg = isLine ? lg : g;
+    const pb = isLine ? lb : b;
+    for (let x = 0; x < w; x++) {
+      const px = off + 1 + x * 3;
+      raw[px] = pr;
+      raw[px + 1] = pg;
+      raw[px + 2] = pb;
+    }
+  }
+
+  const compressed = zlib.deflateSync(raw);
+  const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    sig,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', compressed),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
 }
 
 const ICON_1X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAIAAADZ8fBYAAAAJUlEQVR4nGNgmNJBEzRq7qi5o+aOmjtq7qi5o+aOmjtq7qAyFwCzp6UqMm3T+QAAAABJRU5ErkJggg==', 'base64');
@@ -484,10 +551,15 @@ walletPassRouter.get(
       const custSuffix = customerId.replace(/-/g, '').substring(0, 7).toUpperCase();
       const barcodeMessage = `MBR${tierPrefix}-${custSuffix}`;
 
+      const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
+      const stripPng = createStripPng(750, 246, bgR, bgG, bgB);
+
       const files: Record<string, Buffer> = {
         'icon.png': ICON_1X,
         'icon@2x.png': ICON_2X,
         'icon@3x.png': ICON_3X,
+        'strip.png': stripPng,
+        'strip@2x.png': stripPng,
       };
 
       if (config?.wallet_card_logo_url) {
@@ -776,10 +848,13 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       }
     }
 
+    const testStrip = createStripPng(750, 246, 79, 70, 229);
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
       'icon@2x.png': ICON_2X,
       'icon@3x.png': ICON_3X,
+      'strip.png': testStrip,
+      'strip@2x.png': testStrip,
     };
 
     if (logoUrl) {
@@ -860,11 +935,15 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const barcodeMessage = `MBR${tierPrefix}-${custSuffix}`;
 
     const bgRgb = hexToRgb(bgColor);
+    const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
+    const stripPng = createStripPng(750, 246, bgR, bgG, bgB);
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
       'icon@2x.png': ICON_2X,
       'icon@3x.png': ICON_3X,
+      'strip.png': stripPng,
+      'strip@2x.png': stripPng,
     };
 
     if (config?.wallet_card_logo_url) {
