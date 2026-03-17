@@ -317,16 +317,12 @@ function buildPassJson(opts: {
         { key: 'points', label: 'POINTS BALANCE', value: opts.points },
       ],
       secondaryFields: [
-        {
-          key: 'left',
-          label: 'WORTH',
-          value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR\n\nEXPIRES\n${opts.expiresLabel}`,
-        },
-        {
-          key: 'right',
-          label: 'EARN RATE',
-          value: `${opts.earnRate}\n\nTIER\n${opts.tier}`,
-        },
+        { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
+        { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
+      ],
+      auxiliaryFields: [
+        { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
+        { key: 'tier', label: 'TIER', value: opts.tier },
       ],
       backFields: [
         { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
