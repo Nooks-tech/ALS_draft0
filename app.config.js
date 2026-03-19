@@ -17,6 +17,7 @@ const buildTimeAccentColor = process.env.EXPO_PUBLIC_ACCENT_COLOR || '';
 const buildTimeBackgroundColor = process.env.EXPO_PUBLIC_BACKGROUND_COLOR || '';
 const buildTimeMenuCardColor = process.env.EXPO_PUBLIC_MENU_CARD_COLOR || '';
 const buildTimeTextColor = process.env.EXPO_PUBLIC_TEXT_COLOR || '';
+const buildTimeTabTextColor = process.env.EXPO_PUBLIC_TAB_TEXT_COLOR || '';
 const buildTimeAppIconBgColor = process.env.EXPO_PUBLIC_APP_ICON_BG_COLOR || '';
 const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
@@ -90,6 +91,7 @@ config.expo.extra = {
   backgroundColor: buildTimeBackgroundColor || '',
   menuCardColor: buildTimeMenuCardColor || '',
   textColor: buildTimeTextColor || '',
+  tabTextColor: buildTimeTabTextColor || '',
   appIconBgColor: buildTimeAppIconBgColor || '',
 };
 
