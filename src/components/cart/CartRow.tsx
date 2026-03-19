@@ -1,6 +1,7 @@
 import { Minus, Plus, Trash2 } from 'lucide-react-native';
 import { Image, Text, TouchableOpacity, View } from 'react-native';
 import { CartItem } from '../../context/CartContext';
+import { PriceWithSymbol } from '../common/PriceWithSymbol';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface CartRowProps {
@@ -22,7 +23,7 @@ export const CartRow = ({ item, onIncrease, onDecrease, onRemove }: CartRowProps
 
       <View className="flex-1 ml-3">
         <Text className="font-bold text-gray-800 text-base">{item.name}</Text>
-        <Text className="font-bold mt-1" style={{ color: primaryColor }}>{item.price * item.quantity} SAR</Text>
+        <PriceWithSymbol amount={item.price * item.quantity} iconSize={16} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', marginTop: 4 }} />
       </View>
 
       <View className="flex-row items-center bg-gray-50 rounded-lg p-1">

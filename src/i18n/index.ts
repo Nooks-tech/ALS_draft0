@@ -15,8 +15,8 @@ const RESOURCES = {
 const initI18n = async () => {
   let savedLanguage = await AsyncStorage.getItem('language');
 
-  if (!savedLanguage) {
-    savedLanguage = Localization.getLocales()[0].languageCode;
+  if (!savedLanguage || !['ar', 'en'].includes(savedLanguage)) {
+    savedLanguage = Localization.getLocales()[0]?.languageCode === 'ar' ? 'ar' : 'en';
   }
 
   i18n.use(initReactI18next).init({

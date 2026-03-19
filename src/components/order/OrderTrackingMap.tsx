@@ -1,6 +1,7 @@
 import Constants from 'expo-constants';
 import { StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { useTranslation } from 'react-i18next';
 
 const DEFAULT_ACCENT = '#0D9488';
 
@@ -16,7 +17,7 @@ type OrderTrackingMapProps = {
   accentColor?: string;
 };
 
-const MAP_HEIGHT = 220;
+const MAP_HEIGHT = 264;
 
 export function OrderTrackingMap({
   branchLat,
@@ -28,11 +29,13 @@ export function OrderTrackingMap({
   branchName,
   accentColor = DEFAULT_ACCENT,
 }: OrderTrackingMapProps) {
+  const { i18n } = useTranslation();
   const runtimeGoogleMapsKey =
     ((Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey || '').trim();
   const shouldRenderNativeMap = runtimeGoogleMapsKey.length > 0;
   const hasDelivery = deliveryLat != null && deliveryLng != null;
   const hasDriver = driverLat != null && driverLon != null;
+  const isArabic = i18n.language === 'ar';
 
   const points = [
     { lat: branchLat, lng: branchLon },
@@ -53,18 +56,18 @@ export function OrderTrackingMap({
   if (!shouldRenderNativeMap) {
     return (
       <View style={[styles.container, { height: MAP_HEIGHT, padding: 16, justifyContent: 'center' }]}>
-        <Text style={{ color: '#0f172a', fontWeight: '700', marginBottom: 8 }}>Live tracking map unavailable</Text>
+        <Text style={{ color: '#0f172a', fontWeight: '700', marginBottom: 8 }}>{isArabic ? 'خريطة التتبع المباشر غير متاحة' : 'Live tracking map unavailable'}</Text>
         <Text style={{ color: '#475569' }}>
-          Branch: {branchLat.toFixed(5)}, {branchLon.toFixed(5)}
+          {isArabic ? 'الفرع' : 'Branch'}: {branchLat.toFixed(5)}, {branchLon.toFixed(5)}
         </Text>
         {hasDelivery ? (
           <Text style={{ color: '#475569', marginTop: 4 }}>
-            Delivery: {deliveryLat!.toFixed(5)}, {deliveryLng!.toFixed(5)}
+            {isArabic ? 'التوصيل' : 'Delivery'}: {deliveryLat!.toFixed(5)}, {deliveryLng!.toFixed(5)}
           </Text>
         ) : null}
         {hasDriver ? (
           <Text style={{ color: '#475569', marginTop: 4 }}>
-            Driver: {driverLat!.toFixed(5)}, {driverLon!.toFixed(5)}
+            {isArabic ? 'السائق' : 'Driver'}: {driverLat!.toFixed(5)}, {driverLon!.toFixed(5)}
           </Text>
         ) : null}
       </View>
@@ -75,6 +78,7 @@ export function OrderTrackingMap({
     <View style={[styles.container, { height: MAP_HEIGHT }]}>
       <MapView
         style={StyleSheet.absoluteFill}
+        provider={PROVIDER_GOOGLE}
         initialRegion={{
           latitude: centerLat,
           longitude: centerLng,
@@ -86,23 +90,23 @@ export function OrderTrackingMap({
       >
         <Marker
           coordinate={{ latitude: branchLat, longitude: branchLon }}
-          title="Branch"
+          title={isArabic ? 'الفرع' : 'Branch'}
           description={branchName}
           pinColor="#F59E0B"
         />
         {hasDelivery && (
           <Marker
             coordinate={{ latitude: deliveryLat, longitude: deliveryLng }}
-            title="Your location"
-            description="Delivery address"
+            title={isArabic ? 'موقعك' : 'Your location'}
+            description={isArabic ? 'عنوان التوصيل' : 'Delivery address'}
             pinColor={accentColor}
           />
         )}
         {hasDriver && (
           <Marker
             coordinate={{ latitude: driverLat, longitude: driverLon }}
-            title="Driver"
-            description="On the way"
+            title={isArabic ? 'السائق' : 'Driver'}
+            description={isArabic ? 'في الطريق' : 'On the way'}
             pinColor="#6366F1"
           />
         )}

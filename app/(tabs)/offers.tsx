@@ -9,6 +9,7 @@ try {
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp, Wallet } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
   Alert,
@@ -33,6 +34,7 @@ import {
 } from '../../src/api/loyalty';
 import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
+import { PriceWithSymbol } from '../../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
 
@@ -69,6 +71,7 @@ function formatExpiry(validUntil?: string): string {
 
 export default function OffersScreen() {
   const router = useRouter();
+  const { i18n } = useTranslation();
   const { merchantId } = useMerchant();
   const { backgroundColor, menuCardColor, textColor, primaryColor } = useMerchantBranding();
   const { user } = useAuth();
@@ -91,6 +94,7 @@ export default function OffersScreen() {
   const [appleWalletAvailable, setAppleWalletAvailable] = useState(false);
   const [googleWalletAvailable, setGoogleWalletAvailable] = useState(false);
   const [walletLoading, setWalletLoading] = useState(false);
+  const isArabic = i18n.language === 'ar';
 
   useEffect(() => {
     if (!merchantId) return;
@@ -128,21 +132,21 @@ export default function OffersScreen() {
   const handleRedeemReward = async (reward: LoyaltyReward) => {
     if (!user?.id || !merchantId) return;
     if ((balance?.points ?? 0) < reward.points_cost) {
-      Alert.alert('Not enough points', `You need ${reward.points_cost} points but only have ${balance?.points ?? 0}.`);
+      Alert.alert('النقاط غير كافية', `تحتاج إلى ${reward.points_cost} نقطة لكن لديك فقط ${balance?.points ?? 0}.`);
       return;
     }
-    Alert.alert('Redeem Reward', `Spend ${reward.points_cost} points for "${reward.name}"?`, [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert('استبدال المكافأة', `هل تريد صرف ${reward.points_cost} نقطة مقابل "${reward.name}"؟`, [
+      { text: 'إلغاء', style: 'cancel' },
       {
-        text: 'Redeem',
+        text: 'استبدال',
         onPress: async () => {
           setRedeemingId(reward.id);
           try {
             const result = await loyaltyApi.redeemReward(user.id, reward.id, merchantId);
-            Alert.alert('Redeemed!', `You redeemed "${result.reward}". Show this to the staff.`);
+            Alert.alert('تم الاستبدال!', `لقد استبدلت "${result.reward}". اعرض هذا للموظف.`);
             loadLoyalty();
           } catch {
-            Alert.alert('Error', 'Failed to redeem reward.');
+            Alert.alert('خطأ', 'تعذر استبدال المكافأة.');
           }
           setRedeemingId(null);
         },
@@ -187,7 +191,7 @@ export default function OffersScreen() {
           <ArrowLeft size={24} color={textColor} />
         </TouchableOpacity>
         <Text className="text-xl font-bold flex-1" style={{ color: textColor }}>
-          {tab === 'offers' ? 'Offers' : 'Points'}
+          {tab === 'offers' ? (isArabic ? 'العروض' : 'Offers') : (isArabic ? 'النقاط' : 'Points')}
         </Text>
       </View>
 
@@ -198,14 +202,14 @@ export default function OffersScreen() {
           className="flex-1 py-2.5 items-center"
           style={tab === 'offers' ? { backgroundColor: primaryColor } : {}}
         >
-          <Text className="text-sm font-semibold" style={{ color: tab === 'offers' ? '#fff' : textColor }}>Offers</Text>
+          <Text className="text-sm font-semibold" style={{ color: tab === 'offers' ? '#fff' : textColor }}>{isArabic ? 'العروض' : 'Offers'}</Text>
         </TouchableOpacity>
         <TouchableOpacity
           onPress={() => setTab('points')}
           className="flex-1 py-2.5 items-center"
           style={tab === 'points' ? { backgroundColor: primaryColor } : {}}
         >
-          <Text className="text-sm font-semibold" style={{ color: tab === 'points' ? '#fff' : textColor }}>Points</Text>
+          <Text className="text-sm font-semibold" style={{ color: tab === 'points' ? '#fff' : textColor }}>{isArabic ? 'النقاط' : 'Points'}</Text>
         </TouchableOpacity>
       </View>
 
@@ -235,7 +239,7 @@ export default function OffersScreen() {
             visibleBannerCards.length === 0 ? (
               <View className="items-center justify-center py-20">
                 <Gift size={48} color="#94a3b8" />
-                <Text className="text-slate-400 mt-3 text-center">No offers available right now.</Text>
+                <Text className="text-slate-400 mt-3 text-center">{isArabic ? 'لا توجد عروض متاحة حالياً.' : 'No offers available right now.'}</Text>
               </View>
             ) : null
           }
@@ -317,9 +321,10 @@ export default function OffersScreen() {
                     <Text style={{ color: cardTextColor, fontSize: 48, fontWeight: '800', lineHeight: 52 }}>
                       {balance?.points ?? 0}
                     </Text>
-                    <Text style={{ color: cardSubTextColor, fontSize: 14, marginTop: 4 }}>
-                      Worth {balance?.pointsValue?.toFixed(2) ?? '0.00'} SAR
-                    </Text>
+                    <View className="flex-row items-center mt-1">
+                      <Text style={{ color: cardSubTextColor, fontSize: 14 }}>Worth </Text>
+                      <PriceWithSymbol amount={balance?.pointsValue ?? 0} iconSize={14} iconColor={cardSubTextColor} textStyle={{ color: cardSubTextColor, fontSize: 14 }} />
+                    </View>
 
                     {/* Divider */}
                     <View
@@ -373,11 +378,11 @@ export default function OffersScreen() {
                   ))}
                 </View>
                 <Text className="text-slate-500 text-xs mt-3">
-                  {(balance.stampTarget - (balance.stamps ?? 0))} more orders until: {balance.stampRewardDescription}
+                  تبقى {balance.stampTarget - (balance.stamps ?? 0)} طلبات حتى: {balance.stampRewardDescription}
                 </Text>
                 {(balance.completedCards ?? 0) > 0 && (
                   <Text className="text-emerald-600 text-xs mt-1 font-semibold">
-                    Cards completed: {balance.completedCards}
+                    البطاقات المكتملة: {balance.completedCards}
                   </Text>
                 )}
               </View>
@@ -530,7 +535,7 @@ export default function OffersScreen() {
                 onPress={() => setShowHistory(!showHistory)}
                 className="flex-row items-center justify-between mb-3"
               >
-                <Text className="text-lg font-bold" style={{ color: textColor }}>Recent Activity</Text>
+                <Text className="text-lg font-bold" style={{ color: textColor }}>النشاط الأخير</Text>
                 <ChevronDown
                   size={20}
                   color="#64748b"

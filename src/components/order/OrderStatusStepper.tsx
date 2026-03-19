@@ -1,4 +1,5 @@
 import { Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 
 type OrderStatus = 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled';
 
@@ -22,6 +23,8 @@ export function OrderStatusStepper({
   orderType: 'delivery' | 'pickup';
   accentColor?: string;
 }) {
+  const { i18n } = useTranslation();
+  const isArabic = i18n.language === 'ar';
   const steps = orderType === 'delivery'
     ? STATUS_STEPS
     : STATUS_STEPS.filter((s) => s.key !== 'Out for delivery');
@@ -68,14 +71,18 @@ export function OrderStatusStepper({
                   isCurrent ? 'text-slate-900' : isCompleted ? 'text-slate-600' : 'text-slate-400'
                 }`}
               >
-                {step.label}
+                {step.key === 'Preparing' ? (isArabic ? 'قيد التحضير' : 'Preparing')
+                  : step.key === 'Ready' ? (isArabic ? 'جاهز' : 'Ready')
+                  : step.key === 'Out for delivery' ? (isArabic ? 'في الطريق' : 'On the way')
+                  : step.key === 'Delivered' ? (isArabic ? 'تم التوصيل' : 'Delivered')
+                  : step.label}
               </Text>
               {isCurrent && (
                 <Text className="text-slate-500 text-xs mt-0.5">
-                  {status === 'Preparing' && 'Your order is being prepared'}
-                  {status === 'Ready' && (orderType === 'pickup' ? 'Ready for pickup!' : 'Picked up by driver')}
-                  {status === 'Out for delivery' && 'Driver is on the way'}
-                  {status === 'Delivered' && 'Order delivered'}
+                  {status === 'Preparing' && (isArabic ? 'طلبك قيد التحضير' : 'Your order is being prepared')}
+                  {status === 'Ready' && (orderType === 'pickup' ? (isArabic ? 'جاهز للاستلام!' : 'Ready for pickup!') : (isArabic ? 'استلمه السائق' : 'Picked up by driver'))}
+                  {status === 'Out for delivery' && (isArabic ? 'السائق في الطريق' : 'Driver is on the way')}
+                  {status === 'Delivered' && (isArabic ? 'تم توصيل الطلب' : 'Order delivered')}
                 </Text>
               )}
             </View>

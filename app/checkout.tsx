@@ -22,6 +22,7 @@ import {
   View,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ApplePay as ApplePayButton,
@@ -33,6 +34,7 @@ import {
   PaymentStatus,
   isMoyasarError,
 } from 'react-native-moyasar-sdk';
+import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { paymentApi } from '../src/api/payment';
 import { otoApi } from '../src/api/oto';
@@ -66,6 +68,7 @@ const VAT_RATE = 0.15; // 15% Saudi VAT
 
 export default function CheckoutScreen() {
   const router = useRouter();
+  const { i18n } = useTranslation();
   const {
     cartItems,
     totalPrice,
@@ -80,6 +83,7 @@ export default function CheckoutScreen() {
   const { isClosed, isBusy } = useOperations();
   const { primaryColor } = useMerchantBranding();
   const { user } = useAuth();
+  const isArabic = i18n.language === 'ar';
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     Platform.OS === 'ios' ? 'apple_pay' : (SAMSUNG_PAY_ENABLED ? 'samsung_pay' : 'credit_card')
@@ -94,6 +98,7 @@ export default function CheckoutScreen() {
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
+  const [draftOrderNote, setDraftOrderNote] = useState('');
   const [promoValidating, setPromoValidating] = useState(false);
   const [moyasarWebUrl, setMoyasarWebUrl] = useState<string | null>(null);
   const paymentSuccessHandled = useRef(false);
@@ -216,6 +221,16 @@ export default function CheckoutScreen() {
     setPromoDiscount(0);
     setPromoCode('');
     setCouponInput('');
+  };
+
+  const openNoteModal = () => {
+    setDraftOrderNote(orderNote);
+    setShowNoteModal(true);
+  };
+
+  const saveOrderNote = () => {
+    setOrderNote(draftOrderNote.trim());
+    setShowNoteModal(false);
   };
 
   const createOrderAfterPayment = useCallback(async (moyasarPaymentId?: string) => {
@@ -426,7 +441,7 @@ export default function CheckoutScreen() {
           Alert.alert('Payment Error', 'Could not open payment page. Please try again.');
         }
       } catch (err: unknown) {
-        Alert.alert('Payment Error', err instanceof Error ? err.message : 'Failed to start payment.');
+        Alert.alert(isArabic ? 'خطأ في الدفع' : 'Payment Error', err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.'));
       } finally {
         setSubmitting(false);
       }
@@ -441,14 +456,14 @@ export default function CheckoutScreen() {
       ? '\uF8FF Apple Pay'
       : paymentMethod === 'samsung_pay'
         ? 'Samsung Pay'
-        : 'Credit / Debit Card';
+        : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
 
   if (cartItems.length === 0) {
     return (
       <SafeAreaView className="flex-1 bg-white items-center justify-center px-6">
-        <Text className="text-slate-600 text-center mb-4">Your cart is empty</Text>
-        <TouchableOpacity onPress={() => router.back()} className="bg-black px-6 py-3 rounded-xl">
-          <Text className="text-white font-bold">Back to Cart</Text>
+        <Text className="text-slate-600 text-center mb-4">{isArabic ? 'سلتك فارغة' : 'Your cart is empty'}</Text>
+        <TouchableOpacity onPress={() => router.back()} className="px-6 py-3 rounded-2xl" style={{ backgroundColor: primaryColor }}>
+          <Text className="text-white font-bold">{isArabic ? 'العودة إلى السلة' : 'Back to Cart'}</Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
@@ -457,11 +472,11 @@ export default function CheckoutScreen() {
   return (
     <SafeAreaView className="flex-1 bg-white" edges={['top']}>
       {/* Header */}
-      <View className="flex-row items-center px-5 py-4 border-b border-slate-100">
-        <TouchableOpacity onPress={() => router.back()} className="p-2 -ml-2">
-          <ArrowLeft size={24} color="#111" />
+      <View className="flex-row items-center px-5 py-4 border-b border-slate-100 bg-white">
+        <TouchableOpacity onPress={() => router.back()} className="bg-slate-100 p-2 rounded-full">
+          <ArrowLeft size={22} color="#334155" />
         </TouchableOpacity>
-        <Text className="flex-1 text-center text-lg font-bold text-slate-900">Checkout</Text>
+        <Text className="flex-1 text-center text-lg font-bold text-slate-900">{isArabic ? 'الدفع' : 'Checkout'}</Text>
         <View className="w-10" />
       </View>
 
@@ -472,32 +487,41 @@ export default function CheckoutScreen() {
       >
         <View className="px-5 pt-5">
           {/* Delivery & Order Details (display only, no change) */}
-          <View className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <View className="flex-row items-center px-4 py-3.5">
-              <MapPin size={20} color="#64748b" />
+          <View className="bg-slate-50 rounded-[28px] border border-slate-100 overflow-hidden">
+            <View className="flex-row items-center px-4 py-4">
+              <View className="w-11 h-11 rounded-2xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
+                <MapPin size={20} color={primaryColor} />
+              </View>
               <View className="flex-1 ml-3">
-                <Text className="text-slate-500 text-xs">{orderType === 'delivery' ? 'Delivery to' : 'Pickup from'}</Text>
-                <Text className="text-slate-900 font-medium" numberOfLines={1}>
+                <Text className="text-slate-500 text-xs font-bold uppercase tracking-widest">{orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivery to') : (isArabic ? 'الاستلام من' : 'Pickup from')}</Text>
+                <Text className="text-slate-900 font-bold text-base" numberOfLines={1}>
                   {orderType === 'delivery' ? deliveryAddress?.address || '—' : selectedBranch?.name || '—'}
                 </Text>
               </View>
             </View>
-            <View className="h-px bg-slate-100 ml-12" />
-            <View className="flex-row items-center px-4 py-3.5">
-              <Clock size={20} color="#64748b" />
+            <View className="h-px bg-slate-200 ml-[70px]" />
+            <View className="flex-row items-center px-4 py-4">
+              <View className="w-11 h-11 rounded-2xl items-center justify-center bg-white border border-slate-200">
+                <Clock size={20} color="#64748b" />
+              </View>
               <View className="flex-1 ml-3">
-                <Text className="text-slate-500 text-xs">Expected due time</Text>
-                <Text className="text-slate-900 font-medium">~ 30 minutes</Text>
+                <Text className="text-slate-500 text-xs font-bold uppercase tracking-widest">{isArabic ? 'الوقت المتوقع' : 'Expected time'}</Text>
+                <Text className="text-slate-900 font-bold text-base">{isArabic ? 'حوالي 30 دقيقة' : '~ 30 minutes'}</Text>
               </View>
             </View>
-            <View className="h-px bg-slate-100 ml-12" />
+            <View className="h-px bg-slate-200 ml-[70px]" />
             <TouchableOpacity
-              onPress={() => Alert.prompt('Note', 'Add a note for your order', (t) => setOrderNote(t || ''))}
-              className="flex-row items-center px-4 py-3.5"
+              onPress={openNoteModal}
+              className="flex-row items-center px-4 py-4"
             >
-              <Pencil size={20} color="#64748b" />
+              <View className="w-11 h-11 rounded-2xl items-center justify-center bg-white border border-slate-200">
+                <Pencil size={20} color="#64748b" />
+              </View>
               <View className="flex-1 ml-3">
-                <Text className="text-slate-900 font-medium">{orderNote || 'Write a note'}</Text>
+                <Text className="text-slate-900 font-bold">{orderNote || (isArabic ? 'اكتب ملاحظة' : 'Write a note')}</Text>
+                <Text className="text-slate-400 text-xs mt-0.5">
+                  {isArabic ? 'أضف تعليمات للطلب إن لزم' : 'Add instructions for your order if needed'}
+                </Text>
               </View>
               <ChevronRight size={20} color="#94a3b8" />
             </TouchableOpacity>
@@ -506,47 +530,59 @@ export default function CheckoutScreen() {
           {/* Promo / Coupon */}
           <View className="mt-5">
             {showCouponInput ? (
-              <View className="flex-row items-center border-2 border-dashed border-slate-200 rounded-2xl p-3 gap-2">
+              <View className="rounded-[28px] border border-slate-100 bg-slate-50 p-4">
+                <View className="flex-row items-center border-2 border-dashed border-slate-200 rounded-2xl px-4 py-3">
+                  <Percent size={18} color="#94a3b8" />
                 <TextInput
-                  placeholder="Enter promo code"
+                  placeholder={isArabic ? 'أدخل كود الخصم' : 'Enter promo code'}
                   value={couponInput}
                   onChangeText={setCouponInput}
-                  className="flex-1 text-slate-900 font-medium"
+                  className="flex-1 text-slate-900 font-medium ml-3"
                   autoCapitalize="characters"
                 />
-                <TouchableOpacity
-                  onPress={applyCoupon}
-                  disabled={promoValidating}
-                  className="bg-black px-4 py-2 rounded-xl disabled:opacity-60"
-                >
-                  {promoValidating ? (
-                    <ActivityIndicator size="small" color="white" />
-                  ) : (
-                    <Text className="text-white font-bold">Apply</Text>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => { setShowCouponInput(false); setCouponInput(''); }}>
-                  <Text className="text-slate-500">Cancel</Text>
-                </TouchableOpacity>
+                </View>
+                <View className="flex-row mt-3">
+                  <TouchableOpacity
+                    onPress={applyCoupon}
+                    disabled={promoValidating}
+                    className="flex-1 items-center py-3 rounded-2xl mr-3 disabled:opacity-60"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    {promoValidating ? (
+                      <ActivityIndicator size="small" color="white" />
+                    ) : (
+                      <Text className="text-white font-bold">{isArabic ? 'تطبيق' : 'Apply'}</Text>
+                    )}
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setShowCouponInput(false); setCouponInput(''); }} className="px-5 justify-center rounded-2xl bg-white border border-slate-200">
+                    <Text className="text-slate-500 font-bold">{isArabic ? 'إلغاء' : 'Cancel'}</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             ) : promoApplied ? (
               <TouchableOpacity
                 onPress={removeCoupon}
-                className="border-2 rounded-2xl p-4 flex-row items-center justify-between bg-teal-50/50"
-            style={{ borderColor: primaryColor, backgroundColor: `${primaryColor}08` }}
+                className="rounded-[28px] p-4 flex-row items-center justify-between border"
+                style={{ borderColor: `${primaryColor}30`, backgroundColor: `${primaryColor}08` }}
               >
                 <View className="flex-row items-center">
-                  <Percent size={20} color={primaryColor} />
-                  <Text className="ml-3 font-bold" style={{ color: primaryColor }}>{promoCode} applied</Text>
+                  <View className="w-11 h-11 rounded-2xl items-center justify-center bg-white">
+                    <Percent size={20} color={primaryColor} />
+                  </View>
+                  <View className="ml-3">
+                    <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? `تم تطبيق ${promoCode}` : `${promoCode} applied`}</Text>
+                    <Text className="text-slate-400 text-xs">{isArabic ? 'اضغط لإزالة الكود' : 'Tap to remove code'}</Text>
+                  </View>
                 </View>
-                <Text className="text-slate-500 text-sm">−{promoDiscount} SAR</Text>
+                <View className="flex-row items-center"><Text className="text-slate-500 text-sm">−</Text><PriceWithSymbol amount={promoDiscount} iconSize={14} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 14 }} /></View>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity
                 onPress={() => setShowCouponInput(true)}
-                className="border-2 border-dashed border-slate-200 rounded-2xl p-4 flex-row items-center justify-center"
+                className="border-2 border-dashed border-slate-200 rounded-[28px] p-5 flex-row items-center justify-center bg-slate-50"
               >
-                <Text className="text-slate-500 font-medium">Add promo code or coupon</Text>
+                <Percent size={18} color="#94a3b8" />
+                <Text className="text-slate-500 font-medium ml-2">{isArabic ? 'إضافة كود خصم أو كوبون' : 'Add promo code or coupon'}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -555,11 +591,11 @@ export default function CheckoutScreen() {
           {user?.id && loyaltyBalance && loyaltyBalance.points > 0 && (
             <TouchableOpacity
               onPress={() => setUsePoints(!usePoints)}
-              className="mt-5 rounded-2xl p-4 flex-row items-center justify-between"
+              className="mt-5 rounded-[28px] p-4 flex-row items-center justify-between"
               style={{
-                borderWidth: 2,
+                borderWidth: 1,
                 borderColor: usePoints ? primaryColor : '#e2e8f0',
-                backgroundColor: usePoints ? `${primaryColor}08` : 'transparent',
+                backgroundColor: usePoints ? `${primaryColor}08` : '#f8fafc',
               }}
               activeOpacity={0.7}
             >
@@ -575,11 +611,12 @@ export default function CheckoutScreen() {
                 </View>
                 <View className="ml-3 flex-1">
                   <Text className="font-bold text-slate-900">
-                    Use {loyaltyBalance.points} points
+                    {isArabic ? `استخدم ${loyaltyBalance.points} نقطة` : `Use ${loyaltyBalance.points} points`}
                   </Text>
-                  <Text className="text-slate-500 text-xs mt-0.5">
-                    Save up to {Math.min(maxPointsDiscountSar, itemsAfterPromo).toFixed(2)} SAR
-                  </Text>
+                  <View className="flex-row items-center flex-wrap mt-0.5">
+                    <Text className="text-slate-500 text-xs">{isArabic ? 'وفّر حتى ' : 'Save up to '}</Text>
+                    <PriceWithSymbol amount={Math.min(maxPointsDiscountSar, itemsAfterPromo)} iconSize={12} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 12 }} />
+                  </View>
                 </View>
               </View>
               <View
@@ -604,44 +641,44 @@ export default function CheckoutScreen() {
           )}
 
           {/* Order Summary */}
-          <View className="mt-6">
-            <Text className="text-slate-500 text-sm mb-1">Amount excl. VAT</Text>
+          <View className="mt-6 rounded-[28px] bg-slate-50 border border-slate-100 p-5">
+            <Text className="text-slate-900 text-lg font-bold mb-4">{isArabic ? 'ملخص الدفع' : 'Payment Summary'}</Text>
             <View className="flex-row justify-between">
-              <Text className="text-slate-900 font-medium">Amount excl. VAT</Text>
-              <Text className="text-slate-900 font-bold">{itemsExclVAT.toFixed(2)} SAR</Text>
+              <Text className="text-slate-900 font-medium">{isArabic ? 'المبلغ بدون الضريبة' : 'Amount excl. VAT'}</Text>
+              <PriceWithSymbol amount={itemsExclVAT} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
             </View>
             <View className="flex-row justify-between mt-1">
-              <Text className="text-slate-900 font-medium">Delivery fee excl. VAT</Text>
-              <Text className="text-slate-900 font-bold">{deliveryExclVAT.toFixed(2)} SAR</Text>
+              <Text className="text-slate-900 font-medium">{isArabic ? 'رسوم التوصيل بدون الضريبة' : 'Delivery fee excl. VAT'}</Text>
+              <PriceWithSymbol amount={deliveryExclVAT} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
             </View>
             <View className="flex-row justify-between mt-1">
               <Text className="text-slate-900 font-medium">VAT</Text>
-              <Text className="text-slate-900 font-bold">{vatAmount.toFixed(2)} SAR</Text>
+              <PriceWithSymbol amount={vatAmount} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
             </View>
             {promoApplied && discount > 0 && (
               <View className="flex-row justify-between mt-1">
-                <Text className="text-slate-900 font-medium">Promo discount</Text>
-                <Text className="text-emerald-600 font-bold">- {discount.toFixed(2)} SAR</Text>
+                <Text className="text-slate-900 font-medium">{isArabic ? 'خصم العرض' : 'Promo discount'}</Text>
+                <PriceWithSymbol amount={discount} prefix="- " iconSize={16} iconColor="#059669" textStyle={{ color: '#059669', fontWeight: '700' }} />
               </View>
             )}
             {usePoints && pointsDiscount > 0 && (
               <View className="flex-row justify-between mt-1">
-                <Text className="text-slate-900 font-medium">Points ({pointsToRedeem} pts)</Text>
-                <Text className="text-emerald-600 font-bold">- {pointsDiscount.toFixed(2)} SAR</Text>
+                <Text className="text-slate-900 font-medium">{isArabic ? `النقاط (${pointsToRedeem} نقطة)` : `Points (${pointsToRedeem} pts)`}</Text>
+                <PriceWithSymbol amount={pointsDiscount} prefix="- " iconSize={16} iconColor="#059669" textStyle={{ color: '#059669', fontWeight: '700' }} />
               </View>
             )}
-            <View className="flex-row justify-between mt-3 pt-3 border-t border-slate-100">
-              <Text className="text-slate-900 font-bold">Total VAT included</Text>
-              <Text className="text-slate-900 font-bold text-lg">{finalTotal.toFixed(2)} SAR</Text>
+            <View className="flex-row justify-between mt-4 pt-4 border-t border-slate-200">
+              <Text className="text-slate-900 font-bold">{isArabic ? 'الإجمالي شامل الضريبة' : 'Total VAT included'}</Text>
+              <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 18 }} />
             </View>
           </View>
 
           {/* Payment Method */}
           <View className="mt-8">
-            <Text className="text-slate-500 text-sm mb-2">Selected payment method</Text>
+            <Text className="text-slate-500 text-sm mb-2">{isArabic ? 'طريقة الدفع المختارة' : 'Selected payment method'}</Text>
             <TouchableOpacity
               onPress={() => setShowPaymentPicker(true)}
-              className="flex-row items-center bg-slate-50 rounded-2xl p-4 border border-slate-100"
+              className="flex-row items-center bg-slate-50 rounded-[28px] p-4 border border-slate-100"
             >
               {paymentMethod === 'apple_pay' ? (
                 <View className="w-12 h-8 bg-black rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
@@ -665,8 +702,14 @@ export default function CheckoutScreen() {
 
       {/* Footer */}
       <View className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-5 pt-4 pb-10">
-        <View className="flex-row items-center justify-between mb-3">
-          <Text className="text-2xl font-bold text-slate-900">{finalTotal.toFixed(2)} SAR</Text>
+        <View className="rounded-[28px] bg-slate-50 border border-slate-100 p-4">
+          <View className="flex-row items-center justify-between">
+            <View>
+              <Text className="text-slate-400 text-xs font-bold uppercase tracking-widest">
+                {isArabic ? 'الإجمالي' : 'Total'}
+              </Text>
+              <PriceWithSymbol amount={finalTotal} iconSize={24} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }} />
+            </View>
           {paymentMethod === 'apple_pay' && Platform.OS === 'ios' && paymentConfig ? (
             <View style={{ width: 180, height: 50 }}>
               <ApplePayButton
@@ -679,25 +722,66 @@ export default function CheckoutScreen() {
             <TouchableOpacity
               onPress={handlePay}
               disabled={submitting}
-              className="px-8 py-4 rounded-2xl min-w-[160px] items-center"
+              className="px-6 py-4 rounded-[24px] min-w-[190px] items-center flex-row justify-center"
               style={{ backgroundColor: primaryColor }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color="white" />
+              ) : paymentMethod === 'samsung_pay' ? (
+                <Text className="text-white font-bold text-base">{isArabic ? 'الدفع عبر Samsung Pay' : 'Pay with Samsung Pay'}</Text>
               ) : (
-                <Text className="text-white font-bold text-base">
-                  {paymentMethod === 'samsung_pay'
-                    ? 'Pay with Samsung Pay'
-                    : `Pay ${finalTotal.toFixed(2)} SAR`}
-                </Text>
+                <View className="flex-row items-center">
+                  <Text className="text-white font-bold text-base mr-2">{isArabic ? 'إتمام الطلب' : 'Complete Order'}</Text>
+                  <ChevronRight size={18} color="white" />
+                </View>
               )}
             </TouchableOpacity>
           )}
+          </View>
         </View>
         <TouchableOpacity onPress={() => router.push('/terms-modal')} className="self-center">
-          <Text className="text-slate-500 text-sm underline">Cancellation Policy</Text>
+          <Text className="text-slate-500 text-sm underline">{isArabic ? 'سياسة الإلغاء' : 'Cancellation Policy'}</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Note Modal */}
+      <Modal visible={showNoteModal} transparent animationType="fade">
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setShowNoteModal(false)}
+          className="flex-1 bg-black/50 justify-end"
+        >
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="bg-white rounded-t-[32px] p-6 pb-10">
+            <Text className="text-lg font-bold text-slate-900 mb-2">{isArabic ? 'ملاحظة الطلب' : 'Order Note'}</Text>
+            <Text className="text-slate-500 mb-4">{isArabic ? 'أضف تعليمات للطلب إن لزم' : 'Add special instructions if needed'}</Text>
+            <View className="rounded-[24px] border border-slate-200 bg-slate-50 p-4">
+              <TextInput
+                value={draftOrderNote}
+                onChangeText={setDraftOrderNote}
+                placeholder={isArabic ? 'اكتب ملاحظتك هنا' : 'Write your note here'}
+                multiline
+                textAlignVertical="top"
+                style={{ minHeight: 120, color: '#0f172a' }}
+              />
+            </View>
+            <View className="flex-row mt-4">
+              <TouchableOpacity
+                onPress={() => setShowNoteModal(false)}
+                className="flex-1 py-3 rounded-2xl bg-slate-100 items-center mr-3"
+              >
+                <Text className="font-bold text-slate-600">{isArabic ? 'إلغاء' : 'Cancel'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={saveOrderNote}
+                className="flex-1 py-3 rounded-2xl items-center"
+                style={{ backgroundColor: primaryColor }}
+              >
+                <Text className="font-bold text-white">{isArabic ? 'حفظ' : 'Save'}</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Payment Method Picker Modal */}
       <Modal visible={showPaymentPicker} transparent animationType="fade">
@@ -706,28 +790,28 @@ export default function CheckoutScreen() {
           onPress={() => setShowPaymentPicker(false)}
           className="flex-1 bg-black/50 justify-end"
         >
-          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="bg-white rounded-t-3xl p-6 pb-10">
-            <Text className="text-lg font-bold text-slate-900 mb-4">Select payment method</Text>
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="bg-white rounded-t-[32px] p-6 pb-10">
+            <Text className="text-lg font-bold text-slate-900 mb-4">{isArabic ? 'اختر طريقة الدفع' : 'Select payment method'}</Text>
             {Platform.OS === 'ios' && (
               <TouchableOpacity
                 onPress={() => { setPaymentMethod('apple_pay'); setShowPaymentPicker(false); }}
-                className="flex-row items-center py-3 border-b border-slate-100"
+                className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"
               >
                 <View className="w-12 h-8 bg-black rounded items-center justify-center">
                   <Text className="text-white font-bold text-xs">{'\uF8FF'} Pay</Text>
                 </View>
-                <Text className="ml-3 font-medium">{'\uF8FF'} Apple Pay</Text>
+                <Text className="ml-3 font-bold text-slate-900">{'\uF8FF'} Apple Pay</Text>
               </TouchableOpacity>
             )}
             {Platform.OS === 'android' && SAMSUNG_PAY_ENABLED && (
               <TouchableOpacity
                 onPress={() => { setPaymentMethod('samsung_pay'); setShowPaymentPicker(false); }}
-                className="flex-row items-center py-3 border-b border-slate-100"
+                className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"
               >
                 <View className="w-12 h-8 bg-blue-900 rounded items-center justify-center">
                   <Text className="text-white font-bold text-xs">S Pay</Text>
                 </View>
-                <Text className="ml-3 font-medium">Samsung Pay</Text>
+                <Text className="ml-3 font-bold text-slate-900">Samsung Pay</Text>
               </TouchableOpacity>
             )}
             <TouchableOpacity
@@ -736,10 +820,16 @@ export default function CheckoutScreen() {
                 setShowPaymentPicker(false);
                 setShowPaymentModal(true);
               }}
-              className="flex-row items-center py-3"
+              className="flex-row items-center py-4 px-4 rounded-[24px] bg-slate-50 border border-slate-100"
             >
-              <Text className="font-medium">Credit / Debit Card</Text>
-              <Text className="text-slate-400 text-sm ml-1">– Enter card or use saved</Text>
+              <View className="w-12 h-10 bg-white rounded-xl items-center justify-center border border-slate-200">
+                <Text className="text-slate-600 font-bold text-xs">••••</Text>
+              </View>
+              <View className="ml-3 flex-1">
+                <Text className="font-bold text-slate-900">{isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card'}</Text>
+                <Text className="text-slate-400 text-sm">{isArabic ? 'أدخل البطاقة أو استخدم المحفوظ' : 'Enter card or use saved'}</Text>
+              </View>
+              <ChevronRight size={18} color="#94a3b8" />
             </TouchableOpacity>
           </TouchableOpacity>
         </TouchableOpacity>
@@ -773,7 +863,7 @@ export default function CheckoutScreen() {
       <Modal visible={!!moyasarWebUrl} animationType="slide" presentationStyle="pageSheet">
         <SafeAreaView className="flex-1 bg-white">
           <View className="flex-row items-center justify-between px-5 py-4 border-b border-slate-100">
-            <Text className="text-lg font-bold text-slate-800">Pay with Samsung Pay</Text>
+            <Text className="text-lg font-bold text-slate-800">الدفع عبر Samsung Pay</Text>
             <TouchableOpacity onPress={() => setMoyasarWebUrl(null)} className="p-2">
               <X size={24} color="#64748b" />
             </TouchableOpacity>

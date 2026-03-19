@@ -1,5 +1,7 @@
 import { Clock } from 'lucide-react-native';
 import { Text, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
+import { PriceWithSymbol } from '../common/PriceWithSymbol';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface OrderProps {
@@ -13,7 +15,17 @@ interface OrderProps {
 }
 
 export const OrderCard = ({ id, status, price, date, items, refundStatus, onPress }: OrderProps) => {
+  const { i18n } = useTranslation();
   const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
+  const isArabic = i18n.language === 'ar';
+  const statusLabel =
+    status === 'Preparing' ? (isArabic ? 'قيد التحضير' : 'Preparing') :
+    status === 'Ready' ? (isArabic ? 'جاهز' : 'Ready') :
+    status === 'Out for delivery' ? (isArabic ? 'خرج للتوصيل' : 'Out for delivery') :
+    status === 'Delivered' ? (isArabic ? 'تم التوصيل' : 'Delivered') :
+    status === 'Cancelled' ? (isArabic ? 'ملغي' : 'Cancelled') :
+    status === 'On Hold' ? (isArabic ? 'قيد الانتظار' : 'On Hold') :
+    status;
 
   const getStatusColor = () => {
     switch (status) {
@@ -38,24 +50,24 @@ export const OrderCard = ({ id, status, price, date, items, refundStatus, onPres
       style={{ backgroundColor: menuCardColor }}
     >
       <View className="flex-row justify-between items-center mb-3">
-        <Text className="font-medium" style={{ color: textColor }}>Order #{id}</Text>
+        <Text className="font-medium" style={{ color: textColor }}>{isArabic ? 'الطلب' : 'Order'} #{id}</Text>
         <View className="flex-row gap-1.5">
           <View className={`px-3 py-1 rounded-full ${bgClass}`}>
-            <Text className={`text-xs font-bold ${textClass}`}>{status}</Text>
+            <Text className={`text-xs font-bold ${textClass}`}>{statusLabel}</Text>
           </View>
           {(refundStatus === 'refunded' || refundStatus === 'voided') && (
             <View className="px-2 py-1 rounded-full bg-green-100">
-              <Text className="text-xs font-bold text-green-700">Refunded</Text>
+              <Text className="text-xs font-bold text-green-700">{isArabic ? 'تم الاسترجاع' : 'Refunded'}</Text>
             </View>
           )}
           {refundStatus === 'refund_failed' && (
             <View className="px-2 py-1 rounded-full bg-red-100">
-              <Text className="text-xs font-bold text-red-600">Refund Failed</Text>
+              <Text className="text-xs font-bold text-red-600">{isArabic ? 'فشل الاسترجاع' : 'Refund Failed'}</Text>
             </View>
           )}
           {refundStatus === 'pending_manual' && (
             <View className="px-2 py-1 rounded-full bg-amber-100">
-              <Text className="text-xs font-bold text-amber-700">Refund Pending</Text>
+              <Text className="text-xs font-bold text-amber-700">{isArabic ? 'الاسترجاع قيد المعالجة' : 'Refund Pending'}</Text>
             </View>
           )}
         </View>
@@ -72,9 +84,9 @@ export const OrderCard = ({ id, status, price, date, items, refundStatus, onPres
       </View>
 
       <View className="flex-row justify-between items-center pt-3 border-t border-gray-50">
-        <Text className="font-bold text-lg" style={{ color: textColor }}>{price} SAR</Text>
+        <PriceWithSymbol amount={price} iconSize={18} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700', fontSize: 18 }} />
         <TouchableOpacity onPress={onPress}>
-          <Text className="font-bold text-sm" style={{ color: primaryColor }}>View Details</Text>
+          <Text className="font-bold text-sm" style={{ color: primaryColor }}>{isArabic ? 'عرض التفاصيل' : 'View Details'}</Text>
         </TouchableOpacity>
       </View>
     </TouchableOpacity>

@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { ArrowLeft } from 'lucide-react-native';
+import { ArrowLeft, Package } from 'lucide-react-native';
 import { ActivityIndicator, FlatList, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { OrderCard } from '../../src/components/order/OrderCard';
@@ -25,7 +25,7 @@ export default function OrdersScreen() {
         <TouchableOpacity onPress={() => router.replace('/(tabs)/menu')} className="mr-4 p-2 -ml-2">
           <ArrowLeft size={24} color={textColor} />
         </TouchableOpacity>
-        <Text className="text-xl font-bold" style={{ color: textColor }}>Orders</Text>
+        <Text className="text-xl font-bold" style={{ color: textColor }}>{t('orders')}</Text>
       </View>
       {loading ? (
         <View className="flex-1 items-center justify-center py-12">
@@ -47,11 +47,13 @@ export default function OrdersScreen() {
               onPress={() => router.push({ pathname: '/order-detail-modal', params: { orderId: item.id } })}
             />
           )}
-          contentContainerStyle={{ padding: 16 }}
+          contentContainerStyle={orders.length === 0 ? { flexGrow: 1, padding: 16 } : { padding: 16 }}
           ListEmptyComponent={
-            <View className="items-center py-12">
-              <Text style={{ color: textColor }}>{t('no_orders_yet')}</Text>
-              <Text className="text-sm mt-1" style={{ color: textColor }}>{t('no_orders_hint')}</Text>
+            <View className="flex-1 items-center justify-center px-8">
+              <Package size={52} color="#94a3b8" />
+              <Text className="text-xl mt-4 text-center" style={{ color: '#94a3b8' }}>
+                {t('no_orders_yet')}
+              </Text>
             </View>
           }
         />

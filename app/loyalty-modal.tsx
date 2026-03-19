@@ -3,10 +3,12 @@ import { useRouter } from 'expo-router';
 import { Award, ChevronDown, Gift, Star, TrendingUp, X } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { loyaltyApi, type LoyaltyBalance, type LoyaltyTransaction } from '../src/api/loyalty';
 import { useAuth } from '../src/context/AuthContext';
 import { useMerchant } from '../src/context/MerchantContext';
+import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
@@ -32,6 +34,7 @@ function isLightColor(hex: string): boolean {
 
 export default function LoyaltyModal() {
   const router = useRouter();
+  const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
   const { user } = useAuth();
   const { merchantId } = useMerchant();
@@ -39,6 +42,7 @@ export default function LoyaltyModal() {
   const [transactions, setTransactions] = useState<LoyaltyTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
+  const isArabic = i18n.language === 'ar';
 
   useEffect(() => {
     if (!user?.id) return;
@@ -58,6 +62,7 @@ export default function LoyaltyModal() {
   const tierName = !balance ? 'Bronze' :
     balance.lifetimePoints >= 5000 ? 'Gold' :
     balance.lifetimePoints >= 1000 ? 'Silver' : 'Bronze';
+  const tierLabel = tierName === 'Gold' ? (isArabic ? 'ذهبي' : 'Gold') : tierName === 'Silver' ? (isArabic ? 'فضي' : 'Silver') : (isArabic ? 'برونزي' : 'Bronze');
 
   const tierColor = tierName === 'Gold' ? '#F59E0B' : tierName === 'Silver' ? '#94A3B8' : '#CD7F32';
   const nextTier = tierName === 'Gold' ? null : tierName === 'Silver' ? { name: 'Gold', points: 5000 } : { name: 'Silver', points: 1000 };
@@ -66,7 +71,7 @@ export default function LoyaltyModal() {
   return (
     <SafeAreaView className="flex-1 bg-white">
       <View className="flex-row items-center justify-between px-5 py-4 border-b border-slate-100">
-        <Text className="text-lg font-bold text-slate-800">Loyalty Points</Text>
+        <Text className="text-lg font-bold text-slate-800">{isArabic ? 'نقاط الولاء' : 'Loyalty Points'}</Text>
         <TouchableOpacity onPress={() => router.back()} className="p-2">
           <X size={24} color="#64748b" />
         </TouchableOpacity>
@@ -128,7 +133,7 @@ export default function LoyaltyModal() {
                         <Star size={18} color={cardTextColor} fill={cardTextColor} />
                       </View>
                       <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
-                        Your Points
+                        {isArabic ? 'نقاطك' : 'Your Points'}
                       </Text>
                     </View>
                     <View
@@ -140,7 +145,7 @@ export default function LoyaltyModal() {
                     >
                       <Award size={14} color={tierColor} />
                       <Text style={{ color: cardTextColor, fontSize: 12, fontWeight: '600', marginLeft: 4 }}>
-                        {tierName}
+                        {tierLabel}
                       </Text>
                     </View>
                   </View>
@@ -149,19 +154,20 @@ export default function LoyaltyModal() {
                   <Text style={{ color: cardTextColor, fontSize: 48, fontWeight: '800', lineHeight: 52 }}>
                     {balance?.points ?? 0}
                   </Text>
-                  <Text style={{ color: cardSubTextColor, fontSize: 14, marginTop: 4 }}>
-                    Worth {balance?.pointsValue?.toFixed(2) ?? '0.00'} SAR
-                  </Text>
+                  <View className="flex-row items-center mt-1">
+                    <Text style={{ color: cardSubTextColor, fontSize: 14 }}>{isArabic ? 'القيمة ' : 'Worth '}</Text>
+                    <PriceWithSymbol amount={balance?.pointsValue ?? 0} iconSize={14} iconColor={cardSubTextColor} textStyle={{ color: cardSubTextColor, fontSize: 14 }} />
+                  </View>
 
                   {/* Tier Progress */}
                   {nextTier && (
                     <View className="mt-5">
                       <View className="flex-row justify-between mb-1.5">
                         <Text style={{ color: cardSubTextColor, fontSize: 11 }}>
-                          {balance?.lifetimePoints ?? 0} pts
+                          {balance?.lifetimePoints ?? 0} {isArabic ? 'نقطة' : 'pts'}
                         </Text>
                         <Text style={{ color: cardSubTextColor, fontSize: 11 }}>
-                          {nextTier.points} pts for {nextTier.name}
+                          {isArabic ? `${nextTier.points} نقطة للوصول إلى ${nextTier.name === 'Gold' ? 'الذهبي' : 'الفضي'}` : `${nextTier.points} pts for ${nextTier.name}`}
                         </Text>
                       </View>
                       <View
@@ -191,11 +197,17 @@ export default function LoyaltyModal() {
                   {/* Earn info */}
                   <View className="flex-row items-center">
                     <TrendingUp size={14} color={cardSubTextColor} />
-                    <Text style={{ color: cardSubTextColor, fontSize: 13, marginLeft: 6 }}>
-                      {balance?.earnMode === 'per_order'
-                        ? `Earn ${balance?.pointsPerOrder ?? 10} points per order`
-                        : `Earn ${balance?.pointsPerSar ?? 1} point per SAR spent`}
-                    </Text>
+                    <View className="flex-row flex-wrap items-center" style={{ marginLeft: 6 }}>
+                      {balance?.earnMode === 'per_order' ? (
+                        <Text style={{ color: cardSubTextColor, fontSize: 13 }}>{isArabic ? `اكسب ${balance?.pointsPerOrder ?? 10} نقطة لكل طلب` : `Earn ${balance?.pointsPerOrder ?? 10} points per order`}</Text>
+                      ) : (
+                        <>
+                          <Text style={{ color: cardSubTextColor, fontSize: 13 }}>{isArabic ? `اكسب ${balance?.pointsPerSar ?? 1} نقطة لكل ` : `Earn ${balance?.pointsPerSar ?? 1} point per `}</Text>
+                          <PriceWithSymbol symbolOnly iconSize={13} iconColor={cardSubTextColor} textStyle={{ color: cardSubTextColor, fontSize: 13 }} />
+                          <Text style={{ color: cardSubTextColor, fontSize: 13 }}>{isArabic ? ' يتم إنفاقه' : ' spent'}</Text>
+                        </>
+                      )}
+                    </View>
                   </View>
                 </LinearGradient>
               </View>
@@ -204,23 +216,30 @@ export default function LoyaltyModal() {
 
           {/* How it works */}
           <View className="mx-5 mt-6">
-            <Text className="text-lg font-bold text-slate-800 mb-4">How it works</Text>
+            <Text className="text-lg font-bold text-slate-800 mb-4">{isArabic ? 'كيف يعمل' : 'How it works'}</Text>
             <View className="flex-row gap-4">
               <View className="flex-1 bg-slate-50 rounded-2xl p-4 items-center">
                 <TrendingUp size={24} color={primaryColor} />
-                <Text className="text-slate-800 font-bold mt-2 text-center">Earn</Text>
-                <Text className="text-slate-500 text-xs text-center mt-1">
-                  {balance?.earnMode === 'per_order'
-                    ? `${balance?.pointsPerOrder ?? 10} points per order`
-                    : `${balance?.pointsPerSar ?? 1} point per SAR spent`}
-                </Text>
+                <Text className="text-slate-800 font-bold mt-2 text-center">{isArabic ? 'اكسب' : 'Earn'}</Text>
+                <View className="flex-row flex-wrap items-center justify-center mt-1">
+                  {balance?.earnMode === 'per_order' ? (
+                    <Text className="text-slate-500 text-xs text-center">{isArabic ? `${balance?.pointsPerOrder ?? 10} نقطة لكل طلب` : `${balance?.pointsPerOrder ?? 10} points per order`}</Text>
+                  ) : (
+                    <>
+                      <Text className="text-slate-500 text-xs text-center">{isArabic ? `${balance?.pointsPerSar ?? 1} نقطة لكل ` : `${balance?.pointsPerSar ?? 1} point per `}</Text>
+                      <PriceWithSymbol symbolOnly iconSize={12} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 12 }} />
+                      <Text className="text-slate-500 text-xs text-center">{isArabic ? ' يتم إنفاقه' : ' spent'}</Text>
+                    </>
+                  )}
+                </View>
               </View>
               <View className="flex-1 bg-slate-50 rounded-2xl p-4 items-center">
                 <Gift size={24} color={primaryColor} />
-                <Text className="text-slate-800 font-bold mt-2 text-center">Redeem</Text>
-                <Text className="text-slate-500 text-xs text-center mt-1">
-                  Each point = {balance?.pointValueSar ?? 0.1} SAR
-                </Text>
+                <Text className="text-slate-800 font-bold mt-2 text-center">{isArabic ? 'استبدل' : 'Redeem'}</Text>
+                <View className="flex-row items-center justify-center mt-1">
+                  <Text className="text-slate-500 text-xs text-center">{isArabic ? 'كل نقطة = ' : 'Each point = '}</Text>
+                  <PriceWithSymbol amount={balance?.pointValueSar ?? 0.1} iconSize={12} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 12 }} />
+                </View>
               </View>
             </View>
           </View>
@@ -228,7 +247,7 @@ export default function LoyaltyModal() {
           {/* Stamp Card */}
           {balance?.stampEnabled && (
             <View className="mx-5 mt-6 bg-slate-50 rounded-2xl p-5">
-              <Text className="font-bold text-slate-800 mb-3">Stamp Card</Text>
+              <Text className="font-bold text-slate-800 mb-3">{isArabic ? 'بطاقة الأختام' : 'Stamp Card'}</Text>
               <View className="flex-row flex-wrap gap-2">
                 {Array.from({ length: balance.stampTarget }).map((_, i) => (
                   <View
@@ -245,7 +264,7 @@ export default function LoyaltyModal() {
                 ))}
               </View>
               <Text className="text-slate-500 text-xs mt-3">
-                {balance.stampTarget - (balance.stamps ?? 0)} more for: {balance.stampRewardDescription}
+                {isArabic ? `تبقى ${balance.stampTarget - (balance.stamps ?? 0)} للحصول على: ${balance.stampRewardDescription}` : `${balance.stampTarget - (balance.stamps ?? 0)} remaining to get: ${balance.stampRewardDescription}`}
               </Text>
             </View>
           )}
@@ -256,7 +275,7 @@ export default function LoyaltyModal() {
               onPress={() => setShowHistory(!showHistory)}
               className="flex-row items-center justify-between mb-3"
             >
-              <Text className="text-lg font-bold text-slate-800">Recent Activity</Text>
+              <Text className="text-lg font-bold text-slate-800">{isArabic ? 'النشاط الأخير' : 'Recent Activity'}</Text>
               <ChevronDown
                 size={20}
                 color="#64748b"
@@ -292,7 +311,7 @@ export default function LoyaltyModal() {
                   </View>
                 ))
               ) : (
-                <Text className="text-slate-400 text-center py-4">No transactions yet. Make an order to earn points!</Text>
+                <Text className="text-slate-400 text-center py-4">{isArabic ? 'لا توجد معاملات بعد. قم بإجراء طلب لكسب النقاط!' : 'No transactions yet. Make an order to earn points!'}</Text>
               )
             )}
           </View>
@@ -302,25 +321,25 @@ export default function LoyaltyModal() {
             onPress={() => { router.back(); router.replace('/(tabs)/offers'); }}
             className="mx-5 mt-6 bg-slate-50 rounded-2xl p-4 items-center"
           >
-            <Text className="font-semibold" style={{ color: primaryColor }}>View Rewards Catalog</Text>
+            <Text className="font-semibold" style={{ color: primaryColor }}>{isArabic ? 'عرض كتالوج المكافآت' : 'View Rewards Catalog'}</Text>
           </TouchableOpacity>
 
           {/* Lifetime stats */}
           <View className="mx-5 mt-6 bg-slate-50 rounded-2xl p-5">
-            <Text className="font-bold text-slate-800 mb-3">Lifetime Stats</Text>
+            <Text className="font-bold text-slate-800 mb-3">{isArabic ? 'إحصاءات مدى الحياة' : 'Lifetime Stats'}</Text>
             <View className="flex-row justify-between">
               <View>
-                <Text className="text-slate-500 text-xs">Total Earned</Text>
+                <Text className="text-slate-500 text-xs">{isArabic ? 'إجمالي المكتسب' : 'Total Earned'}</Text>
                 <Text className="text-slate-800 font-bold text-lg">{balance?.lifetimePoints ?? 0}</Text>
               </View>
               <View>
-                <Text className="text-slate-500 text-xs">Points Used</Text>
+                <Text className="text-slate-500 text-xs">{isArabic ? 'النقاط المستخدمة' : 'Points Used'}</Text>
                 <Text className="text-slate-800 font-bold text-lg">
                   {(balance?.lifetimePoints ?? 0) - (balance?.points ?? 0)}
                 </Text>
               </View>
               <View>
-                <Text className="text-slate-500 text-xs">Available</Text>
+                <Text className="text-slate-500 text-xs">{isArabic ? 'المتاح' : 'Available'}</Text>
                 <Text className="font-bold text-lg" style={{ color: primaryColor }}>{balance?.points ?? 0}</Text>
               </View>
             </View>

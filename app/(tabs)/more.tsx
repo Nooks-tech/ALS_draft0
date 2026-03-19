@@ -8,7 +8,6 @@ import {
   FileText,
   Globe,
   Heart,
-  HelpCircle,
   Info,
   LogOut,
   Mail,
@@ -29,6 +28,78 @@ export default function MoreScreen() {
   const { primaryColor, backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const { profile } = useProfile();
   const { signOut } = useAuth();
+  const isArabic = i18n.language === 'ar';
+  const copy = isArabic
+    ? {
+        error: 'خطأ',
+        changeLanguageFailed: 'تعذر تغيير اللغة.',
+        logoutTitle: 'تسجيل الخروج',
+        logoutConfirm: 'هل أنت متأكد أنك تريد تسجيل الخروج؟',
+        cancel: 'إلغاء',
+        yourName: 'اسمك',
+        account: 'الحساب',
+        profileInfo: 'الملف الشخصي',
+        editDetails: 'تعديل بياناتك',
+        myAddresses: 'عناويني',
+        manageLocations: 'إدارة مواقع التوصيل',
+        notifications: 'الإشعارات',
+        offersUpdates: 'العروض والتحديثات',
+        favorites: 'المفضلة',
+        savedItems: 'العناصر المحفوظة',
+        preferences: 'التفضيلات',
+        paymentMethod: 'طرق الدفع',
+        cardsOptions: 'البطاقات وخيارات الدفع',
+        loyaltyPoints: 'نقاط الولاء',
+        rewards: 'اكسب واستبدل المكافآت',
+        appSettings: 'إعدادات التطبيق',
+        english: 'الإنجليزية',
+        supportLegal: 'الدعم والقانونية',
+        support: 'الدعم',
+        getHelp: 'احصل على المساعدة',
+        contactUs: 'اتصل بنا',
+        reachOut: 'تواصل معنا',
+        about: 'عن التطبيق',
+        learnAbout: 'تعرف على ALS Coffee',
+        privacyPolicy: 'سياسة الخصوصية',
+        terms: 'الشروط والأحكام',
+        logOut: 'تسجيل الخروج',
+        version: 'الإصدار 1.0.0',
+      }
+    : {
+        error: 'Error',
+        changeLanguageFailed: 'Could not change language.',
+        logoutTitle: 'Log Out',
+        logoutConfirm: 'Are you sure you want to log out?',
+        cancel: 'Cancel',
+        yourName: 'Your Name',
+        account: 'Account',
+        profileInfo: 'Profile Info',
+        editDetails: 'Edit your details',
+        myAddresses: 'My Addresses',
+        manageLocations: 'Manage delivery locations',
+        notifications: 'Notifications',
+        offersUpdates: 'Offers & Updates',
+        favorites: 'Favorites',
+        savedItems: 'Your saved items',
+        preferences: 'Preferences',
+        paymentMethod: 'Payment Method',
+        cardsOptions: 'Cards & payment options',
+        loyaltyPoints: 'Loyalty Points',
+        rewards: 'Earn & redeem rewards',
+        appSettings: 'App Settings',
+        english: 'English',
+        supportLegal: 'Support & Legal',
+        support: 'Support',
+        getHelp: 'Get help',
+        contactUs: 'Contact Us',
+        reachOut: 'Reach out to us',
+        about: 'About',
+        learnAbout: 'Learn about ALS Coffee',
+        privacyPolicy: 'Privacy Policy',
+        terms: 'Terms & Conditions',
+        logOut: 'Log Out',
+        version: 'Version 1.0.0',
+      };
 
   const toggleLanguage = async () => {
     try {
@@ -39,18 +110,22 @@ export default function MoreScreen() {
       if (I18nManager.isRTL !== isRTL) {
         I18nManager.allowRTL(isRTL);
         I18nManager.forceRTL(isRTL);
-        await Updates.reloadAsync();
+        try {
+          await Updates.reloadAsync();
+        } catch {
+          // Language change already applied; reload can fail in some environments.
+        }
       }
     } catch (error) {
-      Alert.alert('Error', 'Could not change language.');
+      Alert.alert(copy.error, copy.changeLanguageFailed);
     }
   };
 
   const handleLogout = () => {
-    Alert.alert('Log Out', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(copy.logoutTitle, copy.logoutConfirm, [
+      { text: copy.cancel, style: 'cancel' },
       {
-        text: 'Log Out',
+        text: copy.logOut,
         style: 'destructive',
         onPress: async () => {
           await signOut();
@@ -94,26 +169,26 @@ export default function MoreScreen() {
             </Text>
           </View>
           <Text className="text-xl font-bold" style={{ color: textColor }}>
-            {profile.fullName || 'Your Name'}
+            {profile.fullName || copy.yourName}
           </Text>
           <Text style={{ color: textColor }}>{profile.phone || '+966 5X XXX XXXX'}</Text>
         </View>
 
-        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>Account</Text>
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.account}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
-          <MenuItem icon={User} title="Profile Info" subtitle="Edit your details" onPress={() => router.push('/profile-modal')} accentColor={primaryColor} />
-          <MenuItem icon={MapPin} title="My Addresses" subtitle="Manage delivery locations" onPress={() => router.push('/address-modal')} accentColor={primaryColor} />
-          <MenuItem icon={Bell} title="Notifications" subtitle="Offers & Updates" onPress={openNotificationSettings} accentColor={primaryColor} />
-          <MenuItem icon={Heart} title="Favorites" subtitle="Your saved items" onPress={() => router.push('/favorites-modal')} accentColor={primaryColor} />
+          <MenuItem icon={User} title={copy.profileInfo} subtitle={copy.editDetails} onPress={() => router.push('/profile-modal')} accentColor={primaryColor} />
+          <MenuItem icon={MapPin} title={copy.myAddresses} subtitle={copy.manageLocations} onPress={() => router.push('/address-modal')} accentColor={primaryColor} />
+          <MenuItem icon={Bell} title={copy.notifications} subtitle={copy.offersUpdates} onPress={openNotificationSettings} accentColor={primaryColor} />
+          <MenuItem icon={Heart} title={copy.favorites} subtitle={copy.savedItems} onPress={() => router.push('/favorites-modal')} accentColor={primaryColor} />
         </View>
 
-        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>Preferences</Text>
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.preferences}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
-          <MenuItem icon={CreditCard} title="Payment Method" subtitle="Cards & payment options" onPress={() => router.push('/payment-modal')} accentColor={primaryColor} />
-          <MenuItem icon={Star} title="Loyalty Points" subtitle="Earn & redeem rewards" onPress={() => router.push('/loyalty-modal')} accentColor={primaryColor} />
+          <MenuItem icon={CreditCard} title={copy.paymentMethod} subtitle={copy.cardsOptions} onPress={() => router.push('/payment-modal')} accentColor={primaryColor} />
+          <MenuItem icon={Star} title={copy.loyaltyPoints} subtitle={copy.rewards} onPress={() => router.push('/loyalty-modal')} accentColor={primaryColor} />
         </View>
 
-        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>App Settings</Text>
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.appSettings}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <TouchableOpacity onPress={toggleLanguage} className="flex-row items-center p-4" style={{ backgroundColor: menuCardColor }}>
             <View className="w-10 h-10 rounded-full justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
@@ -121,7 +196,7 @@ export default function MoreScreen() {
             </View>
             <View className="flex-1 ml-4">
               <Text className="text-base font-bold" style={{ color: textColor }}>Language / اللغة</Text>
-              <Text className="text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? 'English' : 'العربية'}</Text>
+              <Text className="text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? copy.english : 'العربية'}</Text>
             </View>
             <View className="px-3 py-1 rounded-full" style={{ backgroundColor: menuCardColor }}>
               <Text className="font-bold text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? 'AR' : 'EN'}</Text>
@@ -129,20 +204,19 @@ export default function MoreScreen() {
           </TouchableOpacity>
         </View>
 
-        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>Support & Legal</Text>
+        <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.supportLegal}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
-          <MenuItem icon={HelpCircle} title="Support" subtitle="Get help" onPress={() => router.push('/support-modal')} />
-          <MenuItem icon={Mail} title="Contact Us" subtitle="Reach out to us" onPress={() => router.push('/contact-modal')} />
-          <MenuItem icon={Info} title="About" subtitle="Learn about ALS Coffee" onPress={() => router.push('/about-modal')} />
-          <MenuItem icon={Shield} title="Privacy Policy" onPress={() => router.push('/privacy-modal')} />
-          <MenuItem icon={FileText} title="Terms & Conditions" onPress={() => router.push('/terms-modal')} />
+          <MenuItem icon={Mail} title={copy.contactUs} subtitle={copy.reachOut} onPress={() => router.push('/contact-modal')} />
+          <MenuItem icon={Info} title={copy.about} subtitle={copy.learnAbout} onPress={() => router.push('/about-modal')} />
+          <MenuItem icon={Shield} title={copy.privacyPolicy} onPress={() => router.push('/privacy-modal')} />
+          <MenuItem icon={FileText} title={copy.terms} onPress={() => router.push('/terms-modal')} />
         </View>
 
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
-          <MenuItem icon={LogOut} title="Log Out" isDestructive onPress={handleLogout} />
+          <MenuItem icon={LogOut} title={copy.logOut} isDestructive onPress={handleLogout} />
         </View>
 
-        <Text className="text-center text-xs mb-8" style={{ color: textColor }}>Version 1.0.0</Text>
+        <Text className="text-center text-xs mb-8" style={{ color: textColor }}>{copy.version}</Text>
       </ScrollView>
     </SafeAreaView>
   );

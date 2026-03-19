@@ -10,7 +10,27 @@ import { PHONE_PREFIX, ensurePrefix } from '../../src/utils/phone';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const isArabic = i18n.language === 'ar';
+  const copy = isArabic
+    ? {
+        error: 'خطأ',
+        invalidPhone: 'يرجى إدخال رقم جوال سعودي صحيح.',
+        sendCodeFailed: 'تعذر إرسال الرمز.',
+        intro: 'أدخل رقم جوالك للبدء',
+        phoneNumber: 'رقم الجوال',
+        continue: 'متابعة',
+        smsNotice: 'سنرسل لك رمز تحقق عبر رسالة نصية',
+      }
+    : {
+        error: 'Error',
+        invalidPhone: 'Please enter a valid Saudi phone number.',
+        sendCodeFailed: 'Could not send code.',
+        intro: 'Enter your phone number to get started',
+        phoneNumber: 'Phone Number',
+        continue: 'Continue',
+        smsNotice: "We'll send you a verification code via SMS",
+      };
 
   const [digits, setDigits] = useState('');
   const [loading, setLoading] = useState(false);
@@ -18,7 +38,7 @@ export default function LoginScreen() {
   const handleContinue = async () => {
     const phone = ensurePrefix(digits);
     if (!phone || digits.replace(/\D/g, '').length < 9) {
-      Alert.alert(t('error') || 'Error', 'Please enter a valid Saudi phone number.');
+      Alert.alert(copy.error, copy.invalidPhone);
       return;
     }
     setLoading(true);
@@ -26,7 +46,7 @@ export default function LoginScreen() {
       await authApi.sendOtp(phone);
       router.push({ pathname: '/(auth)/otp', params: { phone } });
     } catch (err) {
-      Alert.alert(t('error') || 'Error', err instanceof Error ? err.message : 'Could not send code.');
+      Alert.alert(copy.error, err instanceof Error ? err.message : copy.sendCodeFailed);
     } finally {
       setLoading(false);
     }
@@ -49,28 +69,41 @@ export default function LoginScreen() {
             </View>
             <Text className="text-3xl font-bold text-gray-900">{t('welcome')}</Text>
             <Text className="text-gray-500 mt-2 text-center">
-              Enter your phone number to get started
+              {copy.intro}
             </Text>
           </View>
 
           <View className="w-full mb-4">
-            <Text className="text-gray-700 mb-2 font-medium text-start">Phone Number</Text>
-            <View className="flex-row items-center min-h-12 border rounded-xl border-gray-200 bg-gray-50 px-4 py-2">
-              <Text className="text-gray-700 font-medium">{PHONE_PREFIX} </Text>
-              <TextInput
-                placeholder="5XX XXX XXXX"
-                placeholderTextColor="#9CA3AF"
-                value={digits}
-                onChangeText={(t) => setDigits(t.replace(/\D/g, '').slice(0, 9))}
-                keyboardType="phone-pad"
-                autoFocus
-                className="flex-1 py-2 px-2 text-base text-gray-900 font-medium"
-              />
+            <Text className="text-gray-700 mb-2 font-medium text-start">{copy.phoneNumber}</Text>
+            <View className="flex-row items-center border rounded-xl border-gray-200 bg-gray-50 px-4" style={{ minHeight: 52 }}>
+              <View className="flex-row flex-1" style={{ height: 52, alignItems: 'center' }}>
+                <View style={{ justifyContent: 'center', paddingTop: 2 }}>
+                  <Text className="text-gray-700 font-medium text-base" style={{ lineHeight: 20, fontSize: 16 }}>{PHONE_PREFIX} </Text>
+                </View>
+                <TextInput
+                  placeholder="5XX XXX XXXX"
+                  placeholderTextColor="#64748b"
+                  value={digits}
+                  onChangeText={(t) => setDigits(t.replace(/\D/g, '').slice(0, 9))}
+                  keyboardType="phone-pad"
+                  autoFocus
+                  className="flex-1 text-gray-900 font-medium"
+                  style={{
+                    paddingVertical: 0,
+                    paddingHorizontal: 8,
+                    height: 52,
+                    fontSize: 16,
+                    lineHeight: 20,
+                    ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }),
+                  }}
+                  includeFontPadding={false}
+                />
+              </View>
             </View>
           </View>
 
           <Button
-            title="Continue"
+            title={copy.continue}
             onPress={handleContinue}
             isLoading={loading}
             className="mt-4"
@@ -78,7 +111,7 @@ export default function LoginScreen() {
 
           <View className="flex-row justify-center mt-6">
             <Text className="text-gray-600 text-center">
-              We'll send you a verification code via SMS
+              {copy.smsNotice}
             </Text>
           </View>
         </ScrollView>

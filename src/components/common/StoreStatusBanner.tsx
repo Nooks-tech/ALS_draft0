@@ -1,5 +1,6 @@
 import { Clock, XCircle } from 'lucide-react-native';
 import { Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useOperations } from '../../context/OperationsContext';
 
 /**
@@ -8,15 +9,17 @@ import { useOperations } from '../../context/OperationsContext';
  * - busy: amber banner with prep time estimate
  */
 export function StoreStatusBanner() {
+  const { i18n } = useTranslation();
   const { isClosed, isBusy, prepTimeMinutes, busySecondsLeft } = useOperations();
+  const isArabic = i18n.language === 'ar';
 
   if (isClosed) {
     return (
       <View className="mx-4 mt-3 mb-1 p-4 rounded-2xl bg-red-50 border border-red-100 flex-row items-center">
         <XCircle size={22} color="#dc2626" />
         <View className="ml-3 flex-1">
-          <Text className="font-bold text-red-700">Store is currently closed</Text>
-          <Text className="text-red-500 text-xs mt-0.5">Ordering is unavailable right now. Please check back later.</Text>
+          <Text className="font-bold text-red-700">{isArabic ? 'المتجر مغلق حالياً' : 'Store is currently closed'}</Text>
+          <Text className="text-red-500 text-xs mt-0.5">{isArabic ? 'الطلب غير متاح حالياً. يرجى المحاولة لاحقاً.' : 'Ordering is unavailable right now. Please check back later.'}</Text>
         </View>
       </View>
     );
@@ -35,14 +38,14 @@ export function StoreStatusBanner() {
         <View className="flex-row items-center">
         <Clock size={22} color="#d97706" />
         <View className="ml-3 flex-1">
-          <Text className="font-bold text-amber-700">Store is busy</Text>
+          <Text className="font-bold text-amber-700">{isArabic ? 'المتجر مشغول حالياً' : 'Store is busy'}</Text>
             <Text className="text-amber-900 text-base font-extrabold mt-1">
-              {busyTimer} remaining
+              {isArabic ? `المتبقي ${busyTimer}` : `${busyTimer} remaining`}
             </Text>
             <Text className="text-amber-700 text-xs mt-0.5">
               {prepTimeMinutes > 0
-                ? `Estimated prep time: ~${prepTimeMinutes} min`
-                : 'Orders may take longer than usual'}
+                ? (isArabic ? `الوقت المتوقع للتحضير: حوالي ${prepTimeMinutes} دقيقة` : `Estimated prep time: ~${prepTimeMinutes} min`)
+                : (isArabic ? 'قد تستغرق الطلبات وقتاً أطول من المعتاد' : 'Orders may take longer than usual')}
             </Text>
           </View>
         </View>

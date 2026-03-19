@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../src/context/AuthContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
@@ -34,9 +35,11 @@ const toYYYYMMDD = (d: Date) => {
 
 export default function ProfileModal() {
   const router = useRouter();
+  const { i18n } = useTranslation();
   const { user } = useAuth();
   const { primaryColor } = useMerchantBranding();
   const { profile, updateProfile, saveProfile, clearProfile } = useProfile();
+  const isArabic = i18n.language === 'ar';
   const [fullName, setFullName] = useState(profile.fullName);
   const [digits, setDigits] = useState(() => stripPrefix(profile.phone));
   const [dateOfBirth, setDateOfBirth] = useState(profile.dateOfBirth);
@@ -62,10 +65,10 @@ export default function ProfileModal() {
       const data = { fullName, phone: phoneValue, dateOfBirth };
       updateProfile(data);
       await saveProfile(data);
-      Alert.alert('Saved', 'Your profile has been updated.');
+      Alert.alert(isArabic ? 'تم الحفظ' : 'Saved', isArabic ? 'تم تحديث ملفك الشخصي.' : 'Your profile has been updated.');
       router.back();
     } catch (e) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Could not save.');
+      Alert.alert(isArabic ? 'خطأ' : 'Error', e instanceof Error ? e.message : (isArabic ? 'تعذر الحفظ.' : 'Could not save.'));
     } finally {
       setSaving(false);
     }
@@ -73,12 +76,12 @@ export default function ProfileModal() {
 
   const handleDeleteAccount = () => {
     Alert.alert(
-      'Delete Account',
-      'Are you sure you want to delete your account? This will remove all your profile data, saved addresses, and favorites. This action cannot be undone.',
+      isArabic ? 'حذف الحساب' : 'Delete Account',
+      isArabic ? 'هل أنت متأكد أنك تريد حذف حسابك؟ سيؤدي ذلك إلى حذف بيانات ملفك الشخصي والعناوين المحفوظة والمفضلة، ولا يمكن التراجع عن هذا الإجراء.' : 'Are you sure you want to delete your account? This will remove all your profile data, saved addresses, and favorites. This action cannot be undone.',
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: isArabic ? 'إلغاء' : 'Cancel', style: 'cancel' },
         {
-          text: 'Delete',
+          text: isArabic ? 'حذف' : 'Delete',
           style: 'destructive',
           onPress: async () => {
             await clearProfile();
@@ -101,7 +104,7 @@ export default function ProfileModal() {
           <TouchableOpacity onPress={() => router.back()} className="p-2 -ml-2">
             <ArrowLeft size={24} color="#334155" />
           </TouchableOpacity>
-          <Text className="flex-1 text-center text-xl font-bold text-slate-800">Profile Info</Text>
+          <Text className="flex-1 text-center text-xl font-bold text-slate-800">{isArabic ? 'الملف الشخصي' : 'Profile Info'}</Text>
           <View className="w-10" />
         </View>
 
@@ -117,11 +120,12 @@ export default function ProfileModal() {
             </View>
           </View>
           <View className="mb-4">
-            <Text className="text-slate-500 text-sm font-bold mb-2">Full Name</Text>
+            <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'الاسم الكامل' : 'Full Name'}</Text>
             <View className="flex-row items-center bg-slate-50 rounded-2xl px-4">
               <User size={20} color="#94a3b8" />
               <TextInput
-                placeholder="Enter your full name"
+                placeholder={isArabic ? 'أدخل اسمك الكامل' : 'Enter your full name'}
+                placeholderTextColor="#64748b"
                 value={fullName}
                 onChangeText={setFullName}
                 className="flex-1 py-3 ml-3 text-slate-800 font-medium"
@@ -129,34 +133,47 @@ export default function ProfileModal() {
             </View>
           </View>
           <View className="mb-4">
-            <Text className="text-slate-500 text-sm font-bold mb-2">Phone Number</Text>
-            <View className="flex-row items-center bg-slate-50 rounded-2xl px-4 py-2">
+            <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'رقم الجوال' : 'Phone Number'}</Text>
+            <View className="flex-row items-center bg-slate-50 rounded-2xl px-4" style={{ minHeight: 52 }}>
               <Phone size={20} color="#94a3b8" />
-              <Text className="ml-3 text-slate-600 font-medium">{PHONE_PREFIX} </Text>
-              <TextInput
-                placeholder="5XX XXX XXXX"
-                placeholderTextColor="#94a3b8"
-                value={digits}
-                onChangeText={(t) => setDigits(t.replace(/\D/g, '').slice(0, 9))}
-                className="flex-1 py-3 px-2 text-base text-slate-800 font-medium"
-                keyboardType="phone-pad"
-              />
+              <View className="flex-row flex-1 ml-3" style={{ height: 52, alignItems: 'center' }}>
+                <View style={{ justifyContent: 'center', paddingTop: 2 }}>
+                  <Text className="text-slate-600 font-medium text-base" style={{ lineHeight: 20, fontSize: 16 }}>{PHONE_PREFIX} </Text>
+                </View>
+                <TextInput
+                  placeholder="5XX XXX XXXX"
+                  placeholderTextColor="#64748b"
+                  value={digits}
+                  onChangeText={(t) => setDigits(t.replace(/\D/g, '').slice(0, 9))}
+                  className="flex-1 text-slate-800 font-medium"
+                  style={{
+                    paddingVertical: 0,
+                    paddingHorizontal: 8,
+                    height: 52,
+                    fontSize: 16,
+                    lineHeight: 20,
+                    ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }),
+                  }}
+                  keyboardType="phone-pad"
+                  includeFontPadding={false}
+                />
+              </View>
             </View>
           </View>
           {user?.email && !user.email.endsWith('@phone.nooks.app') && (
             <View className="mb-4">
-              <Text className="text-slate-500 text-sm font-bold mb-2">Email</Text>
+              <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'البريد الإلكتروني' : 'Email'}</Text>
               <View className="flex-row items-center bg-slate-50 rounded-2xl px-4 py-3">
                 <Mail size={20} color="#94a3b8" />
                 <Text className="flex-1 ml-3 text-slate-600 font-medium">
                   {user.email}
                 </Text>
               </View>
-              <Text className="text-slate-400 text-xs mt-1">Email is from your account and cannot be changed here</Text>
+              <Text className="text-slate-400 text-xs mt-1">{isArabic ? 'البريد الإلكتروني مرتبط بحسابك ولا يمكن تغييره من هنا' : 'Email is from your account and cannot be changed here'}</Text>
             </View>
           )}
           <View className="mb-6">
-            <Text className="text-slate-500 text-sm font-bold mb-2">Date of Birth</Text>
+            <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'تاريخ الميلاد' : 'Date of Birth'}</Text>
             <TouchableOpacity
               onPress={() => {
                 Keyboard.dismiss();
@@ -165,8 +182,8 @@ export default function ProfileModal() {
               className="flex-row items-center bg-slate-50 rounded-2xl px-4 py-3"
             >
               <Calendar size={20} color="#94a3b8" />
-              <Text className={`flex-1 ml-3 ${dateOfBirth ? 'text-slate-800 font-medium' : 'text-slate-400'}`}>
-                {dateOfBirth || 'Tap to select date'}
+              <Text className={`flex-1 ml-3 ${dateOfBirth ? 'text-slate-800 font-medium' : 'text-slate-500'}`}>
+                {dateOfBirth || (isArabic ? 'اضغط لاختيار التاريخ' : 'Tap to select date')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -176,7 +193,7 @@ export default function ProfileModal() {
             style={{ backgroundColor: primaryColor }}
             className="py-4 rounded-2xl items-center mb-8"
           >
-            <Text className="text-white font-bold text-lg">{saving ? 'Saving...' : 'Save Changes'}</Text>
+            <Text className="text-white font-bold text-lg">{saving ? (isArabic ? 'جارٍ الحفظ...' : 'Saving...') : (isArabic ? 'حفظ التغييرات' : 'Save Changes')}</Text>
           </TouchableOpacity>
 
           {/* Delete Account */}
@@ -185,7 +202,7 @@ export default function ProfileModal() {
             className="flex-row items-center justify-center py-4 border-t border-slate-200"
           >
             <Trash2 size={20} color="#ef4444" />
-            <Text className="text-red-500 font-bold ml-2">Delete Account</Text>
+            <Text className="text-red-500 font-bold ml-2">{isArabic ? 'حذف الحساب' : 'Delete Account'}</Text>
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -196,9 +213,9 @@ export default function ProfileModal() {
           <TouchableOpacity className="flex-1" activeOpacity={1} onPress={() => setShowDatePicker(false)} />
           <View className="bg-white rounded-t-[24px] p-6 pb-10">
             <View className="flex-row justify-between items-center mb-4">
-              <Text className="text-lg font-bold text-slate-800">Select date</Text>
+              <Text className="text-lg font-bold text-slate-800">{isArabic ? 'اختر التاريخ' : 'Select date'}</Text>
               <TouchableOpacity onPress={() => setShowDatePicker(false)}>
-                <Text className="font-bold text-lg" style={{ color: primaryColor }}>Done</Text>
+                <Text className="font-bold text-lg" style={{ color: primaryColor }}>{isArabic ? 'تم' : 'Done'}</Text>
               </TouchableOpacity>
             </View>
             <View className="rounded-2xl overflow-hidden border border-slate-100 bg-slate-50">

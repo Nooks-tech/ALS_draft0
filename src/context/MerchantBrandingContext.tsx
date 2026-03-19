@@ -32,6 +32,12 @@ export type MerchantBranding = {
   backgroundColor: string;
   menuCardColor: string;
   textColor: string;
+  tabTextColor: string;
+  cafeName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  contactWhatsapp: string | null;
+  aboutText: string | null;
 };
 
 const DEFAULT_BRANDING: MerchantBranding = {
@@ -41,6 +47,12 @@ const DEFAULT_BRANDING: MerchantBranding = {
   backgroundColor: '#f5f5f4',
   menuCardColor: '#f5f5f4',
   textColor: '#1f2937',
+  tabTextColor: '#ffffff',
+  cafeName: null,
+  contactEmail: null,
+  contactPhone: null,
+  contactWhatsapp: null,
+  aboutText: null,
 };
 
 function normalizeColor(input: unknown): string | null {
@@ -70,6 +82,9 @@ function getBuildTimeBranding(): MerchantBranding {
   const text = normalizeColor(extra?.textColor)
     ?? normalizeColor(process.env.EXPO_PUBLIC_TEXT_COLOR)
     ?? DEFAULT_BRANDING.textColor;
+  const tabText = normalizeColor(extra?.tabTextColor)
+    ?? normalizeColor(process.env.EXPO_PUBLIC_TAB_TEXT_COLOR)
+    ?? DEFAULT_BRANDING.tabTextColor;
   return {
     logoUrl: typeof logo === 'string' && logo ? logo : null,
     primaryColor: primary,
@@ -77,6 +92,12 @@ function getBuildTimeBranding(): MerchantBranding {
     backgroundColor: bg,
     menuCardColor: card,
     textColor: text,
+    tabTextColor: tabText,
+    cafeName: null,
+    contactEmail: null,
+    contactPhone: null,
+    contactWhatsapp: null,
+    aboutText: null,
   };
 }
 
@@ -90,6 +111,12 @@ function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding 
     backgroundColor: normalizeColor(data.backgroundColor) ?? normalizeColor(data.background_color) ?? DEFAULT_BRANDING.backgroundColor,
     menuCardColor: normalizeColor(data.menuCardColor) ?? normalizeColor(data.menu_card_color) ?? DEFAULT_BRANDING.menuCardColor,
     textColor: normalizeColor(data.textColor) ?? normalizeColor(data.text_color) ?? DEFAULT_BRANDING.textColor,
+    tabTextColor: normalizeColor(data.tabTextColor) ?? normalizeColor(data.tab_text_color) ?? DEFAULT_BRANDING.tabTextColor,
+    cafeName: typeof data.cafeName === 'string' ? data.cafeName : typeof data.cafe_name === 'string' ? data.cafe_name : null,
+    contactEmail: typeof data.contactEmail === 'string' && data.contactEmail ? data.contactEmail : null,
+    contactPhone: typeof data.contactPhone === 'string' && data.contactPhone ? data.contactPhone : null,
+    contactWhatsapp: typeof data.contactWhatsapp === 'string' && data.contactWhatsapp ? data.contactWhatsapp : null,
+    aboutText: typeof data.aboutText === 'string' && data.aboutText ? data.aboutText : null,
   };
 }
 

@@ -2,8 +2,10 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ArrowLeft, Heart, Minus, Plus } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useCart } from '../src/context/CartContext';
 import { useFavorites } from '../src/context/FavoritesContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
@@ -12,10 +14,12 @@ import { useMenuContext } from '../src/context/MenuContext';
 export default function ProductScreen() {
   const { id, uniqueId } = useLocalSearchParams<{ id: string; uniqueId?: string }>();
   const router = useRouter();
+  const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
   const { addToCart, updateQuantity, cartItems } = useCart();
   const { isFavorite, toggleFavorite } = useFavorites();
   const isEditMode = !!uniqueId;
+  const isArabic = i18n.language === 'ar';
 
   const { products } = useMenuContext();
   const product = useMemo(() => products.find((p) => p.id === id), [products, id]);
@@ -57,9 +61,9 @@ export default function ProductScreen() {
   if (!product) {
     return (
       <View className="flex-1 items-center justify-center">
-        <Text className="text-slate-500">Product not found</Text>
+        <Text className="text-slate-500">{isArabic ? 'المنتج غير موجود' : 'Product not found'}</Text>
         <TouchableOpacity onPress={() => router.back()} className="mt-4">
-          <Text className="font-bold" style={{ color: primaryColor }}>Go back</Text>
+          <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? 'العودة' : 'Go back'}</Text>
         </TouchableOpacity>
       </View>
     );
@@ -96,7 +100,7 @@ export default function ProductScreen() {
         <TouchableOpacity onPress={() => router.back()} className="bg-slate-100 p-2 rounded-full">
           <ArrowLeft size={22} color="#334155" />
         </TouchableOpacity>
-        <Text className="text-lg font-bold text-slate-800">Product</Text>
+        <Text className="text-lg font-bold text-slate-800">{isArabic ? 'المنتج' : 'Product'}</Text>
         <TouchableOpacity onPress={() => product && toggleFavorite(product.id)} className="bg-slate-100 p-2 rounded-full">
           <Heart size={22} color={primaryColor} fill={product && isFavorite(product.id) ? primaryColor : 'transparent'} />
         </TouchableOpacity>
@@ -111,7 +115,7 @@ export default function ProductScreen() {
             <Text className="text-2xl font-bold text-slate-900">{product.name}</Text>
             <Text className="text-slate-400 text-sm mt-1">{product.description}</Text>
           </View>
-          <Text className="text-xl font-bold" style={{ color: primaryColor }}>{currentPrice} SAR</Text>
+          <PriceWithSymbol amount={currentPrice} iconSize={20} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 20 }} />
         </View>
         <View className="mb-8">
           {product.modifierGroups?.map((group: any) => (
@@ -131,7 +135,7 @@ export default function ProductScreen() {
                     >
                       <Text className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-slate-600'}`}>{opt.name}</Text>
                       {hasExtraPrice && (
-                        <Text className={`text-xs font-bold ml-2 ${isSelected ? 'text-white/90' : ''}`} style={!isSelected ? { color: primaryColor } : undefined}>+{opt.price} SAR</Text>
+                        <PriceWithSymbol amount={opt.price} prefix="+" iconSize={12} iconColor={isSelected ? 'rgba(255,255,255,0.9)' : primaryColor} textStyle={{ fontSize: 12, fontWeight: '700', color: isSelected ? 'rgba(255,255,255,0.9)' : primaryColor }} className="ml-2" />
                       )}
                     </TouchableOpacity>
                   );
@@ -144,10 +148,9 @@ export default function ProductScreen() {
       </ScrollView>
       <View className="p-6 pt-4 pb-8 bg-white border-t border-slate-100">
         <View className="p-4 rounded-[28px] flex-row items-center shadow-2xl" style={{ backgroundColor: primaryColor }}>
-          <TouchableOpacity onPress={handleSave} className="flex-1">
-            <Text className="text-white font-bold text-xl" numberOfLines={1}>{isEditMode ? 'Save Changes' : 'Add to Basket'}</Text>
+          <TouchableOpacity onPress={handleSave} className="flex-1 mr-3" activeOpacity={0.8}>
+            <Text className="text-white font-bold text-xl" numberOfLines={1}>{isEditMode ? (isArabic ? 'حفظ التغييرات' : 'Save changes') : (isArabic ? 'أضف إلى السلة' : 'Add to Cart')}</Text>
           </TouchableOpacity>
-          <Text className="text-white font-bold text-base mr-3">{(currentPrice * quantity).toFixed(1)} SAR</Text>
           <View className="flex-row items-center bg-white/20 rounded-lg py-1 px-1">
             <TouchableOpacity
               onPress={() => setQuantity((q) => Math.max(1, q - 1))}

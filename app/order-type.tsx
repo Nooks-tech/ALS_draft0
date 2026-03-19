@@ -1,6 +1,7 @@
 import { ArrowLeft, Bike, MapPin, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Dimensions, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useCart } from '../src/context/CartContext';
@@ -14,6 +15,7 @@ const SCREEN_HEIGHT = Dimensions.get('window').height;
 
 export default function OrderTypeScreen() {
   const router = useRouter();
+  const { i18n } = useTranslation();
   const insets = useSafeAreaInsets();
   const { primaryColor } = useMerchantBranding();
   const { orderType, setOrderType, selectedBranch, setSelectedBranch, setDeliveryAddress } = useCart();
@@ -21,6 +23,7 @@ export default function OrderTypeScreen() {
   const { isClosed, isBusy, isPickupOnly } = useOperations();
   const { addresses: savedAddresses, setDefault, updateAddress, removeAddress } = useSavedAddresses();
   const [step, setStep] = useState<'choice' | 'branch' | 'map'>('choice');
+  const isArabic = i18n.language === 'ar';
 
   const handleSelectBranch = (branch: (typeof branches)[0]) => {
     setSelectedBranch(branch);
@@ -76,13 +79,13 @@ export default function OrderTypeScreen() {
           <ArrowLeft size={22} color="#334155" />
         </TouchableOpacity>
         <Text className="text-lg font-bold text-slate-800">
-          {step === 'choice' ? 'Order Type' : step === 'branch' ? 'Select Branch' : 'Delivery Address'}
+          {step === 'choice' ? (isArabic ? 'نوع الطلب' : 'Order Type') : step === 'branch' ? (isArabic ? 'اختر الفرع' : 'Select Branch') : (isArabic ? 'عنوان التوصيل' : 'Delivery Address')}
         </Text>
         <View className="w-10" />
       </View>
       {step === 'map' ? (
         <View className="flex-1" style={{ paddingHorizontal: 20, paddingTop: 16 }}>
-          <Text className="text-2xl font-bold text-slate-900 mb-4">Delivery Address</Text>
+          <Text className="text-2xl font-bold text-slate-900 mb-4">{isArabic ? 'عنوان التوصيل' : 'Delivery Address'}</Text>
           <ScrollView
             className="flex-1"
             showsVerticalScrollIndicator={false}
@@ -91,7 +94,7 @@ export default function OrderTypeScreen() {
           >
             {savedAddresses.length > 0 ? (
               <View>
-                <Text className="text-slate-600 font-bold text-sm mb-2">Saved locations</Text>
+                <Text className="text-slate-600 font-bold text-sm mb-2">{isArabic ? 'العناوين المحفوظة' : 'Saved locations'}</Text>
                 {savedAddresses.map((addr) => {
                   const label = addr.label === 'Other' && addr.customLabel ? addr.customLabel : addr.label;
                   const selectAddress = () => {
@@ -114,7 +117,7 @@ export default function OrderTypeScreen() {
                             <Text className="font-bold text-slate-800">{label}</Text>
                             {addr.isDefault && (
                               <View className="px-1.5 py-0.5 rounded" style={{ backgroundColor: primaryColor }}>
-                                <Text className="text-white text-[10px] font-bold">Default</Text>
+                                <Text className="text-white text-[10px] font-bold">{isArabic ? 'افتراضي' : 'Default'}</Text>
                               </View>
                             )}
                           </View>
@@ -128,7 +131,7 @@ export default function OrderTypeScreen() {
                             style={{ backgroundColor: `${primaryColor}18` }}
                             className="px-3 py-2 rounded-lg"
                           >
-                            <Text className="font-bold text-sm" style={{ color: primaryColor }}>Set as default</Text>
+                            <Text className="font-bold text-sm" style={{ color: primaryColor }}>{isArabic ? 'تعيين كافتراضي' : 'Set as default'}</Text>
                           </TouchableOpacity>
                         )}
                         <View className="flex-row gap-3 ml-auto">
@@ -161,7 +164,7 @@ export default function OrderTypeScreen() {
             className="flex-row items-center justify-center p-4 mt-2 border-2 border-dashed border-slate-200 rounded-2xl"
           >
             <Plus size={20} color={primaryColor} />
-            <Text className="font-bold ml-2" style={{ color: primaryColor }}>Add new location</Text>
+            <Text className="font-bold ml-2" style={{ color: primaryColor }}>{isArabic ? 'إضافة موقع جديد' : 'Add new location'}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -172,14 +175,14 @@ export default function OrderTypeScreen() {
       >
         {step === 'choice' && (
           <View>
-            <Text className="text-2xl font-bold text-slate-900 mb-6">How'll you have it?</Text>
+            <Text className="text-2xl font-bold text-slate-900 mb-6">{isArabic ? 'كيف تود استلامه؟' : "How'll you have it?"}</Text>
             {(isClosed || isBusy) && (
               <View className="mb-4 p-4 rounded-2xl bg-amber-50 border border-amber-200">
-                <Text className="font-bold text-amber-800">{isClosed ? 'Store is currently closed' : 'Store is currently busy'}</Text>
+                <Text className="font-bold text-amber-800">{isClosed ? (isArabic ? 'المتجر مغلق حالياً' : 'Store is currently closed') : (isArabic ? 'المتجر مشغول حالياً' : 'Store is currently busy')}</Text>
                 <Text className="text-amber-700 text-sm mt-1">
                   {isClosed
-                    ? 'You can still browse the menu. Orders will be available when we reopen.'
-                    : 'You can still browse the menu. New orders are temporarily paused.'}
+                    ? (isArabic ? 'يمكنك الاستمرار في تصفح القائمة، وستتوفر الطلبات عند إعادة الافتتاح.' : 'You can still browse the menu. Orders will be available when we reopen.')
+                    : (isArabic ? 'يمكنك الاستمرار في تصفح القائمة، لكن الطلبات الجديدة متوقفة مؤقتاً.' : 'You can still browse the menu. New orders are temporarily paused.')}
                 </Text>
               </View>
             )}
@@ -191,8 +194,8 @@ export default function OrderTypeScreen() {
               >
                 <View className="p-4 rounded-2xl" style={{ backgroundColor: `${primaryColor}20` }}><Bike size={28} color={primaryColor} /></View>
                 <View className="ml-4 flex-1">
-                  <Text className="text-lg font-bold text-slate-800">Delivery</Text>
-                  <Text className="text-slate-500 text-xs">Direct to your doorstep</Text>
+                  <Text className="text-lg font-bold text-slate-800">{isArabic ? 'التوصيل' : 'Delivery'}</Text>
+                  <Text className="text-slate-500 text-xs">{isArabic ? 'حتى باب منزلك' : 'Direct to your doorstep'}</Text>
                 </View>
               </TouchableOpacity>
             )}
@@ -203,8 +206,8 @@ export default function OrderTypeScreen() {
             >
               <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
               <View className="ml-4 flex-1">
-                <Text className="text-lg font-bold text-slate-800">In-Store Pickup</Text>
-                <Text className="text-slate-500 text-xs">Skip the line & grab it fresh</Text>
+                <Text className="text-lg font-bold text-slate-800">{isArabic ? 'الاستلام من الفرع' : 'In-Store Pickup'}</Text>
+                <Text className="text-slate-500 text-xs">{isArabic ? 'تجاوز الانتظار واستلمه طازجاً' : 'Skip the line & grab it fresh'}</Text>
               </View>
             </TouchableOpacity>
           </View>
@@ -212,7 +215,7 @@ export default function OrderTypeScreen() {
 
         {step === 'branch' && (
           <View className="pb-8">
-            <Text className="text-2xl font-bold mb-6">Select Branch</Text>
+            <Text className="text-2xl font-bold mb-6">{isArabic ? 'اختر الفرع' : 'Select Branch'}</Text>
             {sortedBranches.map((b) => (
                 <TouchableOpacity
                   key={b.id}

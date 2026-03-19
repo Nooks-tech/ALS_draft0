@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react-native';
 import { useEffect, useRef } from 'react';
 import { Animated, Image, Text, TouchableOpacity, View } from 'react-native';
+import { PriceWithSymbol } from '../common/PriceWithSymbol';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface Product {
@@ -58,9 +59,7 @@ export const ProductCard = ({ product, onAdd, index = 0 }: ProductCardProps) => 
           <Text className="text-xs mt-1 font-[Poppins-Regular]" style={{ color: textColor }} numberOfLines={2}>
             {product.description}
           </Text>
-          <Text className="font-bold mt-2 text-base font-[Poppins-Bold]" style={{ color: textColor }}>
-            {product.price} SAR
-          </Text>
+          <PriceWithSymbol amount={product.price} iconSize={16} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700', marginTop: 8 }} className="mt-2" />
         </View>
         <TouchableOpacity
           onPress={onAdd}

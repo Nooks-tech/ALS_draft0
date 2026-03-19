@@ -3,6 +3,7 @@ import { AlertTriangle, Camera, Flag, Map, MapPin, MessageSquare, RefreshCw, Sto
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { useTranslation } from 'react-i18next';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
 import { useAuth } from '../src/context/AuthContext';
@@ -11,6 +12,7 @@ import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
 import { submitComplaint, getOrderComplaint, type ComplaintRow } from '../src/api/orders';
+import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { supabase } from '../src/api/supabase';
 
@@ -22,7 +24,24 @@ const COMPLAINT_TYPES = [
   { value: 'other', label: 'Other' },
 ] as const;
 
+const COMPLAINT_TYPE_ARABIC: Record<(typeof COMPLAINT_TYPES)[number]['value'], string> = {
+  missing_item: 'عنصر مفقود',
+  wrong_item: 'عنصر خاطئ',
+  quality_issue: 'مشكلة في الجودة',
+  other: 'أخرى',
+};
+
+const STATUS_ARABIC: Record<string, string> = {
+  Preparing: 'قيد التحضير',
+  Ready: 'جاهز',
+  'Out for delivery': 'خرج للتوصيل',
+  Delivered: 'تم التوصيل',
+  Cancelled: 'ملغي',
+  'On Hold': 'قيد الانتظار',
+};
+
 export default function OrderDetailModal() {
+  const { i18n } = useTranslation();
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
   const router = useRouter();
   const { orders } = useOrders();
@@ -42,6 +61,7 @@ export default function OrderDetailModal() {
   const [submittingComplaint, setSubmittingComplaint] = useState(false);
   const [existingComplaint, setExistingComplaint] = useState<ComplaintRow | null>(null);
   const [loadingComplaint, setLoadingComplaint] = useState(false);
+  const isArabic = i18n.language === 'ar';
 
   // Load existing complaint for delivered orders
   useEffect(() => {
@@ -125,13 +145,13 @@ export default function OrderDetailModal() {
 
   const handlePickPhoto = () => {
     if (complaintPhotos.length >= 3) return;
-    Alert.alert('Add Photo', 'Choose a source', [
+    Alert.alert(isArabic ? 'إضافة صورة' : 'Add Photo', isArabic ? 'اختر المصدر' : 'Choose a source', [
       {
-        text: 'Take Photo',
+        text: isArabic ? 'التقاط صورة' : 'Take Photo',
         onPress: async () => {
           const perm = await ImagePicker.requestCameraPermissionsAsync();
           if (!perm.granted) {
-            Alert.alert('Permission Required', 'Camera access is needed to take photos.');
+            Alert.alert(isArabic ? 'الإذن مطلوب' : 'Permission Required', isArabic ? 'مطلوب إذن الكاميرا لالتقاط الصور.' : 'Camera access is needed to take photos.');
             return;
           }
           const result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
@@ -141,7 +161,7 @@ export default function OrderDetailModal() {
         },
       },
       {
-        text: 'Choose from Library',
+        text: isArabic ? 'الاختيار من الصور' : 'Choose from Library',
         onPress: async () => {
           const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -156,7 +176,7 @@ export default function OrderDetailModal() {
           }
         },
       },
-      { text: 'Cancel', style: 'cancel' },
+      { text: isArabic ? 'إلغاء' : 'Cancel', style: 'cancel' },
     ]);
   };
 
@@ -178,12 +198,12 @@ export default function OrderDetailModal() {
       if (result.success) {
         setShowComplaintModal(false);
         setExistingComplaint(result.complaint ?? null);
-        Alert.alert('Complaint Submitted', 'The merchant will review your complaint shortly.');
+        Alert.alert(isArabic ? 'تم إرسال الشكوى' : 'Complaint Submitted', isArabic ? 'سيقوم المتجر بمراجعة شكواك قريباً.' : 'The merchant will review your complaint shortly.');
       } else {
-        Alert.alert('Error', result.error || 'Failed to submit complaint');
+        Alert.alert(isArabic ? 'خطأ' : 'Error', result.error || (isArabic ? 'تعذر إرسال الشكوى' : 'Failed to submit complaint'));
       }
     } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to submit complaint');
+      Alert.alert(isArabic ? 'خطأ' : 'Error', e?.message || (isArabic ? 'تعذر إرسال الشكوى' : 'Failed to submit complaint'));
     }
     setSubmittingComplaint(false);
   };
@@ -192,9 +212,9 @@ export default function OrderDetailModal() {
     return (
       <View className="flex-1 justify-center items-center bg-black/60">
         <View className="bg-white rounded-2xl p-6 max-w-sm">
-          <Text className="text-slate-600 text-center">Order not found</Text>
+          <Text className="text-slate-600 text-center">{isArabic ? 'لم يتم العثور على الطلب' : 'Order not found'}</Text>
           <TouchableOpacity onPress={() => router.back()} className="mt-4 py-3 rounded-xl" style={{ backgroundColor: primaryColor }}>
-            <Text className="text-white font-bold text-center">Close</Text>
+            <Text className="text-white font-bold text-center">{isArabic ? 'إغلاق' : 'Close'}</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -225,33 +245,35 @@ export default function OrderDetailModal() {
   // Refund/complaint status badges
   const refundBadge = (() => {
     if (order.refundStatus === 'refunded' || order.refundStatus === 'voided')
-      return { label: 'Refunded', bg: 'bg-green-100', text: 'text-green-700' };
+      return { label: isArabic ? 'تم الاسترجاع' : 'Refunded', bg: 'bg-green-100', text: 'text-green-700' };
     if (order.refundStatus === 'refund_failed')
-      return { label: 'Refund Failed', bg: 'bg-red-100', text: 'text-red-600' };
+      return { label: isArabic ? 'فشل الاسترجاع' : 'Refund Failed', bg: 'bg-red-100', text: 'text-red-600' };
     if (order.refundStatus === 'pending_manual')
-      return { label: 'Refund Pending', bg: 'bg-amber-100', text: 'text-amber-700' };
+      return { label: isArabic ? 'الاسترجاع قيد المعالجة' : 'Refund Pending', bg: 'bg-amber-100', text: 'text-amber-700' };
     return null;
   })();
 
   const complaintBadge = (() => {
     if (!existingComplaint) return null;
     if (existingComplaint.status === 'refunded')
-      return { label: 'Complaint Approved', bg: 'bg-green-100', text: 'text-green-700' };
+      return { label: isArabic ? 'تمت الموافقة على الشكوى' : 'Complaint Approved', bg: 'bg-green-100', text: 'text-green-700' };
     if (existingComplaint.status === 'approved')
-      return { label: 'Refund Processing', bg: 'bg-amber-100', text: 'text-amber-700' };
+      return { label: isArabic ? 'الاسترجاع قيد التنفيذ' : 'Refund Processing', bg: 'bg-amber-100', text: 'text-amber-700' };
     if (existingComplaint.status === 'rejected')
-      return { label: 'Complaint Rejected', bg: 'bg-red-100', text: 'text-red-600' };
+      return { label: isArabic ? 'تم رفض الشكوى' : 'Complaint Rejected', bg: 'bg-red-100', text: 'text-red-600' };
     if (existingComplaint.status === 'pending')
-      return { label: 'Complaint Pending', bg: 'bg-orange-100', text: 'text-orange-600' };
+      return { label: isArabic ? 'الشكوى قيد المراجعة' : 'Complaint Pending', bg: 'bg-orange-100', text: 'text-orange-600' };
     return null;
   })();
+
+  const statusLabel = isArabic ? (STATUS_ARABIC[order.status] || order.status) : order.status;
 
   return (
     <View className="flex-1">
       <TouchableOpacity className="absolute inset-0 bg-black/60" activeOpacity={1} onPress={() => router.back()} />
       <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[40px] max-h-[85%] overflow-hidden">
         <View className="flex-row items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100">
-          <Text className="text-xl font-bold text-slate-800">Order #{order.id.replace('order-', '')}</Text>
+          <Text className="text-xl font-bold text-slate-800">{isArabic ? 'الطلب' : 'Order'} #{order.id.replace('order-', '')}</Text>
           <TouchableOpacity onPress={() => router.back()} className="p-2 -mr-2">
             <X size={24} color="#64748b" />
           </TouchableOpacity>
@@ -261,7 +283,7 @@ export default function OrderDetailModal() {
           <View className="mb-4">
             <View className="flex-row flex-wrap gap-2">
               <View className={`self-start px-3 py-1 rounded-full ${badge.bg}`}>
-                <Text className={`text-xs font-bold ${badge.text}`}>{order.status}</Text>
+                <Text className={`text-xs font-bold ${badge.text}`}>{statusLabel}</Text>
               </View>
               {refundBadge && (
                 <View className={`self-start px-3 py-1 rounded-full ${refundBadge.bg}`}>
@@ -283,20 +305,21 @@ export default function OrderDetailModal() {
               <AlertTriangle size={18} color="#EF4444" style={{ marginTop: 2 }} />
               <View className="flex-1 ml-3">
                 <Text className="font-bold text-red-700 text-sm">
-                  {order.cancelledBy === 'merchant' ? 'Cancelled by store' : order.cancelledBy === 'system' ? 'Cancelled by system' : 'You cancelled this order'}
+                  {order.cancelledBy === 'merchant' ? (isArabic ? 'تم إلغاء الطلب من المتجر' : 'Cancelled by store') : order.cancelledBy === 'system' ? (isArabic ? 'تم إلغاء الطلب من النظام' : 'Cancelled by system') : (isArabic ? 'لقد قمت بإلغاء هذا الطلب' : 'You cancelled this order')}
                 </Text>
                 <Text className="text-red-600 text-sm mt-1">{order.cancellationReason}</Text>
                 {(order.refundStatus === 'refunded' || order.refundStatus === 'voided') && (
-                  <Text className="text-green-600 text-xs mt-1 font-medium">
-                    Refund of {order.refundAmount ?? order.total} SAR processed
-                    {order.refundMethod === 'void' ? ' (voided — no fee)' : ''}
-                  </Text>
+                  <View className="flex-row flex-wrap items-center mt-1">
+                    <Text className="text-green-600 text-xs font-medium">{isArabic ? 'تمت معالجة استرجاع بقيمة ' : 'Refund of '}</Text>
+                    <PriceWithSymbol amount={order.refundAmount ?? order.total} iconSize={12} iconColor="#16a34a" textStyle={{ color: '#16a34a', fontSize: 12 }} />
+                    <Text className="text-green-600 text-xs font-medium">{order.refundMethod === 'void' ? (isArabic ? ' (إلغاء بدون رسوم)' : ' processed (voided - no fee)') : (isArabic ? '' : ' processed')}</Text>
+                  </View>
                 )}
                 {order.refundStatus === 'pending_manual' && (
-                  <Text className="text-amber-600 text-xs mt-1 font-medium">Refund being processed</Text>
+                  <Text className="text-amber-600 text-xs mt-1 font-medium">{isArabic ? 'الاسترجاع قيد المعالجة' : 'Refund being processed'}</Text>
                 )}
                 {order.refundStatus === 'refund_failed' && (
-                  <Text className="text-red-600 text-xs mt-1 font-medium">Refund failed — please contact support</Text>
+                  <Text className="text-red-600 text-xs mt-1 font-medium">{isArabic ? 'فشل الاسترجاع - يرجى التواصل مع الدعم' : 'Refund failed - please contact support'}</Text>
                 )}
               </View>
             </View>
@@ -307,12 +330,12 @@ export default function OrderDetailModal() {
             <View className="mb-4 p-4 bg-amber-50 rounded-xl flex-row items-start">
               <AlertTriangle size={18} color="#D97706" style={{ marginTop: 2 }} />
               <View className="flex-1 ml-3">
-                <Text className="font-bold text-amber-700 text-sm">Delivery dispatch pending</Text>
+                <Text className="font-bold text-amber-700 text-sm">{isArabic ? 'إرسال التوصيل قيد الانتظار' : 'Delivery dispatch pending'}</Text>
                 <Text className="text-amber-700 text-sm mt-1">
-                  We could not send this order to the delivery provider yet. The store has your order and can retry dispatch.
+                  {isArabic ? 'تعذر إرسال هذا الطلب إلى مزود التوصيل حتى الآن. المتجر لديه طلبك ويمكنه إعادة محاولة الإرسال.' : 'We could not send this order to the delivery provider yet. The store has your order and can retry dispatch.'}
                 </Text>
                 {!!order.otoDispatchError && (
-                  <Text className="text-amber-800 text-xs mt-2">Details: {order.otoDispatchError}</Text>
+                  <Text className="text-amber-800 text-xs mt-2">{isArabic ? 'التفاصيل' : 'Details'}: {order.otoDispatchError}</Text>
                 )}
               </View>
             </View>
@@ -323,18 +346,20 @@ export default function OrderDetailModal() {
             <View className="mb-4 p-4 bg-slate-50 rounded-xl flex-row items-start">
               <Flag size={18} color="#6366F1" style={{ marginTop: 2 }} />
               <View className="flex-1 ml-3">
-                <Text className="font-bold text-slate-700 text-sm">Complaint Filed</Text>
-                <Text className="text-slate-600 text-sm mt-1 capitalize">{existingComplaint.complaint_type.replace('_', ' ')}</Text>
+                <Text className="font-bold text-slate-700 text-sm">{isArabic ? 'تم تقديم شكوى' : 'Complaint Filed'}</Text>
+                <Text className="text-slate-600 text-sm mt-1 capitalize">{isArabic ? (COMPLAINT_TYPE_ARABIC[existingComplaint.complaint_type as keyof typeof COMPLAINT_TYPE_ARABIC] || existingComplaint.complaint_type) : existingComplaint.complaint_type.replace('_', ' ')}</Text>
                 {existingComplaint.status === 'refunded' && existingComplaint.approved_refund_amount && (
-                  <Text className="text-green-600 text-xs mt-1 font-medium">
-                    Refund of {existingComplaint.approved_refund_amount} SAR approved
-                  </Text>
+                  <View className="flex-row flex-wrap items-center mt-1">
+                    <Text className="text-green-600 text-xs font-medium">{isArabic ? 'تمت الموافقة على استرجاع بقيمة ' : 'Refund of '}</Text>
+                    <PriceWithSymbol amount={existingComplaint.approved_refund_amount} iconSize={12} iconColor="#16a34a" textStyle={{ color: '#16a34a', fontSize: 12 }} />
+                    <Text className="text-green-600 text-xs font-medium">{isArabic ? '' : ' approved'}</Text>
+                  </View>
                 )}
                 {existingComplaint.status === 'rejected' && existingComplaint.merchant_notes && (
                   <Text className="text-red-600 text-xs mt-1">{existingComplaint.merchant_notes}</Text>
                 )}
                 {existingComplaint.status === 'pending' && (
-                  <Text className="text-amber-600 text-xs mt-1 font-medium">Awaiting merchant review</Text>
+                  <Text className="text-amber-600 text-xs mt-1 font-medium">{isArabic ? 'بانتظار مراجعة المتجر' : 'Awaiting merchant review'}</Text>
                 )}
               </View>
             </View>
@@ -342,7 +367,7 @@ export default function OrderDetailModal() {
 
           {order.status !== 'Cancelled' && order.status !== 'On Hold' && (
             <View className="mb-6">
-              <Text className="font-bold text-slate-800 mb-3">Order status</Text>
+              <Text className="font-bold text-slate-800 mb-3">{isArabic ? 'حالة الطلب' : 'Order status'}</Text>
               <OrderStatusStepper status={order.status as any} orderType={order.orderType} accentColor={primaryColor} />
             </View>
           )}
@@ -365,7 +390,7 @@ export default function OrderDetailModal() {
             <View className="mb-6">
               <View className="flex-row items-center gap-2 mb-3">
                 <Truck size={18} color={primaryColor} />
-                <Text className="font-bold text-slate-800">Live driver tracking</Text>
+                <Text className="font-bold text-slate-800">{isArabic ? 'تتبع السائق المباشر' : 'Live driver tracking'}</Text>
               </View>
               <OrderTrackingMap
                 branchLat={branchLat}
@@ -380,23 +405,23 @@ export default function OrderDetailModal() {
               <View className="flex-row flex-wrap gap-2 mt-2">
                 <View className="flex-row items-center gap-1.5">
                   <View className="w-2 h-2 rounded-full bg-amber-500" />
-                  <Text className="text-slate-500 text-xs">Branch</Text>
+                  <Text className="text-slate-500 text-xs">{isArabic ? 'الفرع' : 'Branch'}</Text>
                 </View>
                 {(order.deliveryLat != null && order.deliveryLng != null) && (
                   <View className="flex-row items-center gap-1.5">
                     <View className="w-2 h-2 rounded-full" style={{ backgroundColor: primaryColor }} />
-                    <Text className="text-slate-500 text-xs">Your location</Text>
+                    <Text className="text-slate-500 text-xs">{isArabic ? 'موقعك' : 'Your location'}</Text>
                   </View>
                 )}
                 {otoStatus?.driverLat != null && (
                   <View className="flex-row items-center gap-1.5">
                     <View className="w-2 h-2 rounded-full bg-indigo-500" />
-                    <Text className="text-slate-500 text-xs">Driver</Text>
+                    <Text className="text-slate-500 text-xs">{isArabic ? 'السائق' : 'Driver'}</Text>
                   </View>
                 )}
               </View>
               {otoStatus?.estimatedDeliveryTime && (
-                <Text className="text-slate-500 text-xs mt-2">ETA: {otoStatus.estimatedDeliveryTime}</Text>
+                <Text className="text-slate-500 text-xs mt-2">{isArabic ? 'الوقت المتوقع للوصول' : 'ETA'}: {otoStatus.estimatedDeliveryTime}</Text>
               )}
             </View>
           )}
@@ -406,7 +431,7 @@ export default function OrderDetailModal() {
             <View className="mb-6">
               <View className="flex-row items-center gap-2 mb-3">
                 <Map size={18} color={primaryColor} />
-                <Text className="font-bold text-slate-800">Track on map</Text>
+                <Text className="font-bold text-slate-800">{isArabic ? 'التتبع على الخريطة' : 'Track on map'}</Text>
               </View>
               <OrderTrackingMap
                 branchLat={branchLat}
@@ -421,23 +446,26 @@ export default function OrderDetailModal() {
             </View>
           )}
 
-          <Text className="font-bold text-slate-800 mb-2">Items</Text>
+          <Text className="font-bold text-slate-800 mb-2">{isArabic ? 'العناصر' : 'Items'}</Text>
           {order.items.map((item) => (
             <View key={item.uniqueId} className="flex-row items-center mb-3 p-3 bg-slate-50 rounded-xl">
               <Image source={{ uri: item.image }} className="w-12 h-12 rounded-lg bg-slate-200" />
               <View className="flex-1 ml-3">
                 <Text className="font-bold text-slate-800">{item.name}</Text>
-                <Text className="text-slate-500 text-sm">
-                  {item.quantity} × {item.price} SAR = {item.price * item.quantity} SAR
-                </Text>
+                <View className="flex-row flex-wrap items-center">
+                  <Text className="text-slate-500 text-sm">{item.quantity} × </Text>
+                  <PriceWithSymbol amount={item.price} iconSize={14} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 14 }} />
+                  <Text className="text-slate-500 text-sm"> = </Text>
+                  <PriceWithSymbol amount={item.price * item.quantity} iconSize={14} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 14 }} />
+                </View>
               </View>
-              <Text className="font-bold" style={{ color: primaryColor }}>{item.price * item.quantity} SAR</Text>
+              <PriceWithSymbol amount={item.price * item.quantity} iconSize={16} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700' }} />
             </View>
           ))}
 
           <View className="border-t border-slate-200 mt-4 pt-4 flex-row justify-between">
-            <Text className="font-bold text-slate-800">Total</Text>
-            <Text className="font-bold text-lg" style={{ color: primaryColor }}>{order.total} SAR</Text>
+            <Text className="font-bold text-slate-800">{isArabic ? 'الإجمالي' : 'Total'}</Text>
+            <PriceWithSymbol amount={order.total} iconSize={18} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 18 }} />
           </View>
 
           {/* Report Issue (delivered orders, 24h window) */}
@@ -447,7 +475,7 @@ export default function OrderDetailModal() {
               className="mt-4 py-4 rounded-2xl items-center flex-row justify-center gap-2 border-2 border-red-200 bg-red-50"
             >
               <MessageSquare size={18} color="#EF4444" />
-              <Text className="text-red-600 font-bold text-base">Report Issue</Text>
+              <Text className="text-red-600 font-bold text-base">{isArabic ? 'الإبلاغ عن مشكلة' : 'Report Issue'}</Text>
             </TouchableOpacity>
           )}
 
@@ -455,7 +483,7 @@ export default function OrderDetailModal() {
           {isDelivered && (
             <View className="mt-3 p-3 bg-slate-50 rounded-xl">
               <Text className="text-slate-500 text-xs text-center">
-                Need help? Contact support via WhatsApp or call us
+                {isArabic ? 'هل تحتاج إلى مساعدة؟ تواصل مع الدعم عبر واتساب أو اتصل بنا' : 'Need help? Contact support via WhatsApp or call us'}
               </Text>
             </View>
           )}
@@ -468,7 +496,7 @@ export default function OrderDetailModal() {
               style={{ backgroundColor: primaryColor }}
             >
               <RefreshCw size={18} color="white" />
-              <Text className="text-white font-bold text-base">Re-order</Text>
+              <Text className="text-white font-bold text-base">{isArabic ? 'إعادة الطلب' : 'Re-order'}</Text>
             </TouchableOpacity>
           )}
 
@@ -481,14 +509,14 @@ export default function OrderDetailModal() {
         <View className="flex-1 justify-end bg-black/50">
           <View className="bg-white rounded-t-3xl p-6 max-h-[90%]">
             <View className="flex-row items-center justify-between mb-4">
-              <Text className="text-lg font-bold text-slate-800">Report an Issue</Text>
+              <Text className="text-lg font-bold text-slate-800">{isArabic ? 'الإبلاغ عن مشكلة' : 'Report an Issue'}</Text>
               <TouchableOpacity onPress={() => setShowComplaintModal(false)}>
                 <X size={24} color="#64748b" />
               </TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
               {/* Issue type */}
-              <Text className="font-bold text-slate-700 mb-2">What went wrong?</Text>
+              <Text className="font-bold text-slate-700 mb-2">{isArabic ? 'ما المشكلة التي حدثت؟' : 'What went wrong?'}</Text>
               <View className="flex-row flex-wrap gap-2 mb-4">
                 {COMPLAINT_TYPES.map((ct) => (
                   <Pressable
@@ -497,18 +525,18 @@ export default function OrderDetailModal() {
                     className={`px-4 py-2 rounded-full border ${complaintType === ct.value ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white'}`}
                   >
                     <Text className={complaintType === ct.value ? 'text-red-600 font-bold text-sm' : 'text-slate-600 text-sm'}>
-                      {ct.label}
+                      {isArabic ? COMPLAINT_TYPE_ARABIC[ct.value] : ct.label}
                     </Text>
                   </Pressable>
                 ))}
               </View>
 
               {/* Description */}
-              <Text className="font-bold text-slate-700 mb-2">Description</Text>
+              <Text className="font-bold text-slate-700 mb-2">{isArabic ? 'الوصف' : 'Description'}</Text>
               <TextInput
                 value={complaintDescription}
                 onChangeText={setComplaintDescription}
-                placeholder="Describe the issue..."
+                placeholder={isArabic ? 'اكتب وصف المشكلة...' : 'Describe the issue...'}
                 multiline
                 numberOfLines={3}
                 className="border border-slate-200 rounded-xl p-3 text-slate-700 mb-4"
@@ -516,7 +544,7 @@ export default function OrderDetailModal() {
               />
 
               {/* Photos */}
-              <Text className="font-bold text-slate-700 mb-2">Photos (optional, max 3)</Text>
+              <Text className="font-bold text-slate-700 mb-2">{isArabic ? 'الصور (اختياري، بحد أقصى 3)' : 'Photos (optional, max 3)'}</Text>
               <View className="flex-row gap-2 mb-4">
                 {complaintPhotos.map((url, i) => (
                   <View key={i} className="relative">
@@ -540,7 +568,7 @@ export default function OrderDetailModal() {
               </View>
 
               {/* Affected items */}
-              <Text className="font-bold text-slate-700 mb-2">Affected items</Text>
+              <Text className="font-bold text-slate-700 mb-2">{isArabic ? 'العناصر المتأثرة' : 'Affected items'}</Text>
               {order?.items.map((item) => (
                 <Pressable
                   key={item.uniqueId}
@@ -551,7 +579,7 @@ export default function OrderDetailModal() {
                     {selectedItems[item.uniqueId] && <Text className="text-white text-xs font-bold">✓</Text>}
                   </View>
                   <Text className="flex-1 text-slate-700">{item.name}</Text>
-                  <Text className="text-slate-500 text-sm">{item.price} SAR × {item.quantity}</Text>
+                  <View className="flex-row items-center"><PriceWithSymbol amount={item.price} iconSize={14} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 14 }} /><Text className="text-slate-500 text-sm"> × {item.quantity}</Text></View>
                 </Pressable>
               ))}
 
@@ -565,7 +593,7 @@ export default function OrderDetailModal() {
                 {submittingComplaint ? (
                   <ActivityIndicator color="white" />
                 ) : (
-                  <Text className="text-white font-bold text-base">Submit Complaint</Text>
+                  <Text className="text-white font-bold text-base">{isArabic ? 'إرسال الشكوى' : 'Submit Complaint'}</Text>
                 )}
               </TouchableOpacity>
               <View className="h-6" />

@@ -13,9 +13,43 @@ import { useAuth } from '../../src/context/AuthContext';
 export default function OtpScreen() {
   const router = useRouter();
   const { phone } = useLocalSearchParams<{ phone: string }>();
-  const { t } = useTranslation();
+  const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
   const { setServerSession } = useAuth();
+  const isArabic = i18n.language === 'ar';
+  const copy = isArabic
+    ? {
+        error: 'خطأ',
+        invalidCodeTitle: 'رمز غير صحيح',
+        couldNotSend: 'تعذر إرسال الرمز.',
+        invalidCodeBody: 'يرجى إدخال رمز التحقق المكون من 6 أرقام.',
+        phoneMissing: 'رقم الجوال مفقود. يرجى العودة والمحاولة مرة أخرى.',
+        codeExpired: 'الرمز غير صحيح أو منتهي الصلاحية. حاول مرة أخرى.',
+        title: 'تحقق من رقم الجوال',
+        yourPhone: 'رقم جوالك',
+        enterBelow: 'أدخله بالأسفل للمتابعة.',
+        verificationCode: 'رمز التحقق',
+        verifyContinue: 'تأكيد ومتابعة',
+        didntReceive: 'لم يصلك الرمز؟',
+        resendIn: 'إعادة الإرسال خلال',
+        resendCode: 'إعادة إرسال الرمز',
+      }
+    : {
+        error: 'Error',
+        invalidCodeTitle: 'Invalid Code',
+        couldNotSend: 'Could not send code.',
+        invalidCodeBody: 'Please enter the 6-digit code from your SMS.',
+        phoneMissing: 'Phone number is missing. Please go back and try again.',
+        codeExpired: 'Code is wrong or expired. Try again.',
+        title: 'Verify your phone',
+        yourPhone: 'your phone',
+        enterBelow: 'Enter it below to continue.',
+        verificationCode: 'Verification Code',
+        verifyContinue: 'Verify & Continue',
+        didntReceive: "Didn't receive the code?",
+        resendIn: 'Resend in',
+        resendCode: 'Resend Code',
+      };
 
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -29,7 +63,7 @@ export default function OtpScreen() {
       await authApi.sendOtp(phone);
       setTimer(60);
     } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Could not send code.');
+      Alert.alert(copy.error, err instanceof Error ? err.message : copy.couldNotSend);
     } finally {
       setSending(false);
     }
@@ -43,11 +77,11 @@ export default function OtpScreen() {
   const handleVerify = async () => {
     const c = code.replace(/\D/g, '');
     if (c.length !== 6) {
-      Alert.alert('Invalid Code', 'Please enter the 6-digit code from your SMS.');
+      Alert.alert(copy.invalidCodeTitle, copy.invalidCodeBody);
       return;
     }
     if (!phone?.trim()) {
-      Alert.alert('Error', 'Phone number is missing. Please go back and try again.');
+      Alert.alert(copy.error, copy.phoneMissing);
       return;
     }
     setLoading(true);
@@ -58,12 +92,12 @@ export default function OtpScreen() {
         result.session.refresh_token,
       );
       if (error) {
-        Alert.alert('Error', error);
+        Alert.alert(copy.error, error);
         return;
       }
       router.replace('/(tabs)/menu');
     } catch (err) {
-      Alert.alert('Invalid Code', err instanceof Error ? err.message : 'Code is wrong or expired. Try again.');
+      Alert.alert(copy.invalidCodeTitle, err instanceof Error ? err.message : copy.codeExpired);
     } finally {
       setLoading(false);
     }
@@ -79,17 +113,19 @@ export default function OtpScreen() {
         <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View className="mb-8">
             <Text className="text-3xl font-bold text-gray-900 mb-2">
-              {t('otp') || 'Verify your phone'}
+              {copy.title}
             </Text>
             <Text className="text-gray-500 text-base">
-              We sent a 6-digit code to {maskedPhone || 'your phone'}.
-              {'\n'}Enter it below to continue.
+              {isArabic ? 'أرسلنا رمزًا مكونًا من 6 أرقام إلى ' : 'We sent a 6-digit code to '}
+              {maskedPhone || copy.yourPhone}.
+              {'\n'}
+              {copy.enterBelow}
             </Text>
           </View>
 
           <View className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
             <Input
-              label="Verification Code"
+              label={copy.verificationCode}
               placeholder="000000"
               value={code}
               onChangeText={(t) => setCode(t.replace(/\D/g, '').slice(0, 6))}
@@ -99,7 +135,7 @@ export default function OtpScreen() {
             />
 
             <Button
-              title="Verify & Continue"
+              title={copy.verifyContinue}
               onPress={handleVerify}
               isLoading={loading}
               className="mt-4"
@@ -107,12 +143,12 @@ export default function OtpScreen() {
           </View>
 
           <View className="mt-8 items-center">
-            <Text className="text-gray-500 mb-2">Didn't receive the code?</Text>
+            <Text className="text-gray-500 mb-2">{copy.didntReceive}</Text>
             {timer > 0 ? (
-              <Text className="text-gray-400 font-bold">Resend in {timer}s</Text>
+              <Text className="text-gray-400 font-bold">{isArabic ? `${copy.resendIn} ${timer}ث` : `${copy.resendIn} ${timer}s`}</Text>
             ) : (
               <TouchableOpacity onPress={resendOtp} disabled={sending}>
-                <Text className="font-bold text-lg" style={{ color: primaryColor }}>Resend Code</Text>
+                <Text className="font-bold text-lg" style={{ color: primaryColor }}>{copy.resendCode}</Text>
               </TouchableOpacity>
             )}
           </View>

@@ -1,6 +1,7 @@
 import * as ExpoClipboard from 'expo-clipboard';
 import { Copy } from 'lucide-react-native';
 import { Alert, ImageBackground, Text, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface OfferProps {
@@ -12,11 +13,13 @@ interface OfferProps {
 }
 
 export const OfferCard = ({ title, description, code, image, expiry }: OfferProps) => {
+  const { i18n } = useTranslation();
   const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
+  const isArabic = i18n.language === 'ar';
 
   const copyToClipboard = async () => {
     await ExpoClipboard.setStringAsync(code);
-    Alert.alert('Copied', `Code "${code}" copied to clipboard`);
+    Alert.alert(isArabic ? 'تم النسخ' : 'Copied', isArabic ? `تم نسخ الرمز "${code}"` : `Code "${code}" copied to clipboard`);
   };
 
   return (

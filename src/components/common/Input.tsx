@@ -13,7 +13,7 @@ export const Input = ({ label, error, ...props }: InputProps) => {
         className={`w-full h-12 border rounded-xl px-4 bg-gray-50 text-start ${
           error ? 'border-red-500' : 'border-gray-200'
         }`}
-        placeholderTextColor="#9CA3AF"
+        placeholderTextColor="#64748b"
         {...props}
       />
       {error && <Text className="text-red-500 text-xs mt-1 text-start">{error}</Text>}

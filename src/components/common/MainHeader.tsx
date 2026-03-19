@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import { Bell, MapPin, Search } from 'lucide-react-native';
 import { Linking, Text, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useCart } from '../../context/CartContext';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
@@ -10,12 +11,14 @@ interface MainHeaderProps {
 
 export const MainHeader = ({ onSearchPress }: MainHeaderProps) => {
   const router = useRouter();
+  const { i18n } = useTranslation();
   const { orderType, selectedBranch, deliveryAddress } = useCart();
   const { primaryColor } = useMerchantBranding();
+  const isArabic = i18n.language === 'ar';
 
   const locationLabel = orderType === 'pickup'
-    ? (selectedBranch?.name || 'Select branch')
-    : (deliveryAddress?.address || 'Add address');
+    ? (selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch'))
+    : (deliveryAddress?.address || (isArabic ? 'أضف عنواناً' : 'Add address'));
 
   return (
     <View className="pt-14 pb-4 px-4 bg-white border-b border-slate-100 flex-row justify-between items-center">
@@ -28,7 +31,7 @@ export const MainHeader = ({ onSearchPress }: MainHeaderProps) => {
         </View>
         <View className="flex-1">
           <Text className="text-xs text-slate-400 font-bold uppercase tracking-wider">
-            {orderType === 'pickup' ? 'Pickup From' : 'Delivering To'}
+            {orderType === 'pickup' ? (isArabic ? 'الاستلام من' : 'Pickup From') : (isArabic ? 'التوصيل إلى' : 'Delivering To')}
           </Text>
           <Text className="text-slate-800 font-bold text-base" numberOfLines={1}>
             {locationLabel}

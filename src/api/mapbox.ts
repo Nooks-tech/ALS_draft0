@@ -24,7 +24,7 @@ export interface MapboxSearchResult {
  */
 export async function searchAddresses(query: string, limit = 5): Promise<MapboxSearchResult[]> {
   if (!GOOGLE_MAPS_KEY) return [];
-  if (!query || query.trim().length < 3) return [];
+  if (!query || query.trim().length < 2) return [];
 
   const encoded = encodeURIComponent(query.trim());
   const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encoded}&key=${GOOGLE_MAPS_KEY}&region=sa&language=en`;
