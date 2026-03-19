@@ -42,6 +42,10 @@ on:
         required: false
         type: string
         default: "#1f2937"
+      tab_text_color:
+        required: false
+        type: string
+        default: "#ffffff"
       use_test_builds:
         description: "Use preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed"
         required: false
@@ -146,6 +150,7 @@ jobs:
           echo "EXPO_PUBLIC_BACKGROUND_COLOR=${{ github.event.inputs.background_color }}" >> .env
           echo "EXPO_PUBLIC_MENU_CARD_COLOR=${{ github.event.inputs.menu_card_color }}" >> .env
           echo "EXPO_PUBLIC_TEXT_COLOR=${{ github.event.inputs.text_color }}" >> .env
+          echo "EXPO_PUBLIC_TAB_TEXT_COLOR=${{ github.event.inputs.tab_text_color }}" >> .env
           echo "EXPO_PUBLIC_APP_ICON_BG_COLOR=${{ github.event.inputs.app_icon_bg_color }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
