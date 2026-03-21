@@ -7,18 +7,20 @@ try {
   // Native module not available in Expo Go — only works in device builds
 }
 import { useRouter } from 'expo-router';
-import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp, Wallet } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
   Image,
   Linking,
   Platform,
   ScrollView,
   StatusBar,
+  StyleSheet,
   Text,
   TouchableOpacity,
   View,
@@ -37,6 +39,7 @@ import { useMerchant } from '../../src/context/MerchantContext';
 import { PriceWithSymbol } from '../../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
+import { AppleWalletAddPassButton } from '../../src/components/apple-wallet/AppleWalletAddPassButton';
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/.exec(hex);
@@ -83,6 +86,8 @@ export default function OffersScreen() {
     id: string; code: string; name: string; description?: string;
     valid_until?: string; image_url?: string | null; imageUrl?: string | null;
   }>>([]);
+  /** False until both Nooks fetches finish and optional minimum display time elapses. */
+  const [offersFetchDone, setOffersFetchDone] = useState(() => !merchantId);
 
   // Loyalty data
   const [balance, setBalance] = useState<LoyaltyBalance | null>(null);
@@ -96,10 +101,58 @@ export default function OffersScreen() {
   const [walletLoading, setWalletLoading] = useState(false);
   const isArabic = i18n.language === 'ar';
 
+  const offersPulse = useRef(new Animated.Value(0.4)).current;
   useEffect(() => {
-    if (!merchantId) return;
-    fetchNooksBanners(merchantId).then(setNooksBanners);
-    fetchNooksPromos(merchantId).then(setNooksPromos);
+    if (tab !== 'offers' || offersFetchDone) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(offersPulse, { toValue: 1, duration: 550, useNativeDriver: true }),
+        Animated.timing(offersPulse, { toValue: 0.4, duration: 550, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [tab, offersFetchDone, offersPulse]);
+
+  useEffect(() => {
+    if (!merchantId) {
+      setOffersFetchDone(true);
+      setNooksBanners([]);
+      setNooksPromos([]);
+      return;
+    }
+    setOffersFetchDone(false);
+    let cancelled = false;
+    const MIN_MS = 650;
+    const started = Date.now();
+
+    (async () => {
+      try {
+        const [banners, promos] = await Promise.all([
+          fetchNooksBanners(merchantId),
+          fetchNooksPromos(merchantId),
+        ]);
+        if (cancelled) return;
+        setNooksBanners(banners);
+        setNooksPromos(promos);
+      } catch {
+        if (!cancelled) {
+          setNooksBanners([]);
+          setNooksPromos([]);
+        }
+      } finally {
+        if (cancelled) return;
+        const elapsed = Date.now() - started;
+        const rest = Math.max(0, MIN_MS - elapsed);
+        setTimeout(() => {
+          if (!cancelled) setOffersFetchDone(true);
+        }, rest);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [merchantId]);
 
   const loadLoyalty = useCallback(async () => {
@@ -128,6 +181,53 @@ export default function OffersScreen() {
   useEffect(() => {
     if (tab === 'points') loadLoyalty();
   }, [tab, loadLoyalty]);
+
+  const handleAddToAppleWallet = useCallback(async () => {
+    if (!user?.id || !merchantId) return;
+    setWalletLoading(true);
+    try {
+      const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
+      const res = await fetch(passUrl);
+      if (!res.ok) {
+        let msg = `Server returned ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data.error) msg = data.error;
+        } catch { /* not JSON */ }
+        Alert.alert('Error', msg);
+        return;
+      }
+      const data = await res.json();
+      if (data.error) {
+        Alert.alert('Error', data.error);
+        return;
+      }
+      const base64: string = data.base64;
+      if (!base64 || base64.length === 0) {
+        Alert.alert('Error', 'Empty pass data from server.');
+        return;
+      }
+      console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
+      if (!ExpoWallet) throw new Error('Apple Wallet not available on this device.');
+      await ExpoWallet.addPass(base64);
+    } catch (err: unknown) {
+      const e = err as { message?: string; code?: string };
+      const msg = e?.message || String(err);
+      const code = e?.code || '';
+      console.log('[AppleWallet] error code:', code, 'message:', msg);
+      if (msg.includes('E_PASS_LIBRARY_CANNOT_ADD')) {
+        Alert.alert('Not Added', 'Pass was not added to Wallet.');
+      } else if (msg.includes('E_PASS_LIBRARY_INVALID_DATA')) {
+        Alert.alert('Error', 'Invalid pass data received from server.');
+      } else if (msg.includes('E_PASS_LIBRARY_UNAVAILABLE')) {
+        Alert.alert('Error', 'Apple Wallet is not available on this device.');
+      } else {
+        Alert.alert('Error', msg || 'Could not add wallet pass.');
+      }
+    } finally {
+      setWalletLoading(false);
+    }
+  }, [user?.id, merchantId]);
 
   const handleRedeemReward = async (reward: LoyaltyReward) => {
     if (!user?.id || !merchantId) return;
@@ -215,37 +315,51 @@ export default function OffersScreen() {
 
       {/* Offers Tab */}
       {tab === 'offers' && (
-        <FlatList
-          data={offerList}
-          keyExtractor={(item) => item.id}
-          ListHeaderComponent={
-            offerList.length === 0 && visibleBannerCards.length > 0 ? (
-              <View className="mb-4">
-                {visibleBannerCards.map((b) => (
-                  <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: menuCardColor }}>
-                    <Image source={{ uri: b.image_url }} className="w-full h-40 bg-slate-200" resizeMode="cover" />
-                    {(b.title || b.subtitle) && (
-                      <View className="p-3">
-                        {b.subtitle ? <Text className="text-lg font-bold" style={{ color: textColor }}>{b.subtitle}</Text> : null}
-                        {b.title ? <Text style={{ color: textColor }}>{b.title}</Text> : null}
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                ))}
+        <View style={styles.offersTabWrap}>
+          <FlatList
+            data={offerList}
+            keyExtractor={(item) => item.id}
+            ListHeaderComponent={
+              offerList.length === 0 && visibleBannerCards.length > 0 ? (
+                <View className="mb-4">
+                  {visibleBannerCards.map((b) => (
+                    <TouchableOpacity key={b.id} activeOpacity={1} className="mb-3 rounded-2xl overflow-hidden shadow-sm" style={{ backgroundColor: menuCardColor }}>
+                      <Image source={{ uri: b.image_url }} className="w-full h-40 bg-slate-200" resizeMode="cover" />
+                      {(b.title || b.subtitle) && (
+                        <View className="p-3">
+                          {b.subtitle ? <Text className="text-lg font-bold" style={{ color: textColor }}>{b.subtitle}</Text> : null}
+                          {b.title ? <Text style={{ color: textColor }}>{b.title}</Text> : null}
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null
+            }
+            ListEmptyComponent={
+              visibleBannerCards.length === 0 ? (
+                <View className="items-center justify-center py-20">
+                  <Gift size={48} color="#94a3b8" />
+                  <Text className="text-slate-400 mt-3 text-center">{isArabic ? 'لا توجد عروض متاحة حالياً.' : 'No offers available right now.'}</Text>
+                </View>
+              ) : null
+            }
+            renderItem={({ item }) => <OfferCard {...item} />}
+            contentContainerStyle={{ padding: 16 }}
+          />
+          {!offersFetchDone && (
+            <View style={[StyleSheet.absoluteFillObject, { backgroundColor }]} pointerEvents="auto">
+              <View style={styles.offersLoadingInner}>
+                <Animated.View style={{ opacity: offersPulse }}>
+                  <ActivityIndicator size="large" color={primaryColor} />
+                </Animated.View>
+                <Text style={[styles.offersLoadingHint, { color: textColor }]}>
+                  {isArabic ? 'جاري تحميل العروض…' : 'Loading offers…'}
+                </Text>
               </View>
-            ) : null
-          }
-          ListEmptyComponent={
-            visibleBannerCards.length === 0 ? (
-              <View className="items-center justify-center py-20">
-                <Gift size={48} color="#94a3b8" />
-                <Text className="text-slate-400 mt-3 text-center">{isArabic ? 'لا توجد عروض متاحة حالياً.' : 'No offers available right now.'}</Text>
-              </View>
-            ) : null
-          }
-          renderItem={({ item }) => <OfferCard {...item} />}
-          contentContainerStyle={{ padding: 16 }}
-        />
+            </View>
+          )}
+        </View>
       )}
 
       {/* Points Tab */}
@@ -388,75 +502,20 @@ export default function OffersScreen() {
               </View>
             )}
 
-            {/* Add to Apple Wallet */}
+            {/* Add to Apple Wallet — native PKAddPassButton (Apple HIG) */}
             {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && (
-              <TouchableOpacity
-                disabled={walletLoading}
-                onPress={async () => {
-                  setWalletLoading(true);
-                  try {
-                    const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
-                    const res = await fetch(passUrl);
-                    if (!res.ok) {
-                      let msg = `Server returned ${res.status}`;
-                      try {
-                        const data = await res.json();
-                        if (data.error) msg = data.error;
-                      } catch { /* not JSON */ }
-                      Alert.alert('Error', msg);
-                      return;
-                    }
-                    const data = await res.json();
-                    if (data.error) {
-                      Alert.alert('Error', data.error);
-                      return;
-                    }
-                    const base64: string = data.base64;
-                    if (!base64 || base64.length === 0) {
-                      Alert.alert('Error', 'Empty pass data from server.');
-                      return;
-                    }
-                    console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
-                    if (!ExpoWallet) throw new Error('Apple Wallet not available on this device.');
-                    const result = await ExpoWallet.addPass(base64);
-                    console.log('[AppleWallet] addPass result:', result);
-                  } catch (err: any) {
-                    const msg = err?.message || String(err);
-                    const code = err?.code || '';
-                    console.log('[AppleWallet] error code:', code, 'message:', msg);
-                    if (msg.includes('E_PASS_LIBRARY_CANNOT_ADD')) {
-                      Alert.alert('Not Added', 'Pass was not added to Wallet.');
-                    } else if (msg.includes('E_PASS_LIBRARY_INVALID_DATA')) {
-                      Alert.alert('Error', 'Invalid pass data received from server.');
-                    } else if (msg.includes('E_PASS_LIBRARY_UNAVAILABLE')) {
-                      Alert.alert('Error', 'Apple Wallet is not available on this device.');
-                    } else {
-                      Alert.alert('Error', msg || 'Could not add wallet pass.');
-                    }
-                  } finally {
-                    setWalletLoading(false);
-                  }
-                }}
-                style={{
-                  backgroundColor: '#000',
-                  height: 48,
-                  borderRadius: 12,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginTop: 20,
-                  opacity: walletLoading ? 0.6 : 1,
-                }}
-              >
+              <View style={{ marginTop: 20, alignItems: 'center', minHeight: 48, justifyContent: 'center' }}>
                 {walletLoading ? (
-                  <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+                  <ActivityIndicator size="small" color={primaryColor} />
                 ) : (
-                  <Wallet size={20} color="#fff" style={{ marginRight: 8 }} />
+                  <AppleWalletAddPassButton
+                    style={{ width: '100%', maxWidth: 320, height: 48, alignSelf: 'center' }}
+                    onWalletButtonPress={() => {
+                      void handleAddToAppleWallet();
+                    }}
+                  />
                 )}
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: '600' }}>
-                  {walletLoading ? 'Adding...' : 'Add to Apple Wallet'}
-                </Text>
-              </TouchableOpacity>
+              </View>
             )}
 
             {/* Add to Google Wallet */}
@@ -535,7 +594,9 @@ export default function OffersScreen() {
                 onPress={() => setShowHistory(!showHistory)}
                 className="flex-row items-center justify-between mb-3"
               >
-                <Text className="text-lg font-bold" style={{ color: textColor }}>النشاط الأخير</Text>
+                <Text className="text-lg font-bold" style={{ color: textColor }}>
+                  {isArabic ? 'النشاط الأخير' : 'Recent Activity'}
+                </Text>
                 <ChevronDown
                   size={20}
                   color="#64748b"
@@ -583,3 +644,18 @@ export default function OffersScreen() {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  offersTabWrap: { flex: 1 },
+  offersLoadingInner: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  offersLoadingHint: {
+    marginTop: 14,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+});

@@ -55,20 +55,43 @@ config.expo.plugins = existingPlugins.map((pluginEntry) => {
   if (Array.isArray(pluginEntry) && pluginEntry[0] === 'expo-splash-screen') {
     splashUpdated = true;
     const prevOptions = (pluginEntry[1] && typeof pluginEntry[1] === 'object') ? pluginEntry[1] : {};
+    const splashBg =
+      (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
+      prevOptions.backgroundColor ||
+      '#3B5F1D';
+    const darkBg =
+      (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
+      (prevOptions.dark && prevOptions.dark.backgroundColor) ||
+      splashBg;
     return [
       'expo-splash-screen',
       {
         ...prevOptions,
         image: resolvedIcon,
+        backgroundColor: splashBg,
+        dark: {
+          ...(typeof prevOptions.dark === 'object' ? prevOptions.dark : {}),
+          backgroundColor: darkBg,
+        },
       },
     ];
   }
   return pluginEntry;
 });
 if (!splashUpdated) {
+  const fallbackSplashBg =
+    (buildTimePrimaryColor && buildTimePrimaryColor.trim()) || '#3B5F1D';
   config.expo.plugins = [
     ...config.expo.plugins,
-    ['expo-splash-screen', { image: resolvedIcon, resizeMode: 'contain', backgroundColor: '#ffffff' }],
+    [
+      'expo-splash-screen',
+      {
+        image: resolvedIcon,
+        resizeMode: 'contain',
+        backgroundColor: fallbackSplashBg,
+        dark: { backgroundColor: fallbackSplashBg },
+      },
+    ],
   ];
 }
 

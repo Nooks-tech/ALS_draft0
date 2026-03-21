@@ -1,10 +1,47 @@
 import ExpoModulesCore
+import ObjectiveC
 import PassKit
 import UIKit
+
+/// Native `PKAddPassButton` (Apple's required control for "Add to Apple Wallet" UI).
+class AppleWalletAddPassButtonView: ExpoView {
+    let onWalletButtonPress = EventDispatcher()
+    private let passButton: PKAddPassButton
+
+    required init(appContext: AppContext? = nil) {
+        passButton = PKAddPassButton(addPassButtonStyle: .black)
+        super.init(appContext: appContext)
+        clipsToBounds = true
+        passButton.addTarget(self, action: #selector(handleWalletButtonPress), for: .touchUpInside)
+        addSubview(passButton)
+    }
+
+    @objc private func handleWalletButtonPress() {
+        onWalletButtonPress([:])
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let size = passButton.intrinsicContentSize
+        let maxW = bounds.width > 0 ? bounds.width : size.width
+        let w = min(size.width, maxW)
+        let h = size.height
+        passButton.frame = CGRect(
+            x: (bounds.width - w) / 2,
+            y: (bounds.height - h) / 2,
+            width: w,
+            height: h
+        )
+    }
+}
 
 public class ExpoWalletModule: Module {
     public func definition() -> ModuleDefinition {
         Name("ExpoWallet")
+
+        View(AppleWalletAddPassButtonView.self) {
+            Events("onWalletButtonPress")
+        }
 
         AsyncFunction("addPass") { (value: String, promise: Promise) in
             guard PKPassLibrary.isPassLibraryAvailable() else {
@@ -13,7 +50,7 @@ public class ExpoWalletModule: Module {
             }
 
             guard let passData = Data(base64Encoded: value, options: .ignoreUnknownCharacters) else {
-                promise.reject(Exception(name: "E_PASS_LIBRARY_INVALID_DATA", description: "Could not decode base64 pass data"))
+                promise.reject(Exception(name: "E_PASS_LIBRARY_INVALID_DATA", description: "Could not decode pass data"))
                 return
             }
 

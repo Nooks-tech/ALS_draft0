@@ -4,7 +4,7 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import Constants from 'expo-constants';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
 
@@ -43,7 +43,8 @@ async function requestNotificationPermissions() {
 }
 import { AuthProvider } from '../src/context/AuthContext';
 import { CartProvider } from '../src/context/CartContext';
-import { MerchantBrandingWrapper, useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { MerchantBrandingWrapper } from '../src/context/MerchantBrandingContext';
+import { BrandedSplashOverlay } from '../src/components/splash/BrandedSplashOverlay';
 import { MerchantProvider } from '../src/context/MerchantContext';
 import { OperationsProvider } from '../src/context/OperationsContext';
 import { FavoritesProvider } from '../src/context/FavoritesContext';
@@ -60,22 +61,13 @@ import '../src/i18n';
 SplashScreen.preventAutoHideAsync();
 
 function SplashGate() {
-  const { loading } = useMerchantBranding();
-  const [minTimePassed, setMinTimePassed] = useState(false);
-
-  useEffect(() => {
-    const t = setTimeout(() => setMinTimePassed(true), 300);
-    return () => clearTimeout(t);
-  }, []);
-
-  useEffect(() => {
-    if (!loading && minTimePassed) {
-      SplashScreen.hideAsync();
-      requestNotificationPermissions();
-    }
-  }, [loading, minTimePassed]);
-
-  return null;
+  return (
+    <BrandedSplashOverlay
+      onDismiss={() => {
+        void requestNotificationPermissions();
+      }}
+    />
+  );
 }
 
 export default function RootLayout() {
