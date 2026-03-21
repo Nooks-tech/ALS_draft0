@@ -10,7 +10,8 @@ import React, { createContext, ReactNode, useContext, useEffect, useMemo, useRef
 import { AppState } from 'react-native';
 import { useMerchant } from './MerchantContext';
 
-const BRANDING_CACHE_PREFIX = '@als_branding_';
+/** Bump when branding shape changes (e.g. new API fields) so stale cache merges with defaults. */
+const BRANDING_CACHE_PREFIX = '@als_branding_v2_';
 
 function getExtra(): Record<string, unknown> | undefined {
   return Constants.expoConfig?.extra as Record<string, unknown> | undefined;
@@ -26,7 +27,16 @@ function getBaseUrl() {
 }
 
 export type MerchantBranding = {
+  /** In-app / header logo (app_config.logo_url) */
   logoUrl: string | null;
+  /** Launcher / store icon image URL (app_config.app_icon_url) */
+  appIconUrl: string | null;
+  /** Hex or "none" — home-screen style icon background from dashboard */
+  appIconBgColor: string | null;
+  /** 20–200: scales logo inside fixed header slot (does not grow header height) */
+  inAppLogoScale: number;
+  /** 20–150: used for native builds / future in-app icon previews */
+  launcherIconScale: number;
   primaryColor: string;
   accentColor: string;
   backgroundColor: string;
@@ -42,6 +52,10 @@ export type MerchantBranding = {
 
 const DEFAULT_BRANDING: MerchantBranding = {
   logoUrl: null,
+  appIconUrl: null,
+  appIconBgColor: null,
+  inAppLogoScale: 100,
+  launcherIconScale: 70,
   primaryColor: '#0D9488',
   accentColor: '#0D9488',
   backgroundColor: '#f5f5f4',
@@ -87,6 +101,10 @@ function getBuildTimeBranding(): MerchantBranding {
     ?? DEFAULT_BRANDING.tabTextColor;
   return {
     logoUrl: typeof logo === 'string' && logo ? logo : null,
+    appIconUrl: null,
+    appIconBgColor: null,
+    inAppLogoScale: 100,
+    launcherIconScale: 70,
     primaryColor: primary,
     accentColor: accent,
     backgroundColor: bg,
@@ -101,11 +119,36 @@ function getBuildTimeBranding(): MerchantBranding {
   };
 }
 
+function parseAppIconBg(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== 'string') return null;
+  const t = raw.trim();
+  if (!t || t.toLowerCase() === 'none') return 'none';
+  return normalizeColor(t) ?? t;
+}
+
+function parseScale(raw: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? parseInt(raw, 10) : NaN;
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
 function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding {
-  return {
-    logoUrl: typeof data.logoUrl === 'string' ? data.logoUrl
+  const logoUrl =
+    typeof data.logoUrl === 'string' ? data.logoUrl
       : typeof data.logo_url === 'string' ? data.logo_url
-      : null,
+      : null;
+  const appIconUrl =
+    typeof data.appIconUrl === 'string' ? data.appIconUrl
+      : typeof data.app_icon_url === 'string' ? data.app_icon_url
+      : null;
+
+  return {
+    logoUrl,
+    appIconUrl,
+    appIconBgColor: parseAppIconBg(data.appIconBgColor ?? data.app_icon_bg_color),
+    inAppLogoScale: parseScale(data.inAppLogoScale ?? data.in_app_logo_scale, 100, 20, 200),
+    launcherIconScale: parseScale(data.launcherIconScale ?? data.launcher_icon_scale, 70, 20, 150),
     primaryColor: normalizeColor(data.primaryColor) ?? normalizeColor(data.primary_color) ?? DEFAULT_BRANDING.primaryColor,
     accentColor: normalizeColor(data.accentColor) ?? normalizeColor(data.accent_color) ?? DEFAULT_BRANDING.accentColor,
     backgroundColor: normalizeColor(data.backgroundColor) ?? normalizeColor(data.background_color) ?? DEFAULT_BRANDING.backgroundColor,
@@ -144,9 +187,9 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
       .then((cached) => {
         if (cached && !cacheLoaded.current) {
           try {
-            const parsed = JSON.parse(cached) as MerchantBranding;
+            const parsed = JSON.parse(cached) as Partial<MerchantBranding>;
             if (parsed.primaryColor) {
-              setBranding(parsed);
+              setBranding({ ...DEFAULT_BRANDING, ...parsed });
             }
           } catch { /* ignore corrupt cache */ }
         }

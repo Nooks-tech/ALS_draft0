@@ -45,12 +45,14 @@ export default function MenuScreen() {
   const { totalItems, totalPrice, orderType, selectedBranch, deliveryAddress } = useCart();
   const { merchantId } = useMerchant();
   const { products, categories, loading } = useMenuContext();
-  const { primaryColor, logoUrl, backgroundColor, menuCardColor, textColor, tabTextColor } = useMerchantBranding();
+  const { primaryColor, logoUrl, inAppLogoScale, backgroundColor, menuCardColor, textColor, tabTextColor } = useMerchantBranding();
   const { isClosed, isBusy, isPickupOnly } = useOperations();
   const router = useRouter();
   const headerBg = primaryColor;
   const accent = primaryColor;
   const isArabic = i18n.language === 'ar';
+  const LOGO_SLOT = 54;
+  const logoScaleFactor = Math.min(2, Math.max(0.2, (inAppLogoScale ?? 100) / 100));
 
   const [selectedCategory, setSelectedCategory] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
@@ -378,11 +380,20 @@ export default function MenuScreen() {
         <TouchableOpacity onPress={() => setIsSearchVisible(true)} className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0 mr-2" accessibilityLabel={isArabic ? 'ابحث في المنيو' : 'Search menu'} accessibilityRole="button">
           <Search size={22} color={tabTextColor} />
         </TouchableOpacity>
-        <View className="ml-1" style={{ width: 54, height: 54 }} accessibilityLabel={isArabic ? 'شعار المتجر' : 'Merchant logo'} accessibilityRole="image">
+        <View
+          className="ml-1"
+          style={{ width: LOGO_SLOT, height: LOGO_SLOT, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
+          accessibilityLabel={isArabic ? 'شعار المتجر' : 'Merchant logo'}
+          accessibilityRole="image"
+        >
           {logoUrl ? (
-            <Image source={{ uri: logoUrl }} style={{ width: 54, height: 54 }} resizeMode="contain" />
+            <Image
+              source={{ uri: logoUrl }}
+              style={{ width: LOGO_SLOT, height: LOGO_SLOT, transform: [{ scale: logoScaleFactor }] }}
+              resizeMode="contain"
+            />
           ) : (
-            <View style={{ width: 54, height: 54 }} />
+            <View style={{ width: LOGO_SLOT, height: LOGO_SLOT }} />
           )}
         </View>
       </View>
