@@ -170,6 +170,8 @@ const MerchantBrandingContext = createContext<MerchantBranding & { loading: bool
 
 const BASE_URL = getBaseUrl().replace(/\/$/, '');
 
+const TAG = '[Branding]';
+
 export function MerchantBrandingProvider({ children }: { children: ReactNode }) {
   const { merchantId } = useMerchant();
   const [branding, setBranding] = useState<MerchantBranding>(getBuildTimeBranding);
@@ -179,7 +181,6 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
   const cacheLoaded = useRef(false);
   merchantIdRef.current = merchantId;
 
-  // Load cached branding instantly on mount
   useEffect(() => {
     if (!merchantId) return;
     const key = `${BRANDING_CACHE_PREFIX}${merchantId}`;
@@ -200,6 +201,7 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
 
   useEffect(() => {
     if (!BASE_URL || !merchantId) {
+      if (__DEV__) console.warn(TAG, 'skip fetch — BASE_URL:', BASE_URL || '(empty)', 'merchantId:', merchantId || '(empty)');
       setLoading(false);
       return;
     }
@@ -209,11 +211,17 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
 
     const doFetch = async () => {
       const url = `${BASE_URL}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
+      if (__DEV__) console.log(TAG, 'fetching', url);
       const res = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } });
-      if (!res.ok || cancelled) return;
+      if (!res.ok) {
+        if (__DEV__) console.warn(TAG, 'HTTP', res.status, res.statusText);
+        return;
+      }
+      if (cancelled) return;
       const data = (await res.json()) as Record<string, unknown>;
       if (cancelled) return;
       const parsed = parseBrandingResponse(data);
+      if (__DEV__) console.log(TAG, 'applied branding:', parsed.primaryColor, 'logoScale:', parsed.inAppLogoScale, 'iconBg:', parsed.appIconBgColor);
       setBranding(parsed);
       const key = `${BRANDING_CACHE_PREFIX}${merchantId}`;
       AsyncStorage.setItem(key, JSON.stringify(parsed)).catch(() => {});
@@ -221,7 +229,7 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
 
     setLoading(true);
     doFetch()
-      .catch(() => {})
+      .catch((err) => { if (__DEV__) console.error(TAG, 'fetch error:', err); })
       .finally(() => { if (id === runIdRef.current) setLoading(false); });
 
     return () => { cancelled = true; };
@@ -235,14 +243,14 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
       if (!mid) return;
       const url = `${BASE_URL}/api/public/merchants/${encodeURIComponent(mid)}/branding`;
       fetch(url, { headers: { 'Cache-Control': 'no-cache' } })
-        .then((r) => r.ok ? r.json() : null)
+        .then((r) => { if (!r.ok && __DEV__) console.warn(TAG, 'bg refresh', r.status); return r.ok ? r.json() : null; })
         .then((data) => {
           if (!data) return;
           const parsed = parseBrandingResponse(data as Record<string, unknown>);
           setBranding(parsed);
           AsyncStorage.setItem(`${BRANDING_CACHE_PREFIX}${mid}`, JSON.stringify(parsed)).catch(() => {});
         })
-        .catch(() => {});
+        .catch((err) => { if (__DEV__) console.error(TAG, 'bg refresh error:', err); });
     });
     return () => sub.remove();
   }, []);
