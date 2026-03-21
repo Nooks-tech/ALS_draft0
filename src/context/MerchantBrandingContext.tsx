@@ -123,8 +123,8 @@ function parseAppIconBg(raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw !== 'string') return null;
   const t = raw.trim();
-  if (!t || t.toLowerCase() === 'none') return 'none';
-  return normalizeColor(t) ?? t;
+  if (!t || t.toLowerCase() === 'none') return null;
+  return normalizeColor(t) ?? null;
 }
 
 function parseScale(raw: unknown, fallback: number, min: number, max: number): number {
