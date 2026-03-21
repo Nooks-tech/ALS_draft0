@@ -271,6 +271,110 @@ function formatExpiryDate(lastEarnDate: string | null, expiryMonths: number | nu
   return base.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
 
+/** Apple Wallet store-card logo max sizes (pt); @2x is doubled. */
+const WALLET_LOGO_SLOT_1X = { w: 160, h: 50 };
+const WALLET_LOGO_SLOT_2X = { w: 320, h: 100 };
+
+/**
+ * Same idea as in-app header logo: fit inside a fixed slot, then scale by `in_app_logo_scale` (20–200),
+ * centered; overflow is clipped to the slot (matches menu.tsx fixed slot + transform scale).
+ */
+async function buildWalletLogoPngBuffers(
+  logoUrl: string,
+  scalePercent: number,
+): Promise<{ logo1x: Buffer; logo2x: Buffer } | null> {
+  let sharpMod: typeof import('sharp');
+  try {
+    sharpMod = (await import('sharp')).default;
+  } catch {
+    console.warn('[WalletPass] sharp not available; install sharp for scaled wallet logos');
+    return null;
+  }
+
+  const res = await fetch(logoUrl);
+  if (!res.ok) return null;
+  const input = Buffer.from(await res.arrayBuffer());
+  const scale = Math.min(200, Math.max(20, Math.round(scalePercent))) / 100;
+
+  async function oneSlot(slotW: number, slotH: number): Promise<Buffer> {
+    const fitted = await sharpMod(input)
+      .resize(slotW, slotH, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .ensureAlpha()
+      .png()
+      .toBuffer();
+
+    const meta = await sharpMod(fitted).metadata();
+    const fw = meta.width ?? slotW;
+    const fh = meta.height ?? slotH;
+    const scaledW = Math.max(1, Math.round(fw * scale));
+    const scaledH = Math.max(1, Math.round(fh * scale));
+
+    const scaled = await sharpMod(fitted).resize(scaledW, scaledH, { fit: 'fill' }).png().toBuffer();
+
+    const left = Math.round((slotW - scaledW) / 2);
+    const top = Math.round((slotH - scaledH) / 2);
+
+    return sharpMod({
+      create: {
+        width: slotW,
+        height: slotH,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
+    })
+      .composite([{ input: scaled, left, top }])
+      .png()
+      .toBuffer();
+  }
+
+  const [logo1x, logo2x] = await Promise.all([
+    oneSlot(WALLET_LOGO_SLOT_1X.w, WALLET_LOGO_SLOT_1X.h),
+    oneSlot(WALLET_LOGO_SLOT_2X.w, WALLET_LOGO_SLOT_2X.h),
+  ]);
+
+  return { logo1x, logo2x };
+}
+
+/** Prefer loyalty wallet logo; fall back to merchant app_config.logo_url (same as customer app header). */
+function resolveWalletLogoUrl(
+  walletCardLogoUrl: string | null | undefined,
+  appLogoUrl: string | null | undefined,
+): string | null {
+  const w = typeof walletCardLogoUrl === 'string' ? walletCardLogoUrl.trim() : '';
+  if (w) return w;
+  const a = typeof appLogoUrl === 'string' ? appLogoUrl.trim() : '';
+  return a || null;
+}
+
+async function attachWalletLogosToFiles(
+  files: Record<string, Buffer>,
+  opts: { logoUrl: string | null; inAppLogoScale: number },
+): Promise<void> {
+  const { logoUrl, inAppLogoScale } = opts;
+  if (!logoUrl) return;
+
+  const built = await buildWalletLogoPngBuffers(logoUrl, inAppLogoScale);
+  if (built) {
+    files['logo.png'] = built.logo1x;
+    files['logo@2x.png'] = built.logo2x;
+    return;
+  }
+
+  try {
+    const logoRes = await fetch(logoUrl);
+    if (logoRes.ok) {
+      const logoBuf = Buffer.from(await logoRes.arrayBuffer());
+      files['logo.png'] = logoBuf;
+      files['logo@2x.png'] = logoBuf;
+    }
+  } catch {
+    /* skip */
+  }
+}
+
 function buildPassJson(opts: {
   serialNumber: string;
   description: string;
@@ -532,9 +636,10 @@ walletPassRouter.get(
       const lifetimePoints = pointsData?.lifetime_points ?? 0;
       const lastEarnDate = pointsData?.updated_at ?? null;
 
-      const { data: config } = await supabaseAdmin
-        .from('loyalty_config').select('*')
-        .eq('merchant_id', merchantId).maybeSingle();
+      const [{ data: config }, { data: appConfig }] = await Promise.all([
+        supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale').eq('merchant_id', merchantId).maybeSingle(),
+      ]);
 
       const bgColor = config?.wallet_card_bg_color || '#6366F1';
       const textColor = config?.wallet_card_text_color || '#FFFFFF';
@@ -562,16 +667,9 @@ walletPassRouter.get(
         'strip@2x.png': stripPng,
       };
 
-      if (config?.wallet_card_logo_url) {
-        try {
-          const logoRes = await fetch(config.wallet_card_logo_url);
-          if (logoRes.ok) {
-            const logoBuf = Buffer.from(await logoRes.arrayBuffer());
-            files['logo.png'] = logoBuf;
-            files['logo@2x.png'] = logoBuf;
-          }
-        } catch { /* skip */ }
-      }
+      const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
+      const inAppLogoScale = Number(appConfig?.in_app_logo_scale ?? 100) || 100;
+      await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
       files['pass.json'] = buildPassJson({
         serialNumber,
@@ -832,20 +930,23 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
     let logoUrl: string | null = null;
 
     const merchantId = req.query.merchantId as string;
+    let inAppLogoScale = 100;
     if (merchantId && supabaseAdmin) {
-      const { data: config } = await supabaseAdmin
-        .from('loyalty_config').select('*')
-        .eq('merchant_id', merchantId).maybeSingle();
+      const [{ data: config }, { data: appConfig }] = await Promise.all([
+        supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale').eq('merchant_id', merchantId).maybeSingle(),
+      ]);
       if (config) {
         bgColor = hexToRgb(config.wallet_card_bg_color || '#4F46E5');
         textColor = hexToRgb(config.wallet_card_text_color || '#FFFFFF');
         cardLabel = config.wallet_card_label || 'Loyalty Card';
-        logoUrl = config.wallet_card_logo_url || null;
         const pps = config.points_per_sar ?? 0.1;
         earnRate = config.earn_mode === 'per_order'
           ? `${config.points_per_order ?? 10} points per order`
           : `${Math.round(pps * 100)}% back in points`;
       }
+      logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
+      inAppLogoScale = Number(appConfig?.in_app_logo_scale ?? 100) || 100;
     }
 
     const testStrip = createStripPng(750, 246, 79, 70, 229);
@@ -858,14 +959,7 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
     };
 
     if (logoUrl) {
-      try {
-        const logoRes = await fetch(logoUrl);
-        if (logoRes.ok) {
-          const logoBuf = Buffer.from(await logoRes.arrayBuffer());
-          files['logo.png'] = logoBuf;
-          files['logo@2x.png'] = logoBuf;
-        }
-      } catch { /* skip */ }
+      await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
     }
 
     files['pass.json'] = buildPassJson({
@@ -914,9 +1008,10 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const lifetimePoints = pointsData?.lifetime_points ?? 0;
     const lastEarnDate = pointsData?.updated_at ?? null;
 
-    const { data: config } = await supabaseAdmin
-      .from('loyalty_config').select('*')
-      .eq('merchant_id', merchantId).maybeSingle();
+    const [{ data: config }, { data: appConfig }] = await Promise.all([
+      supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
+      supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale').eq('merchant_id', merchantId).maybeSingle(),
+    ]);
 
     const bgColor = config?.wallet_card_bg_color || '#6366F1';
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
@@ -946,16 +1041,9 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       'strip@2x.png': stripPng,
     };
 
-    if (config?.wallet_card_logo_url) {
-      try {
-        const logoRes = await fetch(config.wallet_card_logo_url);
-        if (logoRes.ok) {
-          const logoBuf = Buffer.from(await logoRes.arrayBuffer());
-          files['logo.png'] = logoBuf;
-          files['logo@2x.png'] = logoBuf;
-        }
-      } catch { /* skip */ }
-    }
+    const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
+    const inAppLogoScale = Number(appConfig?.in_app_logo_scale ?? 100) || 100;
+    await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
     files['pass.json'] = buildPassJson({
       serialNumber: `loyalty-${merchantId}-${customerId}`,
