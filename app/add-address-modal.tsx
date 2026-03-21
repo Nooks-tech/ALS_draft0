@@ -15,6 +15,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
@@ -64,9 +65,16 @@ export default function AddAddressModal() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [reverseGeocodeLoading, setReverseGeocodeLoading] = useState(false);
 
-  const runtimeGoogleMapsKey =
-    ((Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey || '').trim();
-  const shouldRenderNativeMap = runtimeGoogleMapsKey.length > 0;
+  const runtimeGoogleMapsKey = (
+    (Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey
+    || (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY)
+    || ''
+  ).trim();
+  /** Android needs a Google Maps API key for tiles. iOS can use Apple Maps (default provider) without one. */
+  const hasGoogleMapsKey = runtimeGoogleMapsKey.length > 0;
+  const shouldRenderNativeMap = Platform.OS === 'ios' || hasGoogleMapsKey;
+  /** Google provider on iOS requires Google Maps iOS SDK + key; blank white map is the usual symptom if misconfigured. */
+  const mapProvider = Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined;
 
   const mapRegion = useState({
     latitude: 24.7136,
@@ -530,16 +538,18 @@ export default function AddAddressModal() {
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: 'white' }}>
+    <View style={{ flex: 1, backgroundColor: '#e2e8f0' }}>
       <MapView
         ref={mapRef}
-        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
-        provider={PROVIDER_GOOGLE}
+        style={StyleSheet.absoluteFillObject}
+        provider={mapProvider}
         initialRegion={mapRegion}
         onPress={handleMapPress}
         mapType="standard"
         showsUserLocation
         showsMyLocationButton={false}
+        loadingEnabled
+        mapPadding={{ bottom: 220, top: 120, left: 0, right: 0 }}
       >
         {pinCoords && (
           <Marker

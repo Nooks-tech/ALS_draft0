@@ -1,5 +1,5 @@
 import Constants from 'expo-constants';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { useTranslation } from 'react-i18next';
 
@@ -30,9 +30,14 @@ export function OrderTrackingMap({
   accentColor = DEFAULT_ACCENT,
 }: OrderTrackingMapProps) {
   const { i18n } = useTranslation();
-  const runtimeGoogleMapsKey =
-    ((Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey || '').trim();
-  const shouldRenderNativeMap = runtimeGoogleMapsKey.length > 0;
+  const runtimeGoogleMapsKey = (
+    (Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey
+    || (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY)
+    || ''
+  ).trim();
+  const hasGoogleMapsKey = runtimeGoogleMapsKey.length > 0;
+  const shouldRenderNativeMap = Platform.OS === 'ios' || hasGoogleMapsKey;
+  const mapProvider = Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined;
   const hasDelivery = deliveryLat != null && deliveryLng != null;
   const hasDriver = driverLat != null && driverLon != null;
   const isArabic = i18n.language === 'ar';
@@ -78,7 +83,8 @@ export function OrderTrackingMap({
     <View style={[styles.container, { height: MAP_HEIGHT }]}>
       <MapView
         style={StyleSheet.absoluteFill}
-        provider={PROVIDER_GOOGLE}
+        provider={mapProvider}
+        loadingEnabled
         initialRegion={{
           latitude: centerLat,
           longitude: centerLng,
