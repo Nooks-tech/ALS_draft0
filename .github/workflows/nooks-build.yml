@@ -149,8 +149,13 @@ jobs:
                 const bg = sharp({ create: { width: canvasPx, height: canvasPx, channels: 4, background: bgColor } }).png();
                 const bgBuf = await bg.toBuffer();
                 const iconBuf = await icon
+                  .ensureAlpha()
                   .resize(innerPx, innerPx, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: K })
+                  .resize(canvasPx, canvasPx, { fit: 'inside', kernel: K })
+                  .png({ compressionLevel: 6, effort: 10 })
                   .toBuffer();
+                const iconMeta = await sharp(iconBuf).metadata();
+                console.log('Icon overlay size:', iconMeta.width, 'x', iconMeta.height, 'canvas:', canvasPx, 'x', canvasPx);
                 await sharp(bgBuf)
                   .composite([{ input: iconBuf, gravity: 'centre' }])
                   .resize(size, size, { kernel: K, fit: 'fill' })
