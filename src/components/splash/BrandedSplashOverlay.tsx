@@ -5,7 +5,8 @@
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Image, StyleSheet, Text, View } from 'react-native';
+import { MerchantLogoImage } from '../branding/MerchantLogoImage';
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 
 const MIN_VISIBLE_MS = 380;
 
@@ -81,10 +82,9 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
     >
       <Animated.View style={{ opacity: logoOpacity, transform: [{ scale: logoScale }], alignItems: 'center' }}>
         {logoUrl ? (
-          <Image
-            source={{ uri: logoUrl }}
-            style={{ width: 132, height: 132 }}
-            resizeMode="contain"
+          <MerchantLogoImage
+            uri={logoUrl}
+            sizeDp={132}
             accessibilityLabel="Logo"
           />
         ) : (

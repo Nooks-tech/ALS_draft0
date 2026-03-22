@@ -22,6 +22,7 @@ const DEFAULT_CONFIG = {
   stamp_enabled: false,
   stamp_target: 10,
   stamp_reward_description: 'Free item',
+  wallet_card_logo_scale: null as number | null,
 };
 
 async function getMerchantConfig(merchantId: string) {
@@ -77,7 +78,7 @@ loyaltyRouter.put('/config', async (req, res) => {
       'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
       'expiry_months', 'stamp_enabled', 'stamp_target', 'stamp_reward_description',
       'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
-      'wallet_card_label', 'wallet_card_secondary_label',
+      'wallet_card_label', 'wallet_card_secondary_label', 'wallet_card_logo_scale',
     ];
     const payload: Record<string, unknown> = { merchant_id: merchantId, updated_at: new Date().toISOString() };
     for (const k of allowed) {
@@ -159,6 +160,8 @@ loyaltyRouter.get('/balance', async (req, res) => {
       walletCardLogoUrl: config.wallet_card_logo_url || null,
       walletCardLabel: config.wallet_card_label || null,
       walletCardSecondaryLabel: config.wallet_card_secondary_label || null,
+      walletCardLogoScale:
+        config.wallet_card_logo_scale != null ? Number(config.wallet_card_logo_scale) : null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get loyalty balance' });

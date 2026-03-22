@@ -20,6 +20,8 @@ export interface LoyaltyBalance {
   walletCardBgColor: string | null;
   walletCardTextColor: string | null;
   walletCardLogoUrl: string | null;
+  /** 20–200 when set in dashboard; null = follow app in-app logo scale */
+  walletCardLogoScale: number | null;
   walletCardLabel: string | null;
   walletCardSecondaryLabel: string | null;
 }
@@ -50,6 +52,7 @@ export interface LoyaltyConfig {
   stamp_enabled: boolean;
   stamp_target: number;
   stamp_reward_description: string;
+  wallet_card_logo_scale?: number | null;
 }
 
 export const loyaltyApi = {

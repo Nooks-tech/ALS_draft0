@@ -132,18 +132,31 @@ jobs:
             node -e "
               const sharp = require('sharp');
               const scalePct = ${RAW_SCALE};
+              const K = 'lanczos3';
               (async () => {
                 const iconPath = '$APP_ICON_FILE';
                 const bgColor = '$BG_COLOR';
                 const icon = sharp(iconPath);
                 const meta = await icon.metadata();
-                const size = Math.max(meta.width || 1024, meta.height || 1024);
-                const inner = Math.max(8, Math.round(size * (scalePct / 100)));
-                const bg = sharp({ create: { width: size, height: size, channels: 4, background: bgColor } }).png();
+                const srcW = meta.width || 1024;
+                const srcH = meta.height || 1024;
+                const srcMax = Math.max(srcW, srcH);
+                const size = Math.min(4096, Math.max(1024, srcMax));
+                const inner = Math.max(8, Math.min(size, Math.round(size * (scalePct / 100))));
+                const SS = 2;
+                const canvasPx = size * SS;
+                const innerPx = inner * SS;
+                const bg = sharp({ create: { width: canvasPx, height: canvasPx, channels: 4, background: bgColor } }).png();
                 const bgBuf = await bg.toBuffer();
-                const iconBuf = await icon.resize(inner, inner, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).toBuffer();
-                await sharp(bgBuf).composite([{ input: iconBuf, gravity: 'centre' }]).png().toFile(iconPath);
-                console.log('Icon composited with bg color:', bgColor, 'scale:', scalePct + '%', 'inner:', inner);
+                const iconBuf = await icon
+                  .resize(innerPx, innerPx, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: K })
+                  .toBuffer();
+                await sharp(bgBuf)
+                  .composite([{ input: iconBuf, gravity: 'centre' }])
+                  .resize(size, size, { kernel: K, fit: 'fill' })
+                  .png({ compressionLevel: 6, effort: 10 })
+                  .toFile(iconPath);
+                console.log('Icon composited (2x supersample + lanczos3):', bgColor, 'scale:', scalePct + '%', 'out:', size, 'inner:', inner);
               })().catch(e => { console.error(e); process.exit(1); });
             "
           fi

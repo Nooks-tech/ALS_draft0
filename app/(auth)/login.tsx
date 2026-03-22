@@ -1,6 +1,5 @@
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
-import { Image } from 'expo-image';
 import { useMemo, useState } from 'react';
 import { Alert, Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
@@ -9,6 +8,7 @@ import { Button } from '../../src/components/common/Button';
 import { Container } from '../../src/components/common/Container';
 import { authApi } from '../../src/api/auth';
 import { PHONE_PREFIX, ensurePrefix } from '../../src/utils/phone';
+import { MerchantLogoImage } from '../../src/components/branding/MerchantLogoImage';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 
 function getExtraAppName(): string | null {
@@ -104,10 +104,9 @@ export default function LoginScreen() {
               style={{ backgroundColor: circleBg }}
             >
               {iconUri ? (
-                <Image
-                  source={{ uri: iconUri }}
-                  style={{ width: logoSize, height: logoSize }}
-                  contentFit="contain"
+                <MerchantLogoImage
+                  uri={iconUri}
+                  sizeDp={logoSize}
                   transition={200}
                   accessibilityLabel={brandName}
                 />

@@ -276,8 +276,8 @@ const WALLET_LOGO_SLOT_1X = { w: 160, h: 50 };
 const WALLET_LOGO_SLOT_2X = { w: 320, h: 100 };
 
 /**
- * Same idea as in-app header logo: fit inside a fixed slot, then scale by `in_app_logo_scale` (20–200),
- * centered; overflow is clipped to the slot (matches menu.tsx fixed slot + transform scale).
+ * Same idea as in-app header logo: fit inside a fixed slot, then scale by resolved logo % (20–200),
+ * (`loyalty_config.wallet_card_logo_scale` or `app_config.in_app_logo_scale`), centered; capped to slot for Sharp.
  */
 async function buildWalletLogoPngBuffers(
   logoUrl: string,
@@ -301,6 +301,7 @@ async function buildWalletLogoPngBuffers(
       .resize(slotW, slotH, {
         fit: 'contain',
         background: { r: 0, g: 0, b: 0, alpha: 0 },
+        kernel: 'lanczos3',
       })
       .ensureAlpha()
       .png()
@@ -312,10 +313,20 @@ async function buildWalletLogoPngBuffers(
     const scaledW = Math.max(1, Math.round(fw * scale));
     const scaledH = Math.max(1, Math.round(fh * scale));
 
-    const scaled = await sharpMod(fitted).resize(scaledW, scaledH, { fit: 'fill' }).png().toBuffer();
+    // Scale up to match in-app logo scale (up to 200%). Sharp requires the composite
+    // layer width/height ≤ canvas ("Image to composite must have same dimensions or smaller").
+    // Cap with fit: 'inside' — same idea as launcher_icon_scale cap in nooks-build.yml.
+    const scaled = await sharpMod(fitted)
+      .resize(scaledW, scaledH, { fit: 'fill', kernel: 'lanczos3' })
+      .resize(slotW, slotH, { fit: 'inside', kernel: 'lanczos3' })
+      .png({ compressionLevel: 6, effort: 10 })
+      .toBuffer();
 
-    const left = Math.round((slotW - scaledW) / 2);
-    const top = Math.round((slotH - scaledH) / 2);
+    const metaScaled = await sharpMod(scaled).metadata();
+    const sw = metaScaled.width ?? slotW;
+    const sh = metaScaled.height ?? slotH;
+    const left = Math.round((slotW - sw) / 2);
+    const top = Math.round((slotH - sh) / 2);
 
     return sharpMod({
       create: {
@@ -347,6 +358,25 @@ function resolveWalletLogoUrl(
   if (w) return w;
   const a = typeof appLogoUrl === 'string' ? appLogoUrl.trim() : '';
   return a || null;
+}
+
+/**
+ * Wallet pass logo scale: loyalty `wallet_card_logo_scale` when set, else `app_config.in_app_logo_scale`.
+ * Both are clamped to 20–200 (same as nooksweb / in-app slider).
+ */
+function resolveWalletLogoScale(
+  loyalty: { wallet_card_logo_scale?: unknown } | null | undefined,
+  appInAppScale: number,
+): number {
+  const raw = loyalty?.wallet_card_logo_scale;
+  if (raw !== null && raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (!Number.isNaN(n)) {
+      return Math.min(200, Math.max(20, Math.round(n)));
+    }
+  }
+  const fallback = Number(appInAppScale ?? 100) || 100;
+  return Math.min(200, Math.max(20, Math.round(fallback)));
 }
 
 async function attachWalletLogosToFiles(
@@ -946,7 +976,10 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
           : `${Math.round(pps * 100)}% back in points`;
       }
       logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
-      inAppLogoScale = Number(appConfig?.in_app_logo_scale ?? 100) || 100;
+      inAppLogoScale = resolveWalletLogoScale(
+        config,
+        Number(appConfig?.in_app_logo_scale ?? 100) || 100,
+      );
     }
 
     const testStrip = createStripPng(750, 246, 79, 70, 229);
@@ -1042,7 +1075,10 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     };
 
     const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
-    const inAppLogoScale = Number(appConfig?.in_app_logo_scale ?? 100) || 100;
+    const inAppLogoScale = resolveWalletLogoScale(
+      config,
+      Number(appConfig?.in_app_logo_scale ?? 100) || 100,
+    );
     await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
     files['pass.json'] = buildPassJson({

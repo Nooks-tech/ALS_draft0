@@ -13,6 +13,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { MerchantLogoImage } from '../../src/components/branding/MerchantLogoImage';
 import {
   Alert,
   Dimensions,
@@ -387,10 +388,10 @@ export default function MenuScreen() {
           accessibilityRole="image"
         >
           {logoUrl ? (
-            <Image
-              source={{ uri: logoUrl }}
-              style={{ width: LOGO_SLOT, height: LOGO_SLOT, transform: [{ scale: logoScaleFactor }] }}
-              resizeMode="contain"
+            <MerchantLogoImage
+              uri={logoUrl}
+              sizeDp={LOGO_SLOT}
+              scaleFactor={logoScaleFactor}
             />
           ) : (
             <View style={{ width: LOGO_SLOT, height: LOGO_SLOT }} />
