@@ -46,6 +46,11 @@ on:
         required: false
         type: string
         default: "#ffffff"
+      launcher_icon_scale:
+        description: "Logo size inside launcher icon (20-150), must match app_config.launcher_icon_scale"
+        required: false
+        type: string
+        default: "70"
       use_test_builds:
         description: "Use preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed"
         required: false
@@ -112,25 +117,33 @@ jobs:
               echo "::warning::Failed to download app icon URL. Using default icon."
             fi
           fi
-          # Composite icon with background color for iOS (iOS uses the raw icon, no adaptive bg)
+          # Composite icon with background color for iOS (iOS uses the raw icon, no adaptive bg).
+          # Logo size matches dashboard "Launcher icon size" (launcher_icon_scale % of canvas).
           BG_COLOR="${{ github.event.inputs.app_icon_bg_color }}"
+          RAW_SCALE="${{ github.event.inputs.launcher_icon_scale }}"
+          if [ -z "$RAW_SCALE" ] || [ "$RAW_SCALE" = "null" ]; then RAW_SCALE=70; fi
+          if ! [[ "$RAW_SCALE" =~ ^[0-9]+$ ]]; then RAW_SCALE=70; fi
+          if [ "$RAW_SCALE" -lt 20 ]; then RAW_SCALE=20; fi
+          if [ "$RAW_SCALE" -gt 150 ]; then RAW_SCALE=150; fi
+          echo "Using launcher_icon_scale=${RAW_SCALE}%"
           if [ -n "$BG_COLOR" ] && [ "$BG_COLOR" != "none" ] && [ "$BG_COLOR" != "null" ]; then
             echo "Compositing icon with background color $BG_COLOR for iOS..."
             npm install --no-save sharp 2>/dev/null || true
             node -e "
               const sharp = require('sharp');
-              const fs = require('fs');
+              const scalePct = ${RAW_SCALE};
               (async () => {
                 const iconPath = '$APP_ICON_FILE';
                 const bgColor = '$BG_COLOR';
                 const icon = sharp(iconPath);
                 const meta = await icon.metadata();
                 const size = Math.max(meta.width || 1024, meta.height || 1024);
+                const inner = Math.max(8, Math.round(size * (scalePct / 100)));
                 const bg = sharp({ create: { width: size, height: size, channels: 4, background: bgColor } }).png();
                 const bgBuf = await bg.toBuffer();
-                const iconBuf = await icon.resize(Math.round(size * 0.75), Math.round(size * 0.75), { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).toBuffer();
+                const iconBuf = await icon.resize(inner, inner, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).toBuffer();
                 await sharp(bgBuf).composite([{ input: iconBuf, gravity: 'centre' }]).png().toFile(iconPath);
-                console.log('Icon composited with bg color:', bgColor);
+                console.log('Icon composited with bg color:', bgColor, 'scale:', scalePct + '%', 'inner:', inner);
               })().catch(e => { console.error(e); process.exit(1); });
             "
           fi

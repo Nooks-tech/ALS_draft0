@@ -1,5 +1,5 @@
 {
-  "welcome": "مرحباً بك في ALS",
+  "welcome": "مرحباً بك في {{brand}}",
   "menu": "المنيو",
   "orders": "طلباتي",
   "offers": "العروض",

@@ -24,7 +24,7 @@ Requires **`sharp`** on the API server (`server/package.json`). If `sharp` fails
 
 ## Native launcher icon
 
-The **home screen** icon is produced by **EAS build** (GitHub Actions `nooks-build.yml`): it downloads `app_icon_url`, composites `app_icon_bg_color` when not `none`, then copies into `assets/images/`. Rebuild the app after changing icon/bg in the dashboard.
+The **home screen** icon is produced by **EAS build** (GitHub Actions `nooks-build.yml`): it downloads `app_icon_url`, composites `app_icon_bg_color` when not `none`, scales the logo by **`launcher_icon_scale`** (20–150%, same as the dashboard slider; previously the workflow used a fixed 75%), then copies into `assets/images/`. **Saving in the dashboard only updates Supabase**—you must **trigger a new build** (Nooks “Rebuild App” / `/api/build/trigger`) **and install** that build for the device icon to change. Android adaptive background uses `EXPO_PUBLIC_APP_ICON_BG_COLOR` from `app.config.js`.
 
 ## Troubleshooting
 

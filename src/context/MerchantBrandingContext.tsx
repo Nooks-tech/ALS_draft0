@@ -43,6 +43,8 @@ export type MerchantBranding = {
   menuCardColor: string;
   textColor: string;
   tabTextColor: string;
+  /** Display name from app_config.app_name (dashboard "App name") */
+  appName: string | null;
   cafeName: string | null;
   contactEmail: string | null;
   contactPhone: string | null;
@@ -62,6 +64,7 @@ const DEFAULT_BRANDING: MerchantBranding = {
   menuCardColor: '#f5f5f4',
   textColor: '#1f2937',
   tabTextColor: '#ffffff',
+  appName: null,
   cafeName: null,
   contactEmail: null,
   contactPhone: null,
@@ -99,6 +102,12 @@ function getBuildTimeBranding(): MerchantBranding {
   const tabText = normalizeColor(extra?.tabTextColor)
     ?? normalizeColor(process.env.EXPO_PUBLIC_TAB_TEXT_COLOR)
     ?? DEFAULT_BRANDING.tabTextColor;
+  const buildAppName =
+    typeof extra?.appName === 'string' && (extra.appName as string).trim()
+      ? (extra.appName as string).trim()
+      : typeof process.env.EXPO_PUBLIC_APP_NAME === 'string' && process.env.EXPO_PUBLIC_APP_NAME.trim()
+        ? process.env.EXPO_PUBLIC_APP_NAME.trim()
+        : null;
   return {
     logoUrl: typeof logo === 'string' && logo ? logo : null,
     appIconUrl: null,
@@ -111,6 +120,7 @@ function getBuildTimeBranding(): MerchantBranding {
     menuCardColor: card,
     textColor: text,
     tabTextColor: tabText,
+    appName: buildAppName,
     cafeName: null,
     contactEmail: null,
     contactPhone: null,
@@ -155,6 +165,12 @@ function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding 
     menuCardColor: normalizeColor(data.menuCardColor) ?? normalizeColor(data.menu_card_color) ?? DEFAULT_BRANDING.menuCardColor,
     textColor: normalizeColor(data.textColor) ?? normalizeColor(data.text_color) ?? DEFAULT_BRANDING.textColor,
     tabTextColor: normalizeColor(data.tabTextColor) ?? normalizeColor(data.tab_text_color) ?? DEFAULT_BRANDING.tabTextColor,
+    appName:
+      typeof data.appName === 'string' && data.appName.trim()
+        ? data.appName.trim()
+        : typeof data.app_name === 'string' && data.app_name.trim()
+          ? data.app_name.trim()
+          : null,
     cafeName: typeof data.cafeName === 'string' ? data.cafeName : typeof data.cafe_name === 'string' ? data.cafe_name : null,
     contactEmail: typeof data.contactEmail === 'string' && data.contactEmail ? data.contactEmail : null,
     contactPhone: typeof data.contactPhone === 'string' && data.contactPhone ? data.contactPhone : null,

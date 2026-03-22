@@ -1,17 +1,45 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Alert } from 'react-native';
+import Constants from 'expo-constants';
+import { Image } from 'expo-image';
+import { useMemo, useState } from 'react';
+import { Alert, Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from 'react-native';
 import { Button } from '../../src/components/common/Button';
 import { Container } from '../../src/components/common/Container';
 import { authApi } from '../../src/api/auth';
 import { PHONE_PREFIX, ensurePrefix } from '../../src/utils/phone';
+import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
+
+function getExtraAppName(): string | null {
+  const extra = Constants.expoConfig?.extra as { appName?: string } | undefined;
+  const n = extra?.appName?.trim();
+  return n || null;
+}
 
 export default function LoginScreen() {
   const router = useRouter();
   const { t, i18n } = useTranslation();
   const isArabic = i18n.language === 'ar';
+  const {
+    appName,
+    cafeName,
+    logoUrl,
+    appIconUrl,
+    appIconBgColor,
+    primaryColor,
+    backgroundColor,
+    menuCardColor,
+    textColor,
+    launcherIconScale,
+  } = useMerchantBranding();
+
+  const brandName = useMemo(() => {
+    const fromApi = (appName?.trim() || cafeName?.trim() || '').trim();
+    if (fromApi) return fromApi;
+    return getExtraAppName() || 'ALS';
+  }, [appName, cafeName]);
+
   const copy = isArabic
     ? {
         error: 'خطأ',
@@ -35,6 +63,13 @@ export default function LoginScreen() {
   const [digits, setDigits] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const iconUri = (appIconUrl || logoUrl || '').trim() || null;
+  const circleBg = appIconBgColor || menuCardColor || '#fee2e2';
+  const logoSize = Math.max(
+    8,
+    Math.round(96 * (Math.min(150, Math.max(20, launcherIconScale)) / 100)),
+  );
+
   const handleContinue = async () => {
     const phone = ensurePrefix(digits);
     if (!phone || digits.replace(/\D/g, '').length < 9) {
@@ -53,7 +88,7 @@ export default function LoginScreen() {
   };
 
   return (
-    <Container className="justify-center">
+    <Container className="justify-center" backgroundColor={backgroundColor}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         className="flex-1 justify-center"
@@ -64,13 +99,31 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View className="items-center mb-8">
-            <View className="w-24 h-24 bg-red-100 rounded-full justify-center items-center mb-4">
-              <Text className="text-4xl">☕</Text>
+            <View
+              className="w-24 h-24 rounded-full justify-center items-center mb-4 overflow-hidden"
+              style={{ backgroundColor: circleBg }}
+            >
+              {iconUri ? (
+                <Image
+                  source={{ uri: iconUri }}
+                  style={{ width: logoSize, height: logoSize }}
+                  contentFit="contain"
+                  transition={200}
+                  accessibilityLabel={brandName}
+                />
+              ) : (
+                <Text className="text-3xl font-bold" style={{ color: primaryColor }}>
+                  {brandName.charAt(0).toUpperCase()}
+                </Text>
+              )}
             </View>
-            <Text className="text-3xl font-bold text-gray-900">{t('welcome')}</Text>
-            <Text className="text-gray-500 mt-2 text-center">
-              {copy.intro}
+            <Text
+              className="text-3xl font-bold text-center px-2"
+              style={{ color: textColor }}
+            >
+              {t('welcome', { brand: brandName })}
             </Text>
+            <Text className="text-gray-500 mt-2 text-center">{copy.intro}</Text>
           </View>
 
           <View className="w-full mb-4">
@@ -84,7 +137,7 @@ export default function LoginScreen() {
                   placeholder="5XX XXX XXXX"
                   placeholderTextColor="#64748b"
                   value={digits}
-                  onChangeText={(t) => setDigits(t.replace(/\D/g, '').slice(0, 9))}
+                  onChangeText={(tx) => setDigits(tx.replace(/\D/g, '').slice(0, 9))}
                   keyboardType="phone-pad"
                   autoFocus
                   className="flex-1 text-gray-900 font-medium"
@@ -96,7 +149,6 @@ export default function LoginScreen() {
                     lineHeight: 20,
                     ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }),
                   }}
-                  includeFontPadding={false}
                 />
               </View>
             </View>
@@ -110,9 +162,7 @@ export default function LoginScreen() {
           />
 
           <View className="flex-row justify-center mt-6">
-            <Text className="text-gray-600 text-center">
-              {copy.smsNotice}
-            </Text>
+            <Text className="text-gray-600 text-center">{copy.smsNotice}</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

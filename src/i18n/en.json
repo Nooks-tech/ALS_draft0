@@ -1,5 +1,5 @@
 {
-  "welcome": "Welcome to ALS",
+  "welcome": "Welcome to {{brand}}",
   "menu": "Menu",
   "orders": "Orders",
   "offers": "Offers",

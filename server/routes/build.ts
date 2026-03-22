@@ -97,6 +97,7 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     app_name,
     app_icon_url,
     app_icon_bg_color,
+    launcher_icon_scale,
     logo_url,
     primary_color,
     accent_color,
@@ -121,6 +122,10 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     app_name: app_name != null ? String(app_name) : 'Nooks App',
     app_icon_url: app_icon_url != null ? String(app_icon_url) : '',
     app_icon_bg_color: app_icon_bg_color != null ? String(app_icon_bg_color) : '',
+    launcher_icon_scale:
+      launcher_icon_scale != null && launcher_icon_scale !== ''
+        ? String(launcher_icon_scale)
+        : '70',
     logo_url: logo_url != null ? String(logo_url) : '',
     primary_color: primary_color != null ? String(primary_color) : '#0D9488',
     accent_color: accent_color != null ? String(accent_color) : '#0D9488',
