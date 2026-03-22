@@ -136,7 +136,7 @@ jobs:
               (async () => {
                 const iconPath = '$APP_ICON_FILE';
                 const bgColor = '$BG_COLOR';
-                const icon = sharp(iconPath);
+                const icon = sharp(iconPath, { pages: 1 });
                 const meta = await icon.metadata();
                 const srcW = meta.width || 1024;
                 const srcH = meta.height || 1024;
@@ -146,18 +146,26 @@ jobs:
                 const SS = 2;
                 const canvasPx = size * SS;
                 const innerPx = inner * SS;
-                const bg = sharp({ create: { width: canvasPx, height: canvasPx, channels: 4, background: bgColor } }).png();
-                const bgBuf = await bg.toBuffer();
                 const iconBuf = await icon
                   .ensureAlpha()
                   .resize(innerPx, innerPx, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: K })
-                  .resize(canvasPx, canvasPx, { fit: 'inside', kernel: K })
                   .png({ compressionLevel: 6, effort: 10 })
                   .toBuffer();
                 const iconMeta = await sharp(iconBuf).metadata();
-                console.log('Icon overlay size:', iconMeta.width, 'x', iconMeta.height, 'canvas:', canvasPx, 'x', canvasPx);
-                await sharp(bgBuf)
-                  .composite([{ input: iconBuf, gravity: 'centre' }])
+                const topPad = Math.max(0, Math.floor((canvasPx - innerPx) / 2));
+                const leftPad = Math.max(0, Math.floor((canvasPx - innerPx) / 2));
+                const bottomPad = Math.max(0, canvasPx - innerPx - topPad);
+                const rightPad = Math.max(0, canvasPx - innerPx - leftPad);
+                console.log('Icon overlay size:', iconMeta.width, 'x', iconMeta.height, 'canvas:', canvasPx, 'x', canvasPx, 'pad:', leftPad, topPad, rightPad, bottomPad);
+                await sharp(iconBuf)
+                  .extend({
+                    top: topPad,
+                    bottom: bottomPad,
+                    left: leftPad,
+                    right: rightPad,
+                    background: { r: 0, g: 0, b: 0, alpha: 0 },
+                  })
+                  .flatten({ background: bgColor })
                   .resize(size, size, { kernel: K, fit: 'fill' })
                   .png({ compressionLevel: 6, effort: 10 })
                   .toFile(iconPath);
