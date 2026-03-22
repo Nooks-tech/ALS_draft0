@@ -1,6 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import React, { createContext, ReactNode, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
+import i18n from '../i18n';
+import { cancelAbandonedCartReminder, CART_TTL_MS, scheduleAbandonedCartReminder } from '../utils/cartNotifications';
 import { useAuth } from './AuthContext';
+import { useMerchantBranding } from './MerchantBrandingContext';
 
 // 1. Define the item structure (Restored from your old code)
 export type CartItem = {
@@ -34,49 +38,78 @@ export type CartContextType = {
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
+type PersistedCart = {
+  cartItems?: CartItem[];
+  orderType?: 'delivery' | 'pickup';
+  selectedBranch?: { id: string; name: string; address: string; distance?: string } | null;
+  deliveryAddress?: { address: string; lat?: number; lng?: number; city?: string } | null;
+  updatedAt?: number;
+  expiresAt?: number | null;
+};
+
 export const CartProvider = ({ children }: { children: ReactNode }) => {
-  const { user } = useAuth();
+  const { user, initialized } = useAuth();
+  const { appName, cafeName } = useMerchantBranding();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
-  const [orderType, setOrderType] = useState<'delivery' | 'pickup'>('pickup');
-  const [selectedBranch, setSelectedBranch] = useState<{ id: string; name: string; address: string; distance?: string } | null>(null);
-  const [deliveryAddress, setDeliveryAddress] = useState<{ address: string; lat?: number; lng?: number; city?: string } | null>(null);
+  const [orderType, setOrderTypeState] = useState<'delivery' | 'pickup'>('pickup');
+  const [selectedBranch, setSelectedBranchState] = useState<{ id: string; name: string; address: string; distance?: string } | null>(null);
+  const [deliveryAddress, setDeliveryAddressState] = useState<{ address: string; lat?: number; lng?: number; city?: string } | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number>(Date.now());
   const prevUserRef = useRef<string | null>(null);
 
   const uid = user?.id ?? 'guest';
   const CART_CACHE_KEY = `@als_cart_${uid}`;
+  const CART_REMINDER_KEY = `@als_cart_reminder_${uid}`;
+  const totalItems = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+  const totalPrice = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+
+  const touchCart = useCallback(() => {
+    setLastUpdatedAt(Date.now());
+  }, []);
 
   // Reset cart state when user changes
   useEffect(() => {
     if (prevUserRef.current !== null && prevUserRef.current !== uid) {
+      void cancelAbandonedCartReminder(`@als_cart_reminder_${prevUserRef.current}`);
       setCartItems([]);
-      setOrderType('pickup');
-      setSelectedBranch(null);
-      setDeliveryAddress(null);
+      setOrderTypeState('pickup');
+      setSelectedBranchState(null);
+      setDeliveryAddressState(null);
       setHydrated(false);
+      setLastUpdatedAt(Date.now());
     }
     prevUserRef.current = uid;
   }, [uid]);
 
   useEffect(() => {
-    if (hydrated) return;
+    if (!initialized || hydrated) return;
     AsyncStorage.getItem(CART_CACHE_KEY)
       .then((raw) => {
         if (!raw) return;
-        const parsed = JSON.parse(raw) as {
-          cartItems?: CartItem[];
-          orderType?: 'delivery' | 'pickup';
-          selectedBranch?: { id: string; name: string; address: string; distance?: string } | null;
-          deliveryAddress?: { address: string; lat?: number; lng?: number; city?: string } | null;
-        };
+        const parsed = JSON.parse(raw) as PersistedCart;
+        const now = Date.now();
+        const expiresAt =
+          typeof parsed.expiresAt === 'number'
+            ? parsed.expiresAt
+            : typeof parsed.updatedAt === 'number'
+              ? parsed.updatedAt + CART_TTL_MS
+              : null;
+
+        if (expiresAt != null && expiresAt <= now) {
+          void AsyncStorage.removeItem(CART_CACHE_KEY);
+          return;
+        }
+
         if (Array.isArray(parsed.cartItems)) setCartItems(parsed.cartItems);
-        if (parsed.orderType === 'delivery' || parsed.orderType === 'pickup') setOrderType(parsed.orderType);
-        if (parsed.selectedBranch) setSelectedBranch(parsed.selectedBranch);
-        if (parsed.deliveryAddress) setDeliveryAddress(parsed.deliveryAddress);
+        if (parsed.orderType === 'delivery' || parsed.orderType === 'pickup') setOrderTypeState(parsed.orderType);
+        if (parsed.selectedBranch) setSelectedBranchState(parsed.selectedBranch);
+        if (parsed.deliveryAddress) setDeliveryAddressState(parsed.deliveryAddress);
+        setLastUpdatedAt(typeof parsed.updatedAt === 'number' ? parsed.updatedAt : now);
       })
       .catch(() => {})
       .finally(() => setHydrated(true));
-  }, [CART_CACHE_KEY, hydrated]);
+  }, [CART_CACHE_KEY, hydrated, initialized]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -85,9 +118,66 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       orderType,
       selectedBranch,
       deliveryAddress,
+      updatedAt: lastUpdatedAt,
+      expiresAt: cartItems.length > 0 ? lastUpdatedAt + CART_TTL_MS : null,
     });
     AsyncStorage.setItem(CART_CACHE_KEY, payload).catch(() => {});
-  }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress, CART_CACHE_KEY]);
+  }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress, CART_CACHE_KEY, lastUpdatedAt]);
+
+  useEffect(() => {
+    if (!hydrated || !initialized) return;
+    if (cartItems.length === 0) {
+      void cancelAbandonedCartReminder(CART_REMINDER_KEY);
+    }
+  }, [hydrated, initialized, cartItems.length, CART_REMINDER_KEY]);
+
+  useEffect(() => {
+    if (!hydrated || !initialized) return;
+
+    const subscription = AppState.addEventListener('change', (state) => {
+      const expiresAt = lastUpdatedAt + CART_TTL_MS;
+
+      if (state === 'active') {
+        void cancelAbandonedCartReminder(CART_REMINDER_KEY);
+        if (cartItems.length > 0 && expiresAt <= Date.now()) {
+          setCartItems([]);
+        }
+        return;
+      }
+
+      if (state !== 'background') return;
+
+      if (cartItems.length === 0 || expiresAt <= Date.now()) {
+        void cancelAbandonedCartReminder(CART_REMINDER_KEY);
+        return;
+      }
+
+      const brandName = (appName?.trim() || cafeName?.trim() || '').trim();
+      void scheduleAbandonedCartReminder({
+        reminderKey: CART_REMINDER_KEY,
+        brandName,
+        itemCount: totalItems,
+        isArabic: i18n.language === 'ar',
+      });
+    });
+
+    return () => subscription.remove();
+  }, [hydrated, initialized, cartItems.length, totalItems, lastUpdatedAt, CART_REMINDER_KEY, appName, cafeName]);
+
+  const setOrderType = useCallback((type: 'delivery' | 'pickup') => {
+    setOrderTypeState(type);
+    touchCart();
+  }, [touchCart]);
+
+  const setSelectedBranch = useCallback((branch: any) => {
+    setSelectedBranchState(branch);
+    touchCart();
+  }, [touchCart]);
+
+  const setDeliveryAddress = useCallback((addr: { address: string; lat?: number; lng?: number; city?: string } | null) => {
+    setDeliveryAddressState(addr);
+    touchCart();
+  }, [touchCart]);
 
   // RESTORED: Your smart Unique ID generator
   const generateUniqueId = (product: any) => {
@@ -101,6 +191,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   const addToCart = (product: any, quantity: number = 1) => {
     const qty = Math.max(1, Math.floor(quantity));
+    touchCart();
     setCartItems((prevItems) => {
       const uniqueId = generateUniqueId(product);
       const existingItem = prevItems.find((item) => item.uniqueId === uniqueId);
@@ -119,6 +210,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   // ADDED: Specifically for the + and - buttons in the Cart Screen
   const updateQuantity = (uniqueId: string, amount: number) => {
+    touchCart();
     setCartItems((prevItems) => 
       prevItems.map((item) => 
         item.uniqueId === uniqueId 
@@ -129,16 +221,15 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const removeFromCart = (product: any) => {
+    touchCart();
     setCartItems((prevItems) => {
       const uniqueId = product.uniqueId;
       return prevItems.filter((item) => item.uniqueId !== uniqueId);
     });
   };
 
-  const totalItems = cartItems.reduce((sum, item) => sum + item.quantity, 0);
-  const totalPrice = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-
   const clearCart = () => {
+    touchCart();
     setCartItems([]);
   };
 
@@ -151,19 +242,20 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     deliveryLat?: number;
     deliveryLng?: number;
   }) => {
+    touchCart();
     setCartItems(order.items);
-    setOrderType(order.orderType);
+    setOrderTypeState(order.orderType);
     if (order.branchId != null && order.branchName != null) {
-      setSelectedBranch({ id: order.branchId, name: order.branchName, address: '' });
+      setSelectedBranchState({ id: order.branchId, name: order.branchName, address: '' });
     }
     if (order.orderType === 'delivery' && order.deliveryAddress) {
-      setDeliveryAddress({
+      setDeliveryAddressState({
         address: order.deliveryAddress,
         lat: order.deliveryLat,
         lng: order.deliveryLng,
       });
     } else {
-      setDeliveryAddress(null);
+      setDeliveryAddressState(null);
     }
   };
 

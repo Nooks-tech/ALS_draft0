@@ -111,9 +111,9 @@ function getBuildTimeBranding(): MerchantBranding {
   return {
     logoUrl: typeof logo === 'string' && logo ? logo : null,
     appIconUrl: null,
-    appIconBgColor: null,
+    appIconBgColor: parseAppIconBg(extra?.appIconBgColor ?? process.env.EXPO_PUBLIC_APP_ICON_BG_COLOR),
     inAppLogoScale: 100,
-    launcherIconScale: 70,
+    launcherIconScale: parseScale(extra?.launcherIconScale ?? process.env.EXPO_PUBLIC_LAUNCHER_ICON_SCALE, 70, 20, 150),
     primaryColor: primary,
     accentColor: accent,
     backgroundColor: bg,

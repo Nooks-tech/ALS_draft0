@@ -1,8 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { Button } from '../../src/components/common/Button';
 import { Container } from '../../src/components/common/Container';
 import { Input } from '../../src/components/common/Input';
@@ -67,7 +66,7 @@ export default function OtpScreen() {
     } finally {
       setSending(false);
     }
-  }, [phone]);
+  }, [phone, copy.couldNotSend, copy.error]);
 
   useEffect(() => {
     const interval = setInterval(() => setTimer((prev) => (prev > 0 ? prev - 1 : 0)), 1000);
@@ -112,10 +111,10 @@ export default function OtpScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} className="flex-1 justify-center">
         <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View className="mb-8">
-            <Text className="text-3xl font-bold text-gray-900 mb-2">
+            <Text className="text-3xl font-bold text-gray-900 mb-2" style={{ textAlign: isArabic ? 'right' : 'left' }}>
               {copy.title}
             </Text>
-            <Text className="text-gray-500 text-base">
+            <Text className="text-gray-500 text-base" style={{ textAlign: isArabic ? 'right' : 'left' }}>
               {isArabic ? 'أرسلنا رمزًا مكونًا من 6 أرقام إلى ' : 'We sent a 6-digit code to '}
               {maskedPhone || copy.yourPhone}.
               {'\n'}

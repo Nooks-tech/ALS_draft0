@@ -86,10 +86,23 @@ loyaltyRouter.put('/config', async (req, res) => {
     }
 
     console.log('[loyalty] PUT config payload:', JSON.stringify(payload));
-    const { data, error } = await supabaseAdmin
+    let { data, error } = await supabaseAdmin
       .from('loyalty_config')
       .upsert(payload, { onConflict: 'merchant_id' })
       .select();
+
+    if (error && /wallet_card_logo_scale/i.test(error.message || '')) {
+      const retryPayload = { ...payload };
+      delete retryPayload.wallet_card_logo_scale;
+      console.warn('[loyalty] wallet_card_logo_scale missing in DB; retrying save without it');
+      const retry = await supabaseAdmin
+        .from('loyalty_config')
+        .upsert(retryPayload, { onConflict: 'merchant_id' })
+        .select();
+      data = retry.data;
+      error = retry.error;
+    }
+
     if (error) {
       console.error('[loyalty] upsert error:', error.message, error.code, error.hint, error.details);
       return res.status(500).json({ error: error.message, code: error.code, hint: error.hint });

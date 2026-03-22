@@ -1,4 +1,4 @@
-import { Text, View } from 'react-native';
+import { I18nManager, Text, View } from 'react-native';
 import { SaudiRiyalIcon } from './SaudiRiyalIcon';
 
 type Props = {
@@ -12,14 +12,18 @@ type Props = {
 };
 
 export function PriceWithSymbol({ amount, iconSize = 16, iconColor, textStyle, className, prefix = '', symbolOnly = false }: Props) {
+  const isRTL = I18nManager.isRTL;
   const displayAmount = amount != null
     ? (typeof amount === 'number' ? amount.toFixed(amount % 1 === 0 ? 0 : 2) : amount)
     : '';
   return (
-    <View className={`flex-row items-center ${className ?? ''}`}>
+    <View
+      className={`items-center ${className ?? ''}`}
+      style={{ flexDirection: isRTL ? 'row-reverse' : 'row' }}
+    >
       {prefix ? <Text style={textStyle}>{prefix}</Text> : null}
       {!symbolOnly && displayAmount !== '' ? <Text style={textStyle}>{displayAmount}</Text> : null}
-      {!symbolOnly && displayAmount !== '' ? <View style={{ marginLeft: 4 }} /> : null}
+      {!symbolOnly && displayAmount !== '' ? <View style={isRTL ? { marginRight: 4 } : { marginLeft: 4 }} /> : null}
       <SaudiRiyalIcon size={iconSize} color={iconColor} />
     </View>
   );

@@ -1,9 +1,8 @@
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { useMemo, useState } from 'react';
-import { Alert, Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native';
 import { Button } from '../../src/components/common/Button';
 import { Container } from '../../src/components/common/Container';
 import { authApi } from '../../src/api/auth';
@@ -122,13 +121,16 @@ export default function LoginScreen() {
             >
               {t('welcome', { brand: brandName })}
             </Text>
-            <Text className="text-gray-500 mt-2 text-center">{copy.intro}</Text>
+            <Text className="text-gray-500 mt-2 text-center" style={{ textAlign: isArabic ? 'right' : 'center', alignSelf: 'stretch' }}>{copy.intro}</Text>
           </View>
 
           <View className="w-full mb-4">
-            <Text className="text-gray-700 mb-2 font-medium text-start">{copy.phoneNumber}</Text>
-            <View className="flex-row items-center border rounded-xl border-gray-200 bg-gray-50 px-4" style={{ minHeight: 52 }}>
-              <View className="flex-row flex-1" style={{ height: 52, alignItems: 'center' }}>
+            <Text className="text-gray-700 mb-2 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{copy.phoneNumber}</Text>
+            <View
+              className="items-center border rounded-xl border-gray-200 bg-gray-50 px-4"
+              style={{ minHeight: 52, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+            >
+              <View style={{ height: 52, alignItems: 'center', flex: 1, flexDirection: isArabic ? 'row-reverse' : 'row' }}>
                 <View style={{ justifyContent: 'center', paddingTop: 2 }}>
                   <Text className="text-gray-700 font-medium text-base" style={{ lineHeight: 20, fontSize: 16 }}>{PHONE_PREFIX} </Text>
                 </View>
@@ -146,6 +148,8 @@ export default function LoginScreen() {
                     height: 52,
                     fontSize: 16,
                     lineHeight: 20,
+                    textAlign: isArabic ? 'right' : 'left',
+                    writingDirection: isArabic ? 'rtl' : 'ltr',
                     ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }),
                   }}
                 />
@@ -161,7 +165,7 @@ export default function LoginScreen() {
           />
 
           <View className="flex-row justify-center mt-6">
-            <Text className="text-gray-600 text-center">{copy.smsNotice}</Text>
+            <Text className="text-gray-600 text-center" style={{ textAlign: isArabic ? 'right' : 'center' }}>{copy.smsNotice}</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

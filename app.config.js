@@ -19,6 +19,7 @@ const buildTimeMenuCardColor = process.env.EXPO_PUBLIC_MENU_CARD_COLOR || '';
 const buildTimeTextColor = process.env.EXPO_PUBLIC_TEXT_COLOR || '';
 const buildTimeTabTextColor = process.env.EXPO_PUBLIC_TAB_TEXT_COLOR || '';
 const buildTimeAppIconBgColor = process.env.EXPO_PUBLIC_APP_ICON_BG_COLOR || '';
+const buildTimeLauncherIconScale = process.env.EXPO_PUBLIC_LAUNCHER_ICON_SCALE || '';
 const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 const config = {
@@ -56,10 +57,12 @@ config.expo.plugins = existingPlugins.map((pluginEntry) => {
     splashUpdated = true;
     const prevOptions = (pluginEntry[1] && typeof pluginEntry[1] === 'object') ? pluginEntry[1] : {};
     const splashBg =
+      (buildTimeBackgroundColor && buildTimeBackgroundColor.trim()) ||
       (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
       prevOptions.backgroundColor ||
       '#3B5F1D';
     const darkBg =
+      (buildTimeBackgroundColor && buildTimeBackgroundColor.trim()) ||
       (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
       (prevOptions.dark && prevOptions.dark.backgroundColor) ||
       splashBg;
@@ -80,7 +83,9 @@ config.expo.plugins = existingPlugins.map((pluginEntry) => {
 });
 if (!splashUpdated) {
   const fallbackSplashBg =
-    (buildTimePrimaryColor && buildTimePrimaryColor.trim()) || '#3B5F1D';
+    (buildTimeBackgroundColor && buildTimeBackgroundColor.trim()) ||
+    (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
+    '#3B5F1D';
   config.expo.plugins = [
     ...config.expo.plugins,
     [
@@ -116,6 +121,7 @@ config.expo.extra = {
   textColor: buildTimeTextColor || '',
   tabTextColor: buildTimeTabTextColor || '',
   appIconBgColor: buildTimeAppIconBgColor || '',
+  launcherIconScale: buildTimeLauncherIconScale || '',
 };
 
 // Add Apple Pay entitlement (required for iOS). Update merchantId once you have Apple Developer account.

@@ -69,19 +69,25 @@ googleWalletRouter.get('/google-wallet', async (req, res) => {
     const lifetimePoints = pointsData?.lifetime_points ?? 0;
     const tierName = lifetimePoints >= 5000 ? 'Gold' : lifetimePoints >= 1000 ? 'Silver' : 'Bronze';
 
-    const { data: config } = await supabaseAdmin
-      .from('loyalty_config')
-      .select('*')
-      .eq('merchant_id', merchantId)
-      .single();
+    const [{ data: config }, { data: merchant }, { data: appConfig }] = await Promise.all([
+      supabaseAdmin
+        .from('loyalty_config')
+        .select('*')
+        .eq('merchant_id', merchantId)
+        .single(),
+      supabaseAdmin
+        .from('merchants')
+        .select('cafe_name')
+        .eq('id', merchantId)
+        .single(),
+      supabaseAdmin
+        .from('app_config')
+        .select('primary_color')
+        .eq('merchant_id', merchantId)
+        .maybeSingle(),
+    ]);
 
-    const { data: merchant } = await supabaseAdmin
-      .from('merchants')
-      .select('cafe_name')
-      .eq('id', merchantId)
-      .single();
-
-    const bgColor = config?.wallet_card_bg_color || '#0D9488';
+    const bgColor = config?.wallet_card_bg_color || appConfig?.primary_color || '#0D9488';
     const cardLabel = config?.wallet_card_label || merchant?.cafe_name || 'Loyalty Card';
     const pointValueSar = config?.point_value_sar ?? 0.1;
 

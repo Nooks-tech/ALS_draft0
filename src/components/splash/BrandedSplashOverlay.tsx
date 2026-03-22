@@ -16,7 +16,19 @@ type BrandedSplashOverlayProps = {
 };
 
 export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
-  const { loading, primaryColor, logoUrl, tabTextColor, cafeName } = useMerchantBranding();
+  const {
+    loading,
+    primaryColor,
+    backgroundColor,
+    appIconBgColor,
+    appIconUrl,
+    logoUrl,
+    tabTextColor,
+    textColor,
+    appName,
+    cafeName,
+    launcherIconScale,
+  } = useMerchantBranding();
   const [minTimePassed, setMinTimePassed] = useState(false);
   const [finished, setFinished] = useState(false);
 
@@ -64,7 +76,11 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
 
   if (finished) return null;
 
-  const fg = tabTextColor || '#ffffff';
+  const splashBg = backgroundColor || primaryColor;
+  const surfaceColor = appIconBgColor || primaryColor;
+  const splashLogoUri = appIconUrl || logoUrl;
+  const fg = textColor || tabTextColor || '#ffffff';
+  const tileLogoScale = Math.min(1.2, Math.max(0.72, (launcherIconScale ?? 100) / 100));
 
   return (
     <Animated.View
@@ -73,7 +89,7 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
         {
           zIndex: 99999,
           elevation: 99999,
-          backgroundColor: primaryColor,
+          backgroundColor: splashBg,
           justifyContent: 'center',
           alignItems: 'center',
           opacity: containerOpacity,
@@ -81,20 +97,23 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
       ]}
     >
       <Animated.View style={{ opacity: logoOpacity, transform: [{ scale: logoScale }], alignItems: 'center' }}>
-        {logoUrl ? (
-          <MerchantLogoImage
-            uri={logoUrl}
-            sizeDp={132}
-            accessibilityLabel="Logo"
-          />
+        {splashLogoUri ? (
+          <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
+            <MerchantLogoImage
+              uri={splashLogoUri}
+              sizeDp={96}
+              scaleFactor={tileLogoScale}
+              accessibilityLabel="Logo"
+            />
+          </View>
         ) : (
           <Text style={{ color: fg, fontSize: 26, fontWeight: '700', textAlign: 'center', paddingHorizontal: 32 }}>
-            {cafeName?.trim() || ''}
+            {appName?.trim() || cafeName?.trim() || ''}
           </Text>
         )}
       </Animated.View>
       <View style={styles.dots} accessibilityElementsHidden>
-        <SubtleDots color={fg} />
+        <SubtleDots color={primaryColor || fg} />
       </View>
     </Animated.View>
   );
@@ -141,6 +160,18 @@ function SubtleDots({ color }: { color: string }) {
 }
 
 const styles = StyleSheet.create({
+  logoTile: {
+    width: 156,
+    height: 156,
+    borderRadius: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
   dots: {
     position: 'absolute',
     bottom: '18%',

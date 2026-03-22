@@ -23,7 +23,7 @@ import { useProfile } from '../../src/context/ProfileContext';
 import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 
 export default function MoreScreen() {
-  const { t, i18n } = useTranslation();
+  const { i18n } = useTranslation();
   const router = useRouter();
   const { primaryColor, backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const { profile } = useProfile();
@@ -116,7 +116,7 @@ export default function MoreScreen() {
           // Language change already applied; reload can fail in some environments.
         }
       }
-    } catch (error) {
+    } catch {
       Alert.alert(copy.error, copy.changeLanguageFailed);
     }
   };
@@ -140,7 +140,11 @@ export default function MoreScreen() {
   };
 
   const MenuItem = ({ icon: Icon, title, subtitle, onPress, isDestructive = false, accentColor }: any) => (
-    <TouchableOpacity onPress={onPress} className="flex-row items-center p-4 mb-[1px]" style={{ backgroundColor: menuCardColor }}>
+    <TouchableOpacity
+      onPress={onPress}
+      className="items-center p-4 mb-[1px]"
+      style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+    >
       <View
         style={
           isDestructive
@@ -151,11 +155,17 @@ export default function MoreScreen() {
       >
         <Icon size={20} color={isDestructive ? '#EF4444' : (accentColor || '#0D9488')} />
       </View>
-      <View className="flex-1 ml-4">
-        <Text className="text-base font-bold" style={{ color: isDestructive ? '#ef4444' : textColor }}>{title}</Text>
-        {subtitle && <Text className="text-xs" style={{ color: textColor }}>{subtitle}</Text>}
+      <View
+        className="flex-1"
+        style={{
+          marginLeft: isArabic ? 0 : 16,
+          marginRight: isArabic ? 16 : 0,
+        }}
+      >
+        <Text className="text-base font-bold" style={{ color: isDestructive ? '#ef4444' : textColor, textAlign: isArabic ? 'right' : 'left' }}>{title}</Text>
+        {subtitle && <Text className="text-xs" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{subtitle}</Text>}
       </View>
-      {!isDestructive && <ChevronRight size={20} color={textColor} />}
+      {!isDestructive && <ChevronRight size={20} color={textColor} style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />}
     </TouchableOpacity>
   );
 
@@ -190,13 +200,23 @@ export default function MoreScreen() {
 
         <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.appSettings}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
-          <TouchableOpacity onPress={toggleLanguage} className="flex-row items-center p-4" style={{ backgroundColor: menuCardColor }}>
+          <TouchableOpacity
+            onPress={toggleLanguage}
+            className="items-center p-4"
+            style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+          >
             <View className="w-10 h-10 rounded-full justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
               <Globe size={20} color={primaryColor} />
             </View>
-            <View className="flex-1 ml-4">
-              <Text className="text-base font-bold" style={{ color: textColor }}>Language / اللغة</Text>
-              <Text className="text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? copy.english : 'العربية'}</Text>
+            <View
+              className="flex-1"
+              style={{
+                marginLeft: isArabic ? 0 : 16,
+                marginRight: isArabic ? 16 : 0,
+              }}
+            >
+              <Text className="text-base font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>Language / اللغة</Text>
+              <Text className="text-xs" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{i18n.language === 'en' ? copy.english : 'العربية'}</Text>
             </View>
             <View className="px-3 py-1 rounded-full" style={{ backgroundColor: menuCardColor }}>
               <Text className="font-bold text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? 'AR' : 'EN'}</Text>

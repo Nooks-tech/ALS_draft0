@@ -379,6 +379,16 @@ function resolveWalletLogoScale(
   return Math.min(200, Math.max(20, Math.round(fallback)));
 }
 
+function resolveWalletCardBgColor(
+  loyalty: { wallet_card_bg_color?: string | null } | null | undefined,
+  appConfig: { primary_color?: string | null } | null | undefined,
+): string {
+  const loyaltyBg = typeof loyalty?.wallet_card_bg_color === 'string' ? loyalty.wallet_card_bg_color.trim() : '';
+  if (loyaltyBg) return loyaltyBg;
+  const brandBg = typeof appConfig?.primary_color === 'string' ? appConfig.primary_color.trim() : '';
+  return brandBg || '#0D9488';
+}
+
 async function attachWalletLogosToFiles(
   files: Record<string, Buffer>,
   opts: { logoUrl: string | null; inAppLogoScale: number },
@@ -421,6 +431,7 @@ function buildPassJson(opts: {
   expiresLabel: string;
   barcodeMessage: string;
   customerId: string;
+  hasLogoImage: boolean;
 }): Buffer {
   const pass: Record<string, unknown> = {
     formatVersion: 1,
@@ -432,7 +443,7 @@ function buildPassJson(opts: {
     backgroundColor: opts.bgColor,
     foregroundColor: opts.fgColor,
     labelColor: opts.labelColor,
-    logoText: opts.cardLabel,
+    ...(opts.hasLogoImage ? {} : { logoText: opts.cardLabel }),
     webServiceURL: WEB_SERVICE_URL,
     authenticationToken: authTokenForSerial(opts.serialNumber),
     barcodes: [
@@ -444,9 +455,6 @@ function buildPassJson(opts: {
       },
     ],
     storeCard: {
-      headerFields: [
-        { key: 'member', label: 'MEMBER', value: opts.tier },
-      ],
       primaryFields: [
         { key: 'points', label: 'POINTS BALANCE', value: opts.points },
       ],
@@ -668,10 +676,10 @@ walletPassRouter.get(
 
       const [{ data: config }, { data: appConfig }] = await Promise.all([
         supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
-        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
       ]);
 
-      const bgColor = config?.wallet_card_bg_color || '#6366F1';
+      const bgColor = resolveWalletCardBgColor(config, appConfig);
       const textColor = config?.wallet_card_text_color || '#FFFFFF';
       const cardLabel = config?.wallet_card_label || 'Your Points';
       const pointValueSar = config?.point_value_sar ?? 0.1;
@@ -698,7 +706,10 @@ walletPassRouter.get(
       };
 
       const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
-      const inAppLogoScale = Number(appConfig?.in_app_logo_scale ?? 100) || 100;
+      const inAppLogoScale = resolveWalletLogoScale(
+        config,
+        Number(appConfig?.in_app_logo_scale ?? 100) || 100,
+      );
       await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
       files['pass.json'] = buildPassJson({
@@ -717,6 +728,7 @@ walletPassRouter.get(
         expiresLabel,
         barcodeMessage,
         customerId,
+        hasLogoImage: !!logoUrl,
       });
 
       const pkpass = await createPassBuffer(files);
@@ -893,6 +905,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
         expiresLabel: 'Never',
         barcodeMessage: 'MBRBRO-DEBUG00',
         customerId: 'debug',
+        hasLogoImage: false,
       }),
     });
     info.testPassSize = testPass.length;
@@ -953,7 +966,7 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
   try {
     if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
 
-    let bgColor = 'rgb(79, 70, 229)';
+    let bgHex = '#0D9488';
     let textColor = 'rgb(255, 255, 255)';
     let cardLabel = 'Loyalty Card';
     let earnRate = '10% back in points';
@@ -964,10 +977,10 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
     if (merchantId && supabaseAdmin) {
       const [{ data: config }, { data: appConfig }] = await Promise.all([
         supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
-        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
       ]);
       if (config) {
-        bgColor = hexToRgb(config.wallet_card_bg_color || '#4F46E5');
+        bgHex = resolveWalletCardBgColor(config, appConfig);
         textColor = hexToRgb(config.wallet_card_text_color || '#FFFFFF');
         cardLabel = config.wallet_card_label || 'Loyalty Card';
         const pps = config.points_per_sar ?? 0.1;
@@ -982,7 +995,8 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       );
     }
 
-    const testStrip = createStripPng(750, 246, 79, 70, 229);
+    const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgHex);
+    const testStrip = createStripPng(750, 246, bgR, bgG, bgB);
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
       'icon@2x.png': ICON_2X,
@@ -999,7 +1013,7 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       serialNumber: `test-${Date.now()}`,
       description: cardLabel,
       organizationName: cardLabel,
-      bgColor,
+      bgColor: hexToRgb(bgHex),
       fgColor: textColor,
       labelColor: textColor,
       cardLabel,
@@ -1011,6 +1025,7 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       expiresLabel: 'Never',
       barcodeMessage: 'MBRBRO-TEST000',
       customerId: 'test-customer',
+      hasLogoImage: !!logoUrl,
     });
 
     const pkpass = await createPassBuffer(files);
@@ -1043,10 +1058,10 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     const [{ data: config }, { data: appConfig }] = await Promise.all([
       supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
-      supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale').eq('merchant_id', merchantId).maybeSingle(),
+      supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
     ]);
 
-    const bgColor = config?.wallet_card_bg_color || '#6366F1';
+    const bgColor = resolveWalletCardBgColor(config, appConfig);
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
     const cardLabel = config?.wallet_card_label || 'Your Points';
     const pointValueSar = config?.point_value_sar ?? 0.1;
@@ -1097,6 +1112,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       expiresLabel,
       barcodeMessage,
       customerId,
+      hasLogoImage: !!logoUrl,
     });
 
     const pkpass = await createPassBuffer(files);

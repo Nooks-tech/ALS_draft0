@@ -191,6 +191,7 @@ jobs:
           echo "EXPO_PUBLIC_TEXT_COLOR=${{ github.event.inputs.text_color }}" >> .env
           echo "EXPO_PUBLIC_TAB_TEXT_COLOR=${{ github.event.inputs.tab_text_color }}" >> .env
           echo "EXPO_PUBLIC_APP_ICON_BG_COLOR=${{ github.event.inputs.app_icon_bg_color }}" >> .env
+          echo "EXPO_PUBLIC_LAUNCHER_ICON_SCALE=${{ github.event.inputs.launcher_icon_scale }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env

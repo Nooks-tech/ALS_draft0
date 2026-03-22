@@ -1,8 +1,7 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Bike, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import React from 'react';
-import { Alert } from 'react-native';
-import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
@@ -16,6 +15,7 @@ export default function CartScreen() {
   const { primaryColor } = useMerchantBranding();
   const { isClosed, isBusy } = useOperations();
   const isArabic = i18n.language === 'ar';
+  const rowDirection = isArabic ? 'row-reverse' : 'row';
   const {
     cartItems,
     updateQuantity,
@@ -57,12 +57,12 @@ export default function CartScreen() {
   return (
     <SafeAreaView className="flex-1 bg-white">
       {/* --- HEADER --- */}
-      <View className="px-5 py-4 flex-row items-center justify-between border-b border-slate-100">
+      <View className="px-5 py-4 items-center justify-between border-b border-slate-100" style={{ flexDirection: rowDirection }}>
         <TouchableOpacity
           onPress={() => router.back()}
           className="bg-slate-100 p-2 rounded-full"
         >
-          <ArrowLeft size={22} color="#334155" />
+          <ArrowLeft size={22} color="#334155" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
         </TouchableOpacity>
         <Text className="text-xl font-bold text-slate-900">{isArabic ? 'سلتي' : 'My Basket'}</Text>
         <View className="w-10" />
@@ -74,19 +74,19 @@ export default function CartScreen() {
         contentContainerStyle={{ paddingBottom: 200 }}
       >
         {/* --- ORDER TYPE STATUS --- */}
-          <View className="flex-row items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100">
-            <View style={orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : undefined} className={orderType === 'delivery' ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
+          <View className="items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100" style={{ flexDirection: rowDirection }}>
+            <View style={[orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : undefined, { marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }]} className={orderType === 'delivery' ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
               {orderType === 'delivery' ? (
                 <Bike size={24} color={primaryColor} />
               ) : (
                 <Store size={24} color="#F59E0B" />
               )}
             </View>
-            <View className="ml-4 flex-1">
-              <Text className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+            <View className="flex-1">
+              <Text className="text-[10px] font-bold text-slate-400 uppercase tracking-widest" style={{ textAlign: isArabic ? 'right' : 'left' }}>
                 {orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
               </Text>
-              <Text className="text-slate-800 font-bold text-base" numberOfLines={2}>
+              <Text className="text-slate-800 font-bold text-base" style={{ textAlign: isArabic ? 'right' : 'left' }} numberOfLines={2}>
                 {orderType === 'delivery'
                   ? deliveryAddress?.address || (isArabic ? 'أضف عنوان التوصيل' : 'Add delivery address')
                   : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch')}
@@ -114,20 +114,21 @@ export default function CartScreen() {
             cartItems.map((item) => (
               <View
                 key={item.uniqueId}
-                className="flex-row items-center mb-6 bg-white rounded-3xl p-3 border border-slate-100 shadow-sm"
+                className="items-center mb-6 bg-white rounded-3xl p-3 border border-slate-100 shadow-sm"
+                style={{ flexDirection: rowDirection }}
               >
                 <Image
                   source={{ uri: item.image }}
                   className="w-20 h-20 rounded-2xl bg-slate-100"
                 />
 
-                <View className="flex-1 ml-4">
-                  <Text className="text-base font-bold text-slate-800" numberOfLines={1}>
+                <View className="flex-1" style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}>
+                  <Text className="text-base font-bold text-slate-800" style={{ textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1}>
                     {item.name}
                   </Text>
 
                   {!!item.customizations && (
-                    <Text className="text-slate-400 text-xs mt-0.5" numberOfLines={1}>
+                    <Text className="text-slate-400 text-xs mt-0.5" style={{ textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1}>
                       {Object.values(item.customizations)
                         .map((opt: any) => opt.name)
                         .join(' • ')}
@@ -216,19 +217,19 @@ export default function CartScreen() {
             </Text>
           )}
           <TouchableOpacity
-            style={{ backgroundColor: (isClosed || isBusy) ? '#94a3b8' : primaryColor }}
-            className="p-5 rounded-[28px] flex-row items-center shadow-xl"
+            style={{ backgroundColor: (isClosed || isBusy) ? '#94a3b8' : primaryColor, flexDirection: rowDirection }}
+            className="p-5 rounded-[28px] items-center shadow-xl"
             activeOpacity={0.9}
             onPress={handleCheckout}
           >
-            <View className="bg-white/20 px-3 py-1.5 rounded-xl mr-3">
+            <View className="bg-white/20 px-3 py-1.5 rounded-xl" style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}>
               <Text className="text-white font-bold">{cartItems.length}</Text>
             </View>
             <Text className="text-white font-bold text-xl">{isArabic ? 'المتابعة للدفع' : 'Proceed to Checkout'}</Text>
-            <View className="ml-4 mr-3">
+            <View style={{ marginLeft: isArabic ? 12 : 16, marginRight: isArabic ? 16 : 12 }}>
               <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
             </View>
-            <ChevronRight size={24} color="white" />
+            <ChevronRight size={24} color="white" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
           </TouchableOpacity>
         </View>
       )}

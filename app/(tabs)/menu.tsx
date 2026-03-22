@@ -47,7 +47,7 @@ export default function MenuScreen() {
   const { merchantId } = useMerchant();
   const { products, categories, loading } = useMenuContext();
   const { primaryColor, logoUrl, inAppLogoScale, backgroundColor, menuCardColor, textColor, tabTextColor } = useMerchantBranding();
-  const { isClosed, isBusy, isPickupOnly } = useOperations();
+  const { isClosed, isBusy } = useOperations();
   const router = useRouter();
   const headerBg = primaryColor;
   const accent = primaryColor;
@@ -172,7 +172,7 @@ export default function MenuScreen() {
 
   useEffect(() => {
     if (isSearchVisible) searchTranslateX.value = 0;
-  }, [isSearchVisible]);
+  }, [isSearchVisible, searchTranslateX]);
 
   const centerCategoryTab = useCallback((category: string, animated = true, force = false) => {
     const layout = categoryLayoutRef.current[category];
@@ -359,30 +359,51 @@ export default function MenuScreen() {
       <StatusBar barStyle="light-content" />
 
       {/* HEADER (L→R): Pickup/branch | Search icon | Merchant logo (right-most) */}
-      <View className="pt-14 pb-6 px-5 shadow-md flex-row justify-between items-center rounded-b-[40px]" style={{ backgroundColor: headerBg }}>
-        <TouchableOpacity onPress={openOrderType} className="flex-row items-center flex-1 min-w-0 mr-2" accessibilityLabel={orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')} accessibilityRole="button">
-          <View className="bg-white/20 p-2.5 rounded-2xl mr-3 border border-white/30 shadow-sm shrink-0">
+      <View
+        className="pt-14 pb-6 px-5 shadow-md justify-between items-center rounded-b-[40px]"
+        style={{ backgroundColor: headerBg, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+      >
+        <TouchableOpacity
+          onPress={openOrderType}
+          className="items-center flex-1 min-w-0"
+          style={{ flexDirection: isArabic ? 'row-reverse' : 'row', marginRight: isArabic ? 0 : 8, marginLeft: isArabic ? 8 : 0 }}
+          accessibilityLabel={orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
+          accessibilityRole="button"
+        >
+          <View
+            className="bg-white/20 p-2.5 rounded-2xl border border-white/30 shadow-sm shrink-0"
+            style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}
+          >
             {orderType === 'delivery' ? <Bike size={20} color={tabTextColor} /> : <Store size={20} color={tabTextColor} />}
           </View>
           <View className="flex-1 min-w-0">
-            <View className="flex-row items-center">
-              <Text className="text-[10px] font-bold uppercase tracking-widest mr-1" style={{ color: tabTextColor }}>
+            <View className="items-center" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+              <Text
+                className="text-[10px] font-bold uppercase tracking-widest"
+                style={{ color: tabTextColor, marginRight: isArabic ? 0 : 4, marginLeft: isArabic ? 4 : 0, textAlign: isArabic ? 'right' : 'left' }}
+              >
                 {orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
               </Text>
               <ChevronDown size={12} color={tabTextColor} />
             </View>
-            <Text className="font-bold text-lg" style={{ color: tabTextColor }} numberOfLines={1} ellipsizeMode="tail">
+            <Text className="font-bold text-lg" style={{ color: tabTextColor, textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1} ellipsizeMode="tail">
               {orderType === 'delivery'
                 ? (deliveryAddress?.address || (isArabic ? 'أضف عنواناً' : 'Add address'))
                 : (selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch'))}
             </Text>
           </View>
         </TouchableOpacity>
-        <TouchableOpacity onPress={() => setIsSearchVisible(true)} className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0 mr-2" accessibilityLabel={isArabic ? 'ابحث في المنيو' : 'Search menu'} accessibilityRole="button">
+        <TouchableOpacity
+          onPress={() => setIsSearchVisible(true)}
+          className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0"
+          style={{ marginRight: isArabic ? 0 : 8, marginLeft: isArabic ? 8 : 0 }}
+          accessibilityLabel={isArabic ? 'ابحث في المنيو' : 'Search menu'}
+          accessibilityRole="button"
+        >
           <Search size={22} color={tabTextColor} />
         </TouchableOpacity>
         <View
-          className="ml-1"
+          className=""
           style={{ width: LOGO_SLOT, height: LOGO_SLOT, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
           accessibilityLabel={isArabic ? 'شعار المتجر' : 'Merchant logo'}
           accessibilityRole="image"
@@ -480,21 +501,35 @@ export default function MenuScreen() {
             style={{ flex: 1 }}
           >
           <View className="p-5 pt-14">
-          <View className="flex-row items-center mb-6">
-            <TouchableOpacity onPress={() => setIsSearchVisible(false)} className="mr-4"><ArrowLeft size={24} color={textColor} /></TouchableOpacity>
+          <View className="items-center mb-6" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+            <TouchableOpacity
+              onPress={() => setIsSearchVisible(false)}
+              style={{ marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }}
+            >
+              <ArrowLeft size={24} color={textColor} style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
+            </TouchableOpacity>
             <View className="flex-1 bg-slate-100 rounded-2xl flex-row items-center px-4 h-12">
               <Search size={20} color="#94a3b8" />
-              <TextInput placeholder={isArabic ? 'ماذا ترغب اليوم؟' : 'What are you craving?'} className="flex-1 ml-2 font-medium" style={{ color: textColor }} value={searchQuery} onChangeText={setSearchQuery} />
+              <TextInput
+                placeholder={isArabic ? 'ماذا ترغب اليوم؟' : 'What are you craving?'}
+                className="flex-1 font-medium"
+                style={{ color: textColor, marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0, textAlign: isArabic ? 'right' : 'left' }}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
             </View>
           </View>
           <ScrollView showsVerticalScrollIndicator={false}>
             {products.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map((item) => (
               <TouchableOpacity key={item.id} onPress={() => openProduct(item)} 
-                className="mb-4 p-3 rounded-2xl flex-row items-center"
-                style={{ backgroundColor: menuCardColor }}
+                className="mb-4 p-3 rounded-2xl items-center"
+                style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
               >
                 <Image source={{ uri: item.image }} className="w-16 h-16 rounded-xl bg-slate-200" />
-                <View className="ml-4 flex-1"><Text className="text-lg font-bold" style={{ color: textColor }}>{item.name}</Text><PriceWithSymbol amount={item.price} iconSize={16} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700' }} /></View>
+                <View className="flex-1" style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}>
+                  <Text className="text-lg font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{item.name}</Text>
+                  <PriceWithSymbol amount={item.price} iconSize={16} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700' }} />
+                </View>
                 <Plus size={16} color={textColor} />
               </TouchableOpacity>
             ))}
