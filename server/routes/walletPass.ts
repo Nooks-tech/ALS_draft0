@@ -215,9 +215,10 @@ function hexToRgbValues(hex: string): { r: number; g: number; b: number } {
 
 function createStripPng(w: number, h: number, r: number, g: number, b: number): Buffer {
   const lineH = 3;
-  const lr = Math.min(255, Math.round(r + (255 - r) * 0.35));
-  const lg = Math.min(255, Math.round(g + (255 - g) * 0.35));
-  const lb = Math.min(255, Math.round(b + (255 - b) * 0.35));
+  /** Subtle bottom accent — avoid a harsh band on the wallet strip. */
+  const lr = Math.min(255, Math.round(r + (255 - r) * 0.14));
+  const lg = Math.min(255, Math.round(g + (255 - g) * 0.14));
+  const lb = Math.min(255, Math.round(b + (255 - b) * 0.14));
 
   const raw = Buffer.alloc((w * 3 + 1) * h);
   for (let y = 0; y < h; y++) {
@@ -274,7 +275,7 @@ function formatExpiryDate(lastEarnDate: string | null, expiryMonths: number | nu
 /** Apple Wallet store-card logo max sizes (pt); @2x is doubled. */
 const WALLET_LOGO_SLOT_1X = { w: 160, h: 50 };
 const WALLET_LOGO_SLOT_2X = { w: 320, h: 100 };
-const WALLET_LOGO_LEFT_BIAS = 0.08;
+const WALLET_LOGO_LEFT_BIAS = 0.05;
 
 /**
  * Apple Wallet logo rendering:
@@ -356,22 +357,33 @@ function resolveWalletLogoUrl(
 }
 
 /**
- * Wallet pass logo scale: loyalty `wallet_card_logo_scale` when set, else `app_config.in_app_logo_scale`.
- * Both are clamped to 20–200 (same as nooksweb / in-app slider).
+ * Wallet pass logo scale: fixed 100% in-slot fit (merchant uploads artwork at intended size).
+ * Per-product: wallet logo resize / “same as in-app” UI was removed from the dashboard.
  */
 function resolveWalletLogoScale(
-  loyalty: { wallet_card_logo_scale?: unknown } | null | undefined,
-  appInAppScale: number,
+  _loyalty: { wallet_card_logo_scale?: unknown } | null | undefined,
+  _appInAppScale: number,
 ): number {
-  const raw = loyalty?.wallet_card_logo_scale;
-  if (raw !== null && raw !== undefined && raw !== '') {
-    const n = Number(raw);
-    if (!Number.isNaN(n)) {
-      return Math.min(200, Math.max(20, Math.round(n)));
-    }
-  }
-  const fallback = Number(appInAppScale ?? 100) || 100;
-  return Math.min(200, Math.max(20, Math.round(fallback)));
+  return 100;
+}
+
+/** Slightly dimmer than body text for field labels (Apple Wallet readability). */
+function mutedLabelRgb(textColor: string): string {
+  if (textColor.startsWith('rgb')) return mutedLabelFromForegroundRgb(textColor);
+  const { r, g, b } = hexToRgbValues(textColor);
+  const d = 0.82;
+  return `rgb(${Math.round(r * d)}, ${Math.round(g * d)}, ${Math.round(b * d)})`;
+}
+
+/** When foreground is already an `rgb(...)` string (e.g. from config), dim it for labels. */
+function mutedLabelFromForegroundRgb(fgRgb: string): string {
+  const m = fgRgb.match(/\d+/g);
+  if (!m || m.length < 3) return 'rgb(210, 210, 210)';
+  const r = Number(m[0]);
+  const g = Number(m[1]);
+  const b = Number(m[2]);
+  const d = 0.82;
+  return `rgb(${Math.round(r * d)}, ${Math.round(g * d)}, ${Math.round(b * d)})`;
 }
 
 function resolveWalletCardBgColor(
@@ -466,7 +478,7 @@ function buildPassJson(opts: {
         { key: 'member', label: 'MEMBER', value: opts.tier },
       ],
       primaryFields: [
-        { key: 'points', label: 'POINTS BALANCE', value: opts.points },
+        { key: 'points', label: 'POINTS BALANCE', value: String(opts.points) },
       ],
       secondaryFields: [
         { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
@@ -474,7 +486,11 @@ function buildPassJson(opts: {
       ],
       auxiliaryFields: [
         { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
-        { key: 'tier', label: 'TIER', value: opts.tier },
+        {
+          key: 'program',
+          label: 'PROGRAM',
+          value: opts.cardLabel.length > 22 ? `${opts.cardLabel.slice(0, 21)}…` : opts.cardLabel,
+        },
       ],
       backFields: [
         { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
@@ -735,7 +751,7 @@ walletPassRouter.get(
         logoText,
         bgColor: hexToRgb(bgColor),
         fgColor: hexToRgb(textColor),
-        labelColor: hexToRgb(textColor),
+        labelColor: mutedLabelRgb(textColor),
         cardLabel,
         points,
         lifetimePoints,
@@ -915,7 +931,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
         logoText: 'Debug',
         bgColor: 'rgb(0,0,0)',
         fgColor: 'rgb(255,255,255)',
-        labelColor: 'rgb(255,255,255)',
+        labelColor: 'rgb(210, 210, 210)',
         cardLabel: 'Debug',
         points: 0, lifetimePoints: 0, pointValueSar: 0.1,
         earnRate: '10% back',
@@ -1041,7 +1057,7 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       logoText,
       bgColor: hexToRgb(bgHex),
       fgColor: textColor,
-      labelColor: textColor,
+      labelColor: mutedLabelFromForegroundRgb(textColor),
       cardLabel,
       points: 0,
       lifetimePoints: 0,
@@ -1135,7 +1151,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       logoText,
       bgColor: bgRgb,
       fgColor: hexToRgb(textColor),
-      labelColor: hexToRgb(textColor),
+      labelColor: mutedLabelRgb(textColor),
       cardLabel,
       points,
       lifetimePoints,

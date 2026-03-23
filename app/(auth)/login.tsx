@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, KeyboardAvoidingView, Platform, ScrollView, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Button } from '../../src/components/common/Button';
 import { Container } from '../../src/components/common/Container';
 import { authApi } from '../../src/api/auth';
@@ -28,7 +28,6 @@ export default function LoginScreen() {
     appIconBgColor,
     primaryColor,
     backgroundColor,
-    menuCardColor,
     textColor,
     launcherIconScale,
   } = useMerchantBranding();
@@ -63,11 +62,9 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   const iconUri = (appIconUrl || logoUrl || '').trim() || null;
-  const circleBg = appIconBgColor || menuCardColor || '#fee2e2';
-  const logoSize = Math.max(
-    8,
-    Math.round(96 * (Math.min(150, Math.max(20, launcherIconScale)) / 100)),
-  );
+  const surfaceColor = appIconBgColor || primaryColor || '#0D9488';
+  /** Match BrandedSplashOverlay tile scaling for consistency with splash. */
+  const tileLogoScale = Math.min(1.12, Math.max(0.64, (launcherIconScale ?? 100) / 100));
 
   const handleContinue = async () => {
     const phone = ensurePrefix(digits);
@@ -98,23 +95,29 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View className="items-center mb-8">
-            <View
-              className="w-24 h-24 rounded-full justify-center items-center mb-4 overflow-hidden"
-              style={{ backgroundColor: circleBg }}
-            >
-              {iconUri ? (
-                <MerchantLogoImage
-                  uri={iconUri}
-                  sizeDp={logoSize}
-                  transition={200}
-                  accessibilityLabel={brandName}
-                />
-              ) : (
-                <Text className="text-3xl font-bold" style={{ color: primaryColor }}>
-                  {brandName.charAt(0).toUpperCase()}
-                </Text>
-              )}
-            </View>
+            {iconUri ? (
+              <View style={styles.logoStage}>
+                <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
+                <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
+                  <MerchantLogoImage
+                    uri={iconUri}
+                    sizeDp={72}
+                    scaleFactor={tileLogoScale}
+                    transition={200}
+                    accessibilityLabel={brandName}
+                  />
+                </View>
+              </View>
+            ) : (
+              <View style={styles.logoStage}>
+                <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
+                <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
+                  <Text style={{ color: textColor || '#ffffff', fontSize: 28, fontWeight: '700' }}>
+                    {brandName.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+              </View>
+            )}
             <Text
               className="text-3xl font-bold text-center px-2"
               style={{ color: textColor }}
@@ -140,7 +143,6 @@ export default function LoginScreen() {
                   value={digits}
                   onChangeText={(tx) => setDigits(tx.replace(/\D/g, '').slice(0, 9))}
                   keyboardType="phone-pad"
-                  autoFocus
                   className="flex-1 text-gray-900 font-medium"
                   style={{
                     paddingVertical: 0,
@@ -172,3 +174,32 @@ export default function LoginScreen() {
     </Container>
   );
 }
+
+const styles = StyleSheet.create({
+  logoStage: {
+    width: 168,
+    height: 168,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  logoGlow: {
+    position: 'absolute',
+    width: 156,
+    height: 156,
+    borderRadius: 44,
+    opacity: 0.12,
+  },
+  logoTile: {
+    width: 128,
+    height: 128,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOpacity: 0.16,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+  },
+});
