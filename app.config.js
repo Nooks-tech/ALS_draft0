@@ -20,6 +20,7 @@ const buildTimeTextColor = process.env.EXPO_PUBLIC_TEXT_COLOR || '';
 const buildTimeTabTextColor = process.env.EXPO_PUBLIC_TAB_TEXT_COLOR || '';
 const buildTimeAppIconBgColor = process.env.EXPO_PUBLIC_APP_ICON_BG_COLOR || '';
 const buildTimeLauncherIconScale = process.env.EXPO_PUBLIC_LAUNCHER_ICON_SCALE || '';
+const buildTimeSplashImageFile = process.env.EXPO_PUBLIC_SPLASH_IMAGE_FILE || './assets/images/splash-icon.png';
 const googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
 const config = {
@@ -49,7 +50,7 @@ config.expo.android = {
   },
 };
 
-// Ensure splash uses the merchant-selected app icon too (prevents red placeholder flash on startup).
+// Keep the native splash visually aligned with the in-app branded splash card.
 const existingPlugins = Array.isArray(config.expo.plugins) ? config.expo.plugins : [];
 let splashUpdated = false;
 config.expo.plugins = existingPlugins.map((pluginEntry) => {
@@ -70,7 +71,8 @@ config.expo.plugins = existingPlugins.map((pluginEntry) => {
       'expo-splash-screen',
       {
         ...prevOptions,
-        image: resolvedIcon,
+        image: buildTimeSplashImageFile.trim() || prevOptions.image || './assets/images/splash-icon.png',
+        imageWidth: 280,
         backgroundColor: splashBg,
         dark: {
           ...(typeof prevOptions.dark === 'object' ? prevOptions.dark : {}),
@@ -91,7 +93,8 @@ if (!splashUpdated) {
     [
       'expo-splash-screen',
       {
-        image: resolvedIcon,
+        image: buildTimeSplashImageFile.trim() || './assets/images/splash-icon.png',
+        imageWidth: 280,
         resizeMode: 'contain',
         backgroundColor: fallbackSplashBg,
         dark: { backgroundColor: fallbackSplashBg },

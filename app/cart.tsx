@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { ArrowLeft, Bike, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Bike, ChevronLeft, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import React from 'react';
 import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,6 +32,8 @@ export default function CartScreen() {
 
   const deliveryFee = orderType === 'delivery' ? 15 : 0;
   const finalTotal = totalPrice + deliveryFee;
+  const BackIcon = isArabic ? ArrowRight : ArrowLeft;
+  const ForwardIcon = isArabic ? ChevronLeft : ChevronRight;
 
   const handleCheckout = () => {
     if (isClosed || isBusy) {
@@ -57,15 +59,15 @@ export default function CartScreen() {
   return (
     <SafeAreaView className="flex-1 bg-white">
       {/* --- HEADER --- */}
-      <View className="px-5 py-4 items-center justify-between border-b border-slate-100" style={{ flexDirection: rowDirection }}>
+      <View className="px-5 py-4 border-b border-slate-100 items-center justify-center relative">
         <TouchableOpacity
           onPress={() => router.back()}
-          className="bg-slate-100 p-2 rounded-full"
+          className="bg-slate-100 p-2 rounded-full absolute"
+          style={{ [isArabic ? 'right' : 'left']: 20, top: 12 }}
         >
-          <ArrowLeft size={22} color="#334155" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
+          <BackIcon size={22} color="#334155" />
         </TouchableOpacity>
         <Text className="text-xl font-bold text-slate-900">{isArabic ? 'سلتي' : 'My Basket'}</Text>
-        <View className="w-10" />
       </View>
 
       <ScrollView
@@ -97,7 +99,7 @@ export default function CartScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text className="text-lg font-bold text-slate-900 mb-4">{isArabic ? 'ملخص الطلب' : 'Order Summary'}</Text>
+          <Text className="text-lg font-bold text-slate-900 mb-4" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'ملخص الطلب' : 'Order Summary'}</Text>
 
           {/* --- CART ITEMS --- */}
           {cartItems.length === 0 ? (
@@ -115,14 +117,21 @@ export default function CartScreen() {
               <View
                 key={item.uniqueId}
                 className="items-center mb-6 bg-white rounded-3xl p-3 border border-slate-100 shadow-sm"
-                style={{ flexDirection: rowDirection }}
+                style={{ flexDirection: rowDirection, alignItems: 'center' }}
               >
                 <Image
                   source={{ uri: item.image }}
                   className="w-20 h-20 rounded-2xl bg-slate-100"
                 />
 
-                <View className="flex-1" style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}>
+                <View
+                  className="flex-1"
+                  style={{
+                    marginLeft: isArabic ? 0 : 16,
+                    marginRight: isArabic ? 16 : 0,
+                    alignItems: isArabic ? 'flex-end' : 'flex-start',
+                  }}
+                >
                   <Text className="text-base font-bold text-slate-800" style={{ textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1}>
                     {item.name}
                   </Text>
@@ -138,16 +147,26 @@ export default function CartScreen() {
                   <PriceWithSymbol amount={item.price * item.quantity} iconSize={16} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700' }} className="mt-1" />
                 </View>
 
-                <View className="items-center">
+                <View className="items-center" style={{ minWidth: 120 }}>
                   <TouchableOpacity
                     onPress={() => handleEditItem(item)}
-                    className="mb-2 flex-row items-center p-2"
+                    className="mb-2 items-center p-2"
+                    style={{ flexDirection: rowDirection }}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <Pencil size={18} color={primaryColor} />
-                    <Text className="font-bold text-sm ml-1.5" style={{ color: primaryColor }}>{isArabic ? 'تعديل' : 'Edit'}</Text>
+                    <Text
+                      className="font-bold text-sm"
+                      style={{
+                        color: primaryColor,
+                        marginLeft: isArabic ? 0 : 6,
+                        marginRight: isArabic ? 6 : 0,
+                      }}
+                    >
+                      {isArabic ? 'تعديل' : 'Edit'}
+                    </Text>
                   </TouchableOpacity>
-                  <View className="flex-row items-center bg-slate-100 rounded-2xl p-2">
+                  <View className="items-center bg-slate-100 rounded-2xl p-2" style={{ flexDirection: rowDirection }}>
                     <TouchableOpacity
                       onPress={() => updateQuantity(item.uniqueId, -1)}
                       className="p-2.5 bg-white rounded-xl shadow-sm"
@@ -156,7 +175,10 @@ export default function CartScreen() {
                       <Minus size={20} color="#64748b" />
                     </TouchableOpacity>
 
-                    <Text className="mx-4 font-bold text-slate-800 text-base">
+                    <Text
+                      className="font-bold text-slate-800 text-base"
+                      style={{ marginHorizontal: 16 }}
+                    >
                       {item.quantity}
                     </Text>
 
@@ -183,12 +205,12 @@ export default function CartScreen() {
 
           {!!cartItems.length && (
             <View className="mt-4 p-6 bg-slate-50 rounded-[32px] border border-slate-100">
-              <View className="flex-row justify-between mb-3">
-                <Text className="text-slate-500 font-medium">{isArabic ? 'المجموع الفرعي' : 'Subtotal'}</Text>
+              <View className="justify-between mb-3" style={{ flexDirection: rowDirection }}>
+                <Text className="text-slate-500 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'المجموع الفرعي' : 'Subtotal'}</Text>
                 <PriceWithSymbol amount={totalPrice} iconSize={15} iconColor="#1e293b" textStyle={{ color: '#1e293b', fontWeight: '700' }} />
               </View>
-              <View className="flex-row justify-between mb-3">
-                <Text className="text-slate-500 font-medium">{isArabic ? 'رسوم الخدمة' : 'Service Fee'}</Text>
+              <View className="justify-between mb-3" style={{ flexDirection: rowDirection }}>
+                <Text className="text-slate-500 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'رسوم الخدمة' : 'Service Fee'}</Text>
                 {deliveryFee > 0 ? (
                   <PriceWithSymbol amount={deliveryFee} iconSize={15} iconColor="#1e293b" textStyle={{ color: '#1e293b', fontWeight: '700' }} />
                 ) : (
@@ -198,11 +220,11 @@ export default function CartScreen() {
 
               <View className="h-[1px] bg-slate-200 my-4" />
 
-              <View className="flex-row justify-between">
-                <Text className="text-xl font-bold text-slate-900">{isArabic ? 'الإجمالي' : 'Total'}</Text>
-                <View>
+              <View className="justify-between" style={{ flexDirection: rowDirection }}>
+                <Text className="text-xl font-bold text-slate-900" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'الإجمالي' : 'Total'}</Text>
+                <View style={{ alignItems: isArabic ? 'flex-start' : 'flex-end' }}>
                   <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 20 }} />
-                  <Text className="text-[10px] text-slate-400 text-right">{isArabic ? 'شامل الضريبة' : 'VAT Included'}</Text>
+                  <Text className="text-[10px] text-slate-400" style={{ textAlign: isArabic ? 'left' : 'right' }}>{isArabic ? 'شامل الضريبة' : 'VAT Included'}</Text>
                 </View>
               </View>
             </View>
@@ -229,7 +251,7 @@ export default function CartScreen() {
             <View style={{ marginLeft: isArabic ? 12 : 16, marginRight: isArabic ? 16 : 12 }}>
               <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
             </View>
-            <ChevronRight size={24} color="white" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
+            <ForwardIcon size={24} color="white" />
           </TouchableOpacity>
         </View>
       )}

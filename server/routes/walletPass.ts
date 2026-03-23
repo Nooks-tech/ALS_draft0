@@ -274,10 +274,14 @@ function formatExpiryDate(lastEarnDate: string | null, expiryMonths: number | nu
 /** Apple Wallet store-card logo max sizes (pt); @2x is doubled. */
 const WALLET_LOGO_SLOT_1X = { w: 160, h: 50 };
 const WALLET_LOGO_SLOT_2X = { w: 320, h: 100 };
+const WALLET_LOGO_LEFT_BIAS = 0.08;
 
 /**
- * Same idea as in-app header logo: fit inside a fixed slot, then scale by resolved logo % (20–200),
- * (`loyalty_config.wallet_card_logo_scale` or `app_config.in_app_logo_scale`), centered; capped to slot for Sharp.
+ * Apple Wallet logo rendering:
+ * - use the merchant-uploaded wallet logo only
+ * - trim transparent edges first so the artwork stays crisp
+ * - resize directly from the original buffer to avoid double-resize softness
+ * - keep the result inside Apple's slot and bias it slightly left to match the older layout
  */
 async function buildWalletLogoPngBuffers(
   logoUrl: string,
@@ -297,36 +301,30 @@ async function buildWalletLogoPngBuffers(
   const scale = Math.min(200, Math.max(20, Math.round(scalePercent))) / 100;
 
   async function oneSlot(slotW: number, slotH: number): Promise<Buffer> {
-    const fitted = await sharpMod(input)
-      .resize(slotW, slotH, {
+    const trimmed = sharpMod(input).ensureAlpha().trim();
+    const meta = await trimmed.metadata();
+    const sourceW = meta.width ?? slotW;
+    const sourceH = meta.height ?? slotH;
+    const fitRatio = Math.min(slotW / sourceW, slotH / sourceH);
+    const baseW = Math.max(1, sourceW * fitRatio);
+    const baseH = Math.max(1, sourceH * fitRatio);
+    const appliedScale = Math.min(scale, slotW / baseW, slotH / baseH);
+    const targetW = Math.max(1, Math.round(baseW * appliedScale));
+    const targetH = Math.max(1, Math.round(baseH * appliedScale));
+
+    const scaled = await trimmed
+      .resize(targetW, targetH, {
         fit: 'contain',
         background: { r: 0, g: 0, b: 0, alpha: 0 },
         kernel: 'lanczos3',
+        withoutEnlargement: false,
       })
-      .ensureAlpha()
-      .png()
-      .toBuffer();
-
-    const meta = await sharpMod(fitted).metadata();
-    const fw = meta.width ?? slotW;
-    const fh = meta.height ?? slotH;
-    const scaledW = Math.max(1, Math.round(fw * scale));
-    const scaledH = Math.max(1, Math.round(fh * scale));
-
-    // Scale up to match in-app logo scale (up to 200%). Sharp requires the composite
-    // layer width/height ≤ canvas ("Image to composite must have same dimensions or smaller").
-    // Cap with fit: 'inside' — same idea as launcher_icon_scale cap in nooks-build.yml.
-    const scaled = await sharpMod(fitted)
-      .resize(scaledW, scaledH, { fit: 'fill', kernel: 'lanczos3' })
-      .resize(slotW, slotH, { fit: 'inside', kernel: 'lanczos3' })
       .png({ compressionLevel: 6, effort: 10 })
       .toBuffer();
 
-    const metaScaled = await sharpMod(scaled).metadata();
-    const sw = metaScaled.width ?? slotW;
-    const sh = metaScaled.height ?? slotH;
-    const left = Math.round((slotW - sw) / 2);
-    const top = Math.round((slotH - sh) / 2);
+    const remainingX = Math.max(0, slotW - targetW);
+    const left = Math.max(0, Math.round((remainingX / 2) - (slotW * WALLET_LOGO_LEFT_BIAS)));
+    const top = Math.max(0, Math.round((slotH - targetH) / 2));
 
     return sharpMod({
       create: {
@@ -349,15 +347,12 @@ async function buildWalletLogoPngBuffers(
   return { logo1x, logo2x };
 }
 
-/** Prefer loyalty wallet logo; fall back to merchant app_config.logo_url (same as customer app header). */
+/** Wallet pass logo uses only the merchant-uploaded wallet icon. No fallback to in-app branding. */
 function resolveWalletLogoUrl(
   walletCardLogoUrl: string | null | undefined,
-  appLogoUrl: string | null | undefined,
 ): string | null {
   const w = typeof walletCardLogoUrl === 'string' ? walletCardLogoUrl.trim() : '';
-  if (w) return w;
-  const a = typeof appLogoUrl === 'string' ? appLogoUrl.trim() : '';
-  return a || null;
+  return w || null;
 }
 
 /**
@@ -387,6 +382,17 @@ function resolveWalletCardBgColor(
   if (loyaltyBg) return loyaltyBg;
   const brandBg = typeof appConfig?.primary_color === 'string' ? appConfig.primary_color.trim() : '';
   return brandBg || '#0D9488';
+}
+
+function resolveWalletLogoText(
+  merchantName: string | null | undefined,
+  appName: string | null | undefined,
+  cardLabel: string,
+): string {
+  const merchant = typeof merchantName === 'string' ? merchantName.trim() : '';
+  if (merchant) return merchant;
+  const app = typeof appName === 'string' ? appName.trim() : '';
+  return app || cardLabel;
 }
 
 async function attachWalletLogosToFiles(
@@ -419,6 +425,7 @@ function buildPassJson(opts: {
   serialNumber: string;
   description: string;
   organizationName: string;
+  logoText: string;
   bgColor: string;
   fgColor: string;
   labelColor: string;
@@ -443,7 +450,7 @@ function buildPassJson(opts: {
     backgroundColor: opts.bgColor,
     foregroundColor: opts.fgColor,
     labelColor: opts.labelColor,
-    ...(opts.hasLogoImage ? {} : { logoText: opts.cardLabel }),
+    logoText: opts.logoText,
     webServiceURL: WEB_SERVICE_URL,
     authenticationToken: authTokenForSerial(opts.serialNumber),
     barcodes: [
@@ -455,6 +462,9 @@ function buildPassJson(opts: {
       },
     ],
     storeCard: {
+      headerFields: [
+        { key: 'member', label: 'MEMBER', value: opts.tier },
+      ],
       primaryFields: [
         { key: 'points', label: 'POINTS BALANCE', value: opts.points },
       ],
@@ -674,9 +684,10 @@ walletPassRouter.get(
       const lifetimePoints = pointsData?.lifetime_points ?? 0;
       const lastEarnDate = pointsData?.updated_at ?? null;
 
-      const [{ data: config }, { data: appConfig }] = await Promise.all([
+      const [{ data: config }, { data: appConfig }, { data: merchant }] = await Promise.all([
         supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
-        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('app_config').select('app_name, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('merchants').select('cafe_name').eq('id', merchantId).maybeSingle(),
       ]);
 
       const bgColor = resolveWalletCardBgColor(config, appConfig);
@@ -705,7 +716,12 @@ walletPassRouter.get(
         'strip@2x.png': stripPng,
       };
 
-      const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
+      const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url);
+      const logoText = resolveWalletLogoText(
+        merchant?.cafe_name as string | undefined,
+        appConfig?.app_name as string | undefined,
+        cardLabel,
+      );
       const inAppLogoScale = resolveWalletLogoScale(
         config,
         Number(appConfig?.in_app_logo_scale ?? 100) || 100,
@@ -715,7 +731,8 @@ walletPassRouter.get(
       files['pass.json'] = buildPassJson({
         serialNumber,
         description: cardLabel,
-        organizationName: cardLabel,
+        organizationName: logoText,
+        logoText,
         bgColor: hexToRgb(bgColor),
         fgColor: hexToRgb(textColor),
         labelColor: hexToRgb(textColor),
@@ -895,6 +912,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
         serialNumber: 'debug-test',
         description: 'Debug',
         organizationName: 'Debug',
+        logoText: 'Debug',
         bgColor: 'rgb(0,0,0)',
         fgColor: 'rgb(255,255,255)',
         labelColor: 'rgb(255,255,255)',
@@ -974,10 +992,12 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
 
     const merchantId = req.query.merchantId as string;
     let inAppLogoScale = 100;
+    let logoText = cardLabel;
     if (merchantId && supabaseAdmin) {
-      const [{ data: config }, { data: appConfig }] = await Promise.all([
+      const [{ data: config }, { data: appConfig }, { data: merchant }] = await Promise.all([
         supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
-        supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('app_config').select('app_name, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('merchants').select('cafe_name').eq('id', merchantId).maybeSingle(),
       ]);
       if (config) {
         bgHex = resolveWalletCardBgColor(config, appConfig);
@@ -988,7 +1008,12 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
           ? `${config.points_per_order ?? 10} points per order`
           : `${Math.round(pps * 100)}% back in points`;
       }
-      logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
+      logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url);
+      logoText = resolveWalletLogoText(
+        merchant?.cafe_name as string | undefined,
+        appConfig?.app_name as string | undefined,
+        cardLabel,
+      );
       inAppLogoScale = resolveWalletLogoScale(
         config,
         Number(appConfig?.in_app_logo_scale ?? 100) || 100,
@@ -1012,7 +1037,8 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
     files['pass.json'] = buildPassJson({
       serialNumber: `test-${Date.now()}`,
       description: cardLabel,
-      organizationName: cardLabel,
+      organizationName: logoText,
+      logoText,
       bgColor: hexToRgb(bgHex),
       fgColor: textColor,
       labelColor: textColor,
@@ -1056,9 +1082,10 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const lifetimePoints = pointsData?.lifetime_points ?? 0;
     const lastEarnDate = pointsData?.updated_at ?? null;
 
-    const [{ data: config }, { data: appConfig }] = await Promise.all([
+    const [{ data: config }, { data: appConfig }, { data: merchant }] = await Promise.all([
       supabaseAdmin.from('loyalty_config').select('*').eq('merchant_id', merchantId).maybeSingle(),
-      supabaseAdmin.from('app_config').select('logo_url, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
+      supabaseAdmin.from('app_config').select('app_name, in_app_logo_scale, primary_color').eq('merchant_id', merchantId).maybeSingle(),
+      supabaseAdmin.from('merchants').select('cafe_name').eq('id', merchantId).maybeSingle(),
     ]);
 
     const bgColor = resolveWalletCardBgColor(config, appConfig);
@@ -1089,7 +1116,12 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       'strip@2x.png': stripPng,
     };
 
-    const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url, appConfig?.logo_url as string | undefined);
+    const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url);
+    const logoText = resolveWalletLogoText(
+      merchant?.cafe_name as string | undefined,
+      appConfig?.app_name as string | undefined,
+      cardLabel,
+    );
     const inAppLogoScale = resolveWalletLogoScale(
       config,
       Number(appConfig?.in_app_logo_scale ?? 100) || 100,
@@ -1099,7 +1131,8 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     files['pass.json'] = buildPassJson({
       serialNumber: `loyalty-${merchantId}-${customerId}`,
       description: cardLabel,
-      organizationName: cardLabel,
+      organizationName: logoText,
+      logoText,
       bgColor: bgRgb,
       fgColor: hexToRgb(textColor),
       labelColor: hexToRgb(textColor),

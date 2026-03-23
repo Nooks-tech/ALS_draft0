@@ -1,14 +1,14 @@
 /**
- * Full-screen branded splash shown until merchant branding is loaded,
- * then fades out smoothly before native splash is hidden.
+ * Full-screen branded splash shown immediately after the native splash,
+ * then fades away once branding is ready.
  */
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MerchantLogoImage } from '../branding/MerchantLogoImage';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 
-const MIN_VISIBLE_MS = 380;
+const MIN_VISIBLE_MS = 900;
 
 type BrandedSplashOverlayProps = {
   /** Called after native splash is hidden (e.g. request notification permissions). */
@@ -31,59 +31,99 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
   } = useMerchantBranding();
   const [minTimePassed, setMinTimePassed] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [nativeSplashHidden, setNativeSplashHidden] = useState(false);
 
   const containerOpacity = useRef(new Animated.Value(1)).current;
-  const logoScale = useRef(new Animated.Value(0.92)).current;
+  const logoScale = useRef(new Animated.Value(0.94)).current;
   const logoOpacity = useRef(new Animated.Value(0)).current;
+  const logoTranslateY = useRef(new Animated.Value(18)).current;
+  const dotsOpacity = useRef(new Animated.Value(0)).current;
+  const nativeHideRequested = useRef(false);
 
-  useEffect(() => {
-    const t = setTimeout(() => setMinTimePassed(true), MIN_VISIBLE_MS);
-    return () => clearTimeout(t);
+  const releaseNativeSplash = useCallback(() => {
+    if (nativeHideRequested.current) return;
+    nativeHideRequested.current = true;
+    void SplashScreen.hideAsync()
+      .catch(() => {
+        // Ignore "already hidden" and similar startup timing errors.
+      })
+      .finally(() => setNativeSplashHidden(true));
   }, []);
 
   useEffect(() => {
+    if (!nativeSplashHidden) return;
+    const t = setTimeout(() => setMinTimePassed(true), MIN_VISIBLE_MS);
+    return () => clearTimeout(t);
+  }, [nativeSplashHidden]);
+
+  useEffect(() => {
+    if (!nativeSplashHidden) return;
     Animated.parallel([
       Animated.timing(logoOpacity, {
         toValue: 1,
-        duration: 520,
+        duration: 420,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
       Animated.spring(logoScale, {
         toValue: 1,
-        friction: 7,
-        tension: 80,
+        friction: 8,
+        tension: 72,
+        useNativeDriver: true,
+      }),
+      Animated.timing(logoTranslateY, {
+        toValue: 0,
+        duration: 460,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(dotsOpacity, {
+        toValue: 1,
+        duration: 320,
+        delay: 140,
+        easing: Easing.out(Easing.quad),
         useNativeDriver: true,
       }),
     ]).start();
-  }, [logoOpacity, logoScale]);
+  }, [dotsOpacity, logoOpacity, logoScale, logoTranslateY, nativeSplashHidden]);
+
+  const handleLayout = useCallback(() => {
+    releaseNativeSplash();
+  }, [releaseNativeSplash]);
 
   useEffect(() => {
-    if (loading || !minTimePassed || finished) return;
+    if (!nativeSplashHidden || loading || !minTimePassed || finished) return;
 
-    Animated.timing(containerOpacity, {
-      toValue: 0,
-      duration: 420,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true,
-    }).start(() => {
-      void SplashScreen.hideAsync().then(() => {
-        onDismiss?.();
-      });
+    Animated.parallel([
+      Animated.timing(containerOpacity, {
+        toValue: 0,
+        duration: 360,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.timing(dotsOpacity, {
+        toValue: 0,
+        duration: 220,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      onDismiss?.();
       setFinished(true);
     });
-  }, [loading, minTimePassed, finished, containerOpacity, onDismiss]);
+  }, [loading, minTimePassed, finished, containerOpacity, dotsOpacity, nativeSplashHidden, onDismiss]);
 
   if (finished) return null;
 
-  const splashBg = backgroundColor || primaryColor;
-  const surfaceColor = appIconBgColor || primaryColor;
+  const splashBg = backgroundColor || '#f5f5f4';
+  const surfaceColor = appIconBgColor || primaryColor || '#0D9488';
   const splashLogoUri = appIconUrl || logoUrl;
   const fg = textColor || tabTextColor || '#ffffff';
-  const tileLogoScale = Math.min(1.2, Math.max(0.72, (launcherIconScale ?? 100) / 100));
+  const tileLogoScale = Math.min(1.12, Math.max(0.64, (launcherIconScale ?? 100) / 100));
 
   return (
     <Animated.View
+      onLayout={handleLayout}
       style={[
         StyleSheet.absoluteFillObject,
         {
@@ -96,15 +136,24 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
         },
       ]}
     >
-      <Animated.View style={{ opacity: logoOpacity, transform: [{ scale: logoScale }], alignItems: 'center' }}>
+      <Animated.View
+        style={{
+          opacity: logoOpacity,
+          transform: [{ translateY: logoTranslateY }, { scale: logoScale }],
+          alignItems: 'center',
+        }}
+      >
         {splashLogoUri ? (
-          <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
-            <MerchantLogoImage
-              uri={splashLogoUri}
-              sizeDp={96}
-              scaleFactor={tileLogoScale}
-              accessibilityLabel="Logo"
-            />
+          <View style={styles.logoStage}>
+            <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
+            <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
+              <MerchantLogoImage
+                uri={splashLogoUri}
+                sizeDp={94}
+                scaleFactor={tileLogoScale}
+                accessibilityLabel="Logo"
+              />
+            </View>
           </View>
         ) : (
           <Text style={{ color: fg, fontSize: 26, fontWeight: '700', textAlign: 'center', paddingHorizontal: 32 }}>
@@ -112,9 +161,9 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
           </Text>
         )}
       </Animated.View>
-      <View style={styles.dots} accessibilityElementsHidden>
-        <SubtleDots color={primaryColor || fg} />
-      </View>
+      <Animated.View style={[styles.dots, { opacity: dotsOpacity }]} accessibilityElementsHidden>
+        <SubtleDots color={surfaceColor || primaryColor || fg} />
+      </Animated.View>
     </Animated.View>
   );
 }
@@ -160,21 +209,34 @@ function SubtleDots({ color }: { color: string }) {
 }
 
 const styles = StyleSheet.create({
+  logoStage: {
+    width: 224,
+    height: 224,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoGlow: {
+    position: 'absolute',
+    width: 210,
+    height: 210,
+    borderRadius: 60,
+    opacity: 0.12,
+  },
   logoTile: {
-    width: 156,
-    height: 156,
-    borderRadius: 40,
+    width: 176,
+    height: 176,
+    borderRadius: 44,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000000',
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 12,
   },
   dots: {
     position: 'absolute',
-    bottom: '18%',
+    bottom: '19%',
     left: 0,
     right: 0,
     alignItems: 'center',
