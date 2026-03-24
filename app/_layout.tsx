@@ -90,8 +90,8 @@ export default function RootLayout() {
         <MerchantProvider>
         <MerchantBrandingWrapper>
         <SplashGate />
-        <OperationsProvider>
         <CartProvider>
+        <OperationsProvider>
           <MenuProvider>
           <FavoritesProvider>
           <OrdersProvider>
@@ -126,8 +126,8 @@ export default function RootLayout() {
           </OrdersProvider>
           </FavoritesProvider>
           </MenuProvider>
-        </CartProvider>
         </OperationsProvider>
+        </CartProvider>
         </MerchantBrandingWrapper>
         </MerchantProvider>
         </AuthProvider>

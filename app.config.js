@@ -50,21 +50,26 @@ config.expo.android = {
   },
 };
 
-// Keep the native splash visually aligned with the in-app branded splash card.
+// Keep the cold-start native splash separate from the in-app language-change overlay.
+// Native splash should stay on the darker app-icon/primary color, while the JS overlay
+// can still use the merchant background color at runtime.
 const existingPlugins = Array.isArray(config.expo.plugins) ? config.expo.plugins : [];
 let splashUpdated = false;
 config.expo.plugins = existingPlugins.map((pluginEntry) => {
   if (Array.isArray(pluginEntry) && pluginEntry[0] === 'expo-splash-screen') {
     splashUpdated = true;
     const prevOptions = (pluginEntry[1] && typeof pluginEntry[1] === 'object') ? pluginEntry[1] : {};
-    const splashBg =
-      (buildTimeBackgroundColor && buildTimeBackgroundColor.trim()) ||
+    const preferredSplashBg =
+      (buildTimeAppIconBgColor && buildTimeAppIconBgColor.trim() && buildTimeAppIconBgColor.trim() !== 'none'
+        ? buildTimeAppIconBgColor.trim()
+        : '') ||
       (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
       prevOptions.backgroundColor ||
       '#3B5F1D';
+    const splashBg =
+      preferredSplashBg;
     const darkBg =
-      (buildTimeBackgroundColor && buildTimeBackgroundColor.trim()) ||
-      (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
+      preferredSplashBg ||
       (prevOptions.dark && prevOptions.dark.backgroundColor) ||
       splashBg;
     return [
@@ -85,7 +90,9 @@ config.expo.plugins = existingPlugins.map((pluginEntry) => {
 });
 if (!splashUpdated) {
   const fallbackSplashBg =
-    (buildTimeBackgroundColor && buildTimeBackgroundColor.trim()) ||
+    (buildTimeAppIconBgColor && buildTimeAppIconBgColor.trim() && buildTimeAppIconBgColor.trim() !== 'none'
+      ? buildTimeAppIconBgColor.trim()
+      : '') ||
     (buildTimePrimaryColor && buildTimePrimaryColor.trim()) ||
     '#3B5F1D';
   config.expo.plugins = [

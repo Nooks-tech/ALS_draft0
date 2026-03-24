@@ -8,6 +8,7 @@ import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../api/supabase';
 import { fetchNooksOperations, type NooksOperations } from '../api/nooksOperations';
+import { useCart } from './CartContext';
 import { useMerchant } from './MerchantContext';
 
 type OperationsContextType = {
@@ -58,11 +59,13 @@ function deriveBusySeconds(ops: NooksOperations | null): number {
 
 export function OperationsProvider({ children }: { children: ReactNode }) {
   const { merchantId } = useMerchant();
+  const { selectedBranch } = useCart();
   const [operations, setOperations] = useState<NooksOperations | null>(null);
   const [loading, setLoading] = useState(false);
   const [busySecondsLeft, setBusySecondsLeft] = useState(0);
   const channelRef = useRef<RealtimeChannel | null>(null);
-  const cacheKey = `@als_operations_${merchantId || 'default'}`;
+  const selectedBranchId = selectedBranch?.id?.trim() || '';
+  const cacheKey = `@als_operations_${merchantId || 'default'}_${selectedBranchId || 'merchant'}`;
 
   useEffect(() => {
     if (!merchantId.trim()) return;
@@ -81,7 +84,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
     if (!merchantId.trim()) return;
     setLoading(true);
     try {
-      const data = await fetchNooksOperations(merchantId);
+      const data = await fetchNooksOperations(merchantId, selectedBranchId || undefined);
       const next = data ?? defaultOps;
       setOperations(next);
       setBusySecondsLeft(deriveBusySeconds(next));
@@ -92,7 +95,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [merchantId, cacheKey]);
+  }, [merchantId, selectedBranchId, cacheKey]);
 
   useEffect(() => {
     refetch();
@@ -107,7 +110,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   }, [refetch]);
 
   useEffect(() => {
-    if (!supabase || !merchantId.trim()) return;
+    if (!supabase || !merchantId.trim() || selectedBranchId) return;
     channelRef.current = supabase
       .channel(`ops-${merchantId}`)
       .on(
@@ -138,7 +141,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       channelRef.current?.unsubscribe();
       channelRef.current = null;
     };
-  }, [merchantId, cacheKey]);
+  }, [merchantId, cacheKey, selectedBranchId]);
 
   const isClosed = operations?.store_status === 'closed';
   const isBusy = operations?.store_status === 'busy';

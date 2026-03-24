@@ -305,6 +305,9 @@ export default function CheckoutScreen() {
           paymentId: moyasarPaymentId || orderId,
           paymentMethod: paymentMethod,
           promoCode: promoApplied ? promoCode : undefined,
+          customerName: profile.fullName || undefined,
+          customerPhone: profile.phone || undefined,
+          customerEmail: profile.email || undefined,
         },
         orderId,
         'Preparing'

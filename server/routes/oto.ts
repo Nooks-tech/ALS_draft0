@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { otoService } from '../services/oto';
 import { earnPoints } from './loyalty';
+import { requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const otoRouter = Router();
 
@@ -309,6 +310,8 @@ otoRouter.post('/webhook', async (req, res) => {
 /** POST /api/oto/create-pickup – Create an OTO pickup location for a branch */
 otoRouter.post('/create-pickup', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const { code, name, city, address, contactName, contactEmail, contactPhone, lat, lon } = req.body;
     if (!code || !name || !city) {
       return res.status(400).json({ error: 'code, name, and city are required' });
@@ -395,6 +398,8 @@ otoRouter.post('/request-delivery', async (req, res) => {
 /** POST /api/oto/register-webhook – Register this server's webhook URL with OTO */
 otoRouter.post('/register-webhook', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const baseUrl = (req.body.baseUrl || '').replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`;
     const webhookUrl = `${baseUrl}/api/oto/webhook`;
     const result = await otoService.registerWebhook(webhookUrl, 'orderStatus');

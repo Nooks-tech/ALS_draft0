@@ -28,10 +28,17 @@ export type PlacedOrder = {
   cancellationReason?: string;
   cancelledBy?: string;
   refundStatus?: string;
+  refundAmount?: number;
+  refundFee?: number;
+  refundMethod?: string;
   createdAt?: string;
   deliveryFee?: number;
   paymentId?: string;
+  paymentMethod?: string;
   promoCode?: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerEmail?: string;
   otoDispatchStatus?: 'success' | 'failed';
   otoDispatchError?: string;
 };
@@ -46,6 +53,9 @@ export type OrdersContextType = {
       paymentId?: string;
       paymentMethod?: string;
       promoCode?: string;
+        customerName?: string;
+        customerPhone?: string;
+        customerEmail?: string;
       otoDispatchStatus?: 'success' | 'failed';
       otoDispatchError?: string;
     },
@@ -72,7 +82,7 @@ function formatOrderDate(iso: string): string {
 }
 
 function rowToOrder(row: OrderRow): PlacedOrder {
-  const items = (Array.isArray(row.items) ? row.items : []) as Array<Record<string, unknown>>;
+  const items = (Array.isArray(row.items) ? row.items : []) as Record<string, unknown>[];
   const cartItems: CartItem[] = items.map((it, i) => ({
     id: String(it.id ?? ''),
     name: String(it.name ?? ''),
@@ -266,7 +276,14 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
               branch_id: order.branchId,
               total_sar: order.total,
               status,
+              order_type: order.orderType,
+              branch_name: order.branchName,
+              delivery_fee: order.deliveryFee ?? null,
               ...(order.paymentId ? { payment_id: order.paymentId } : {}),
+              ...(order.paymentMethod ? { payment_method: order.paymentMethod } : {}),
+              ...(order.customerName ? { customer_name: order.customerName } : {}),
+              ...(order.customerPhone ? { customer_phone: order.customerPhone } : {}),
+              ...(order.customerEmail ? { customer_email: order.customerEmail } : {}),
               items: order.items.map((i) => ({
                 product_id: i.id,
                 name: i.name,
@@ -288,7 +305,14 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
               branch_id: order.branchId,
               total_sar: order.total,
               status,
+              order_type: order.orderType,
+              branch_name: order.branchName,
+              delivery_fee: order.deliveryFee ?? null,
               ...(order.paymentId ? { payment_id: order.paymentId } : {}),
+              ...(order.paymentMethod ? { payment_method: order.paymentMethod } : {}),
+              ...(order.customerName ? { customer_name: order.customerName } : {}),
+              ...(order.customerPhone ? { customer_phone: order.customerPhone } : {}),
+              ...(order.customerEmail ? { customer_email: order.customerEmail } : {}),
               items: order.items.map((i) => ({
                 product_id: i.id,
                 name: i.name,

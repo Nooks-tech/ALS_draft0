@@ -23,9 +23,10 @@ export type NooksOperations = {
   busy_seconds_left?: number | null;
 };
 
-export async function fetchNooksOperations(merchantId: string): Promise<NooksOperations | null> {
+export async function fetchNooksOperations(merchantId: string, branchId?: string | null): Promise<NooksOperations | null> {
   if (!BASE_URL.trim() || !merchantId.trim()) return null;
-  const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/operations`;
+  const qs = branchId?.trim() ? `?branch_id=${encodeURIComponent(branchId.trim())}` : '';
+  const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/operations${qs}`;
   const res = await fetch(url);
   if (!res.ok) return null;
   const data = (await res.json()) as NooksOperations | Record<string, unknown>;

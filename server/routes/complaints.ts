@@ -5,6 +5,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { cancelPayment } from '../services/payment';
+import { requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const complaintsRouter = Router();
 
@@ -147,6 +148,8 @@ complaintsRouter.post('/:orderId', async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 complaintsRouter.get('/', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const merchantId = req.query.merchant_id as string;
@@ -154,7 +157,7 @@ complaintsRouter.get('/', async (req, res) => {
 
     let query = supabaseAdmin
       .from('order_complaints')
-      .select('*, customer_orders!inner(id, total_sar, items, customer_id, branch_name)')
+      .select('*, customer_orders!inner(id, total_sar, items, customer_id, branch_name, branch_id)')
       .eq('merchant_id', merchantId)
       .order('created_at', { ascending: false });
 
@@ -176,6 +179,8 @@ complaintsRouter.get('/', async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const { complaintId } = req.params;
     const { action, approved_refund_amount, merchant_notes } = req.body;
 

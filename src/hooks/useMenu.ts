@@ -6,10 +6,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
 import { foodicsApi, MenuProduct } from '../api/foodics';
 import { fetchNooksBranches } from '../api/nooksBranches';
+import { fetchNooksMenu } from '../api/nooksMenu';
 import { BRANCHES, CATEGORIES, PRODUCTS } from '../data/menu';
 import { useMerchant } from '../context/MerchantContext';
 
-export type MenuItem = MenuProduct & { category: string };
+export type MenuItem = MenuProduct & {
+  category: string;
+  foodicsProductId?: string | null;
+  nooksProductId?: string | null;
+};
 
 const mapToMenuItem = (p: (typeof PRODUCTS)[0]): MenuItem => ({
   id: p.id,
@@ -18,6 +23,8 @@ const mapToMenuItem = (p: (typeof PRODUCTS)[0]): MenuItem => ({
   category: p.category,
   description: p.description,
   image: p.image,
+  foodicsProductId: null,
+  nooksProductId: null,
   modifierGroups: (p.modifierGroups || []).map((g) => ({
     id: g.id,
     title: g.title,
@@ -101,12 +108,60 @@ export function useMenu() {
           }
         }
 
+        const nooksMenu = await fetchNooksMenu(merchantId);
+        if (cancelled) return;
+        if (nooksMenu?.categories?.length) {
+          const flatProducts = nooksMenu.categories.flatMap((category) =>
+            (category.items ?? [])
+              .filter((item) => item.is_available !== false)
+              .map((item) => {
+                const foodicsProductId = typeof item.foodics_product_id === 'string' && item.foodics_product_id.trim()
+                  ? item.foodics_product_id.trim()
+                  : null;
+                const nooksProductId = typeof item.id === 'string' ? item.id : '';
+                if (!foodicsProductId && !nooksProductId) return null;
+                return {
+                  id: foodicsProductId || nooksProductId,
+                  name: item.name || 'Item',
+                  price: Number(item.price ?? 0),
+                  category: category.name || 'Menu',
+                  description: item.description || '',
+                  image: item.image_url || '',
+                  foodicsProductId,
+                  nooksProductId,
+                  modifierGroups: [],
+                } as MenuItem;
+              })
+              .filter((item): item is MenuItem => Boolean(item))
+          );
+          if (flatProducts.length > 0) {
+            nextProducts = flatProducts;
+            nextCategories = nooksMenu.categories.map((c) => c.name).filter(Boolean);
+            setProducts(nextProducts);
+            setCategories(nextCategories);
+            setSource('nooks');
+            nextSource = 'nooks';
+            AsyncStorage.setItem(
+              cacheKey,
+              JSON.stringify({
+                products: nextProducts,
+                categories: nextCategories,
+                branches: nextBranches,
+                source: nextSource,
+              })
+            ).catch(() => {});
+            return;
+          }
+        }
+
         const data = await foodicsApi.getMenu();
         if (cancelled) return;
         if (data?.products?.length) {
           nextProducts = data.products.map((p) => ({
             ...p,
             category: p.category || 'Menu',
+            foodicsProductId: p.id,
+            nooksProductId: null,
           }));
           setProducts(nextProducts);
           if (data.categories?.length) {

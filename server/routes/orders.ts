@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { cancelPayment, calculateMoyasarFee } from '../services/payment';
 import { otoService } from '../services/oto';
 import { earnPoints } from './loyalty';
+import { requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const ordersRouter = Router();
 
@@ -66,6 +67,8 @@ async function cancelOtoIfDelivery(order: Record<string, any>) {
    ═══════════════════════════════════════════════════════════════════ */
 ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const orderId = req.params.id;
     const { reason, refund, amount } = req.body;
     if (!orderId) return res.status(400).json({ error: 'Missing order ID' });
@@ -247,6 +250,8 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 ordersRouter.post('/:id/system-cancel', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const orderId = req.params.id;
     const reason = (req.body.reason as string) || 'No delivery driver found within time limit';
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
@@ -437,6 +442,8 @@ ordersRouter.get('/:id/status', async (req, res) => {
 /* ── Update status (dashboard) ── */
 ordersRouter.patch('/:id/status', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const orderId = req.params.id;
     const { status } = req.body;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
@@ -484,6 +491,8 @@ ordersRouter.patch('/:id/status', async (req, res) => {
 /* ── Diagnostic: check order payment + Moyasar status ── */
 ordersRouter.get('/:id/debug-refund', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 

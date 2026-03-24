@@ -23,7 +23,14 @@ export type NooksOrderPayload = {
   customer_id?: string;
   total_sar: number;
   status: string;
+  order_type?: 'delivery' | 'pickup';
+  branch_name?: string;
+  delivery_fee?: number;
   payment_id?: string;
+  payment_method?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  customer_email?: string;
   items: NooksOrderItem[];
   promo_code?: string;
   delivery_address?: string;
@@ -37,9 +44,16 @@ export function buildNooksOrderPayload(
     merchantId?: string;
     branchId?: string;
     total: number;
-    items: Array<{ id: string; name: string; price: number; quantity: number }>;
+    items: { id: string; name: string; price: number; quantity: number }[];
+    orderType?: 'delivery' | 'pickup';
+    branchName?: string;
+    deliveryFee?: number;
     promoCode?: string;
     paymentId?: string;
+    paymentMethod?: string;
+    customerName?: string;
+    customerPhone?: string;
+    customerEmail?: string;
     deliveryAddress?: string;
     deliveryLat?: number;
     deliveryLng?: number;
@@ -53,6 +67,9 @@ export function buildNooksOrderPayload(
     branch_id: order.branchId,
     total_sar: order.total,
     status: 'pending',
+    ...(order.orderType ? { order_type: order.orderType } : {}),
+    ...(order.branchName ? { branch_name: order.branchName } : {}),
+    ...(order.deliveryFee != null ? { delivery_fee: order.deliveryFee } : {}),
     items: order.items.map((i) => ({
       product_id: i.id,
       name: i.name,
@@ -61,6 +78,10 @@ export function buildNooksOrderPayload(
     })),
     ...(order.promoCode && { promo_code: order.promoCode }),
     ...(order.paymentId && { payment_id: order.paymentId }),
+    ...(order.paymentMethod && { payment_method: order.paymentMethod }),
+    ...(order.customerName && { customer_name: order.customerName }),
+    ...(order.customerPhone && { customer_phone: order.customerPhone }),
+    ...(order.customerEmail && { customer_email: order.customerEmail }),
     ...(order.deliveryAddress && { delivery_address: order.deliveryAddress }),
     ...(order.deliveryLat != null && { delivery_lat: order.deliveryLat }),
     ...(order.deliveryLng != null && { delivery_lng: order.deliveryLng }),

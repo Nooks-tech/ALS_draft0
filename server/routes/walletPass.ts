@@ -478,7 +478,7 @@ function buildPassJson(opts: {
         { key: 'member', label: 'MEMBER', value: opts.tier },
       ],
       primaryFields: [
-        { key: 'points', label: 'POINTS BALANCE', value: String(opts.points) },
+        { key: 'points', label: 'POINTS BALANCE', value: opts.points },
       ],
       secondaryFields: [
         { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
@@ -486,11 +486,7 @@ function buildPassJson(opts: {
       ],
       auxiliaryFields: [
         { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
-        {
-          key: 'program',
-          label: 'PROGRAM',
-          value: opts.cardLabel.length > 22 ? `${opts.cardLabel.slice(0, 21)}…` : opts.cardLabel,
-        },
+        { key: 'tier', label: 'TIER', value: opts.tier },
       ],
       backFields: [
         { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
