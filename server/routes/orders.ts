@@ -4,9 +4,10 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
-import { cancelPayment, calculateMoyasarFee } from '../services/payment';
+import { cancelPayment } from '../services/payment';
 import { otoService } from '../services/oto';
 import { earnPoints } from './loyalty';
+import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const ordersRouter = Router();
@@ -154,12 +155,15 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
 ordersRouter.post('/:id/customer-cancel', async (req, res) => {
   try {
     const orderId = req.params.id;
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: order, error: fetchErr } = await supabaseAdmin
       .from('customer_orders')
       .select('*')
       .eq('id', orderId)
+      .eq('customer_id', user.id)
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
@@ -322,12 +326,15 @@ ordersRouter.post('/:id/system-cancel', async (req, res) => {
 ordersRouter.post('/:id/hold', async (req, res) => {
   try {
     const orderId = req.params.id;
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: order, error: fetchErr } = await supabaseAdmin
       .from('customer_orders')
       .select('*')
       .eq('id', orderId)
+      .eq('customer_id', user.id)
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
@@ -356,7 +363,18 @@ ordersRouter.post('/:id/hold', async (req, res) => {
 ordersRouter.post('/:id/resume', async (req, res) => {
   try {
     const orderId = req.params.id;
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { data: order, error: fetchErr } = await supabaseAdmin
+      .from('customer_orders')
+      .select('customer_id, status')
+      .eq('id', orderId)
+      .eq('customer_id', user.id)
+      .single();
+
+    if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
 
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
@@ -374,6 +392,8 @@ ordersRouter.post('/:id/resume', async (req, res) => {
 /* ── Commission ── */
 ordersRouter.get('/:id/commission', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const orderId = req.params.id;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
@@ -414,12 +434,15 @@ ordersRouter.post('/calculate-commission', async (req, res) => {
 ordersRouter.get('/:id/status', async (req, res) => {
   try {
     const orderId = req.params.id;
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, status, cancellation_reason, cancelled_by, refund_status, refund_amount, refund_fee, refund_method, created_at, updated_at')
+      .select('id, customer_id, status, cancellation_reason, cancelled_by, refund_status, refund_amount, refund_fee, refund_method, created_at, updated_at')
       .eq('id', orderId)
+      .eq('customer_id', user.id)
       .single();
 
     if (error || !order) return res.status(404).json({ error: 'Order not found' });
@@ -433,7 +456,20 @@ ordersRouter.get('/:id/status', async (req, res) => {
       ? CUSTOMER_CANCEL_WINDOW_MS
       : Math.max(0, CUSTOMER_CANCEL_WINDOW_MS - elapsed);
 
-    res.json({ ...order, canCustomerCancel, cancelTimeRemaining });
+    res.json({
+      id: order.id,
+      status: order.status,
+      cancellation_reason: order.cancellation_reason,
+      cancelled_by: order.cancelled_by,
+      refund_status: order.refund_status,
+      refund_amount: order.refund_amount,
+      refund_fee: order.refund_fee,
+      refund_method: order.refund_method,
+      created_at: order.created_at,
+      updated_at: order.updated_at,
+      canCustomerCancel,
+      cancelTimeRemaining,
+    });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get order status' });
   }

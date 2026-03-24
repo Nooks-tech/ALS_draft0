@@ -3,7 +3,7 @@
  * Signing via openssl, ZIP via yazl, push via HTTP/2 APNs.
  */
 import { createClient } from '@supabase/supabase-js';
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { execFileSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
@@ -12,6 +12,8 @@ import * as os from 'os';
 import * as path from 'path';
 import yazl from 'yazl';
 import * as zlib from 'zlib';
+import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { requireDiagnosticAccess } from '../utils/nooksInternal';
 
 export const walletPassRouter = Router();
 
@@ -23,70 +25,22 @@ const supabaseAdmin =
 const PASS_TYPE_ID = process.env.APPLE_PASS_TYPE_ID || '';
 const TEAM_ID = process.env.APPLE_PASS_TEAM_ID || '';
 
-const SIGNER_CERT_PEM = `-----BEGIN CERTIFICATE-----
-MIIGIDCCBQigAwIBAgIQYSoGtD9Lx3AckALdz8XTEzANBgkqhkiG9w0BAQsFADB1
-MUQwQgYDVQQDDDtBcHBsZSBXb3JsZHdpZGUgRGV2ZWxvcGVyIFJlbGF0aW9ucyBD
-ZXJ0aWZpY2F0aW9uIEF1dGhvcml0eTELMAkGA1UECwwCRzQxEzARBgNVBAoMCkFw
-cGxlIEluYy4xCzAJBgNVBAYTAlVTMB4XDTI2MDMxNjE3MjYzOVoXDTI3MDQxNTE3
-MjYzOFowgZgxKDAmBgoJkiaJk/IsZAEBDBhwYXNzLnNwYWNlLm5vb2tzLmxveWFs
-dHkxLzAtBgNVBAMMJlBhc3MgVHlwZSBJRDogcGFzcy5zcGFjZS5ub29rcy5sb3lh
-bHR5MRMwEQYDVQQLDAo0S1VKOURGWjhDMRkwFwYDVQQKDBBBYmR1bGxhaCBBbHNh
-ZWRpMQswCQYDVQQGEwJTQTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
-AKZ/YrI0mhHB+zgO5IjLg47qp+Es62/SysK+JiSb5SvUYhr5rE/h3Xok84zlaANN
-lVmm9chbh1gY6pv3LVB3iR1q00zYNyBiSgl2C7p1mPE1dVJaKakF0tML069T3pGc
-8egSu0B7penRY8xX+ys9gP2tOCFq8tUzD4mYDHbFBEHtkeLq50T++JixfI2M6EOO
-AjHtvgIdkzWrPusXOOg3RNyJApsUFd9NTjYSOY/SokyLpsoT5djTaiSF1zYQBXvo
-cRwFTxPycXqzDTfxHJNcT5qbNFynQ0Cf3aGCPVubL8mPyHDQ5p3QuR1i0BHe5m6x
-rFd5yoD/sGl4bUxI3qmJZykCAwEAAaOCAoYwggKCMAwGA1UdEwEB/wQCMAAwHwYD
-VR0jBBgwFoAUW9n6HeeaGgujmXYiUIY+kchbd6gwcAYIKwYBBQUHAQEEZDBiMC0G
-CCsGAQUFBzAChiFodHRwOi8vY2VydHMuYXBwbGUuY29tL3d3ZHJnNC5kZXIwMQYI
-KwYBBQUHMAGGJWh0dHA6Ly9vY3NwLmFwcGxlLmNvbS9vY3NwMDMtd3dkcmc0MDQw
-ggEeBgNVHSAEggEVMIIBETCCAQ0GCSqGSIb3Y2QFATCB/zCBwwYIKwYBBQUHAgIw
-gbYMgbNSZWxpYW5jZSBvbiB0aGlzIGNlcnRpZmljYXRlIGJ5IGFueSBwYXJ0eSBh
-c3N1bWVzIGFjY2VwdGFuY2Ugb2YgdGhlIHRoZW4gYXBwbGljYWJsZSBzdGFuZGFy
-ZCB0ZXJtcyBhbmQgY29uZGl0aW9ucyBvZiB1c2UsIGNlcnRpZmljYXRlIHBvbGlj
-eSBhbmQgY2VydGlmaWNhdGlvbiBwcmFjdGljZSBzdGF0ZW1lbnRzLjA3BggrBgEF
-BQcCARYraHR0cHM6Ly93d3cuYXBwbGUuY29tL2NlcnRpZmljYXRlYXV0aG9yaXR5
-LzAeBgNVHSUEFzAVBggrBgEFBQcDAgYJKoZIhvdjZAQOMDIGA1UdHwQrMCkwJ6Al
-oCOGIWh0dHA6Ly9jcmwuYXBwbGUuY29tL3d3ZHJnNC02LmNybDAdBgNVHQ4EFgQU
-Eux5He8GBPhAMJfTfxL1c6mkEb0wDgYDVR0PAQH/BAQDAgeAMCgGCiqGSIb3Y2QG
-ARAEGgwYcGFzcy5zcGFjZS5ub29rcy5sb3lhbHR5MBAGCiqGSIb3Y2QGAwIEAgUA
-MA0GCSqGSIb3DQEBCwUAA4IBAQAwDRRWk5VQauU4RuvjeIs1XOFd1hgyy5L9zCPM
-c+sjThjernpKlFKo2bemlTjJ3XZNGbKBZ+NPC7YRrrQAk1hwzVnRHsnvDC28d+m8
-o0/XRwazi/WDjii7wOO/Cu9N8XXciDdqcXp6MgwiaZKjmhc8KLU4GyPQtggDAdsl
-+1y3QS7FZKCLRwJMav2jsXkXpXqvRxjE63E3cX23BLu6HEQUnRYHZoxOk6ItuWHq
-vUZZ0ALxi8swUrLOE92usvoCcs7h7MfEWR7Y7449OR4T6162Y7Q94VKt8t1Wlg18
-7d8QaCyYE0Eodl5o9c4By7rk6lsJRQAL5BnxfDhT0ryP9+dW
------END CERTIFICATE-----`;
+function normalizePem(raw: string): string {
+  return raw.replace(/\\n/g, '\n').trim();
+}
 
-const SIGNER_KEY_PEM = `-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCmf2KyNJoRwfs4
-DuSIy4OO6qfhLOtv0srCviYkm+Ur1GIa+axP4d16JPOM5WgDTZVZpvXIW4dYGOqb
-9y1Qd4kdatNM2DcgYkoJdgu6dZjxNXVSWimpBdLTC9OvU96RnPHoErtAe6Xp0WPM
-V/srPYD9rTghavLVMw+JmAx2xQRB7ZHi6udE/viYsXyNjOhDjgIx7b4CHZM1qz7r
-FzjoN0TciQKbFBXfTU42EjmP0qJMi6bKE+XY02okhdc2EAV76HEcBU8T8nF6sw03
-8RyTXE+amzRcp0NAn92hgj1bmy/Jj8hw0Oad0LkdYtAR3uZusaxXecqA/7BpeG1M
-SN6piWcpAgMBAAECggEACcjnuHhd65g+VtONO7rWHvKMbi/RIE+/icVaAYHF7Jb9
-Mv+kUEeCWBjO1WNwAu2uzseAn0c9w4AnXYYfvCBiRv/NrjDwwG72UesFkm4x0E8n
-d3EEDMJiWvPRe3bO2DjkgJKFPatmm0CqgEpVYPuq1n21FEWwQrZO/fOZG+vFLcib
-pcGCpLzp0Cwc2PWBYmHnKE9Io49rUB0Gm4Ye7BwB6pwHIR+02TgSJyB5Mlg8djTO
-O1hp98Qa0J2xt1AORefai0d2Tu3M4OWIUu3oaqpHL+Vs161+CQlMwVPkut7G0223
-vthc5grcjI8DoWfQSnNxzmemORUiYaQtlzjF+I/7eQKBgQDXk5DP0Y+FsWuptpMp
-ogLEgv0N6e2LUx3rJ4cK2adcD0DZrJ3haSWOXSoyb9TX1TvG6UGc71x2gR52Yaui
-P17MHMITBWdzw0zq8W4JfvAMOlfEwfOsRXCBFTsiDje80akREzvaotmwwLiXmu+J
-qOGjL/htWVGSdS8Wz6r+Nnf2jQKBgQDFt9ybgWxJyZmSS4DItVUIsc1dHrsW54w/
-wP0wu8gKIKtQTbAAFwukYg3LDOLq5/TzcWD4Ttst8u6Enzu0KdGQ2T4k3eom+s2T
-eOmLah60jwyVlW2m1PGggKtWAkeWDLPj5Qk3Sk9crnL5MVjd3lLTsO4YrY4uhQQH
-qbDXJ6nqDQKBgG24gaAEfRQCtVVvw38RIm96a+nFAk5DQ5sIR0dSeEf2y37+yGyN
-47uN14hMOvyPXxliZy7E9T6rgSGnnH+72Tfx+yVLPthAsslxkBvtK6hNmZZfUPKB
-dT193Nb8fYnw/CfgrjodYMcBj/I5vWlHN3CjXcHqEAaG9iyaDeHNP0mRAoGAC5dF
-xZAGyySYbi0i9aE7xPC3e1gL28HjRPGJZkv75CwaHvEO+lJfill9OYQd4WuLvqHM
-74Gf88ekF/5Fv8Ab2wQBUqP30CUv3A9gkZ29AxTHxhUmgntFVwV0BezISZGhEiEh
-My6WDHblopoz/X3FGUfsDWJPTYbav6BBD7vxiBkCgYBaocPX4174YfmGKagOG4o1
-eCoK5y+amr1grfIpBCsSs6p0k8rSVVPJqq5f5smnFUSdm0KnPzGM/qm/rwcyRIEj
-fct/NtIABfuQvOoEGBa9NVtvKQVLjVLc9LrkutfxaOQ2CuwLfTbH/fKLYFgA48/y
-tSAm7J4qGiK4u5h7RsN5LQ==
------END PRIVATE KEY-----`;
+function loadPem(rawEnvName: string, base64EnvName: string): string {
+  const raw = (process.env[rawEnvName] || '').trim();
+  if (raw) return normalizePem(raw);
+
+  const encoded = (process.env[base64EnvName] || '').trim();
+  if (!encoded) return '';
+
+  return normalizePem(Buffer.from(encoded, 'base64').toString('utf8'));
+}
+
+const SIGNER_CERT_PEM = loadPem('APPLE_PASS_CERT_PEM', 'APPLE_PASS_CERT_BASE64');
+const SIGNER_KEY_PEM = loadPem('APPLE_PASS_KEY_PEM', 'APPLE_PASS_KEY_BASE64');
 
 // Official Apple WWDR G4 certificate (downloaded from https://www.apple.com/certificateauthority/)
 // Hardcoded to prevent mismatched certificate issues.
@@ -119,14 +73,24 @@ pU8RBWk6z/Kf
 
 const WEB_SERVICE_URL = process.env.WALLET_WEB_SERVICE_URL
   || 'https://alsdraft0-production.up.railway.app/api/loyalty';
-const AUTH_TOKEN_SECRET = process.env.WALLET_AUTH_SECRET || PASS_TYPE_ID + TEAM_ID;
+const AUTH_TOKEN_SECRET = (process.env.WALLET_AUTH_SECRET || process.env.NOOKS_INTERNAL_SECRET || '').trim();
 
 function isConfigured() {
-  return !!(PASS_TYPE_ID && TEAM_ID && SIGNER_CERT_PEM && SIGNER_KEY_PEM);
+  return !!(PASS_TYPE_ID && TEAM_ID && SIGNER_CERT_PEM && SIGNER_KEY_PEM && AUTH_TOKEN_SECRET);
 }
 
 function authTokenForSerial(serial: string): string {
   return crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(serial).digest('hex');
+}
+
+async function requireWalletPassCustomer(req: Request, res: Response, customerId: string) {
+  const user = await requireAuthenticatedAppUser(req, res);
+  if (!user) return null;
+  if (user.id !== customerId) {
+    res.status(403).json({ error: 'Forbidden - wallet pass does not belong to authenticated user' });
+    return null;
+  }
+  return user;
 }
 
 async function ensureTables() {
@@ -851,7 +815,8 @@ walletPassRouter.get('/wallet-pass/check', (_req, res) => {
   res.json({ available: true });
 });
 
-walletPassRouter.post('/wallet-pass/setup', async (_req, res) => {
+walletPassRouter.post('/wallet-pass/setup', async (req, res) => {
+  if (!requireDiagnosticAccess(req, res)) return;
   const dbUrl = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
   if (!dbUrl) return res.status(400).json({ error: 'Set DATABASE_URL env var first' });
   try {
@@ -882,7 +847,8 @@ walletPassRouter.post('/wallet-pass/setup', async (_req, res) => {
   }
 });
 
-walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
+walletPassRouter.get('/wallet-pass/debug', async (req, res) => {
+  if (!requireDiagnosticAccess(req, res)) return;
   const info: Record<string, unknown> = {
     passTypeId: PASS_TYPE_ID,
     teamId: TEAM_ID,
@@ -994,6 +960,7 @@ walletPassRouter.get('/wallet-pass/debug', async (_req, res) => {
 
 walletPassRouter.get('/wallet-pass/test', async (req, res) => {
   try {
+    if (!requireDiagnosticAccess(req, res)) return;
     if (!isConfigured()) return res.status(501).json({ error: 'Not configured' });
 
     let bgHex = '#0D9488';
@@ -1085,6 +1052,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const merchantId = req.query.merchantId as string;
     if (!customerId || !merchantId) return res.status(400).json({ error: 'customerId and merchantId required' });
     if (!isConfigured()) return res.status(501).json({ error: 'Apple Wallet pass not configured' });
+    if (!await requireWalletPassCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: pointsData } = await supabaseAdmin

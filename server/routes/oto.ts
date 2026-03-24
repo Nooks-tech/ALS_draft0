@@ -13,6 +13,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABAS
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 const OTO_WEBHOOK_SECRET = process.env.OTO_WEBHOOK_SECRET;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
   : null;
@@ -214,7 +215,11 @@ otoRouter.get('/order-status', async (req, res) => {
  */
 otoRouter.post('/webhook', async (req, res) => {
   try {
-    if (OTO_WEBHOOK_SECRET) {
+    if (!OTO_WEBHOOK_SECRET) {
+      if (IS_PRODUCTION) {
+        return res.status(503).json({ error: 'OTO webhook secret is not configured' });
+      }
+    } else {
       const token =
         (req.query.secret_token as string) ||
         req.headers['authorization'] as string ||

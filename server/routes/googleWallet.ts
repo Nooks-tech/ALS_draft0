@@ -9,6 +9,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
+import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 
 export const googleWalletRouter = Router();
 
@@ -56,6 +57,11 @@ googleWalletRouter.get('/google-wallet', async (req, res) => {
       });
     }
 
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (user.id !== customerId) {
+      return res.status(403).json({ error: 'Forbidden - wallet pass does not belong to authenticated user' });
+    }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: pointsData } = await supabaseAdmin

@@ -5,6 +5,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { cancelPayment } from '../services/payment';
+import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const complaintsRouter = Router();
@@ -50,15 +51,21 @@ complaintsRouter.post('/:orderId', async (req, res) => {
     const { orderId } = req.params;
     const { complaint_type, description, photo_urls, items, customer_id } = req.body;
 
-    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
     if (!complaint_type) return res.status(400).json({ error: 'complaint_type is required' });
     if (!customer_id) return res.status(400).json({ error: 'customer_id is required' });
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+    if (customer_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden - complaint customer does not match authenticated user' });
+    }
 
     // Fetch the order
     const { data: order, error: fetchErr } = await supabaseAdmin
       .from('customer_orders')
       .select('*')
       .eq('id', orderId)
+      .eq('customer_id', user.id)
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });

@@ -15,9 +15,10 @@ const router = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 const ALLOW_OTP_FALLBACK = process.env.ALLOW_OTP_FALLBACK === 'true';
 // SMS_VERIFICATION_DISABLED — set BYPASS_SMS=false in Railway env to re-enable
-const BYPASS_SMS = process.env.BYPASS_SMS === 'true';
+const BYPASS_SMS = process.env.BYPASS_SMS === 'true' && process.env.NODE_ENV !== 'production';
 
 /** Admin client – used only for DB queries and admin.createUser(). Never for signInWithPassword. */
 const adminClient = SUPABASE_URL && SUPABASE_SERVICE_KEY
@@ -29,7 +30,7 @@ const adminClient = SUPABASE_URL && SUPABASE_SERVICE_KEY
  * Each call gets its own instance so auth state doesn't leak between requests.
  */
 function createSignInClient() {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY || SUPABASE_SERVICE_KEY, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 }

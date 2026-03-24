@@ -29,6 +29,7 @@ import { API_URL } from '../../src/api/config';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
 import { fetchNooksPromos } from '../../src/api/nooksPromos';
 import {
+  getAuthToken,
   loyaltyApi,
   type LoyaltyBalance,
   type LoyaltyReward,
@@ -186,8 +187,16 @@ export default function OffersScreen() {
     if (!user?.id || !merchantId) return;
     setWalletLoading(true);
     try {
+      const authToken = await getAuthToken();
+      if (!authToken) {
+        Alert.alert('Error', 'Please sign in again to add this pass.');
+        return;
+      }
+
       const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
-      const res = await fetch(passUrl);
+      const res = await fetch(passUrl, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
       if (!res.ok) {
         let msg = `Server returned ${res.status}`;
         try {
@@ -523,8 +532,17 @@ export default function OffersScreen() {
               <TouchableOpacity
                 onPress={async () => {
                   try {
+                    const authToken = await getAuthToken();
+                    if (!authToken) {
+                      Alert.alert('Error', 'Please sign in again to add this pass.');
+                      return;
+                    }
+
                     const res = await fetch(
-                      `${API_URL}/api/loyalty/google-wallet?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`
+                      `${API_URL}/api/loyalty/google-wallet?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`,
+                      {
+                        headers: { Authorization: `Bearer ${authToken}` },
+                      },
                     );
                     const data = await res.json();
                     if (data.saveUrl) {

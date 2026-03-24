@@ -4,14 +4,20 @@
  * workflow that runs EAS build for Android + iOS with merchant branding env vars.
  */
 import { Router, Request, Response } from 'express';
+import { requireDiagnosticAccess } from '../utils/nooksInternal';
 
 const BUILD_WEBHOOK_BASE_URL = process.env.BUILD_WEBHOOK_BASE_URL || '';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 export const buildRouter = Router();
 
 buildRouter.get('/', (req: Request, res: Response) => {
+  if (!requireDiagnosticAccess(req, res)) return;
   const base = BUILD_WEBHOOK_BASE_URL || (req.get('host') ? `${req.protocol}://${req.get('host')}` : '');
-  const webhook_url = base ? `${base.replace(/\/$/, '')}/build` : null;
+  const normalizedBase = base.replace(/\/$/, '');
+  const webhook_url = normalizedBase
+    ? (normalizedBase.endsWith('/build') ? normalizedBase : `${normalizedBase}/build`)
+    : null;
   const token = process.env.GITHUB_TOKEN || '';
   const repo = process.env.GITHUB_REPO || '';
   const configured = !!(token && repo);
@@ -28,6 +34,7 @@ buildRouter.get('/', (req: Request, res: Response) => {
 
 /** GET /build/test – diagnostic: tries to dispatch a no-op and returns the GitHub API response */
 buildRouter.get('/test', async (req: Request, res: Response) => {
+  if (!requireDiagnosticAccess(req, res)) return;
   const token = process.env.GITHUB_TOKEN || '';
   const repo = process.env.GITHUB_REPO || '';
   const ref = process.env.GITHUB_BUILD_REF || 'master';
@@ -73,6 +80,7 @@ buildRouter.get('/test', async (req: Request, res: Response) => {
 });
 
 buildRouter.get('/ping-github', async (_req: Request, res: Response) => {
+  if (!requireDiagnosticAccess(_req, res)) return;
   try {
     const r = await fetch('https://api.github.com/zen');
     const text = await r.text();
@@ -87,6 +95,10 @@ buildRouter.post('/', async (req: Request, res: Response) => {
   const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
   const GITHUB_REPO = process.env.GITHUB_REPO || '';
   const GITHUB_REF = process.env.GITHUB_BUILD_REF || 'master';
+
+  if (!BUILD_SECRET && IS_PRODUCTION) {
+    return res.status(503).json({ error: 'Build webhook secret is not configured' });
+  }
 
   if (BUILD_SECRET && req.headers['x-nooks-secret'] !== BUILD_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });

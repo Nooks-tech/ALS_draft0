@@ -2,8 +2,10 @@
  * Loyalty routes – merchant-config-driven points, stamps, rewards, and wallet pass
  */
 import { createClient } from '@supabase/supabase-js';
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { notifyPassUpdate } from './walletPass';
+import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const loyaltyRouter = Router();
 
@@ -36,6 +38,20 @@ async function getMerchantConfig(merchantId: string) {
   return data ?? DEFAULT_CONFIG;
 }
 
+async function requireMatchingCustomer(
+  req: Request,
+  res: Response,
+  customerId: string,
+) {
+  const user = await requireAuthenticatedAppUser(req, res);
+  if (!user) return null;
+  if (user.id !== customerId) {
+    res.status(403).json({ error: 'Forbidden - loyalty data does not belong to authenticated user' });
+    return null;
+  }
+  return user;
+}
+
 /* ── GET /api/loyalty/config?merchantId=X ── */
 loyaltyRouter.get('/config', async (req, res) => {
   try {
@@ -50,6 +66,7 @@ loyaltyRouter.get('/config', async (req, res) => {
 
 /* ── GET /api/loyalty/config/debug – check table columns ── */
 loyaltyRouter.get('/config/debug', async (_req, res) => {
+  if (!requireDiagnosticAccess(_req, res)) return;
   if (!supabaseAdmin) return res.json({ error: 'no supabaseAdmin' });
   const results: Record<string, unknown> = {};
   try {
@@ -70,6 +87,8 @@ loyaltyRouter.get('/config/debug', async (_req, res) => {
 /* ── PUT /api/loyalty/config ── */
 loyaltyRouter.put('/config', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const { merchantId, ...fields } = req.body;
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
@@ -126,6 +145,7 @@ loyaltyRouter.get('/balance', async (req, res) => {
     const merchantId = req.query.merchantId as string;
     if (!customerId) return res.status(400).json({ error: 'customerId required' });
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+    if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const config = await getMerchantConfig(merchantId);
@@ -184,6 +204,8 @@ loyaltyRouter.get('/balance', async (req, res) => {
 /* ── POST /api/loyalty/earn ── */
 loyaltyRouter.post('/earn', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const { customerId, orderId, orderSubtotal, merchantId } = req.body;
     if (!customerId || !orderId || orderSubtotal == null) {
       return res.status(400).json({ error: 'customerId, orderId, and orderSubtotal required' });
@@ -207,6 +229,35 @@ export async function earnPoints(
   merchantId: string,
 ): Promise<{ success: boolean; pointsEarned: number; newBalance: number; stampAwarded?: boolean; stampRewardGranted?: boolean }> {
   if (!supabaseAdmin) throw new Error('Database not configured');
+
+  const { data: alreadyEarned } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id')
+    .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
+    .eq('order_id', orderId)
+    .eq('type', 'earn')
+    .gt('points', 0)
+    .limit(1)
+    .maybeSingle();
+
+  if (alreadyEarned) {
+    const { data: existingBalance } = await supabaseAdmin
+      .from('loyalty_points')
+      .select('points')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .maybeSingle();
+
+    return {
+      success: true,
+      pointsEarned: 0,
+      newBalance: existingBalance?.points ?? 0,
+      stampAwarded: false,
+      stampRewardGranted: false,
+    };
+  }
+
   const config = await getMerchantConfig(merchantId);
 
   const pointsEarned = config.earn_mode === 'per_order'
@@ -316,6 +367,7 @@ loyaltyRouter.post('/redeem', async (req, res) => {
     if (!customerId || !points || !orderId) {
       return res.status(400).json({ error: 'customerId, points, and orderId required' });
     }
+    if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const config = await getMerchantConfig(merchantId || '');
@@ -362,6 +414,7 @@ loyaltyRouter.post('/redeem-reward', async (req, res) => {
   try {
     const { customerId, rewardId, merchantId } = req.body;
     if (!customerId || !rewardId) return res.status(400).json({ error: 'customerId and rewardId required' });
+    if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { data: reward } = await supabaseAdmin
@@ -428,6 +481,8 @@ loyaltyRouter.get('/rewards', async (req, res) => {
 /* ── POST /api/loyalty/rewards ── */
 loyaltyRouter.post('/rewards', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const { merchantId, name, description, image_url, points_cost } = req.body;
     if (!merchantId || !name || !points_cost) return res.status(400).json({ error: 'merchantId, name, and points_cost required' });
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
@@ -447,6 +502,8 @@ loyaltyRouter.post('/rewards', async (req, res) => {
 /* ── PUT /api/loyalty/rewards/:id ── */
 loyaltyRouter.put('/rewards/:id', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     const { name, description, image_url, points_cost, is_active } = req.body;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
@@ -468,6 +525,8 @@ loyaltyRouter.put('/rewards/:id', async (req, res) => {
 /* ── DELETE /api/loyalty/rewards/:id ── */
 loyaltyRouter.delete('/rewards/:id', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
+
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
     const { error } = await supabaseAdmin.from('loyalty_rewards').update({ is_active: false }).eq('id', req.params.id);
     if (error) return res.status(500).json({ error: error.message });
@@ -483,6 +542,7 @@ loyaltyRouter.get('/history', async (req, res) => {
     const customerId = req.query.customerId as string;
     const merchantId = req.query.merchantId as string;
     if (!customerId) return res.status(400).json({ error: 'customerId required' });
+    if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     let query = supabaseAdmin

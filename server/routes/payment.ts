@@ -8,12 +8,13 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABAS
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
 const MOYASAR_WEBHOOK_SECRET = process.env.MOYASAR_WEBHOOK_SECRET;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 paymentRouter.get('/redirect', (req, res) => {
   const to = req.query.to as string;
-  if (to && (to.startsWith('alsdraft0://') || to.startsWith('https://'))) {
+  if (to && to.startsWith('alsdraft0://')) {
     return res.redirect(302, to);
   }
   res.status(400).send('Invalid redirect');
@@ -60,9 +61,13 @@ paymentRouter.post('/initiate', async (req, res) => {
 /** POST /api/payment/webhook – Moyasar payment status callback */
 paymentRouter.post('/webhook', async (req, res) => {
   try {
-    // Verify webhook secret (Moyasar sends it as query param or header)
-    if (MOYASAR_WEBHOOK_SECRET) {
+    if (!MOYASAR_WEBHOOK_SECRET) {
+      if (IS_PRODUCTION) {
+        return res.status(503).json({ error: 'Moyasar webhook secret is not configured' });
+      }
+    } else {
       const token =
+        req.body?.secret_token as string ||
         (req.query.secret_token as string) ||
         req.headers['x-moyasar-token'] as string ||
         req.headers['x-webhook-secret'] as string;

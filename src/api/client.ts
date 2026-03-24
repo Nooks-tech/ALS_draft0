@@ -6,7 +6,7 @@ import { supabase } from './supabase';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 
-async function getAuthToken(): Promise<string | null> {
+export async function getAuthToken(): Promise<string | null> {
   if (!supabase) return null;
   const { data } = await supabase.auth.getSession();
   return data?.session?.access_token ?? null;

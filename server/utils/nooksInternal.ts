@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 
 const NOOKS_INTERNAL_SECRET = (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 let warnedMissingSecret = false;
 
@@ -15,6 +16,10 @@ export function requireNooksInternalRequest(req: Request, res: Response): boolea
       warnedMissingSecret = true;
       console.warn('[InternalAuth] NOOKS_INTERNAL_SECRET is not configured; internal routes are currently unsecured.');
     }
+    if (IS_PRODUCTION) {
+      res.status(503).json({ error: 'Internal auth is not configured' });
+      return false;
+    }
     return true;
   }
 
@@ -28,4 +33,14 @@ export function requireNooksInternalRequest(req: Request, res: Response): boolea
 
   res.status(401).json({ error: 'Unauthorized' });
   return false;
+}
+
+/**
+ * Production diagnostics should never be public. In development we keep them
+ * accessible, while production requires the same internal secret as the Nooks
+ * backend calls.
+ */
+export function requireDiagnosticAccess(req: Request, res: Response): boolean {
+  if (!IS_PRODUCTION) return true;
+  return requireNooksInternalRequest(req, res);
 }
