@@ -4,7 +4,7 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import Constants from 'expo-constants';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
 
@@ -43,8 +43,7 @@ async function requestNotificationPermissions() {
 }
 import { AuthProvider } from '../src/context/AuthContext';
 import { CartProvider } from '../src/context/CartContext';
-import { MerchantBrandingWrapper } from '../src/context/MerchantBrandingContext';
-import { BrandedSplashOverlay } from '../src/components/splash/BrandedSplashOverlay';
+import { MerchantBrandingWrapper, useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { MerchantProvider } from '../src/context/MerchantContext';
 import { OperationsProvider } from '../src/context/OperationsContext';
 import { FavoritesProvider } from '../src/context/FavoritesContext';
@@ -61,13 +60,23 @@ import '../src/i18n';
 SplashScreen.preventAutoHideAsync();
 
 function SplashGate() {
-  return (
-    <BrandedSplashOverlay
-      onDismiss={() => {
+  const { loading } = useMerchantBranding();
+  const releasedRef = useRef(false);
+
+  useEffect(() => {
+    if (loading || releasedRef.current) return;
+    releasedRef.current = true;
+
+    void SplashScreen.hideAsync()
+      .catch(() => {
+        // Ignore startup timing races when the native splash is already gone.
+      })
+      .finally(() => {
         void requestNotificationPermissions();
-      }}
-    />
-  );
+      });
+  }, [loading]);
+
+  return null;
 }
 
 export default function RootLayout() {

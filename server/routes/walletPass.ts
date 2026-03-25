@@ -229,16 +229,15 @@ function getTier(lifetimePoints: number): string {
   return 'Bronze';
 }
 
-function formatExpiryDate(lastEarnDate: string | null, expiryMonths: number | null): string {
+function formatExpiryDate(_lastEarnDate: string | null, expiryMonths: number | null): string {
   if (!expiryMonths) return 'Never';
-  const base = lastEarnDate ? new Date(lastEarnDate) : new Date();
-  base.setMonth(base.getMonth() + expiryMonths);
-  return base.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  return `${Math.max(1, Math.round(expiryMonths))} mo`;
 }
 
 /** Apple Wallet store-card logo max sizes (pt); @2x is doubled. */
 const WALLET_LOGO_SLOT_1X = { w: 160, h: 50 };
 const WALLET_LOGO_SLOT_2X = { w: 320, h: 100 };
+const WALLET_LOGO_SLOT_3X = { w: 480, h: 150 };
 const WALLET_LOGO_LEFT_BIAS = 0.05;
 
 /**
@@ -251,7 +250,7 @@ const WALLET_LOGO_LEFT_BIAS = 0.05;
 async function buildWalletLogoPngBuffers(
   logoUrl: string,
   scalePercent: number,
-): Promise<{ logo1x: Buffer; logo2x: Buffer } | null> {
+): Promise<{ logo1x: Buffer; logo2x: Buffer; logo3x: Buffer } | null> {
   let sharpMod: typeof import('sharp');
   try {
     sharpMod = (await import('sharp')).default;
@@ -304,12 +303,13 @@ async function buildWalletLogoPngBuffers(
       .toBuffer();
   }
 
-  const [logo1x, logo2x] = await Promise.all([
+  const [logo1x, logo2x, logo3x] = await Promise.all([
     oneSlot(WALLET_LOGO_SLOT_1X.w, WALLET_LOGO_SLOT_1X.h),
     oneSlot(WALLET_LOGO_SLOT_2X.w, WALLET_LOGO_SLOT_2X.h),
+    oneSlot(WALLET_LOGO_SLOT_3X.w, WALLET_LOGO_SLOT_3X.h),
   ]);
 
-  return { logo1x, logo2x };
+  return { logo1x, logo2x, logo3x };
 }
 
 /** Wallet pass logo uses only the merchant-uploaded wallet icon. No fallback to in-app branding. */
@@ -365,10 +365,11 @@ function resolveWalletLogoText(
   appName: string | null | undefined,
   cardLabel: string,
 ): string {
+  const app = typeof appName === 'string' ? appName.trim() : '';
+  if (app) return app;
   const merchant = typeof merchantName === 'string' ? merchantName.trim() : '';
   if (merchant) return merchant;
-  const app = typeof appName === 'string' ? appName.trim() : '';
-  return app || cardLabel;
+  return cardLabel;
 }
 
 async function attachWalletLogosToFiles(
@@ -382,6 +383,7 @@ async function attachWalletLogosToFiles(
   if (built) {
     files['logo.png'] = built.logo1x;
     files['logo@2x.png'] = built.logo2x;
+    files['logo@3x.png'] = built.logo3x;
     return;
   }
 
@@ -391,6 +393,7 @@ async function attachWalletLogosToFiles(
       const logoBuf = Buffer.from(await logoRes.arrayBuffer());
       files['logo.png'] = logoBuf;
       files['logo@2x.png'] = logoBuf;
+      files['logo@3x.png'] = logoBuf;
     }
   } catch {
     /* skip */
@@ -668,7 +671,7 @@ walletPassRouter.get(
 
       const bgColor = resolveWalletCardBgColor(config, appConfig);
       const textColor = config?.wallet_card_text_color || '#FFFFFF';
-      const cardLabel = config?.wallet_card_label || 'Your Points';
+      const cardLabel = config?.wallet_card_label || 'Loyalty Card';
       const pointValueSar = config?.point_value_sar ?? 0.1;
       const pointsPerSar = config?.points_per_sar ?? 0.1;
       const earnRate = config?.earn_mode === 'per_order'
@@ -1070,7 +1073,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     const bgColor = resolveWalletCardBgColor(config, appConfig);
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
-    const cardLabel = config?.wallet_card_label || 'Your Points';
+    const cardLabel = config?.wallet_card_label || 'Loyalty Card';
     const pointValueSar = config?.point_value_sar ?? 0.1;
     const pointsPerSar = config?.points_per_sar ?? 0.1;
 

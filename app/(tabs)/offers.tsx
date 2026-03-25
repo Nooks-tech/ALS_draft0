@@ -1,8 +1,19 @@
 import { LinearGradient } from 'expo-linear-gradient';
 
-let ExpoWallet: { addPass: (base64: string) => Promise<unknown> } | null = null;
+type ExpoWalletBridge = {
+  addPass?: (base64: string) => Promise<unknown>;
+  isAvailable?: () => Promise<boolean>;
+};
+
+let ExpoWallet: ExpoWalletBridge | null = null;
+let expoWalletAddPass: ((base64: string) => Promise<unknown>) | null = null;
+let expoWalletIsAvailable: (() => Promise<boolean>) | null = null;
 try {
-  ExpoWallet = require('@giulio987/expo-wallet').default;
+  const walletModule = require('@giulio987/expo-wallet');
+  const candidate = walletModule?.default ?? walletModule;
+  ExpoWallet = candidate && typeof candidate === 'object' ? candidate as ExpoWalletBridge : null;
+  expoWalletAddPass = typeof walletModule?.addPass === 'function' ? walletModule.addPass : null;
+  expoWalletIsAvailable = typeof walletModule?.isAvailable === 'function' ? walletModule.isAvailable : null;
 } catch {
   // Native module not available in Expo Go — only works in device builds
 }
@@ -26,10 +37,10 @@ import {
   View,
 } from 'react-native';
 import { API_URL } from '../../src/api/config';
+import { getAuthToken } from '../../src/api/client';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
 import { fetchNooksPromos } from '../../src/api/nooksPromos';
 import {
-  getAuthToken,
   loyaltyApi,
   type LoyaltyBalance,
   type LoyaltyReward,
@@ -71,6 +82,35 @@ function formatExpiry(validUntil?: string): string {
   } catch {
     return 'Valid for limited time';
   }
+}
+
+function canAddPassToAppleWallet(): boolean {
+  return typeof expoWalletAddPass === 'function' || typeof ExpoWallet?.addPass === 'function';
+}
+
+async function isAppleWalletBridgeAvailable(): Promise<boolean> {
+  try {
+    if (typeof expoWalletIsAvailable === 'function') {
+      return !!(await expoWalletIsAvailable());
+    }
+    if (typeof ExpoWallet?.isAvailable === 'function') {
+      return !!(await ExpoWallet.isAvailable());
+    }
+  } catch {
+    // Fall back to checking the linked native method below.
+  }
+
+  return canAddPassToAppleWallet();
+}
+
+async function addPassToAppleWallet(base64: string): Promise<unknown> {
+  if (typeof expoWalletAddPass === 'function') {
+    return expoWalletAddPass(base64);
+  }
+  if (typeof ExpoWallet?.addPass === 'function') {
+    return ExpoWallet.addPass(base64);
+  }
+  throw new Error('Apple Wallet is not available on this device.');
 }
 
 export default function OffersScreen() {
@@ -175,7 +215,9 @@ export default function OffersScreen() {
       fetch(`${API_URL}/api/loyalty/wallet-pass/check`).then(r => r.ok).catch(() => false),
       fetch(`${API_URL}/api/loyalty/google-wallet/check`).then(r => r.ok && r.json().then((d: any) => d.available)).catch(() => false),
     ]);
-    setAppleWalletAvailable(Platform.OS === 'ios' && checks[0]);
+    const nativeAppleWalletAvailable =
+      Platform.OS === 'ios' && checks[0] ? await isAppleWalletBridgeAvailable().catch(() => false) : false;
+    setAppleWalletAvailable(nativeAppleWalletAvailable);
     setGoogleWalletAvailable(Platform.OS === 'android' && checks[1]);
   }, [user?.id, merchantId]);
 
@@ -217,8 +259,7 @@ export default function OffersScreen() {
         return;
       }
       console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
-      if (!ExpoWallet) throw new Error('Apple Wallet not available on this device.');
-      await ExpoWallet.addPass(base64);
+      await addPassToAppleWallet(base64);
     } catch (err: unknown) {
       const e = err as { message?: string; code?: string };
       const msg = e?.message || String(err);
