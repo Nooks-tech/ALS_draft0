@@ -210,7 +210,7 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
     // Fetch the parent order for payment_id
     const { data: order } = await supabaseAdmin
       .from('customer_orders')
-      .select('payment_id, total_sar, customer_id')
+      .select('payment_id, total_sar, customer_id, merchant_id')
       .eq('id', complaint.order_id)
       .single();
 
@@ -251,7 +251,7 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
 
     if (order?.payment_id) {
       const amountHalals = Math.round(refundSAR * 100);
-      const result = await cancelPayment(order.payment_id, amountHalals);
+      const result = await cancelPayment(order.payment_id, amountHalals, order.merchant_id);
       if (result.method === 'failed') {
         complaintStatus = 'approved'; // approved but refund failed — logged
         console.error('[Complaints] Refund failed for complaint', complaintId, result.error);

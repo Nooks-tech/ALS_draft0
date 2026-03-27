@@ -7,6 +7,7 @@ export interface InitiatePaymentPayload {
   amount: number;
   currency?: string;
   orderId?: string;
+  merchantId?: string;
   customer?: { name: string; email?: string; phone?: string };
   successUrl?: string;
 }

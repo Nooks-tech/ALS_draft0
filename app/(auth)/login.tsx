@@ -9,6 +9,7 @@ import { authApi } from '../../src/api/auth';
 import { PHONE_PREFIX, ensurePrefix } from '../../src/utils/phone';
 import { MerchantLogoImage } from '../../src/components/branding/MerchantLogoImage';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
+import { useMerchant } from '../../src/context/MerchantContext';
 
 function getExtraAppName(): string | null {
   const extra = Constants.expoConfig?.extra as { appName?: string } | undefined;
@@ -31,6 +32,7 @@ export default function LoginScreen() {
     textColor,
     launcherIconScale,
   } = useMerchantBranding();
+  const { merchantId } = useMerchant();
 
   const brandName = useMemo(() => {
     const fromApi = (appName?.trim() || cafeName?.trim() || '').trim();
@@ -74,7 +76,7 @@ export default function LoginScreen() {
     }
     setLoading(true);
     try {
-      await authApi.sendOtp(phone);
+      await authApi.sendOtp(phone, merchantId);
       router.push({ pathname: '/(auth)/otp', params: { phone } });
     } catch (err) {
       Alert.alert(copy.error, err instanceof Error ? err.message : copy.sendCodeFailed);

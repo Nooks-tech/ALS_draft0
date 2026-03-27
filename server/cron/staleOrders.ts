@@ -57,7 +57,7 @@ async function syncOtoStatuses() {
 
   const { data: activeOrders, error } = await supabaseAdmin
     .from('customer_orders')
-    .select('id, status, customer_id, oto_id')
+    .select('id, status, customer_id, oto_id, merchant_id')
     .eq('order_type', 'delivery')
     .in('status', ['Preparing', 'Ready', 'Out for delivery'])
     .not('oto_id', 'is', null)
@@ -67,7 +67,7 @@ async function syncOtoStatuses() {
 
   for (const order of activeOrders) {
     try {
-      const otoData = await otoService.orderStatus(order.oto_id);
+      const otoData = await otoService.orderStatus(order.oto_id, order.merchant_id);
       const mapped = mapOtoStatusToOrderStatus(otoData?.status);
 
       const currentRank = STATUS_RANK[order.status] ?? 0;
@@ -110,7 +110,7 @@ async function checkStaleOrders() {
     try {
       // Check OTO first — driver might have been assigned
       if (order.oto_id) {
-        const otoStatus = await otoService.orderStatus(order.oto_id);
+        const otoStatus = await otoService.orderStatus(order.oto_id, order.merchant_id);
         const status = (otoStatus.status || '').toLowerCase();
         if (['picked_up', 'on_the_way', 'delivered', 'out_for_delivery'].some(s => status.includes(s))) {
           console.log(`[Cron] Order ${order.id} has OTO status "${otoStatus.status}" — skipping auto-cancel`);
@@ -120,7 +120,7 @@ async function checkStaleOrders() {
 
       // Cancel OTO
       if (order.oto_id) {
-        await otoService.cancelDelivery(order.oto_id);
+        await otoService.cancelDelivery(order.oto_id, undefined, order.merchant_id);
       }
 
       // Cancel payment (void-first)
@@ -130,7 +130,7 @@ async function checkStaleOrders() {
       let refundMethod: string | null = null;
 
       if (order.payment_id) {
-        const result = await cancelPayment(order.payment_id);
+        const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
         if (result.method === 'failed') {
           refundStatus = 'refund_failed';
         } else {

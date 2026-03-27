@@ -4,6 +4,8 @@
  * OTO acts as a universal adapter for Uber, Careem, Barq, Aramex, etc.
  */
 
+import { getMerchantDeliveryRuntimeConfig } from '../lib/merchantIntegrations';
+
 const OTO_BASE = 'https://api.tryoto.com/rest/v2';
 const OTO_REFRESH_TOKEN = process.env.OTO_REFRESH_TOKEN;
 const OTO_PICKUP_LOCATION_CODE = process.env.OTO_PICKUP_LOCATION_CODE;
@@ -26,21 +28,22 @@ function matchesPreferredCarrier(companyName: string): boolean {
   return OTO_PREFERRED_CARRIERS.some((c) => n.includes(c));
 }
 
-let cachedAccessToken: string | null = null;
-let tokenExpiresAt = 0;
+const tokenCache = new Map<string, { accessToken: string; tokenExpiresAt: number }>();
 
-async function getAccessToken(): Promise<string> {
-  if (cachedAccessToken && Date.now() < tokenExpiresAt - 60000) {
-    return cachedAccessToken;
+async function getAccessToken(refreshTokenOverride?: string | null): Promise<string> {
+  const refreshToken = refreshTokenOverride || OTO_REFRESH_TOKEN;
+  if (!refreshToken) {
+    throw new Error('OTO refresh token not configured');
   }
-  if (!OTO_REFRESH_TOKEN) {
-    throw new Error('OTO_REFRESH_TOKEN not configured');
+  const cached = tokenCache.get(refreshToken);
+  if (cached && Date.now() < cached.tokenExpiresAt - 60000) {
+    return cached.accessToken;
   }
 
   const res = await fetch(`${OTO_BASE}/refreshToken`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: OTO_REFRESH_TOKEN }),
+    body: JSON.stringify({ refresh_token: refreshToken }),
   });
   const data = await res.json().catch(() => ({}));
 
@@ -53,13 +56,20 @@ async function getAccessToken(): Promise<string> {
     throw new Error('OTO did not return access_token');
   }
 
-  cachedAccessToken = token;
-  tokenExpiresAt = Date.now() + 60 * 60 * 1000; // 1 hour
+  tokenCache.set(refreshToken, {
+    accessToken: token,
+    tokenExpiresAt: Date.now() + 60 * 60 * 1000,
+  });
   return token;
 }
 
-async function otoRequest<T>(path: string, body: object, method: 'GET' | 'POST' = 'POST'): Promise<T> {
-  const token = await getAccessToken();
+async function otoRequest<T>(
+  path: string,
+  body: object,
+  method: 'GET' | 'POST' = 'POST',
+  refreshTokenOverride?: string | null
+): Promise<T> {
+  const token = await getAccessToken(refreshTokenOverride);
   const url = method === 'GET' && Object.keys(body).length > 0
     ? `${OTO_BASE}${path}?${new URLSearchParams(body as Record<string, string>).toString()}`
     : `${OTO_BASE}${path}`;
@@ -85,6 +95,7 @@ async function otoRequest<T>(path: string, body: object, method: 'GET' | 'POST' 
 export interface OTORequestDeliveryPayload {
   orderId: string;
   amount: number;
+  merchantId?: string | null;
   /** Pickup location code for this branch - overrides OTO_PICKUP_LOCATION_CODE when set */
   pickupLocationCode?: string;
   /** deliveryOptionId from /api/oto/delivery-options - Mrsool when same-city, etc. */
@@ -130,8 +141,13 @@ export interface OTOOrderStatusResponse {
 
 export const otoService = {
   async requestDelivery(payload: OTORequestDeliveryPayload): Promise<OTOOrderResponse> {
-    if (!OTO_REFRESH_TOKEN) {
-      throw new Error('OTO_REFRESH_TOKEN not configured. Add it to server/.env');
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(payload.merchantId);
+    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
+    if (!refreshToken) {
+      throw new Error('OTO refresh token is not configured for this merchant');
+    }
+    if (!runtimeConfig.deliveryEnabled && payload.merchantId) {
+      throw new Error('Delivery is disabled for this merchant');
     }
 
     const pickupCode = payload.pickupLocationCode || OTO_PICKUP_LOCATION_CODE;
@@ -182,7 +198,7 @@ export const otoService = {
       otoOrder.deliveryOptionId = String(deliveryOptionId);
     }
 
-    const result = await otoRequest<OTOOrderResponse>('/createOrder', otoOrder);
+    const result = await otoRequest<OTOOrderResponse>('/createOrder', otoOrder, 'POST', refreshToken);
     return result;
   },
 
@@ -354,10 +370,12 @@ export const otoService = {
    * then cancelShipment (needs shipmentId, fails after "picked up").
    * Returns { cancelled, warning? } — never throws.
    */
-  async cancelDelivery(orderId: string | number, shipmentId?: string): Promise<{ cancelled: boolean; warning?: string }> {
+  async cancelDelivery(orderId: string | number, shipmentId?: string, merchantId?: string | null): Promise<{ cancelled: boolean; warning?: string }> {
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
+    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
     // Try cancelOrder first (lightweight, no shipment needed)
     try {
-      await otoRequest<{ success?: boolean }>('/cancelOrder', { orderId: String(orderId) });
+      await otoRequest<{ success?: boolean }>('/cancelOrder', { orderId: String(orderId) }, 'POST', refreshToken);
       console.log('[OTO] cancelOrder succeeded for', orderId);
       return { cancelled: true };
     } catch (e: any) {
@@ -370,7 +388,7 @@ export const otoService = {
         await otoRequest<{ success?: boolean }>('/cancelShipment', {
           orderId: String(orderId),
           shipmentId,
-        });
+        }, 'POST', refreshToken);
         console.log('[OTO] cancelShipment succeeded for', orderId, shipmentId);
         return { cancelled: true };
       } catch (e: any) {
@@ -382,14 +400,14 @@ export const otoService = {
 
     // No shipmentId — try to fetch it from orderDetails
     try {
-      const details = await this.orderStatus(orderId);
+      const details = await this.orderStatus(orderId, merchantId);
       const trackingNumber = details.trackingNumber;
       if (trackingNumber) {
         try {
           await otoRequest<{ success?: boolean }>('/cancelShipment', {
             orderId: String(orderId),
             shipmentId: trackingNumber,
-          });
+          }, 'POST', refreshToken);
           console.log('[OTO] cancelShipment (auto-fetched) succeeded for', orderId);
           return { cancelled: true };
         } catch (e: any) {
@@ -401,9 +419,10 @@ export const otoService = {
     return { cancelled: false, warning: 'Could not cancel OTO order (may already be picked up)' };
   },
 
-  async healthCheck(): Promise<boolean> {
+  async healthCheck(merchantId?: string | null): Promise<boolean> {
     try {
-      await getAccessToken();
+      const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
+      await getAccessToken(runtimeConfig.refreshToken || OTO_REFRESH_TOKEN);
       const cities = await this.getCities('SA', 1);
       return cities.length > 0;
     } catch {
@@ -416,10 +435,12 @@ export const otoService = {
    * Uses GET /orderDetails?orderId=X (official OTO v2 endpoint).
    * orderId is the OTO order id (numeric otoId from createOrder, or your orderId string).
    */
-  async orderStatus(orderId: number | string): Promise<OTOOrderStatusResponse> {
+  async orderStatus(orderId: number | string, merchantId?: string | null): Promise<OTOOrderStatusResponse> {
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
+    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
     const data = await otoRequest<Record<string, unknown>>('/orderDetails', {
       orderId: String(orderId),
-    }, 'GET');
+    }, 'GET', refreshToken);
 
     const shipments = Array.isArray(data?.shipments) ? data.shipments as Record<string, unknown>[] : [];
     const latestShipment = shipments[0];
@@ -438,12 +459,14 @@ export const otoService = {
   },
 
   /** POST /webhook – register a webhook URL with OTO */
-  async registerWebhook(url: string, webhookType = 'orderStatus'): Promise<{ success: boolean; message?: string }> {
+  async registerWebhook(url: string, webhookType = 'orderStatus', merchantId?: string | null): Promise<{ success: boolean; message?: string }> {
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
+    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
     const data = await otoRequest<{ success?: boolean; message?: string }>('/webhook', {
       method: 'post',
       url,
       webhookType,
-    });
+    }, 'POST', refreshToken);
     return { success: data?.success !== false, message: data?.message };
   },
 };

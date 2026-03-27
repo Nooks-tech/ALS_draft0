@@ -191,7 +191,16 @@ otoRouter.get('/order-status', async (req, res) => {
     }
     const otoId = Number(otoIdRaw);
     const lookupId = isNaN(otoId) ? String(otoIdRaw) : otoId;
-    const status = await otoService.orderStatus(lookupId);
+    let merchantId: string | null = null;
+    if (supabaseAdmin && !isNaN(otoId)) {
+      const { data: order } = await supabaseAdmin
+        .from('customer_orders')
+        .select('merchant_id')
+        .eq('oto_id', otoId)
+        .maybeSingle();
+      merchantId = order?.merchant_id ?? null;
+    }
+    const status = await otoService.orderStatus(lookupId, merchantId);
     const mappedStatus = mapOtoStatusToOrderStatus(status?.status);
     if (supabaseAdmin && mappedStatus !== 'Preparing' && !isNaN(otoId)) {
       const updatePayload: Record<string, unknown> = { status: mappedStatus, updated_at: new Date().toISOString() };
@@ -349,6 +358,7 @@ otoRouter.post('/request-delivery', async (req, res) => {
     const {
       orderId,
       amount,
+      merchantId,
       customer,
       deliveryAddress,
       branch,
@@ -364,6 +374,7 @@ otoRouter.post('/request-delivery', async (req, res) => {
     const result = await otoService.requestDelivery({
       orderId: String(orderId),
       amount: Number(amount),
+      merchantId: typeof merchantId === 'string' ? merchantId : undefined,
       pickupLocationCode: req.body.pickupLocationCode || undefined,
       deliveryOptionId: req.body.deliveryOptionId != null ? Number(req.body.deliveryOptionId) : undefined,
       customer: {

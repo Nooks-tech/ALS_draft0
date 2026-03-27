@@ -16,8 +16,11 @@ export interface VerifyOtpResponse {
 }
 
 export const authApi = {
-  sendOtp: (phone: string) =>
-    api.post<{ ok: boolean }>('/api/auth/send-otp', { phone }),
+  sendOtp: (phone: string, merchantId?: string | null) =>
+    api.post<{ ok: boolean }>('/api/auth/send-otp', {
+      phone,
+      ...(merchantId ? { merchantId } : {}),
+    }),
 
   verifyOtp: (phone: string, code: string) =>
     api.post<VerifyOtpResponse>('/api/auth/verify-otp', { phone, code }),

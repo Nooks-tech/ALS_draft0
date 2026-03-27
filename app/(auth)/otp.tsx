@@ -8,6 +8,7 @@ import { Input } from '../../src/components/common/Input';
 import { authApi } from '../../src/api/auth';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
+import { useMerchant } from '../../src/context/MerchantContext';
 
 export default function OtpScreen() {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function OtpScreen() {
   const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
   const { setServerSession } = useAuth();
+  const { merchantId } = useMerchant();
   const isArabic = i18n.language === 'ar';
   const copy = isArabic
     ? {
@@ -59,7 +61,7 @@ export default function OtpScreen() {
     if (!phone?.trim()) return;
     setSending(true);
     try {
-      await authApi.sendOtp(phone);
+      await authApi.sendOtp(phone, merchantId);
       setTimer(60);
     } catch (err) {
       Alert.alert(copy.error, err instanceof Error ? err.message : copy.couldNotSend);

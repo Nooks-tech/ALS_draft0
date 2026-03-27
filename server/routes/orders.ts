@@ -14,7 +14,7 @@ export const ordersRouter = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
+const NOOKS_COMMISSION_RATE = 0;
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 const CUSTOMER_CANCEL_WINDOW_MS = 60_000; // 60 seconds
 
@@ -59,7 +59,7 @@ async function sendPushToCustomer(customerId: string, title: string, body: strin
 /* ── Cancel OTO if delivery order ── */
 async function cancelOtoIfDelivery(order: Record<string, any>) {
   if (order.order_type !== 'delivery' || !order.oto_id) return;
-  const result = await otoService.cancelDelivery(order.oto_id);
+  const result = await otoService.cancelDelivery(order.oto_id, undefined, order.merchant_id);
   if (result.warning) console.warn('[Orders] OTO cancel warning:', result.warning);
 }
 
@@ -101,7 +101,7 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
     const refundAmountHalals = amount != null ? Math.round(Number(amount) * 100) : undefined;
 
     if (shouldRefund && order.payment_id) {
-      const result = await cancelPayment(order.payment_id, refundAmountHalals);
+      const result = await cancelPayment(order.payment_id, refundAmountHalals, order.merchant_id);
       if (result.method === 'failed') {
         refundStatus = 'refund_failed';
       } else {
@@ -199,7 +199,7 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
     let refundError: string | undefined;
     if (order.payment_id) {
       console.log('[Orders] customer-cancel: attempting refund for payment_id:', order.payment_id);
-      const result = await cancelPayment(order.payment_id);
+      const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
       console.log('[Orders] customer-cancel: cancelPayment result:', JSON.stringify(result));
       if (result.method === 'failed') {
         refundStatus = 'refund_failed';
@@ -279,7 +279,7 @@ ordersRouter.post('/:id/system-cancel', async (req, res) => {
     let refundMethod: string | null = null;
 
     if (order.payment_id) {
-      const result = await cancelPayment(order.payment_id);
+      const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
       if (result.method === 'failed') {
         refundStatus = 'refund_failed';
       } else {

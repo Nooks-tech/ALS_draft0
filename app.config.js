@@ -9,6 +9,8 @@ const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'mer
 const buildTimeAppName = process.env.EXPO_PUBLIC_APP_NAME || '';
 const buildTimeAppIconFile = process.env.EXPO_PUBLIC_APP_ICON_FILE || '';
 const resolvedAppIconFile = buildTimeAppIconFile.trim() || './assets/images/icon.png';
+const iosBundleId = process.env.EXPO_PUBLIC_IOS_BUNDLE_IDENTIFIER || '';
+const androidPackageId = process.env.EXPO_PUBLIC_ANDROID_PACKAGE || '';
 
 // Option A: one build per merchant – branding baked in at build time (from EAS workflow / .env)
 const buildTimeLogoUrl = process.env.EXPO_PUBLIC_LOGO_URL || '';
@@ -34,9 +36,14 @@ if (buildTimeAppName.trim()) {
 if (buildTimeAppIconFile.trim()) {
   config.expo.icon = buildTimeAppIconFile.trim();
 }
+config.expo.ios = {
+  ...(config.expo.ios || {}),
+  ...(iosBundleId.trim() ? { bundleIdentifier: iosBundleId.trim() } : {}),
+};
 const resolvedIcon = config.expo.icon || resolvedAppIconFile;
 config.expo.android = {
   ...(config.expo.android || {}),
+  ...(androidPackageId.trim() ? { package: androidPackageId.trim() } : {}),
   adaptiveIcon: {
     backgroundColor: (buildTimeAppIconBgColor && buildTimeAppIconBgColor !== 'none')
       ? buildTimeAppIconBgColor

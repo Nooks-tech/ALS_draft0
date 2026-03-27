@@ -8,8 +8,9 @@
  */
 import { Router } from 'express';
 import { createClient } from '@supabase/supabase-js';
-import { createHmac } from 'crypto';
+import { createHmac, randomUUID } from 'crypto';
 import { sendSms, normalizePhone } from '../services/sms';
+import { creditMerchantSmsWallet, debitMerchantSmsWallet } from '../lib/smsWallet';
 
 const router = Router();
 
@@ -52,6 +53,8 @@ function phoneToEmail(phone: string): string {
 router.post('/send-otp', async (req, res) => {
   try {
     const { phone } = req.body;
+    const merchantId =
+      typeof req.body?.merchantId === 'string' ? req.body.merchantId.trim() : '';
     if (!phone || typeof phone !== 'string') {
       return res.status(400).json({ error: 'Phone number is required' });
     }
@@ -67,13 +70,66 @@ router.post('/send-otp', async (req, res) => {
 
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    let walletReservation: { merchantId: string; referenceId: string; amountHalalas: number } | null = null;
 
-    const { error: insertErr } = await adminClient.from('sms_otp').insert({
-      phone: normalised,
-      code,
-      expires_at: expiresAt,
-    });
+    if (merchantId) {
+      const referenceId = randomUUID();
+      const debitResult = await debitMerchantSmsWallet({
+        merchantId,
+        referenceId,
+        phone: normalised,
+        note: 'OTP verification SMS',
+        metadata: {
+          route: 'auth.send-otp',
+          phone: normalised,
+        },
+      });
+
+      if (debitResult.reason === 'merchant_not_found') {
+        return res.status(400).json({ error: 'Invalid merchant configuration' });
+      }
+
+      if (!debitResult.ok) {
+        return res.status(402).json({
+          error: 'Verification is temporarily unavailable for this store. Please contact support.',
+        });
+      }
+
+      if (debitResult.charged) {
+        walletReservation = {
+          merchantId,
+          referenceId,
+          amountHalalas: debitResult.chargePerOtpHalalas,
+        };
+      }
+    }
+
+    const { data: insertedOtp, error: insertErr } = await adminClient
+      .from('sms_otp')
+      .insert({
+        phone: normalised,
+        code,
+        expires_at: expiresAt,
+      })
+      .select('id')
+      .single();
     if (insertErr) {
+      if (walletReservation) {
+        try {
+          await creditMerchantSmsWallet({
+            merchantId: walletReservation.merchantId,
+            referenceId: `reversal:${walletReservation.referenceId}`,
+            amountHalalas: walletReservation.amountHalalas,
+            note: 'OTP save failed reversal',
+            metadata: {
+              original_reference_id: walletReservation.referenceId,
+              route: 'auth.send-otp',
+            },
+          });
+        } catch (walletError) {
+          console.warn('[Auth] OTP save reversal failed:', walletError);
+        }
+      }
       console.error('[Auth] DB insert error:', insertErr);
       return res.status(500).json({ error: 'Failed to save OTP. Check Supabase config.' });
     }
@@ -81,10 +137,29 @@ router.post('/send-otp', async (req, res) => {
     const smsResult = await sendSms(normalised, `Your verification code is: ${code}`);
 
     if (!smsResult.ok) {
+      if (walletReservation) {
+        try {
+          await creditMerchantSmsWallet({
+            merchantId: walletReservation.merchantId,
+            referenceId: `reversal:${walletReservation.referenceId}`,
+            amountHalalas: walletReservation.amountHalalas,
+            note: 'SMS send failed reversal',
+            metadata: {
+              original_reference_id: walletReservation.referenceId,
+              route: 'auth.send-otp',
+            },
+          });
+        } catch (walletError) {
+          console.warn('[Auth] SMS wallet reversal failed:', walletError);
+        }
+      }
       console.warn('[Auth] SMS send failed:', smsResult.error);
       console.log('[Auth] OTP for testing:', normalised, '→', code);
       if (ALLOW_OTP_FALLBACK) {
         return res.json({ ok: true });
+      }
+      if (insertedOtp?.id) {
+        await adminClient.from('sms_otp').delete().eq('id', insertedOtp.id);
       }
       return res.status(500).json({ error: 'Failed to send SMS', detail: smsResult.error });
     }

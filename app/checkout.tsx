@@ -81,12 +81,20 @@ export default function CheckoutScreen() {
   const { addOrder } = useOrders();
   const { profile } = useProfile();
   const { isClosed, isBusy } = useOperations();
-  const { primaryColor } = useMerchantBranding();
+  const {
+    primaryColor,
+    appName,
+    moyasarPublishableKey,
+    customerPaymentsEnabled,
+    applePayEnabled,
+  } = useMerchantBranding();
   const { user } = useAuth();
   const isArabic = i18n.language === 'ar';
+  const resolvedPublishableKey = (moyasarPublishableKey || MOYASAR_PUBLISHABLE_KEY || '').trim();
+  const resolvedApplePayEnabled = Platform.OS === 'ios' && applePayEnabled && Boolean(APPLE_PAY_MERCHANT_ID);
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
-    Platform.OS === 'ios' ? 'apple_pay' : (SAMSUNG_PAY_ENABLED ? 'samsung_pay' : 'credit_card')
+    resolvedApplePayEnabled ? 'apple_pay' : (SAMSUNG_PAY_ENABLED ? 'samsung_pay' : 'credit_card')
   );
   const [submitting, setSubmitting] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -119,6 +127,12 @@ export default function CheckoutScreen() {
       .finally(() => setPointsLoading(false));
   }, [user?.id, merchantId]);
 
+  useEffect(() => {
+    if (paymentMethod === 'apple_pay' && !resolvedApplePayEnabled) {
+      setPaymentMethod('credit_card');
+    }
+  }, [paymentMethod, resolvedApplePayEnabled]);
+
   const deliveryFee = orderType === 'delivery' ? 15 : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
   const discount = promoApplied ? promoDiscount : 0;
@@ -143,22 +157,25 @@ export default function CheckoutScreen() {
   const amountHalals = Math.round(finalTotal * 100);
 
   const paymentConfig = useMemo(() => {
-    if (!MOYASAR_PUBLISHABLE_KEY) return null;
+    if (!resolvedPublishableKey || !customerPaymentsEnabled) return null;
     try {
       return new PaymentConfig({
-        publishableApiKey: MOYASAR_PUBLISHABLE_KEY,
+        publishableApiKey: resolvedPublishableKey,
         baseUrl: MOYASAR_BASE_URL,
         amount: Math.max(amountHalals, 100),
         currency: 'SAR',
         merchantCountryCode: 'SA',
-        description: `Order ${orderIdRef.current}`,
-        metadata: { order_id: orderIdRef.current },
+        description: `${appName || 'Nooks'} order ${orderIdRef.current}`,
+        metadata: {
+          order_id: orderIdRef.current,
+          ...(merchantId ? { merchant_id: merchantId } : {}),
+        },
         supportedNetworks: ['mada', 'visa', 'mastercard', 'amex'],
         creditCard: new CreditCardConfig({ saveCard: false, manual: false }),
-        applePay: Platform.OS === 'ios'
+        applePay: resolvedApplePayEnabled
           ? new ApplePayConfig({
               merchantId: APPLE_PAY_MERCHANT_ID,
-              label: 'ALS',
+              label: appName || 'Nooks',
               manual: false,
               saveCard: false,
             })
@@ -168,7 +185,7 @@ export default function CheckoutScreen() {
     } catch {
       return null;
     }
-  }, [amountHalals]);
+  }, [amountHalals, appName, customerPaymentsEnabled, merchantId, resolvedApplePayEnabled, resolvedPublishableKey]);
 
   const applyCoupon = async () => {
     const code = (couponInput || promoCode).trim();
@@ -252,6 +269,7 @@ export default function CheckoutScreen() {
           const deliveryRes = await otoApi.requestDelivery({
             orderId,
             amount: Number(finalTotal.toFixed(2)),
+            merchantId: merchantId || undefined,
             pickupLocationCode: pickupCode,
             customer: {
               name: (profile.fullName || 'Customer').trim(),
@@ -334,7 +352,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, user?.id]);
+  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, router, user?.id]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {
@@ -403,15 +421,19 @@ export default function CheckoutScreen() {
       return;
     }
 
-    if (!paymentConfig || !MOYASAR_PUBLISHABLE_KEY) {
+    if (!paymentConfig || !resolvedPublishableKey || !customerPaymentsEnabled) {
       Alert.alert(
         'Payment Not Configured',
-        'Add EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY to your .env'
+        'Merchant checkout is not configured yet. Please contact the store.'
       );
       return;
     }
     if (paymentMethod === 'apple_pay' && Platform.OS !== 'ios') {
       Alert.alert('Apple Pay', 'Apple Pay is only available on iOS.');
+      return;
+    }
+    if (paymentMethod === 'apple_pay' && !resolvedApplePayEnabled) {
+      Alert.alert('Apple Pay', 'Apple Pay is not ready for this merchant yet. Please use card payment.');
       return;
     }
     if (paymentMethod === 'samsung_pay' && Platform.OS !== 'android') {
@@ -435,6 +457,7 @@ export default function CheckoutScreen() {
           amount: finalTotal,
           currency: 'SAR',
           orderId: `order-${Date.now()}`,
+          merchantId: merchantId || undefined,
           successUrl: 'alsdraft0://payment/success',
         });
         samsungPayInvoiceIdRef.current = session.id;
@@ -713,7 +736,7 @@ export default function CheckoutScreen() {
               </Text>
               <PriceWithSymbol amount={finalTotal} iconSize={24} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }} />
             </View>
-          {paymentMethod === 'apple_pay' && Platform.OS === 'ios' && paymentConfig ? (
+          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig ? (
             <View style={{ width: 180, height: 50 }}>
               <ApplePayButton
                 paymentConfig={paymentConfig}
@@ -795,7 +818,7 @@ export default function CheckoutScreen() {
         >
           <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="bg-white rounded-t-[32px] p-6 pb-10">
             <Text className="text-lg font-bold text-slate-900 mb-4">{isArabic ? 'اختر طريقة الدفع' : 'Select payment method'}</Text>
-            {Platform.OS === 'ios' && (
+            {resolvedApplePayEnabled && (
               <TouchableOpacity
                 onPress={() => { setPaymentMethod('apple_pay'); setShowPaymentPicker(false); }}
                 className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"

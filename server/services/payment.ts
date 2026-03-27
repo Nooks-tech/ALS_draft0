@@ -4,6 +4,7 @@
  */
 import path from 'path';
 import dotenv from 'dotenv';
+import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 
 // Load .env from server/ (payment.ts is in server/services/, so ../.env = server/.env)
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
@@ -12,7 +13,7 @@ const TAP_SECRET_KEY = process.env.TAP_SECRET_KEY;
 const MOYASAR_SECRET_KEY = process.env.MOYASAR_SECRET_KEY;
 /** Public HTTPS base URL for payment redirects (e.g. https://api.als.delivery) - required for success_url */
 const PAYMENT_REDIRECT_BASE = process.env.PAYMENT_REDIRECT_BASE_URL;
-const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
+const NOOKS_COMMISSION_RATE = 0;
 
 /* ── Moyasar fee rates (from signed offer) ── */
 const FEE_RATES = {
@@ -87,10 +88,13 @@ async function resolvePaymentId(storedId: string, authHeader: string): Promise<s
 export async function cancelPayment(
   paymentId: string,
   amountHalals?: number,
+  merchantId?: string | null,
 ): Promise<CancelPaymentResult> {
-  if (!MOYASAR_SECRET_KEY) return { method: 'failed', fee: 0, error: 'MOYASAR_SECRET_KEY not set' };
+  const config = await getMerchantPaymentRuntimeConfig(merchantId);
+  const secretKey = config.secretKey || MOYASAR_SECRET_KEY;
+  if (!secretKey) return { method: 'failed', fee: 0, error: 'Moyasar secret key not configured' };
 
-  const authHeader = `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`;
+  const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
 
   // Resolve invoice ID -> payment ID if needed
   const realPaymentId = await resolvePaymentId(paymentId, authHeader);
@@ -146,6 +150,8 @@ export interface PaymentInitRequest {
   customer?: { name: string; email?: string; phone?: string };
   successUrl?: string;
   deliveryFee?: number;
+  merchantId?: string | null;
+  metadata?: Record<string, string>;
 }
 
 export interface PaymentSession {
@@ -166,10 +172,13 @@ export function calculateCommission(totalAmount: number, deliveryFee: number = 0
 
 export const paymentService = {
   async initiatePayment(req: PaymentInitRequest): Promise<PaymentSession> {
+    if (req.merchantId) {
+      return this.initiateMoyasar(req);
+    }
     if (TAP_SECRET_KEY) {
       return this.initiateTap(req);
     }
-    if (MOYASAR_SECRET_KEY) {
+    if (MOYASAR_SECRET_KEY || req.merchantId) {
       return this.initiateMoyasar(req);
     }
     throw new Error('No payment provider configured. Set TAP_SECRET_KEY or MOYASAR_SECRET_KEY in .env');
@@ -207,6 +216,11 @@ export const paymentService = {
   },
 
   async initiateMoyasar(req: PaymentInitRequest): Promise<PaymentSession> {
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(req.merchantId);
+    const secretKey = runtimeConfig.secretKey || MOYASAR_SECRET_KEY;
+    if (!secretKey) {
+      throw new Error('Moyasar secret key is not configured for this merchant');
+    }
     const amountHalals = Math.round(Number(req.amount) * 100); // SAR to smallest unit (100 halals = 1 SAR)
     const minAmount = 100; // Moyasar minimum 1 SAR
     const amount = Math.max(amountHalals, minAmount);
@@ -216,7 +230,12 @@ export const paymentService = {
       currency: req.currency || 'SAR',
       description: req.orderId ? `Order ${req.orderId}` : 'ALS Order',
     };
-    if (req.orderId) body.metadata = { order_id: String(req.orderId) };
+    if (req.orderId || req.metadata) {
+      body.metadata = {
+        ...(req.orderId ? { order_id: String(req.orderId) } : {}),
+        ...(req.metadata || {}),
+      };
+    }
     // Moyasar requires success_url to be https - custom schemes cause validation error
     const successUrl =
       req.successUrl?.startsWith('https://')
@@ -229,7 +248,7 @@ export const paymentService = {
     const res = await fetch('https://api.moyasar.com/v1/invoices', {
       method: 'POST',
       headers: {
-        Authorization: `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`,
+        Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),

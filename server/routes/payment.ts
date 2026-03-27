@@ -1,14 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { calculateCommission, calculateMoyasarFee, paymentService } from '../services/payment';
+import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 
 export const paymentRouter = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const NOOKS_COMMISSION_RATE = parseFloat(process.env.NOOKS_COMMISSION_RATE || '0.01');
 const MOYASAR_WEBHOOK_SECRET = process.env.MOYASAR_WEBHOOK_SECRET;
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
@@ -22,8 +21,8 @@ paymentRouter.get('/redirect', (req, res) => {
 
 paymentRouter.post('/initiate', async (req, res) => {
   try {
-    const { amount, currency, orderId, customer, successUrl, deliveryFee } = req.body;
-    console.log('[Payment] Initiate request:', { amount, currency, orderId });
+    const { amount, currency, orderId, customer, successUrl, deliveryFee, merchantId } = req.body;
+    console.log('[Payment] Initiate request:', { amount, currency, orderId, merchantId });
     const session = await paymentService.initiatePayment({
       amount: Number(amount),
       currency: currency || 'SAR',
@@ -31,6 +30,8 @@ paymentRouter.post('/initiate', async (req, res) => {
       customer,
       successUrl,
       deliveryFee: deliveryFee != null ? Number(deliveryFee) : 0,
+      merchantId: typeof merchantId === 'string' ? merchantId : null,
+      metadata: typeof merchantId === 'string' ? { merchant_id: merchantId } : undefined,
     });
 
     if (orderId && supabaseAdmin) {
@@ -61,29 +62,31 @@ paymentRouter.post('/initiate', async (req, res) => {
 /** POST /api/payment/webhook – Moyasar payment status callback */
 paymentRouter.post('/webhook', async (req, res) => {
   try {
-    if (!MOYASAR_WEBHOOK_SECRET) {
-      if (IS_PRODUCTION) {
-        return res.status(503).json({ error: 'Moyasar webhook secret is not configured' });
-      }
-    } else {
-      const token =
-        req.body?.secret_token as string ||
-        (req.query.secret_token as string) ||
-        req.headers['x-moyasar-token'] as string ||
-        req.headers['x-webhook-secret'] as string;
-      if (token !== MOYASAR_WEBHOOK_SECRET) {
-        console.warn('[Payment Webhook] Invalid or missing secret token');
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
-    }
-
     const payload = req.body;
     const id: string = payload.id ?? payload.data?.id ?? '';
     const status: string = payload.status ?? payload.data?.status ?? '';
     const metadata = payload.metadata ?? payload.data?.metadata ?? {};
     const source = payload.source ?? payload.data?.source ?? {};
+    const merchantId: string = metadata?.merchant_id ?? '';
 
-    console.log('[Payment Webhook]', { id, status, orderId: metadata?.order_id, company: source?.company });
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId || null);
+    const expectedWebhookSecret = runtimeConfig.webhookSecret || MOYASAR_WEBHOOK_SECRET;
+
+    if (!expectedWebhookSecret) {
+      return res.status(503).json({ error: 'Moyasar webhook secret is not configured' });
+    }
+
+    const token =
+      req.body?.secret_token as string ||
+      (req.query.secret_token as string) ||
+      req.headers['x-moyasar-token'] as string ||
+      req.headers['x-webhook-secret'] as string;
+    if (token !== expectedWebhookSecret) {
+      console.warn('[Payment Webhook] Invalid or missing secret token');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    console.log('[Payment Webhook]', { id, status, orderId: metadata?.order_id, merchantId, company: source?.company });
     if (!supabaseAdmin || !id) return res.json({ received: true });
 
     const metaOrderId = metadata?.order_id;

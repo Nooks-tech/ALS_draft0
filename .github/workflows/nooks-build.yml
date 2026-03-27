@@ -46,6 +46,22 @@ on:
         required: false
         type: string
         default: "#ffffff"
+      ios_bundle_id:
+        required: false
+        type: string
+        default: ""
+      android_package_id:
+        required: false
+        type: string
+        default: ""
+      apple_pay_merchant_id:
+        required: false
+        type: string
+        default: ""
+      moyasar_publishable_key:
+        required: false
+        type: string
+        default: ""
       launcher_icon_scale:
         description: "Logo size inside launcher icon (20-150), must match app_config.launcher_icon_scale"
         required: false
@@ -77,14 +93,12 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           API_URL: ${{ secrets.API_URL }}
           NOOKS_API_BASE_URL: ${{ secrets.NOOKS_API_BASE_URL }}
-          MOYASAR_PUBLISHABLE_KEY: ${{ secrets.MOYASAR_PUBLISHABLE_KEY }}
         run: |
           missing=0
           [ -z "$SUPABASE_URL" ] && echo "::error::SUPABASE_URL is not set in GitHub repo secrets." && missing=1
           [ -z "$SUPABASE_ANON_KEY" ] && echo "::error::SUPABASE_ANON_KEY is not set in GitHub repo secrets." && missing=1
           [ -z "$API_URL" ] && echo "::error::API_URL is not set in GitHub repo secrets." && missing=1
           [ -z "$NOOKS_API_BASE_URL" ] && echo "::error::NOOKS_API_BASE_URL is not set in GitHub repo secrets." && missing=1
-          [ -z "$MOYASAR_PUBLISHABLE_KEY" ] && echo "::error::MOYASAR_PUBLISHABLE_KEY is not set in GitHub repo secrets." && missing=1
           if [ "$missing" -eq 1 ]; then
             echo "Set missing secrets in: Repo -> Settings -> Secrets and variables -> Actions"
             exit 1
@@ -137,6 +151,16 @@ jobs:
           if ! [[ "$RAW_SCALE" =~ ^[0-9]+$ ]]; then RAW_SCALE=70; fi
           if [ "$RAW_SCALE" -lt 20 ]; then RAW_SCALE=20; fi
           if [ "$RAW_SCALE" -gt 150 ]; then RAW_SCALE=150; fi
+          MOYASAR_PUBLISHABLE_KEY_VALUE="${{ github.event.inputs.moyasar_publishable_key }}"
+          if [ -z "$MOYASAR_PUBLISHABLE_KEY_VALUE" ]; then
+            MOYASAR_PUBLISHABLE_KEY_VALUE="${{ secrets.MOYASAR_PUBLISHABLE_KEY }}"
+          fi
+          APPLE_PAY_MERCHANT_ID_VALUE="${{ github.event.inputs.apple_pay_merchant_id }}"
+          if [ -z "$APPLE_PAY_MERCHANT_ID_VALUE" ]; then
+            APPLE_PAY_MERCHANT_ID_VALUE="${{ secrets.APPLE_PAY_MERCHANT_ID }}"
+          fi
+          IOS_BUNDLE_ID_VALUE="${{ github.event.inputs.ios_bundle_id }}"
+          ANDROID_PACKAGE_ID_VALUE="${{ github.event.inputs.android_package_id }}"
           echo "Using launcher_icon_scale=${RAW_SCALE}%"
           npm install --no-save sharp 2>/dev/null || true
           if [ -n "$BG_COLOR" ] && [ "$BG_COLOR" != "none" ] && [ "$BG_COLOR" != "null" ]; then
@@ -290,8 +314,10 @@ jobs:
           echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env
           echo "EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}" >> .env
-          echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=${{ secrets.MOYASAR_PUBLISHABLE_KEY }}" >> .env
-          echo "EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID=${{ secrets.APPLE_PAY_MERCHANT_ID }}" >> .env
+          echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=$MOYASAR_PUBLISHABLE_KEY_VALUE" >> .env
+          echo "EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID=$APPLE_PAY_MERCHANT_ID_VALUE" >> .env
+          echo "EXPO_PUBLIC_IOS_BUNDLE_IDENTIFIER=$IOS_BUNDLE_ID_VALUE" >> .env
+          echo "EXPO_PUBLIC_ANDROID_PACKAGE=$ANDROID_PACKAGE_ID_VALUE" >> .env
           if [ -n "${{ secrets.GOOGLE_MAPS_API_KEY }}" ]; then
             echo "GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}" >> .env
           else

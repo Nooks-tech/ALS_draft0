@@ -50,6 +50,9 @@ export type MerchantBranding = {
   contactPhone: string | null;
   contactWhatsapp: string | null;
   aboutText: string | null;
+  moyasarPublishableKey: string | null;
+  customerPaymentsEnabled: boolean;
+  applePayEnabled: boolean;
 };
 
 const DEFAULT_BRANDING: MerchantBranding = {
@@ -70,6 +73,9 @@ const DEFAULT_BRANDING: MerchantBranding = {
   contactPhone: null,
   contactWhatsapp: null,
   aboutText: null,
+  moyasarPublishableKey: null,
+  customerPaymentsEnabled: false,
+  applePayEnabled: false,
 };
 
 function normalizeColor(input: unknown): string | null {
@@ -126,6 +132,9 @@ function getBuildTimeBranding(): MerchantBranding {
     contactPhone: null,
     contactWhatsapp: null,
     aboutText: null,
+    moyasarPublishableKey: null,
+    customerPaymentsEnabled: false,
+    applePayEnabled: false,
   };
 }
 
@@ -176,6 +185,12 @@ function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding 
     contactPhone: typeof data.contactPhone === 'string' && data.contactPhone ? data.contactPhone : null,
     contactWhatsapp: typeof data.contactWhatsapp === 'string' && data.contactWhatsapp ? data.contactWhatsapp : null,
     aboutText: typeof data.aboutText === 'string' && data.aboutText ? data.aboutText : null,
+    moyasarPublishableKey:
+      typeof data.moyasarPublishableKey === 'string' && data.moyasarPublishableKey.trim()
+        ? data.moyasarPublishableKey.trim()
+        : null,
+    customerPaymentsEnabled: Boolean(data.customerPaymentsEnabled),
+    applePayEnabled: Boolean(data.applePayEnabled),
   };
 }
 
