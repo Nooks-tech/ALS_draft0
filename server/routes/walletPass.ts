@@ -13,6 +13,7 @@ import * as path from 'path';
 import yazl from 'yazl';
 import * as zlib from 'zlib';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { ensureLoyaltyMemberProfile } from '../services/loyaltyMembers';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
 
 export const walletPassRouter = Router();
@@ -416,6 +417,7 @@ function buildPassJson(opts: {
   tier: string;
   expiresLabel: string;
   barcodeMessage: string;
+  memberCode: string;
   customerId: string;
   hasLogoImage: boolean;
 }): Buffer {
@@ -456,7 +458,9 @@ function buildPassJson(opts: {
         { key: 'tier', label: 'TIER', value: opts.tier },
       ],
       backFields: [
+        { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
         { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
+        { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn or redeem points.' },
       ],
     },
   };
@@ -680,9 +684,8 @@ walletPassRouter.get(
 
       const tier = getTier(lifetimePoints);
       const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
-      const tierPrefix = tier.substring(0, 3).toUpperCase();
-      const custSuffix = customerId.replace(/-/g, '').substring(0, 7).toUpperCase();
-      const barcodeMessage = `MBR${tierPrefix}-${custSuffix}`;
+      const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
+      const barcodeMessage = memberProfile.member_code;
 
       const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
       const stripPng = createStripPng(750, 246, bgR, bgG, bgB);
@@ -723,6 +726,7 @@ walletPassRouter.get(
         tier,
         expiresLabel,
         barcodeMessage,
+        memberCode: memberProfile.member_code,
         customerId,
         hasLogoImage: !!logoUrl,
       });
@@ -902,7 +906,8 @@ walletPassRouter.get('/wallet-pass/debug', async (req, res) => {
         earnRate: '10% back',
         tier: 'Bronze',
         expiresLabel: 'Never',
-        barcodeMessage: 'MBRBRO-DEBUG00',
+        barcodeMessage: 'NKDEBUG00',
+        memberCode: 'NKDEBUG00',
         customerId: 'debug',
         hasLogoImage: false,
       }),
@@ -1031,7 +1036,8 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       earnRate,
       tier: 'Bronze',
       expiresLabel: 'Never',
-      barcodeMessage: 'MBRBRO-TEST000',
+      barcodeMessage: 'NKTEST000',
+      memberCode: 'NKTEST000',
       customerId: 'test-customer',
       hasLogoImage: !!logoUrl,
     });
@@ -1083,9 +1089,8 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     const tier = getTier(lifetimePoints);
     const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
-    const tierPrefix = tier.substring(0, 3).toUpperCase();
-    const custSuffix = customerId.replace(/-/g, '').substring(0, 7).toUpperCase();
-    const barcodeMessage = `MBR${tierPrefix}-${custSuffix}`;
+    const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
+    const barcodeMessage = memberProfile.member_code;
 
     const bgRgb = hexToRgb(bgColor);
     const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
@@ -1127,6 +1132,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       tier,
       expiresLabel,
       barcodeMessage,
+      memberCode: memberProfile.member_code,
       customerId,
       hasLogoImage: !!logoUrl,
     });

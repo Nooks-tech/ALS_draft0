@@ -43,6 +43,7 @@ export default function LoginScreen() {
   const copy = isArabic
     ? {
         error: 'خطأ',
+        configMissing: 'تعذر تحديد المتجر لهذا التطبيق. يرجى إعادة تشغيل التطبيق أو التواصل مع الدعم.',
         invalidPhone: 'يرجى إدخال رقم جوال سعودي صحيح.',
         sendCodeFailed: 'تعذر إرسال الرمز.',
         intro: 'أدخل رقم جوالك للبدء',
@@ -52,6 +53,7 @@ export default function LoginScreen() {
       }
     : {
         error: 'Error',
+        configMissing: 'This app is missing its merchant configuration. Please restart the app or contact support.',
         invalidPhone: 'Please enter a valid Saudi phone number.',
         sendCodeFailed: 'Could not send code.',
         intro: 'Enter your phone number to get started',
@@ -70,6 +72,10 @@ export default function LoginScreen() {
 
   const handleContinue = async () => {
     const phone = ensurePrefix(digits);
+    if (!merchantId) {
+      Alert.alert(copy.error, copy.configMissing);
+      return;
+    }
     if (!phone || digits.replace(/\D/g, '').length < 9) {
       Alert.alert(copy.error, copy.invalidPhone);
       return;

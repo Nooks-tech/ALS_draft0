@@ -1,10 +1,10 @@
 /**
- * Fetches menu from Nooks (when URL set) / Foodics API with fallback to local data
+ * Fetches merchant-scoped menu/branches from Nooks public APIs with fallback to local data
  */
 import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
-import { foodicsApi, MenuProduct } from '../api/foodics';
+import { MenuProduct } from '../api/foodics';
 import { fetchNooksBranches } from '../api/nooksBranches';
 import { fetchNooksMenu } from '../api/nooksMenu';
 import { BRANCHES, CATEGORIES, PRODUCTS } from '../data/menu';
@@ -40,15 +40,15 @@ export function useMenu() {
   // Start with local data immediately; refresh from APIs in background.
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [source, setSource] = useState<'local' | 'foodics' | 'nooks'>('local');
+  const [source, setSource] = useState<'local' | 'nooks'>('local');
 
   useEffect(() => {
     let cancelled = false;
     const cacheKey = `@als_menu_${merchantId || 'default'}`;
-    let nextProducts = products;
-    let nextCategories = categories;
-    let nextBranches = branches;
-    let nextSource: 'local' | 'foodics' | 'nooks' = source;
+    let nextProducts = PRODUCTS.map(mapToMenuItem);
+    let nextCategories = CATEGORIES.filter((c) => c !== 'All');
+    let nextBranches = BRANCHES;
+    let nextSource: 'local' | 'nooks' = 'local';
 
     AsyncStorage.getItem(cacheKey).then((raw) => {
       if (!raw || cancelled) return;
@@ -57,7 +57,7 @@ export function useMenu() {
           products?: MenuItem[];
           categories?: string[];
           branches?: typeof BRANCHES;
-          source?: 'local' | 'foodics' | 'nooks';
+          source?: 'local' | 'nooks';
         };
         if (cached.products?.length) {
           nextProducts = cached.products;
@@ -83,7 +83,7 @@ export function useMenu() {
     async function fetchMenu() {
       if (!cancelled) setLoading(true);
       try {
-        // Branches: Nooks first (when API URL + merchant set), then Foodics, then local
+        // Branches: Nooks first, then local fallback
         const nooksBranches = await fetchNooksBranches(merchantId);
         if (cancelled) return;
         if (nooksBranches.length > 0) {
@@ -97,15 +97,6 @@ export function useMenu() {
           setBranches(nextBranches);
           setSource('nooks');
           nextSource = 'nooks';
-        } else {
-          const branchesData = await foodicsApi.getBranches();
-          if (cancelled) return;
-          if (branchesData?.length) {
-            setBranches(branchesData);
-            nextBranches = branchesData;
-            setSource('foodics');
-            nextSource = 'foodics';
-          }
         }
 
         const nooksMenu = await fetchNooksMenu(merchantId);
@@ -129,7 +120,15 @@ export function useMenu() {
                   image: item.image_url || '',
                   foodicsProductId,
                   nooksProductId,
-                  modifierGroups: [],
+                  modifierGroups: (item.modifier_groups ?? []).map((group) => ({
+                    id: group.id,
+                    title: group.title,
+                    options: (group.options ?? []).map((option) => ({
+                      id: option.id,
+                      name: option.name,
+                      price: Number(option.price ?? 0),
+                    })),
+                  })),
                 } as MenuItem;
               })
               .filter((item): item is MenuItem => Boolean(item))
@@ -151,26 +150,6 @@ export function useMenu() {
               })
             ).catch(() => {});
             return;
-          }
-        }
-
-        const data = await foodicsApi.getMenu();
-        if (cancelled) return;
-        if (data?.products?.length) {
-          nextProducts = data.products.map((p) => ({
-            ...p,
-            category: p.category || 'Menu',
-            foodicsProductId: p.id,
-            nooksProductId: null,
-          }));
-          setProducts(nextProducts);
-          if (data.categories?.length) {
-            nextCategories = ['All', ...data.categories];
-            setCategories(nextCategories);
-          }
-          if (nextSource === 'local') {
-            setSource('foodics');
-            nextSource = 'foodics';
           }
         }
         AsyncStorage.setItem(

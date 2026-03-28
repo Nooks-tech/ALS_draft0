@@ -5,7 +5,8 @@ import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { otoService } from '../services/oto';
 import { earnPoints } from './loyalty';
-import { requireNooksInternalRequest } from '../utils/nooksInternal';
+import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const otoRouter = Router();
 
@@ -13,7 +14,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABAS
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 const OTO_WEBHOOK_SECRET = process.env.OTO_WEBHOOK_SECRET;
-const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_KEY
   ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
   : null;
@@ -40,7 +40,7 @@ async function sendPushToCustomer(customerId: string, title: string, body: strin
 }
 
 /** Map OTO order status to customer_orders.status (Preparing | Ready | Out for delivery | Delivered | Cancelled) */
-function mapOtoStatusToOrderStatus(otoStatus: string | undefined): string {
+export function mapOtoStatusToOrderStatus(otoStatus: string | undefined): string {
   if (!otoStatus) return 'Preparing';
   const s = (otoStatus || '').toLowerCase().replace(/_/g, '');
   if (s.includes('delivered')) return 'Delivered';
@@ -50,9 +50,19 @@ function mapOtoStatusToOrderStatus(otoStatus: string | undefined): string {
   return 'Preparing';
 }
 
+export function buildOrderStatusUpdate(mappedStatus: string) {
+  const now = new Date().toISOString();
+  return {
+    status: mappedStatus,
+    updated_at: now,
+    delivered_at: mappedStatus === 'Delivered' ? now : undefined,
+  };
+}
+
 /** GET /api/oto/health - verify OTO is configured and auth works */
-otoRouter.get('/health', async (_req, res) => {
+otoRouter.get('/health', async (req, res) => {
   try {
+    if (!requireDiagnosticAccess(req, res)) return;
     const ok = await otoService.healthCheck();
     res.json({ ok, message: ok ? 'OTO connected' : 'OTO health check failed' });
   } catch (err: any) {
@@ -61,8 +71,9 @@ otoRouter.get('/health', async (_req, res) => {
 });
 
 /** GET /api/oto/dc-list - list all delivery companies integrated with OTO (e.g. to check for Careem, Barq, Marsool) */
-otoRouter.get('/dc-list', async (_req, res) => {
+otoRouter.get('/dc-list', async (req, res) => {
   try {
+    if (!requireDiagnosticAccess(req, res)) return;
     const data = await otoService.dcList();
     res.json(data);
   } catch (err: any) {
@@ -73,6 +84,7 @@ otoRouter.get('/dc-list', async (_req, res) => {
 /** GET /api/oto/activated-carriers?city=Madinah - shows which carriers are active on your account for a city */
 otoRouter.get('/activated-carriers', async (req, res) => {
   try {
+    if (!requireDiagnosticAccess(req, res)) return;
     const city = (req.query.city as string) || undefined;
     const data = await otoService.getActivatedDeliveryOptions(city);
     res.json(data);
@@ -84,6 +96,7 @@ otoRouter.get('/activated-carriers', async (req, res) => {
 /** GET /api/oto/cities?country=SA - list valid city names (use these in delivery-options) */
 otoRouter.get('/cities', async (req, res) => {
   try {
+    if (!requireDiagnosticAccess(req, res)) return;
     const country = (req.query.country as string) || 'SA';
     const cities = await otoService.getCities(country);
     res.json({ cities });
@@ -95,6 +108,7 @@ otoRouter.get('/cities', async (req, res) => {
 /** GET /api/oto/verify - quick setup verification */
 otoRouter.get('/verify', async (req, res) => {
   try {
+    if (!requireDiagnosticAccess(req, res)) return;
     const city = (req.query.city as string) || 'Madinah';
     const health = await otoService.healthCheck();
     const cities = await otoService.getCities('SA', 20).catch(() => []);
@@ -141,6 +155,8 @@ const CITY_COORDS: Record<string, { lat: number; lon: number }> = {
 /** GET /api/oto/delivery-options?originCity=X&destinationCity=Y&originLat=&originLon=&destinationLat=&destinationLon= - list options. Pass lat/lon for Bullet (Mrsool). Same city = Mrsool eligible. */
 otoRouter.get('/delivery-options', async (req, res) => {
   try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
     const originCity = (req.query.originCity as string) || 'Riyadh';
     const destinationCity = (req.query.destinationCity as string) || 'Riyadh';
     const serviceType = req.query.serviceType as string | undefined;
@@ -185,25 +201,39 @@ otoRouter.get('/delivery-options', async (req, res) => {
 /** GET /api/oto/order-status?otoId=123 - OTO order details via GET /orderDetails (driver position, tracking). Syncs status to Supabase customer_orders when oto_id matches. */
 otoRouter.get('/order-status', async (req, res) => {
   try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
     const otoIdRaw = req.query.otoId ?? req.query.orderId;
     if (otoIdRaw == null) {
       return res.status(400).json({ error: 'Missing otoId or orderId query param' });
     }
     const otoId = Number(otoIdRaw);
-    const lookupId = isNaN(otoId) ? String(otoIdRaw) : otoId;
-    let merchantId: string | null = null;
-    if (supabaseAdmin && !isNaN(otoId)) {
-      const { data: order } = await supabaseAdmin
-        .from('customer_orders')
-        .select('merchant_id')
-        .eq('oto_id', otoId)
-        .maybeSingle();
-      merchantId = order?.merchant_id ?? null;
+    if (isNaN(otoId)) {
+      return res.status(400).json({ error: 'otoId must be numeric' });
     }
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+    const lookupId = otoId;
+    let merchantId: string | null = null;
+    const { data: order } = await supabaseAdmin
+      .from('customer_orders')
+      .select('merchant_id, customer_id')
+      .eq('oto_id', otoId)
+      .maybeSingle();
+    if (!order || order.customer_id !== user.id) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    merchantId = order?.merchant_id ?? null;
     const status = await otoService.orderStatus(lookupId, merchantId);
     const mappedStatus = mapOtoStatusToOrderStatus(status?.status);
     if (supabaseAdmin && mappedStatus !== 'Preparing' && !isNaN(otoId)) {
-      const updatePayload: Record<string, unknown> = { status: mappedStatus, updated_at: new Date().toISOString() };
+      const baseUpdate = buildOrderStatusUpdate(mappedStatus);
+      const updatePayload: Record<string, unknown> = {
+        status: baseUpdate.status,
+        updated_at: baseUpdate.updated_at,
+      };
+      if (baseUpdate.delivered_at) updatePayload.delivered_at = baseUpdate.delivered_at;
       if (status.driverLat != null) updatePayload.driver_lat = status.driverLat;
       if (status.driverLon != null) updatePayload.driver_lng = status.driverLon;
       const { error } = await supabaseAdmin
@@ -225,9 +255,7 @@ otoRouter.get('/order-status', async (req, res) => {
 otoRouter.post('/webhook', async (req, res) => {
   try {
     if (!OTO_WEBHOOK_SECRET) {
-      if (IS_PRODUCTION) {
-        return res.status(503).json({ error: 'OTO webhook secret is not configured' });
-      }
+      return res.status(503).json({ error: 'OTO webhook secret is not configured' });
     } else {
       const token =
         (req.query.secret_token as string) ||
@@ -248,21 +276,26 @@ otoRouter.post('/webhook', async (req, res) => {
 
     console.log('[OTO Webhook]', { otoOrderId, otoStatus, driverName, trackingNumber });
 
-    if (!supabaseAdmin || !otoOrderId) return res.json({ received: true });
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+    if (!otoOrderId) return res.status(400).json({ error: 'Missing oto order id' });
 
     const mappedStatus = mapOtoStatusToOrderStatus(otoStatus);
 
     // Find the order by oto_id
     const numericId = Number(otoOrderId);
-    const { data: order } = await supabaseAdmin
+    const { data: order, error: orderLookupError } = await supabaseAdmin
       .from('customer_orders')
       .select('id, status, customer_id, order_type, total_sar, merchant_id')
       .eq('oto_id', isNaN(numericId) ? otoOrderId : numericId)
       .single();
 
+    if (orderLookupError) {
+      console.error('[OTO Webhook] Order lookup failed:', orderLookupError.message);
+      return res.status(500).json({ error: 'Failed to resolve delivery order' });
+    }
     if (!order) {
       console.warn('[OTO Webhook] No order found for oto_id:', otoOrderId);
-      return res.json({ received: true, matched: false });
+      return res.status(409).json({ error: 'Order not found for oto webhook' });
     }
 
     // Don't regress status (e.g. don't go from Delivered back to Out for delivery)
@@ -276,10 +309,14 @@ otoRouter.post('/webhook', async (req, res) => {
       return res.json({ received: true, skipped: true, currentStatus: order.status });
     }
 
+    const baseUpdate = buildOrderStatusUpdate(mappedStatus);
     const updates: Record<string, unknown> = {
-      status: mappedStatus,
-      updated_at: new Date().toISOString(),
+      status: baseUpdate.status,
+      updated_at: baseUpdate.updated_at,
     };
+    if (baseUpdate.delivered_at) {
+      updates.delivered_at = baseUpdate.delivered_at;
+    }
 
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
@@ -288,6 +325,7 @@ otoRouter.post('/webhook', async (req, res) => {
 
     if (updateErr) {
       console.error('[OTO Webhook] DB update failed:', updateErr.message);
+      return res.status(500).json({ error: 'Failed to persist delivery status' });
     }
 
     // Push notifications for key transitions
@@ -317,7 +355,7 @@ otoRouter.post('/webhook', async (req, res) => {
     res.json({ received: true, orderId: order.id, newStatus: mappedStatus });
   } catch (err: any) {
     console.error('[OTO Webhook] Error:', err?.message);
-    res.json({ received: true, error: err?.message });
+    res.status(500).json({ error: err?.message || 'Failed to process oto webhook' });
   }
 });
 
@@ -355,6 +393,8 @@ otoRouter.post('/create-pickup', async (req, res) => {
 otoRouter.post('/request-delivery', async (req, res) => {
   console.log('[OTO] request-delivery received');
   try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
     const {
       orderId,
       amount,
@@ -364,17 +404,51 @@ otoRouter.post('/request-delivery', async (req, res) => {
       branch,
       items,
     } = req.body;
+    const scopedMerchantId = typeof merchantId === 'string' ? merchantId.trim() : '';
 
     if (!orderId || !amount || !customer?.name || !customer?.phone || !deliveryAddress?.address || !branch?.name || !items?.length) {
       return res.status(400).json({
         error: 'Missing required fields: orderId, amount, customer (name, phone), deliveryAddress, branch, items',
       });
     }
+    if (!scopedMerchantId) {
+      return res.status(400).json({ error: 'merchantId is required for delivery dispatch' });
+    }
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    const normalizedOrderId = String(orderId);
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, merchant_id, customer_id, total_sar, status, order_type, payment_id')
+      .eq('id', normalizedOrderId)
+      .eq('merchant_id', scopedMerchantId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+    if (orderError) {
+      return res.status(500).json({ error: orderError.message });
+    }
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found for this customer' });
+    }
+    if (order.order_type !== 'delivery') {
+      return res.status(400).json({ error: 'Delivery dispatch is only allowed for delivery orders' });
+    }
+    if (!order.payment_id) {
+      return res.status(400).json({ error: 'Delivery dispatch requires a paid order' });
+    }
+    if (order.status === 'Cancelled' || order.status === 'Delivered') {
+      return res.status(400).json({ error: `Cannot dispatch delivery for order status: ${order.status}` });
+    }
+    if (Math.abs(Number(order.total_sar ?? 0) - Number(amount)) > 0.01) {
+      return res.status(400).json({ error: 'Dispatch amount does not match the stored order total' });
+    }
 
     const result = await otoService.requestDelivery({
-      orderId: String(orderId),
+      orderId: normalizedOrderId,
       amount: Number(amount),
-      merchantId: typeof merchantId === 'string' ? merchantId : undefined,
+      merchantId: scopedMerchantId,
       pickupLocationCode: req.body.pickupLocationCode || undefined,
       deliveryOptionId: req.body.deliveryOptionId != null ? Number(req.body.deliveryOptionId) : undefined,
       customer: {
@@ -401,7 +475,7 @@ otoRouter.post('/request-delivery', async (req, res) => {
 
     const optId = req.body.deliveryOptionId ?? process.env.OTO_DELIVERY_OPTION_ID;
     const carrierName = req.body.carrierName ?? 'unknown';
-    console.log('[OTO] Delivery requested:', { orderId, otoId: result?.otoId, success: result?.success, deliveryOptionId: optId, carrier: carrierName });
+    console.log('[OTO] Delivery requested:', { userId: user.id, orderId, otoId: result?.otoId, success: result?.success, deliveryOptionId: optId, carrier: carrierName });
     res.json(result);
   } catch (err: any) {
     console.error('[OTO] request-delivery error:', err?.message);
@@ -418,7 +492,8 @@ otoRouter.post('/register-webhook', async (req, res) => {
 
     const baseUrl = (req.body.baseUrl || '').replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`;
     const webhookUrl = `${baseUrl}/api/oto/webhook`;
-    const result = await otoService.registerWebhook(webhookUrl, 'orderStatus');
+    const merchantId = typeof req.body?.merchantId === 'string' ? req.body.merchantId.trim() : undefined;
+    const result = await otoService.registerWebhook(webhookUrl, 'orderStatus', merchantId);
     console.log('[OTO] Webhook registration:', { webhookUrl, result });
     res.json({ ...result, webhookUrl });
   } catch (err: any) {

@@ -12,6 +12,7 @@ import { paymentRouter } from './routes/payment';
 import { complaintsRouter } from './routes/complaints';
 import { walletPassRouter } from './routes/walletPass';
 import { googleWalletRouter } from './routes/googleWallet';
+import { supportRouter } from './routes/support';
 import { startStaleOrdersCron } from './cron/staleOrders';
 
 const app = express();
@@ -40,6 +41,7 @@ app.use('/api/orders', ordersRouter);
 app.use('/api/oto', otoRouter);
 app.use('/api/payment', paymentRouter);
 app.use('/api/complaints', complaintsRouter);
+app.use('/api/support', supportRouter);
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`ALS API running on port ${PORT}`);

@@ -61,6 +61,7 @@ import { useOrders } from '../src/context/OrdersContext';
 import { useProfile } from '../src/context/ProfileContext';
 import { useAuth } from '../src/context/AuthContext';
 import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
+import { commitOrder } from '../src/api/orders';
 
 export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card';
 
@@ -259,6 +260,40 @@ export default function CheckoutScreen() {
     setSubmitting(true);
     const orderId = orderIdRef.current;
     try {
+      const resolvedPaymentId = moyasarPaymentId || orderId;
+      if (user?.id) {
+        await commitOrder({
+          id: orderId,
+          merchantId,
+          branchId: selectedBranch.id,
+          branchName: selectedBranch.name ?? null,
+          totalSar: Number(finalTotal.toFixed(2)),
+          status: 'Preparing',
+          items: cartItems.map((item) => ({
+            id: item.id,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            image: item.image,
+            customizations: item.customizations ?? null,
+            uniqueId: item.uniqueId,
+          })),
+          orderType,
+          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
+          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
+          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
+          deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
+          deliveryFee,
+          paymentId: resolvedPaymentId,
+          paymentMethod,
+          customerName: profile.fullName || null,
+          customerPhone: profile.phone || null,
+          customerEmail: profile.email || null,
+          promoCode: promoApplied ? promoCode : null,
+          relayToNooks: false,
+        });
+      }
+
       let otoId: number | undefined = undefined;
       let otoDispatchStatus: 'success' | 'failed' | undefined;
       let otoDispatchError: string | undefined;
@@ -269,7 +304,7 @@ export default function CheckoutScreen() {
           const deliveryRes = await otoApi.requestDelivery({
             orderId,
             amount: Number(finalTotal.toFixed(2)),
-            merchantId: merchantId || undefined,
+            merchantId,
             pickupLocationCode: pickupCode,
             customer: {
               name: (profile.fullName || 'Customer').trim(),
@@ -305,6 +340,39 @@ export default function CheckoutScreen() {
           console.warn('[Checkout] OTO request failed:', err);
         }
       }
+      if (user?.id) {
+        await commitOrder({
+          id: orderId,
+          merchantId,
+          branchId: selectedBranch.id,
+          branchName: selectedBranch.name ?? null,
+          totalSar: Number(finalTotal.toFixed(2)),
+          status: 'Preparing',
+          items: cartItems.map((item) => ({
+            id: item.id,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            image: item.image,
+            customizations: item.customizations ?? null,
+            uniqueId: item.uniqueId,
+          })),
+          orderType,
+          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
+          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
+          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
+          deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
+          deliveryFee,
+          paymentId: resolvedPaymentId,
+          paymentMethod,
+          otoId: otoId ?? null,
+          customerName: profile.fullName || null,
+          customerPhone: profile.phone || null,
+          customerEmail: profile.email || null,
+          promoCode: promoApplied ? promoCode : null,
+          relayToNooks: true,
+        });
+      }
       addOrder(
         {
           total: finalTotal,
@@ -320,12 +388,13 @@ export default function CheckoutScreen() {
           otoDispatchStatus,
           otoDispatchError,
           deliveryFee,
-          paymentId: moyasarPaymentId || orderId,
+          paymentId: resolvedPaymentId,
           paymentMethod: paymentMethod,
           promoCode: promoApplied ? promoCode : undefined,
           customerName: profile.fullName || undefined,
           customerPhone: profile.phone || undefined,
           customerEmail: profile.email || undefined,
+          serverPersisted: Boolean(user?.id),
         },
         orderId,
         'Preparing'
@@ -420,6 +489,10 @@ export default function CheckoutScreen() {
       Alert.alert('Branch Required', 'Please select a branch.');
       return;
     }
+    if (!merchantId) {
+      Alert.alert('Configuration Error', 'Merchant configuration is missing. Please restart the app and try again.');
+      return;
+    }
 
     if (!paymentConfig || !resolvedPublishableKey || !customerPaymentsEnabled) {
       Alert.alert(
@@ -453,11 +526,43 @@ export default function CheckoutScreen() {
       paymentSuccessHandled.current = false;
       setSubmitting(true);
       try {
+        const samsungOrderId = orderIdRef.current;
+        if (user?.id) {
+          await commitOrder({
+            id: samsungOrderId,
+            merchantId,
+            branchId: selectedBranch.id,
+            branchName: selectedBranch.name ?? null,
+            totalSar: Number(finalTotal.toFixed(2)),
+            status: 'Pending',
+            items: cartItems.map((item) => ({
+              id: item.id,
+              name: item.name,
+              price: item.price,
+              quantity: item.quantity,
+              image: item.image,
+              customizations: item.customizations ?? null,
+              uniqueId: item.uniqueId,
+            })),
+            orderType,
+            deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
+            deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
+            deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
+            deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
+            deliveryFee,
+            paymentMethod,
+            customerName: profile.fullName || null,
+            customerPhone: profile.phone || null,
+            customerEmail: profile.email || null,
+            promoCode: promoApplied ? promoCode : null,
+            relayToNooks: false,
+          });
+        }
         const session = await paymentApi.initiate({
           amount: finalTotal,
           currency: 'SAR',
-          orderId: `order-${Date.now()}`,
-          merchantId: merchantId || undefined,
+          orderId: samsungOrderId,
+          merchantId,
           successUrl: 'alsdraft0://payment/success',
         });
         samsungPayInvoiceIdRef.current = session.id;

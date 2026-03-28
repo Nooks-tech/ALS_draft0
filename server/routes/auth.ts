@@ -6,7 +6,7 @@
  *  2. POST /verify-otp { phone, code } → verify code, find-or-create Supabase user,
  *     return session tokens so the client can call supabase.auth.setSession()
  */
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { createHmac, randomUUID } from 'crypto';
 import { sendSms, normalizePhone } from '../services/sms';
@@ -20,6 +20,10 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.EXPO_PUBL
 const ALLOW_OTP_FALLBACK = process.env.ALLOW_OTP_FALLBACK === 'true';
 // SMS_VERIFICATION_DISABLED — set BYPASS_SMS=false in Railway env to re-enable
 const BYPASS_SMS = process.env.BYPASS_SMS === 'true' && process.env.NODE_ENV !== 'production';
+const OTP_MIN_INTERVAL_MS = 60_000;
+const OTP_WINDOW_MS = 10 * 60 * 1000;
+const OTP_MAX_PER_PHONE_WINDOW = 3;
+const OTP_MAX_PER_IP_WINDOW = 10;
 
 /** Admin client – used only for DB queries and admin.createUser(). Never for signInWithPassword. */
 const adminClient = SUPABASE_URL && SUPABASE_SERVICE_KEY
@@ -48,6 +52,30 @@ function phoneToEmail(phone: string): string {
   return `${phone}@phone.nooks.app`;
 }
 
+const otpAttemptBuckets = new Map<string, number[]>();
+
+function trackOtpAttempt(key: string, now: number) {
+  const current = otpAttemptBuckets.get(key) ?? [];
+  const fresh = current.filter((timestamp) => now - timestamp <= OTP_WINDOW_MS);
+  fresh.push(now);
+  otpAttemptBuckets.set(key, fresh);
+  return fresh;
+}
+
+function recentOtpAttempts(key: string, now: number) {
+  const current = otpAttemptBuckets.get(key) ?? [];
+  const fresh = current.filter((timestamp) => now - timestamp <= OTP_WINDOW_MS);
+  otpAttemptBuckets.set(key, fresh);
+  return fresh;
+}
+
+function getRequestIp(req: Request) {
+  const forwarded = typeof req.headers['x-forwarded-for'] === 'string'
+    ? req.headers['x-forwarded-for'].split(',')[0]?.trim()
+    : '';
+  return forwarded || req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
 // ─── Send OTP ────────────────────────────────────────────────────────────────
 
 router.post('/send-otp', async (req, res) => {
@@ -57,6 +85,9 @@ router.post('/send-otp', async (req, res) => {
       typeof req.body?.merchantId === 'string' ? req.body.merchantId.trim() : '';
     if (!phone || typeof phone !== 'string') {
       return res.status(400).json({ error: 'Phone number is required' });
+    }
+    if (!merchantId) {
+      return res.status(400).json({ error: 'merchantId is required for OTP verification' });
     }
 
     const normalised = normalizePhone(phone.trim());
@@ -68,40 +99,69 @@ router.post('/send-otp', async (req, res) => {
       return res.status(500).json({ error: 'OTP service not configured. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.' });
     }
 
+    const now = Date.now();
+    const requestIp = getRequestIp(req);
+    const phoneBucketKey = `phone:${merchantId}:${normalised}`;
+    const ipBucketKey = `ip:${merchantId}:${requestIp}`;
+    const recentPhoneAttempts = recentOtpAttempts(phoneBucketKey, now);
+    const recentIpAttempts = recentOtpAttempts(ipBucketKey, now);
+    const latestPhoneAttempt = recentPhoneAttempts[recentPhoneAttempts.length - 1];
+    if (latestPhoneAttempt && now - latestPhoneAttempt < OTP_MIN_INTERVAL_MS) {
+      return res.status(429).json({ error: 'Please wait before requesting another verification code.' });
+    }
+    if (recentPhoneAttempts.length >= OTP_MAX_PER_PHONE_WINDOW) {
+      return res.status(429).json({ error: 'Too many verification attempts for this phone number. Please try again later.' });
+    }
+    if (recentIpAttempts.length >= OTP_MAX_PER_IP_WINDOW) {
+      return res.status(429).json({ error: 'Too many verification attempts from this network. Please try again later.' });
+    }
+
+    const { data: latestOtp } = await adminClient
+      .from('sms_otp')
+      .select('created_at')
+      .eq('phone', normalised)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latestOtp?.created_at) {
+      const latestDbAttempt = new Date(latestOtp.created_at).getTime();
+      if (Number.isFinite(latestDbAttempt) && now - latestDbAttempt < OTP_MIN_INTERVAL_MS) {
+        return res.status(429).json({ error: 'Please wait before requesting another verification code.' });
+      }
+    }
+
     const code = generateCode();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     let walletReservation: { merchantId: string; referenceId: string; amountHalalas: number } | null = null;
 
-    if (merchantId) {
-      const referenceId = randomUUID();
-      const debitResult = await debitMerchantSmsWallet({
+    const referenceId = randomUUID();
+    const debitResult = await debitMerchantSmsWallet({
+      merchantId,
+      referenceId,
+      phone: normalised,
+      note: 'OTP verification SMS',
+      metadata: {
+        route: 'auth.send-otp',
+        phone: normalised,
+      },
+    });
+
+    if (debitResult.reason === 'merchant_not_found') {
+      return res.status(400).json({ error: 'Invalid merchant configuration' });
+    }
+
+    if (!debitResult.ok) {
+      return res.status(402).json({
+        error: 'Verification is temporarily unavailable for this store. Please contact support.',
+      });
+    }
+
+    if (debitResult.charged) {
+      walletReservation = {
         merchantId,
         referenceId,
-        phone: normalised,
-        note: 'OTP verification SMS',
-        metadata: {
-          route: 'auth.send-otp',
-          phone: normalised,
-        },
-      });
-
-      if (debitResult.reason === 'merchant_not_found') {
-        return res.status(400).json({ error: 'Invalid merchant configuration' });
-      }
-
-      if (!debitResult.ok) {
-        return res.status(402).json({
-          error: 'Verification is temporarily unavailable for this store. Please contact support.',
-        });
-      }
-
-      if (debitResult.charged) {
-        walletReservation = {
-          merchantId,
-          referenceId,
-          amountHalalas: debitResult.chargePerOtpHalalas,
-        };
-      }
+        amountHalalas: debitResult.chargePerOtpHalalas,
+      };
     }
 
     const { data: insertedOtp, error: insertErr } = await adminClient
@@ -167,6 +227,9 @@ router.post('/send-otp', async (req, res) => {
     if (ALLOW_OTP_FALLBACK) {
       console.log('[Auth] OTP (fallback enabled):', normalised, '→', code);
     }
+
+    trackOtpAttempt(phoneBucketKey, now);
+    trackOtpAttempt(ipBucketKey, now);
 
     res.json({ ok: true });
   } catch (e: unknown) {

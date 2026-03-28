@@ -74,7 +74,8 @@ complaintsRouter.post('/:orderId', async (req, res) => {
     }
 
     // 24-hour window check
-    const deliveredAt = new Date(order.updated_at).getTime();
+    const deliveredSource = order.delivered_at || order.updated_at;
+    const deliveredAt = new Date(deliveredSource).getTime();
     if (Date.now() - deliveredAt > COMPLAINT_WINDOW_HOURS * 60 * 60 * 1000) {
       return res.status(400).json({ error: 'Complaint window has expired (24 hours after delivery)' });
     }

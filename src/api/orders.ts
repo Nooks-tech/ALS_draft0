@@ -83,6 +83,30 @@ export type OrderInsert = {
   payment_method?: string | null;
 };
 
+export type CommitOrderPayload = {
+  id: string;
+  merchantId: string;
+  branchId: string;
+  branchName?: string | null;
+  totalSar: number;
+  status: string;
+  items: unknown;
+  orderType: 'delivery' | 'pickup';
+  deliveryAddress?: string | null;
+  deliveryLat?: number | null;
+  deliveryLng?: number | null;
+  deliveryCity?: string | null;
+  deliveryFee?: number | null;
+  paymentId?: string | null;
+  paymentMethod?: string | null;
+  otoId?: number | null;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+  promoCode?: string | null;
+  relayToNooks?: boolean;
+};
+
 export async function fetchOrdersForCustomer(customerId: string): Promise<OrderRow[]> {
   if (!supabase) return [];
   const primary = await supabase
@@ -161,6 +185,13 @@ export async function insertOrder(row: OrderInsert): Promise<boolean> {
     }
   }
   return true;
+}
+
+export async function commitOrder(payload: CommitOrderPayload) {
+  return api.post<{ success: boolean; order: { id: string; status: string; payment_id: string | null } }>(
+    '/api/orders/commit',
+    payload
+  );
 }
 
 export async function customerCancelOrder(orderId: string): Promise<{ success: boolean; refundStatus?: string; error?: string }> {

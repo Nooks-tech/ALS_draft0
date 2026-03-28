@@ -4,6 +4,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
+import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { cancelPayment } from '../services/payment';
 import { otoService } from '../services/oto';
 import { earnPoints } from './loyalty';
@@ -17,6 +18,8 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const NOOKS_COMMISSION_RATE = 0;
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 const CUSTOMER_CANCEL_WINDOW_MS = 60_000; // 60 seconds
+const NOOKS_API_BASE_URL = (process.env.NOOKS_API_BASE_URL || process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || '').trim().replace(/\/+$/, '');
+const NOOKS_INTERNAL_SECRET = (process.env.NOOKS_INTERNAL_SECRET || '').trim();
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
@@ -62,6 +65,201 @@ async function cancelOtoIfDelivery(order: Record<string, any>) {
   const result = await otoService.cancelDelivery(order.oto_id, undefined, order.merchant_id);
   if (result.warning) console.warn('[Orders] OTO cancel warning:', result.warning);
 }
+
+async function relayOrderToNooks(payload: Record<string, unknown>) {
+  if (!NOOKS_API_BASE_URL) {
+    throw new Error('NOOKS_API_BASE_URL is not configured');
+  }
+  if (!NOOKS_INTERNAL_SECRET) {
+    throw new Error('NOOKS_INTERNAL_SECRET is not configured');
+  }
+
+  const response = await fetch(`${NOOKS_API_BASE_URL}/api/public/orders`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(data?.error || 'Failed to relay order to nooks');
+  }
+  return data;
+}
+
+ordersRouter.post('/relay-to-nooks', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!NOOKS_API_BASE_URL) {
+      return res.status(503).json({ error: 'NOOKS_API_BASE_URL is not configured' });
+    }
+    if (!NOOKS_INTERNAL_SECRET) {
+      return res.status(503).json({ error: 'NOOKS_INTERNAL_SECRET is not configured' });
+    }
+
+    const body = req.body ?? {};
+    if (body.customer_id && body.customer_id !== user.id) {
+      return res.status(403).json({ error: 'customer_id does not match authenticated user' });
+    }
+    if (!body.merchant_id || !body.branch_id || typeof body.total_sar !== 'number' || !Array.isArray(body.items)) {
+      return res.status(400).json({ error: 'merchant_id, branch_id, total_sar, and items are required' });
+    }
+
+    const relayPayload = {
+      ...body,
+      customer_id: user.id,
+    };
+
+    const data = await relayOrderToNooks(relayPayload);
+
+    res.json({ success: true, relayed: true, data });
+  } catch (err: any) {
+    console.error('[Orders] relay-to-nooks error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to relay order' });
+  }
+});
+
+ordersRouter.post('/commit', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    const {
+      id,
+      merchantId,
+      branchId,
+      branchName,
+      totalSar,
+      status,
+      items,
+      orderType,
+      deliveryAddress,
+      deliveryLat,
+      deliveryLng,
+      deliveryCity,
+      deliveryFee,
+      paymentId,
+      paymentMethod,
+      otoId,
+      customerName,
+      customerPhone,
+      customerEmail,
+      promoCode,
+      relayToNooks,
+    } = req.body ?? {};
+
+    if (!id || typeof id !== 'string') {
+      return res.status(400).json({ error: 'id is required' });
+    }
+    if (!merchantId || typeof merchantId !== 'string') {
+      return res.status(400).json({ error: 'merchantId is required' });
+    }
+    if (!branchId || typeof branchId !== 'string') {
+      return res.status(400).json({ error: 'branchId is required' });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'items are required' });
+    }
+    if (typeof totalSar !== 'number' || !Number.isFinite(totalSar) || totalSar < 0) {
+      return res.status(400).json({ error: 'totalSar must be a valid non-negative number' });
+    }
+    if (orderType !== 'delivery' && orderType !== 'pickup') {
+      return res.status(400).json({ error: 'orderType must be delivery or pickup' });
+    }
+
+    const normalizedStatus =
+      typeof status === 'string' && status.trim()
+        ? status.trim()
+        : 'Pending';
+    const normalizedDeliveryFee =
+      typeof deliveryFee === 'number' && Number.isFinite(deliveryFee) ? deliveryFee : null;
+
+    const { data: existing } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, customer_id, merchant_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (existing && (existing.customer_id !== user.id || existing.merchant_id !== merchantId)) {
+      return res.status(403).json({ error: 'Order does not belong to the authenticated user' });
+    }
+
+    const payload: Record<string, unknown> = {
+      id,
+      merchant_id: merchantId,
+      branch_id: branchId,
+      branch_name: typeof branchName === 'string' && branchName.trim() ? branchName.trim() : null,
+      customer_id: user.id,
+      total_sar: totalSar,
+      status: normalizedStatus,
+      items,
+      order_type: orderType,
+      delivery_address: typeof deliveryAddress === 'string' ? deliveryAddress : null,
+      delivery_lat: typeof deliveryLat === 'number' ? deliveryLat : null,
+      delivery_lng: typeof deliveryLng === 'number' ? deliveryLng : null,
+      delivery_city: typeof deliveryCity === 'string' ? deliveryCity : null,
+      oto_id: typeof otoId === 'number' ? otoId : null,
+      delivery_fee: normalizedDeliveryFee,
+      payment_id: typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null,
+      payment_method: typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: savedOrder, error: commitError } = await supabaseAdmin
+      .from('customer_orders')
+      .upsert(payload, { onConflict: 'id' })
+      .select('id, status, payment_id, created_at, updated_at')
+      .single();
+
+    if (commitError || !savedOrder) {
+      return res.status(500).json({ error: commitError?.message || 'Failed to commit order' });
+    }
+
+    let relayResult: unknown = null;
+    if (relayToNooks === true && payload.payment_id) {
+      relayResult = await relayOrderToNooks({
+        id,
+        merchant_id: merchantId,
+        branch_id: branchId,
+        customer_id: user.id,
+        total_sar: totalSar,
+        status: normalizedStatus,
+        order_type: orderType,
+        branch_name: payload.branch_name,
+        delivery_fee: normalizedDeliveryFee,
+        payment_id: payload.payment_id,
+        payment_method: payload.payment_method,
+        customer_name: typeof customerName === 'string' ? customerName.trim() || null : null,
+        customer_phone: typeof customerPhone === 'string' ? customerPhone.trim() || null : null,
+        customer_email: typeof customerEmail === 'string' ? customerEmail.trim() || null : null,
+        promo_code: typeof promoCode === 'string' ? promoCode.trim() || null : null,
+        delivery_address: payload.delivery_address,
+        delivery_lat: payload.delivery_lat,
+        delivery_lng: payload.delivery_lng,
+        delivery_city: payload.delivery_city,
+        items: items.map((item: any) => ({
+          product_id: String(item.id ?? item.product_id ?? ''),
+          name: String(item.name ?? 'Item'),
+          quantity: Number(item.quantity ?? 1),
+          price_sar: Number(item.price ?? item.price_sar ?? 0),
+          ...(item.customizations ? { customizations: item.customizations } : {}),
+        })),
+      });
+    }
+
+    res.json({ success: true, order: savedOrder, relayResult });
+  } catch (err: any) {
+    console.error('[Orders] commit error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to commit order' });
+  }
+});
 
 /* ═══════════════════════════════════════════════════════════════════
    MERCHANT CANCEL – void-first refund + OTO cancel + fee tracking
@@ -498,9 +696,17 @@ ordersRouter.patch('/:id/status', async (req, res) => {
 
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
+    const updatePayload: Record<string, unknown> = {
+      status,
+      updated_at: new Date().toISOString(),
+    };
+    if (status === 'Delivered') {
+      updatePayload.delivered_at = new Date().toISOString();
+    }
+
     const { error } = await supabaseAdmin
       .from('customer_orders')
-      .update({ status, updated_at: new Date().toISOString() })
+      .update(updatePayload)
       .eq('id', orderId);
 
     if (error) return res.status(500).json({ error: error.message });
@@ -534,22 +740,23 @@ ordersRouter.get('/:id/debug-refund', async (req, res) => {
 
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, payment_id, payment_method, refund_status, refund_id, total_sar, status')
+      .select('id, merchant_id, payment_id, payment_method, refund_status, refund_id, total_sar, status')
       .eq('id', orderId)
       .single();
 
     if (error || !order) return res.status(404).json({ error: 'Order not found' });
 
-    const MOYASAR_SECRET_KEY = process.env.MOYASAR_SECRET_KEY;
-    const moyasarConfigured = !!MOYASAR_SECRET_KEY;
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(order.merchant_id ?? null);
+    const moyasarConfigured = !!runtimeConfig.secretKey;
     const result: Record<string, unknown> = {
       order,
       moyasarConfigured,
-      moyasarKeyPrefix: MOYASAR_SECRET_KEY ? MOYASAR_SECRET_KEY.substring(0, 10) + '...' : 'NOT SET',
+      paymentSource: runtimeConfig.source,
+      moyasarKeyPrefix: runtimeConfig.secretKey ? runtimeConfig.secretKey.substring(0, 10) + '...' : 'NOT SET',
     };
 
-    if (order.payment_id && MOYASAR_SECRET_KEY) {
-      const authHeader = `Basic ${Buffer.from(MOYASAR_SECRET_KEY + ':').toString('base64')}`;
+    if (order.payment_id && runtimeConfig.secretKey) {
+      const authHeader = `Basic ${Buffer.from(runtimeConfig.secretKey + ':').toString('base64')}`;
 
       // Try as payment
       try {

@@ -30,6 +30,20 @@ function matchesPreferredCarrier(companyName: string): boolean {
 
 const tokenCache = new Map<string, { accessToken: string; tokenExpiresAt: number }>();
 
+export function normalizeMerchantId(value?: string | null): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+export function resolveScopedRefreshToken(
+  merchantId: string | null,
+  refreshToken: string | null,
+): string | null {
+  if (merchantId) return refreshToken;
+  return refreshToken || OTO_REFRESH_TOKEN || null;
+}
+
 async function getAccessToken(refreshTokenOverride?: string | null): Promise<string> {
   const refreshToken = refreshTokenOverride || OTO_REFRESH_TOKEN;
   if (!refreshToken) {
@@ -95,7 +109,7 @@ async function otoRequest<T>(
 export interface OTORequestDeliveryPayload {
   orderId: string;
   amount: number;
-  merchantId?: string | null;
+  merchantId: string;
   /** Pickup location code for this branch - overrides OTO_PICKUP_LOCATION_CODE when set */
   pickupLocationCode?: string;
   /** deliveryOptionId from /api/oto/delivery-options - Mrsool when same-city, etc. */
@@ -141,12 +155,17 @@ export interface OTOOrderStatusResponse {
 
 export const otoService = {
   async requestDelivery(payload: OTORequestDeliveryPayload): Promise<OTOOrderResponse> {
-    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(payload.merchantId);
-    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
+    const merchantId = normalizeMerchantId(payload.merchantId);
+    if (!merchantId) {
+      throw new Error('merchantId is required for delivery dispatch');
+    }
+
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
+    const refreshToken = resolveScopedRefreshToken(merchantId, runtimeConfig.refreshToken);
     if (!refreshToken) {
       throw new Error('OTO refresh token is not configured for this merchant');
     }
-    if (!runtimeConfig.deliveryEnabled && payload.merchantId) {
+    if (!runtimeConfig.deliveryEnabled) {
       throw new Error('Delivery is disabled for this merchant');
     }
 
@@ -371,8 +390,12 @@ export const otoService = {
    * Returns { cancelled, warning? } — never throws.
    */
   async cancelDelivery(orderId: string | number, shipmentId?: string, merchantId?: string | null): Promise<{ cancelled: boolean; warning?: string }> {
-    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
-    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
+    const scopedMerchantId = normalizeMerchantId(merchantId);
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(scopedMerchantId);
+    const refreshToken = resolveScopedRefreshToken(scopedMerchantId, runtimeConfig.refreshToken);
+    if (!refreshToken) {
+      return { cancelled: false, warning: 'OTO refresh token not configured for this merchant' };
+    }
     // Try cancelOrder first (lightweight, no shipment needed)
     try {
       await otoRequest<{ success?: boolean }>('/cancelOrder', { orderId: String(orderId) }, 'POST', refreshToken);
@@ -421,8 +444,11 @@ export const otoService = {
 
   async healthCheck(merchantId?: string | null): Promise<boolean> {
     try {
-      const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
-      await getAccessToken(runtimeConfig.refreshToken || OTO_REFRESH_TOKEN);
+      const scopedMerchantId = normalizeMerchantId(merchantId);
+      const runtimeConfig = await getMerchantDeliveryRuntimeConfig(scopedMerchantId);
+      const refreshToken = resolveScopedRefreshToken(scopedMerchantId, runtimeConfig.refreshToken);
+      if (!refreshToken) return false;
+      await getAccessToken(refreshToken);
       const cities = await this.getCities('SA', 1);
       return cities.length > 0;
     } catch {
@@ -436,8 +462,12 @@ export const otoService = {
    * orderId is the OTO order id (numeric otoId from createOrder, or your orderId string).
    */
   async orderStatus(orderId: number | string, merchantId?: string | null): Promise<OTOOrderStatusResponse> {
-    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
-    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
+    const scopedMerchantId = normalizeMerchantId(merchantId);
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(scopedMerchantId);
+    const refreshToken = resolveScopedRefreshToken(scopedMerchantId, runtimeConfig.refreshToken);
+    if (!refreshToken) {
+      throw new Error('OTO refresh token is not configured for this merchant');
+    }
     const data = await otoRequest<Record<string, unknown>>('/orderDetails', {
       orderId: String(orderId),
     }, 'GET', refreshToken);
@@ -460,8 +490,12 @@ export const otoService = {
 
   /** POST /webhook – register a webhook URL with OTO */
   async registerWebhook(url: string, webhookType = 'orderStatus', merchantId?: string | null): Promise<{ success: boolean; message?: string }> {
-    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(merchantId);
-    const refreshToken = runtimeConfig.refreshToken || OTO_REFRESH_TOKEN;
+    const scopedMerchantId = normalizeMerchantId(merchantId);
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(scopedMerchantId);
+    const refreshToken = resolveScopedRefreshToken(scopedMerchantId, runtimeConfig.refreshToken);
+    if (!refreshToken) {
+      return { success: false, message: 'OTO refresh token is not configured for this merchant' };
+    }
     const data = await otoRequest<{ success?: boolean; message?: string }>('/webhook', {
       method: 'post',
       url,

@@ -32,7 +32,7 @@ export type MerchantPaymentRuntimeConfig = {
   publishableKey: string | null;
   secretKey: string | null;
   webhookSecret: string | null;
-  source: 'merchant' | 'fallback';
+  source: 'merchant' | 'fallback' | 'missing';
 };
 
 export type MerchantDeliveryRuntimeConfig = {
@@ -41,7 +41,7 @@ export type MerchantDeliveryRuntimeConfig = {
   deliveryEnabled: boolean;
   status: 'disconnected' | 'connected' | 'error';
   refreshToken: string | null;
-  source: 'merchant' | 'fallback';
+  source: 'merchant' | 'fallback' | 'missing';
 };
 
 export function getSupabaseAdminClient() {
@@ -63,15 +63,51 @@ export async function getMerchantPaymentRuntimeConfig(
     source: 'fallback',
   };
 
-  if (!merchantId || !supabaseAdmin) return fallback;
+  if (!merchantId) return fallback;
+  if (!supabaseAdmin) {
+    return {
+      merchantId,
+      environment: 'production',
+      customerPaymentsEnabled: false,
+      applePayEnabled: false,
+      applePayMerchantId: null,
+      publishableKey: null,
+      secretKey: null,
+      webhookSecret: null,
+      source: 'missing',
+    };
+  }
 
-  const { data, error } = await supabaseAdmin
-    .from('merchant_payment_settings')
-    .select('*')
-    .eq('merchant_id', merchantId)
-    .maybeSingle();
+  const [{ data, error }, { data: merchant }] = await Promise.all([
+    supabaseAdmin
+      .from('merchant_payment_settings')
+      .select('*')
+      .eq('merchant_id', merchantId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('merchants')
+      .select('status')
+      .eq('id', merchantId)
+      .maybeSingle(),
+  ]);
 
-  if (error || !data) return fallback;
+  if (error || !data) {
+    return {
+      merchantId,
+      environment: 'production',
+      customerPaymentsEnabled: false,
+      applePayEnabled: false,
+      applePayMerchantId: null,
+      publishableKey: null,
+      secretKey: null,
+      webhookSecret: null,
+      source: 'missing',
+    };
+  }
+
+  const merchantStatus =
+    typeof merchant?.status === 'string' ? merchant.status.trim().toLowerCase() : '';
+  const merchantIsSuspended = merchantStatus === 'suspended';
 
   const environment = data.environment === 'sandbox' ? 'sandbox' : 'production';
   const publishableKeyEnc =
@@ -84,8 +120,8 @@ export async function getMerchantPaymentRuntimeConfig(
   return {
     merchantId,
     environment,
-    customerPaymentsEnabled: Boolean(data.customer_payments_enabled),
-    applePayEnabled: Boolean(data.apple_pay_enabled),
+    customerPaymentsEnabled: !merchantIsSuspended && Boolean(data.customer_payments_enabled),
+    applePayEnabled: !merchantIsSuspended && Boolean(data.apple_pay_enabled),
     applePayMerchantId: normalizeOptionalString(data.apple_pay_merchant_id),
     publishableKey: safeDecrypt(publishableKeyEnc, null),
     secretKey: safeDecrypt(secretKeyEnc, null),
@@ -106,15 +142,45 @@ export async function getMerchantDeliveryRuntimeConfig(
     source: 'fallback',
   };
 
-  if (!merchantId || !supabaseAdmin) return fallback;
+  if (!merchantId) return fallback;
+  if (!supabaseAdmin) {
+    return {
+      merchantId,
+      environment: 'production',
+      deliveryEnabled: false,
+      status: 'disconnected',
+      refreshToken: null,
+      source: 'missing',
+    };
+  }
 
-  const { data, error } = await supabaseAdmin
-    .from('merchant_delivery_settings')
-    .select('*')
-    .eq('merchant_id', merchantId)
-    .maybeSingle();
+  const [{ data, error }, { data: merchant }] = await Promise.all([
+    supabaseAdmin
+      .from('merchant_delivery_settings')
+      .select('*')
+      .eq('merchant_id', merchantId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('merchants')
+      .select('status')
+      .eq('id', merchantId)
+      .maybeSingle(),
+  ]);
 
-  if (error || !data) return fallback;
+  if (error || !data) {
+    return {
+      merchantId,
+      environment: 'production',
+      deliveryEnabled: false,
+      status: 'disconnected',
+      refreshToken: null,
+      source: 'missing',
+    };
+  }
+
+  const merchantStatus =
+    typeof merchant?.status === 'string' ? merchant.status.trim().toLowerCase() : '';
+  const merchantIsSuspended = merchantStatus === 'suspended';
 
   const environment = data.environment === 'sandbox' ? 'sandbox' : 'production';
   const refreshTokenEnc =
@@ -123,8 +189,15 @@ export async function getMerchantDeliveryRuntimeConfig(
   return {
     merchantId,
     environment,
-    deliveryEnabled: Boolean(data.delivery_enabled),
-    status: data.status === 'error' ? 'error' : data.status === 'connected' ? 'connected' : 'disconnected',
+    deliveryEnabled: !merchantIsSuspended && Boolean(data.delivery_enabled),
+    status:
+      merchantIsSuspended
+        ? 'disconnected'
+        : data.status === 'error'
+          ? 'error'
+          : data.status === 'connected'
+            ? 'connected'
+            : 'disconnected',
     refreshToken: safeDecrypt(refreshTokenEnc, null),
     source: 'merchant',
   };

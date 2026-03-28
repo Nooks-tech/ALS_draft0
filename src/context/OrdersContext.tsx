@@ -58,6 +58,7 @@ export type OrdersContextType = {
         customerEmail?: string;
       otoDispatchStatus?: 'success' | 'failed';
       otoDispatchError?: string;
+      serverPersisted?: boolean;
     },
     generatedId?: string,
     initialStatus?: OrderStatus
@@ -222,6 +223,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         promoCode?: string;
         otoDispatchStatus?: 'success' | 'failed';
         otoDispatchError?: string;
+        serverPersisted?: boolean;
       },
       generatedId?: string,
       initialStatus: OrderStatus = 'Preparing'
@@ -243,7 +245,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         return next;
       });
 
-      if (order.merchantId && order.branchId) {
+      if (order.merchantId && order.branchId && !order.serverPersisted) {
         void (async () => {
           let inserted = false;
           if (customerId && customerId !== 'guest') {

@@ -3,8 +3,7 @@ import { CheckCircle, MessageCircle, X } from 'lucide-react-native';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { supabase } from '../src/api/supabase';
-import { useAuth } from '../src/context/AuthContext';
+import { createSupportTicket } from '../src/api/support';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 
@@ -12,7 +11,6 @@ export default function SupportModal() {
   const router = useRouter();
   const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
-  const { user } = useAuth();
   const { merchantId } = useMerchant();
   const isArabic = i18n.language === 'ar';
   const [subject, setSubject] = useState('');
@@ -27,22 +25,18 @@ export default function SupportModal() {
     }
     setSending(true);
     try {
-      if (supabase) {
-        await supabase.from('support_tickets').insert({
-          merchant_id: merchantId || null,
-          customer_id: user?.id ?? null,
-          email: user?.email ?? null,
-          subject: subject.trim(),
-          message: message.trim(),
-        });
-      }
+      await createSupportTicket({
+        merchantId,
+        subject: subject.trim(),
+        message: message.trim(),
+      });
       setSent(true);
     } catch {
       Alert.alert(isArabic ? 'خطأ' : 'Error', isArabic ? 'تعذر إرسال رسالتك. يرجى المحاولة مرة أخرى.' : 'Could not send your message. Please try again.');
     } finally {
       setSending(false);
     }
-  }, [subject, message, user, merchantId]);
+  }, [isArabic, merchantId, message, subject]);
 
   return (
     <View className="flex-1">

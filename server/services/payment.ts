@@ -90,8 +90,9 @@ export async function cancelPayment(
   amountHalals?: number,
   merchantId?: string | null,
 ): Promise<CancelPaymentResult> {
-  const config = await getMerchantPaymentRuntimeConfig(merchantId);
-  const secretKey = config.secretKey || MOYASAR_SECRET_KEY;
+  const scopedMerchantId = normalizeMerchantId(merchantId);
+  const config = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
+  const secretKey = scopedMerchantId ? config.secretKey : (config.secretKey || MOYASAR_SECRET_KEY);
   if (!secretKey) return { method: 'failed', fee: 0, error: 'Moyasar secret key not configured' };
 
   const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
@@ -162,6 +163,12 @@ export interface PaymentSession {
   commission?: { rate: number; amount: number };
 }
 
+export function normalizeMerchantId(value?: string | null): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
 export function calculateCommission(totalAmount: number, deliveryFee: number = 0): { rate: number; amount: number } {
   const subtotal = Math.max(0, totalAmount - deliveryFee);
   return {
@@ -172,7 +179,9 @@ export function calculateCommission(totalAmount: number, deliveryFee: number = 0
 
 export const paymentService = {
   async initiatePayment(req: PaymentInitRequest): Promise<PaymentSession> {
-    if (req.merchantId) {
+    const merchantId = normalizeMerchantId(req.merchantId);
+    if (merchantId) {
+      req.merchantId = merchantId;
       return this.initiateMoyasar(req);
     }
     if (TAP_SECRET_KEY) {
@@ -216,8 +225,17 @@ export const paymentService = {
   },
 
   async initiateMoyasar(req: PaymentInitRequest): Promise<PaymentSession> {
-    const runtimeConfig = await getMerchantPaymentRuntimeConfig(req.merchantId);
-    const secretKey = runtimeConfig.secretKey || MOYASAR_SECRET_KEY;
+    const merchantId = normalizeMerchantId(req.merchantId);
+    if (!merchantId) {
+      throw new Error('merchantId is required for merchant checkout');
+    }
+
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
+    if (!runtimeConfig.customerPaymentsEnabled) {
+      throw new Error('Merchant checkout is not enabled for this merchant');
+    }
+
+    const secretKey = runtimeConfig.secretKey;
     if (!secretKey) {
       throw new Error('Moyasar secret key is not configured for this merchant');
     }
@@ -233,6 +251,7 @@ export const paymentService = {
     if (req.orderId || req.metadata) {
       body.metadata = {
         ...(req.orderId ? { order_id: String(req.orderId) } : {}),
+        merchant_id: merchantId,
         ...(req.metadata || {}),
       };
     }

@@ -1,20 +1,15 @@
 /**
- * Nooks order API – submit customer orders to Nooks when they expose POST /api/public/orders.
- * When EXPO_PUBLIC_NOOKS_API_BASE_URL is not set, all calls no-op.
- * See docs/NOOKSWEB_ANSWERS.md for payload shape.
+ * Relay customer orders to nooksweb through the ALS backend so the shared
+ * internal secret never ships in the mobile app bundle.
  */
-import Constants from 'expo-constants';
-
-const BASE_URL =
-  Constants.expoConfig?.extra?.nooksApiBaseUrl ||
-  process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL ||
-  '';
+import { api } from './client';
 
 export type NooksOrderItem = {
   product_id: string;
   name: string;
   quantity: number;
   price_sar: number;
+  customizations?: Record<string, unknown>;
 };
 
 export type NooksOrderPayload = {
@@ -44,7 +39,7 @@ export function buildNooksOrderPayload(
     merchantId?: string;
     branchId?: string;
     total: number;
-    items: { id: string; name: string; price: number; quantity: number }[];
+    items: { id: string; name: string; price: number; quantity: number; customizations?: Record<string, unknown> }[];
     orderType?: 'delivery' | 'pickup';
     branchName?: string;
     deliveryFee?: number;
@@ -75,6 +70,7 @@ export function buildNooksOrderPayload(
       name: i.name,
       quantity: i.quantity,
       price_sar: i.price,
+      ...(i.customizations ? { customizations: i.customizations } : {}),
     })),
     ...(order.promoCode && { promo_code: order.promoCode }),
     ...(order.paymentId && { payment_id: order.paymentId }),
@@ -90,19 +86,10 @@ export function buildNooksOrderPayload(
   };
 }
 
-/** Fire-and-forget. No-op if BASE_URL not set or request fails. */
+/** Fire-and-forget. Logs failures but never blocks local order history. */
 export async function submitOrderToNooks(payload: NooksOrderPayload): Promise<void> {
-  if (!BASE_URL.trim()) return;
-  const url = `${BASE_URL.replace(/\/$/, '')}/api/public/orders`;
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      console.warn('[Nooks] Order submit failed:', res.status, await res.text());
-    }
+    await api.post('/api/orders/relay-to-nooks', payload);
   } catch (e) {
     console.warn('[Nooks] Order submit error:', e);
   }

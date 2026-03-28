@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { foodicsService } from '../services/foodics';
+import { requireNooksInternalRequest } from '../utils/nooksInternal';
 
 export const foodicsRouter = Router();
 
@@ -29,6 +30,7 @@ foodicsRouter.get('/branches', async (req, res) => {
 
 foodicsRouter.post('/orders', async (req, res) => {
   try {
+    if (!requireNooksInternalRequest(req, res)) return;
     const order = await foodicsService.createOrder(req.body);
     res.json(order);
   } catch (error: any) {

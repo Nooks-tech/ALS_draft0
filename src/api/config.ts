@@ -32,7 +32,7 @@ export const API_URL = process.env.EXPO_PUBLIC_API_URL || API_CONFIG.apiUrl;
 export const MOYASAR_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY || '';
 
 /** Apple Pay merchant ID from Apple Developer - required for Apple Pay on iOS */
-export const APPLE_PAY_MERCHANT_ID = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.als';
+export const APPLE_PAY_MERCHANT_ID = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || '';
 
 /** Moyasar API base URL - use https://apimig.moyasar.com for staging */
 export const MOYASAR_BASE_URL = process.env.EXPO_PUBLIC_MOYASAR_BASE_URL || 'https://api.moyasar.com';

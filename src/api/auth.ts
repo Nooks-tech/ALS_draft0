@@ -16,10 +16,10 @@ export interface VerifyOtpResponse {
 }
 
 export const authApi = {
-  sendOtp: (phone: string, merchantId?: string | null) =>
+  sendOtp: (phone: string, merchantId: string) =>
     api.post<{ ok: boolean }>('/api/auth/send-otp', {
       phone,
-      ...(merchantId ? { merchantId } : {}),
+      merchantId,
     }),
 
   verifyOtp: (phone: string, code: string) =>

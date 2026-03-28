@@ -22,6 +22,7 @@ export default function OtpScreen() {
     ? {
         error: 'خطأ',
         invalidCodeTitle: 'رمز غير صحيح',
+        configMissing: 'تعذر تحديد المتجر لهذا التطبيق. يرجى إعادة تشغيل التطبيق أو التواصل مع الدعم.',
         couldNotSend: 'تعذر إرسال الرمز.',
         invalidCodeBody: 'يرجى إدخال رمز التحقق المكون من 6 أرقام.',
         phoneMissing: 'رقم الجوال مفقود. يرجى العودة والمحاولة مرة أخرى.',
@@ -38,6 +39,7 @@ export default function OtpScreen() {
     : {
         error: 'Error',
         invalidCodeTitle: 'Invalid Code',
+        configMissing: 'This app is missing its merchant configuration. Please restart the app or contact support.',
         couldNotSend: 'Could not send code.',
         invalidCodeBody: 'Please enter the 6-digit code from your SMS.',
         phoneMissing: 'Phone number is missing. Please go back and try again.',
@@ -59,6 +61,10 @@ export default function OtpScreen() {
 
   const resendOtp = useCallback(async () => {
     if (!phone?.trim()) return;
+    if (!merchantId) {
+      Alert.alert(copy.error, copy.configMissing);
+      return;
+    }
     setSending(true);
     try {
       await authApi.sendOtp(phone, merchantId);
@@ -68,7 +74,7 @@ export default function OtpScreen() {
     } finally {
       setSending(false);
     }
-  }, [phone, copy.couldNotSend, copy.error]);
+  }, [merchantId, phone, copy.configMissing, copy.couldNotSend, copy.error]);
 
   useEffect(() => {
     const interval = setInterval(() => setTimer((prev) => (prev > 0 ? prev - 1 : 0)), 1000);

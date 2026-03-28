@@ -17,7 +17,7 @@ export interface OTODeliveryOption {
 export interface OTORequestDeliveryPayload {
   orderId: string;
   amount: number;
-  merchantId?: string;
+  merchantId: string;
   pickupLocationCode?: string;
   deliveryOptionId?: number;
   customer: { name: string; phone: string; email?: string };

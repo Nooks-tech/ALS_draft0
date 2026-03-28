@@ -152,13 +152,7 @@ jobs:
           if [ "$RAW_SCALE" -lt 20 ]; then RAW_SCALE=20; fi
           if [ "$RAW_SCALE" -gt 150 ]; then RAW_SCALE=150; fi
           MOYASAR_PUBLISHABLE_KEY_VALUE="${{ github.event.inputs.moyasar_publishable_key }}"
-          if [ -z "$MOYASAR_PUBLISHABLE_KEY_VALUE" ]; then
-            MOYASAR_PUBLISHABLE_KEY_VALUE="${{ secrets.MOYASAR_PUBLISHABLE_KEY }}"
-          fi
           APPLE_PAY_MERCHANT_ID_VALUE="${{ github.event.inputs.apple_pay_merchant_id }}"
-          if [ -z "$APPLE_PAY_MERCHANT_ID_VALUE" ]; then
-            APPLE_PAY_MERCHANT_ID_VALUE="${{ secrets.APPLE_PAY_MERCHANT_ID }}"
-          fi
           IOS_BUNDLE_ID_VALUE="${{ github.event.inputs.ios_bundle_id }}"
           ANDROID_PACKAGE_ID_VALUE="${{ github.event.inputs.android_package_id }}"
           echo "Using launcher_icon_scale=${RAW_SCALE}%"

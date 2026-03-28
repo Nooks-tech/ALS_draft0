@@ -14,6 +14,15 @@ export type NooksMenuItem = {
   image_url?: string | null;
   sort_order?: number;
   is_available?: boolean;
+  modifier_groups?: Array<{
+    id: string;
+    title: string;
+    options: {
+      id?: string;
+      name: string;
+      price: number;
+    }[];
+  }[];
 };
 
 export type NooksMenuCategory = {
@@ -24,7 +33,7 @@ export type NooksMenuCategory = {
 };
 
 export type NooksMenuResponse = {
-  source?: 'live' | 'mock';
+  source?: 'live' | 'mock' | 'empty';
   categories: NooksMenuCategory[];
 };
 

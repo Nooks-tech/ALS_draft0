@@ -7,6 +7,7 @@
     "start": "tsx index.ts",
     "start:prod": "tsx index.ts",
     "build": "tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
     "postinstall": "echo done"
   },
   "dependencies": {

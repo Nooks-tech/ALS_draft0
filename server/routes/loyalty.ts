@@ -4,6 +4,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
 import { notifyPassUpdate } from './walletPass';
+import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
 
@@ -50,6 +51,191 @@ async function requireMatchingCustomer(
     return null;
   }
   return user;
+}
+
+type LoyaltyActionContext = {
+  source?: 'app' | 'branch' | 'system';
+  branchId?: string | null;
+  actorUserId?: string | null;
+  actorRole?: string | null;
+  referenceType?: string | null;
+  referenceId?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+function normalizeOptionalString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function buildBranchReference(prefix: string, referenceId?: string | null) {
+  const normalized = normalizeOptionalString(referenceId);
+  return normalized ? `${prefix}:${normalized}` : `${prefix}:${Date.now()}`;
+}
+
+async function getLoyaltySnapshot(merchantId: string, customerId: string) {
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  const member = await ensureLoyaltyMemberProfile(merchantId, customerId);
+  const config = await getMerchantConfig(merchantId);
+
+  const [{ data: balance }, { data: rewards }, { data: transactions }] = await Promise.all([
+    supabaseAdmin
+      .from('loyalty_points')
+      .select('points, lifetime_points, updated_at')
+      .eq('merchant_id', merchantId)
+      .eq('customer_id', customerId)
+      .maybeSingle(),
+    supabaseAdmin
+      .from('loyalty_rewards')
+      .select('id, name, description, image_url, points_cost, is_active')
+      .eq('merchant_id', merchantId)
+      .eq('is_active', true)
+      .order('points_cost', { ascending: true }),
+    supabaseAdmin
+      .from('loyalty_transactions')
+      .select('id, type, points, description, branch_id, source, actor_role, reference_type, reference_id, created_at')
+      .eq('merchant_id', merchantId)
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: false })
+      .limit(10),
+  ]);
+
+  const points = balance?.points ?? 0;
+  const lifetimePoints = balance?.lifetime_points ?? 0;
+
+  return {
+    customerId,
+    memberCode: member.member_code,
+    displayName: member.display_name,
+    phoneNumber: member.phone_number,
+    email: member.email,
+    points,
+    lifetimePoints,
+    pointsValueSar: +(points * config.point_value_sar).toFixed(2),
+    pointValueSar: config.point_value_sar,
+    rewards: rewards ?? [],
+    recentTransactions: transactions ?? [],
+  };
+}
+
+async function redeemPointsFromBalance(params: {
+  customerId: string;
+  merchantId: string;
+  points: number;
+  orderId: string;
+  context?: LoyaltyActionContext;
+}) {
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  await ensureLoyaltyMemberProfile(params.merchantId, params.customerId);
+  const config = await getMerchantConfig(params.merchantId);
+  const pointsToRedeem = Math.floor(Number(params.points));
+  if (pointsToRedeem <= 0) throw new Error('Invalid points amount');
+
+  const { data: balance } = await supabaseAdmin
+    .from('loyalty_points')
+    .select('points')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .single();
+
+  if (!balance || balance.points < pointsToRedeem) {
+    throw new Error(`Insufficient points. Available: ${balance?.points ?? 0}`);
+  }
+
+  const discountSar = +(pointsToRedeem * config.point_value_sar).toFixed(2);
+
+  await supabaseAdmin
+    .from('loyalty_points')
+    .update({ points: balance.points - pointsToRedeem, updated_at: new Date().toISOString() })
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId);
+
+  await supabaseAdmin.from('loyalty_transactions').insert({
+    customer_id: params.customerId,
+    merchant_id: params.merchantId,
+    order_id: params.orderId,
+    type: 'redeem',
+    points: -pointsToRedeem,
+    description: `Redeemed ${pointsToRedeem} points for ${discountSar} SAR discount`,
+    branch_id: normalizeOptionalString(params.context?.branchId),
+    source: normalizeOptionalString(params.context?.source) ?? 'app',
+    actor_user_id: normalizeOptionalString(params.context?.actorUserId),
+    actor_role: normalizeOptionalString(params.context?.actorRole),
+    reference_type: normalizeOptionalString(params.context?.referenceType),
+    reference_id: normalizeOptionalString(params.context?.referenceId),
+    metadata: params.context?.metadata ?? {},
+  });
+
+  notifyPassUpdate(params.customerId, params.merchantId).catch(() => {});
+  return {
+    success: true,
+    pointsRedeemed: pointsToRedeem,
+    discountSar,
+    newBalance: balance.points - pointsToRedeem,
+  };
+}
+
+async function redeemRewardFromBalance(params: {
+  customerId: string;
+  merchantId: string;
+  rewardId: string;
+  context?: LoyaltyActionContext;
+}) {
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  await ensureLoyaltyMemberProfile(params.merchantId, params.customerId);
+
+  const { data: reward } = await supabaseAdmin
+    .from('loyalty_rewards')
+    .select('*')
+    .eq('id', params.rewardId)
+    .eq('merchant_id', params.merchantId)
+    .eq('is_active', true)
+    .single();
+  if (!reward) throw new Error('Reward not found or inactive');
+
+  const { data: balance } = await supabaseAdmin
+    .from('loyalty_points')
+    .select('points')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .single();
+
+  if (!balance || balance.points < reward.points_cost) {
+    throw new Error(`Insufficient points. Available: ${balance?.points ?? 0}`);
+  }
+
+  const referenceId =
+    normalizeOptionalString(params.context?.referenceId) ||
+    `branch-reward:${params.rewardId}:${Date.now()}`;
+
+  await supabaseAdmin
+    .from('loyalty_points')
+    .update({ points: balance.points - reward.points_cost, updated_at: new Date().toISOString() })
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId);
+
+  await supabaseAdmin.from('loyalty_transactions').insert({
+    customer_id: params.customerId,
+    merchant_id: params.merchantId,
+    order_id: referenceId,
+    type: 'redeem',
+    points: -reward.points_cost,
+    description: `Redeemed reward: ${reward.name}`,
+    branch_id: normalizeOptionalString(params.context?.branchId),
+    source: normalizeOptionalString(params.context?.source) ?? 'app',
+    actor_user_id: normalizeOptionalString(params.context?.actorUserId),
+    actor_role: normalizeOptionalString(params.context?.actorRole),
+    reference_type: normalizeOptionalString(params.context?.referenceType) ?? 'reward',
+    reference_id: referenceId,
+    metadata: { ...(params.context?.metadata ?? {}), reward_id: reward.id, reward_name: reward.name },
+  });
+
+  notifyPassUpdate(params.customerId, params.merchantId).catch(() => {});
+  return {
+    success: true,
+    reward: reward.name,
+    pointsSpent: reward.points_cost,
+    newBalance: balance.points - reward.points_cost,
+  };
 }
 
 /* ── GET /api/loyalty/config?merchantId=X ── */
@@ -147,6 +333,7 @@ loyaltyRouter.get('/balance', async (req, res) => {
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
     if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+    const member = await ensureLoyaltyMemberProfile(merchantId, customerId);
 
     const config = await getMerchantConfig(merchantId);
 
@@ -175,6 +362,7 @@ loyaltyRouter.get('/balance', async (req, res) => {
     }
 
     res.json({
+      memberCode: member.member_code,
       points,
       lifetimePoints,
       pointsValue,
@@ -227,8 +415,10 @@ export async function earnPoints(
   orderId: string,
   orderSubtotal: number,
   merchantId: string,
+  context?: LoyaltyActionContext,
 ): Promise<{ success: boolean; pointsEarned: number; newBalance: number; stampAwarded?: boolean; stampRewardGranted?: boolean }> {
   if (!supabaseAdmin) throw new Error('Database not configured');
+  await ensureLoyaltyMemberProfile(merchantId, customerId);
 
   const { data: alreadyEarned } = await supabaseAdmin
     .from('loyalty_transactions')
@@ -302,6 +492,13 @@ export async function earnPoints(
     points: pointsEarned,
     description: `Earned ${pointsEarned} points`,
     expires_at: expiresAt,
+    branch_id: normalizeOptionalString(context?.branchId),
+    source: normalizeOptionalString(context?.source) ?? 'app',
+    actor_user_id: normalizeOptionalString(context?.actorUserId),
+    actor_role: normalizeOptionalString(context?.actorRole),
+    reference_type: normalizeOptionalString(context?.referenceType),
+    reference_id: normalizeOptionalString(context?.referenceId),
+    metadata: context?.metadata ?? {},
   });
 
   let stampAwarded = false;
@@ -330,6 +527,13 @@ export async function earnPoints(
         type: 'earn',
         points: 0,
         description: `Stamp card completed! ${config.stamp_reward_description}`,
+        branch_id: normalizeOptionalString(context?.branchId),
+        source: normalizeOptionalString(context?.source) ?? 'app',
+        actor_user_id: normalizeOptionalString(context?.actorUserId),
+        actor_role: normalizeOptionalString(context?.actorRole),
+        reference_type: normalizeOptionalString(context?.referenceType),
+        reference_id: normalizeOptionalString(context?.referenceId),
+        metadata: context?.metadata ?? {},
       });
     }
 
@@ -369,43 +573,18 @@ loyaltyRouter.post('/redeem', async (req, res) => {
     }
     if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-
-    const config = await getMerchantConfig(merchantId || '');
-    const pointsToRedeem = Math.floor(Number(points));
-    if (pointsToRedeem <= 0) return res.status(400).json({ error: 'Invalid points amount' });
-
-    const { data: balance } = await supabaseAdmin
-      .from('loyalty_points')
-      .select('points')
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId || '')
-      .single();
-
-    if (!balance || balance.points < pointsToRedeem) {
-      return res.status(400).json({ error: 'Insufficient points', available: balance?.points ?? 0 });
-    }
-
-    const discountSar = +(pointsToRedeem * config.point_value_sar).toFixed(2);
-
-    await supabaseAdmin
-      .from('loyalty_points')
-      .update({ points: balance.points - pointsToRedeem, updated_at: new Date().toISOString() })
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId || '');
-
-    await supabaseAdmin.from('loyalty_transactions').insert({
-      customer_id: customerId,
-      merchant_id: merchantId || '',
-      order_id: orderId,
-      type: 'redeem',
-      points: -pointsToRedeem,
-      description: `Redeemed ${pointsToRedeem} points for ${discountSar} SAR discount`,
+    const result = await redeemPointsFromBalance({
+      customerId,
+      merchantId: merchantId || '',
+      points: Number(points),
+      orderId,
+      context: { source: 'app' },
     });
-
-    notifyPassUpdate(customerId, merchantId || '').catch(() => {});
-    res.json({ success: true, pointsRedeemed: pointsToRedeem, discountSar, newBalance: balance.points - pointsToRedeem });
+    res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to redeem points' });
+    const message = err?.message || 'Failed to redeem points';
+    const status = /insufficient points|invalid points/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
   }
 });
 
@@ -416,44 +595,18 @@ loyaltyRouter.post('/redeem-reward', async (req, res) => {
     if (!customerId || !rewardId) return res.status(400).json({ error: 'customerId and rewardId required' });
     if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-
-    const { data: reward } = await supabaseAdmin
-      .from('loyalty_rewards')
-      .select('*')
-      .eq('id', rewardId)
-      .eq('is_active', true)
-      .single();
-    if (!reward) return res.status(404).json({ error: 'Reward not found or inactive' });
-
-    const { data: balance } = await supabaseAdmin
-      .from('loyalty_points')
-      .select('points')
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId || reward.merchant_id)
-      .single();
-
-    if (!balance || balance.points < reward.points_cost) {
-      return res.status(400).json({ error: 'Insufficient points', needed: reward.points_cost, available: balance?.points ?? 0 });
-    }
-
-    await supabaseAdmin
-      .from('loyalty_points')
-      .update({ points: balance.points - reward.points_cost, updated_at: new Date().toISOString() })
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId || reward.merchant_id);
-
-    await supabaseAdmin.from('loyalty_transactions').insert({
-      customer_id: customerId,
-      merchant_id: merchantId || reward.merchant_id,
-      type: 'redeem',
-      points: -reward.points_cost,
-      description: `Redeemed reward: ${reward.name}`,
+    const result = await redeemRewardFromBalance({
+      customerId,
+      merchantId: merchantId || '',
+      rewardId,
+      context: { source: 'app' },
     });
-
-    notifyPassUpdate(customerId, merchantId || reward.merchant_id).catch(() => {});
-    res.json({ success: true, reward: reward.name, pointsSpent: reward.points_cost, newBalance: balance.points - reward.points_cost });
+    res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to redeem reward' });
+    const message = err?.message || 'Failed to redeem reward';
+    const status =
+      /insufficient points|not found|inactive/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
   }
 });
 
@@ -533,6 +686,158 @@ loyaltyRouter.delete('/rewards/:id', async (req, res) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to delete reward' });
+  }
+});
+
+/* ── GET /api/loyalty/branch/member?merchantId=X&lookup=Y ── */
+loyaltyRouter.get('/branch/member', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    const merchantId = normalizeOptionalString(req.query.merchantId);
+    const lookup = normalizeOptionalString(req.query.lookup);
+    if (!merchantId || !lookup) {
+      return res.status(400).json({ error: 'merchantId and lookup are required' });
+    }
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const member = await findLoyaltyMemberByLookup(merchantId, lookup);
+    if (!member) {
+      return res.status(404).json({ error: 'Loyalty member not found for this merchant' });
+    }
+
+    const snapshot = await getLoyaltySnapshot(merchantId, member.customer_id);
+    res.json({ success: true, member: snapshot });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to look up loyalty member' });
+  }
+});
+
+/* ── POST /api/loyalty/branch/earn ── */
+loyaltyRouter.post('/branch/earn', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    const merchantId = normalizeOptionalString(req.body?.merchantId);
+    const branchId = normalizeOptionalString(req.body?.branchId);
+    const lookup = normalizeOptionalString(req.body?.lookup);
+    const actorUserId = normalizeOptionalString(req.body?.actorUserId);
+    const actorRole = normalizeOptionalString(req.body?.actorRole);
+    const referenceId = normalizeOptionalString(req.body?.referenceId);
+    const amountSar = Number(req.body?.amountSar);
+    if (!merchantId || !branchId || !lookup || !actorUserId || !actorRole || !referenceId || !Number.isFinite(amountSar) || amountSar <= 0) {
+      return res.status(400).json({
+        error: 'merchantId, branchId, lookup, actorUserId, actorRole, referenceId, and positive amountSar are required',
+      });
+    }
+
+    const member = await findLoyaltyMemberByLookup(merchantId, lookup);
+    if (!member) return res.status(404).json({ error: 'Loyalty member not found for this merchant' });
+
+    const orderId = buildBranchReference('branch-sale', referenceId);
+    const result = await earnPoints(member.customer_id, orderId, amountSar, merchantId, {
+      source: 'branch',
+      branchId,
+      actorUserId,
+      actorRole,
+      referenceType: 'branch_sale',
+      referenceId,
+      metadata: {
+        note: normalizeOptionalString(req.body?.note),
+        amount_sar: amountSar,
+      },
+    });
+    const snapshot = await getLoyaltySnapshot(merchantId, member.customer_id);
+    res.json({ success: true, result, member: snapshot });
+  } catch (err: any) {
+    const message = err?.message || 'Failed to earn branch loyalty points';
+    const status = /not found|required|invalid/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/* ── POST /api/loyalty/branch/redeem-points ── */
+loyaltyRouter.post('/branch/redeem-points', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    const merchantId = normalizeOptionalString(req.body?.merchantId);
+    const branchId = normalizeOptionalString(req.body?.branchId);
+    const lookup = normalizeOptionalString(req.body?.lookup);
+    const actorUserId = normalizeOptionalString(req.body?.actorUserId);
+    const actorRole = normalizeOptionalString(req.body?.actorRole);
+    const referenceId = normalizeOptionalString(req.body?.referenceId);
+    const points = Number(req.body?.points);
+    if (!merchantId || !branchId || !lookup || !actorUserId || !actorRole || !referenceId || !Number.isFinite(points) || points <= 0) {
+      return res.status(400).json({
+        error: 'merchantId, branchId, lookup, actorUserId, actorRole, referenceId, and positive points are required',
+      });
+    }
+
+    const member = await findLoyaltyMemberByLookup(merchantId, lookup);
+    if (!member) return res.status(404).json({ error: 'Loyalty member not found for this merchant' });
+
+    const result = await redeemPointsFromBalance({
+      customerId: member.customer_id,
+      merchantId,
+      points,
+      orderId: buildBranchReference('branch-redeem', referenceId),
+      context: {
+        source: 'branch',
+        branchId,
+        actorUserId,
+        actorRole,
+        referenceType: 'branch_redeem',
+        referenceId,
+        metadata: { note: normalizeOptionalString(req.body?.note) },
+      },
+    });
+    const snapshot = await getLoyaltySnapshot(merchantId, member.customer_id);
+    res.json({ success: true, result, member: snapshot });
+  } catch (err: any) {
+    const message = err?.message || 'Failed to redeem branch loyalty points';
+    const status = /insufficient points|required|invalid|not found/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+/* ── POST /api/loyalty/branch/redeem-reward ── */
+loyaltyRouter.post('/branch/redeem-reward', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    const merchantId = normalizeOptionalString(req.body?.merchantId);
+    const branchId = normalizeOptionalString(req.body?.branchId);
+    const lookup = normalizeOptionalString(req.body?.lookup);
+    const rewardId = normalizeOptionalString(req.body?.rewardId);
+    const actorUserId = normalizeOptionalString(req.body?.actorUserId);
+    const actorRole = normalizeOptionalString(req.body?.actorRole);
+    const referenceId = normalizeOptionalString(req.body?.referenceId);
+    if (!merchantId || !branchId || !lookup || !rewardId || !actorUserId || !actorRole || !referenceId) {
+      return res.status(400).json({
+        error: 'merchantId, branchId, lookup, rewardId, actorUserId, actorRole, and referenceId are required',
+      });
+    }
+
+    const member = await findLoyaltyMemberByLookup(merchantId, lookup);
+    if (!member) return res.status(404).json({ error: 'Loyalty member not found for this merchant' });
+
+    const result = await redeemRewardFromBalance({
+      customerId: member.customer_id,
+      merchantId,
+      rewardId,
+      context: {
+        source: 'branch',
+        branchId,
+        actorUserId,
+        actorRole,
+        referenceType: 'branch_reward',
+        referenceId,
+        metadata: { note: normalizeOptionalString(req.body?.note) },
+      },
+    });
+    const snapshot = await getLoyaltySnapshot(merchantId, member.customer_id);
+    res.json({ success: true, result, member: snapshot });
+  } catch (err: any) {
+    const message = err?.message || 'Failed to redeem branch loyalty reward';
+    const status = /insufficient points|required|not found|inactive/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: message });
   }
 });
 
