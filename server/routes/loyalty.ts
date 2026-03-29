@@ -769,7 +769,11 @@ loyaltyRouter.post('/redeem', async (req, res) => {
     if (!customerId || !points || !orderId) {
       return res.status(400).json({ error: 'customerId, points, and orderId required' });
     }
-    if (!await requireMatchingCustomer(req, res, customerId)) return;
+    // Accept either: user auth (app checkout) OR internal secret (Foodics adapter via nooksweb)
+    const hasInternalSecret = req.headers['x-nooks-internal-secret'] === (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+    if (!hasInternalSecret) {
+      if (!await requireMatchingCustomer(req, res, customerId)) return;
+    }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
     const result = await redeemPointsFromBalance({
       customerId,
@@ -1124,10 +1128,15 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
   return { success: true, cashbackEarned: cashbackSar, newBalance: +((balRow?.balance_sar ?? 0) + cashbackSar).toFixed(2) };
 }
 
-/** POST /api/loyalty/redeem-cashback — redeem cashback SAR at checkout */
+/** POST /api/loyalty/redeem-cashback — redeem cashback SAR at checkout or via Foodics adapter */
 loyaltyRouter.post('/redeem-cashback', async (req, res) => {
   try {
-    if (!requireNooksInternalRequest(req, res)) return;
+    // Accept either: user auth (app checkout) OR internal secret (Foodics adapter via nooksweb)
+    const hasInternalSecret = req.headers['x-nooks-internal-secret'] === (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+    if (!hasInternalSecret) {
+      const { customerId } = req.body ?? {};
+      if (!await requireMatchingCustomer(req, res, customerId)) return;
+    }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { customerId, merchantId, amountSar, orderId } = req.body;
