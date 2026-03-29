@@ -393,8 +393,14 @@ otoRouter.post('/create-pickup', async (req, res) => {
 otoRouter.post('/request-delivery', async (req, res) => {
   console.log('[OTO] request-delivery received');
   try {
-    const user = await requireAuthenticatedAppUser(req, res);
-    if (!user) return;
+    // Accept either: user auth (app checkout) OR internal secret (Foodics webhook via nooksweb)
+    const hasInternalSecret = req.headers['x-nooks-internal-secret'] === (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+    let authUserId: string | null = null;
+    if (!hasInternalSecret) {
+      const user = await requireAuthenticatedAppUser(req, res);
+      if (!user) return;
+      authUserId = user.id;
+    }
     const {
       orderId,
       amount,
@@ -419,18 +425,21 @@ otoRouter.post('/request-delivery', async (req, res) => {
     }
 
     const normalizedOrderId = String(orderId);
-    const { data: order, error: orderError } = await supabaseAdmin
+    let orderQuery = supabaseAdmin
       .from('customer_orders')
       .select('id, merchant_id, customer_id, total_sar, status, order_type, payment_id')
       .eq('id', normalizedOrderId)
-      .eq('merchant_id', scopedMerchantId)
-      .eq('customer_id', user.id)
-      .maybeSingle();
+      .eq('merchant_id', scopedMerchantId);
+    // Only filter by customer_id when called from app (not from nooksweb internal)
+    if (authUserId) {
+      orderQuery = orderQuery.eq('customer_id', authUserId);
+    }
+    const { data: order, error: orderError } = await orderQuery.maybeSingle();
     if (orderError) {
       return res.status(500).json({ error: orderError.message });
     }
     if (!order) {
-      return res.status(404).json({ error: 'Order not found for this customer' });
+      return res.status(404).json({ error: 'Order not found' });
     }
     if (order.order_type !== 'delivery') {
       return res.status(400).json({ error: 'Delivery dispatch is only allowed for delivery orders' });

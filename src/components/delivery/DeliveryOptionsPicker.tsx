@@ -83,7 +83,7 @@ export function DeliveryOptionsPicker({ accentColor = '#0D9488' }: Props) {
 
   return (
     <View className="mb-4">
-      <Text className="font-bold text-slate-700 text-sm mb-2">Delivery Carrier</Text>
+      <Text className="font-bold text-slate-700 text-sm mb-2">Bullet Delivery</Text>
       <View className="gap-2">
         {options.map((opt) => {
           const selected = deliveryOptionId === opt.deliveryOptionId;
@@ -113,6 +113,9 @@ export function DeliveryOptionsPicker({ accentColor = '#0D9488' }: Props) {
           );
         })}
       </View>
+      <Text className="text-[11px] text-slate-400 mt-2">
+        Rapid same-city delivery. Driver dispatched after branch confirms your order. You may receive an SMS to confirm your address.
+      </Text>
     </View>
   );
 }

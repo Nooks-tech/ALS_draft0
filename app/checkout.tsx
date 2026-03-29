@@ -39,7 +39,7 @@ import {
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { paymentApi } from '../src/api/payment';
-import { otoApi } from '../src/api/oto';
+// otoApi no longer called from checkout — OTO dispatch triggered by Foodics webhook on cashier accept
 import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
 import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
@@ -331,53 +331,9 @@ export default function CheckoutScreen() {
         });
       }
 
-      let otoId: number | undefined = undefined;
-      let otoDispatchStatus: 'success' | 'failed' | undefined;
-      let otoDispatchError: string | undefined;
-      if (orderType === 'delivery' && selectedBranch?.id && deliveryAddress?.address) {
-        const branchOto = getBranchOtoConfig(selectedBranch.id, selectedBranch.name);
-        const pickupCode = (selectedBranch as any).oto_warehouse_id || branchOto?.otoPickupLocationCode;
-        try {
-          const deliveryRes = await otoApi.requestDelivery({
-            orderId,
-            amount: Number(finalTotal.toFixed(2)),
-            merchantId,
-            pickupLocationCode: pickupCode,
-            deliveryOptionId: deliveryOptionId ?? undefined,
-            customer: {
-              name: (profile.fullName || 'Customer').trim(),
-              phone: (profile.phone || '500000000').trim(),
-              email: profile.email || undefined,
-            },
-            deliveryAddress: {
-              address: deliveryAddress.address,
-              lat: deliveryAddress.lat,
-              lng: deliveryAddress.lng,
-              city: deliveryAddress.city,
-            },
-            branch: {
-              name: selectedBranch.name || 'Branch',
-              address: selectedBranch.address || undefined,
-            },
-            items: cartItems.map((i) => ({
-              name: i.name,
-              price: i.price,
-              quantity: i.quantity,
-            })),
-          });
-          if (deliveryRes?.success && typeof deliveryRes.otoId === 'number') {
-            otoId = deliveryRes.otoId;
-            otoDispatchStatus = 'success';
-          } else {
-            otoDispatchStatus = 'failed';
-            otoDispatchError = 'Dispatch request did not return OTO order id.';
-          }
-        } catch (err: any) {
-          otoDispatchStatus = 'failed';
-          otoDispatchError = err?.message || 'Failed to dispatch delivery.';
-          console.warn('[Checkout] OTO request failed:', err);
-        }
-      }
+      // OTO bullet delivery is dispatched AFTER the cashier accepts the order in Foodics POS.
+      // The Foodics webhook (status 2 = Active/Accepted) triggers OTO dispatch via nooksweb.
+      // We do NOT dispatch here — just save delivery info with the order.
       if (user?.id) {
         await commitOrder({
           id: orderId,
@@ -403,7 +359,7 @@ export default function CheckoutScreen() {
           deliveryFee,
           paymentId: resolvedPaymentId,
           paymentMethod,
-          otoId: otoId ?? null,
+          otoId: null, // Set later by Foodics webhook when cashier accepts
           customerName: profile.fullName || null,
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,

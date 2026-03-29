@@ -14,11 +14,13 @@ const OTO_DELIVERY_OPTION_ID = process.env.OTO_DELIVERY_OPTION_ID
   ? parseInt(process.env.OTO_DELIVERY_OPTION_ID, 10)
   : undefined;
 
-/** Only show/use these carriers (comma-separated). Empty = all carriers. Default: careem,mrsool,barq */
+/** Bullet delivery carriers only (comma-separated). Empty = all carriers. Default: careem,mrsool,dal
+ * Bullet carriers for Saudi Arabia: Careem (1-2hr), Mrsool/Marsool (2hr), DAL (4hr)
+ * Barq is NOT a bullet carrier — it's standard shipping. */
 const OTO_PREFERRED_CARRIERS = (() => {
   const raw = process.env.OTO_PREFERRED_CARRIERS;
   if (raw === '') return [];
-  const s = raw || 'careem,mrsool,barq';
+  const s = raw || 'careem,mrsool,marsool,dal';
   return s.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 })();
 
@@ -259,21 +261,21 @@ export const otoService = {
         source,
       }));
 
-    // 1) OTO's marketplace contracts (checkOTODeliveryFee) — Mrsool "Bullet" typically here
-    const otoBody = { ...baseBody, originCountry: 'SA', destinationCountry: 'SA' };
+    // 1) OTO's marketplace contracts (checkOTODeliveryFee) — bullet delivery only
+    const otoBody = { ...baseBody, originCountry: 'SA', destinationCountry: 'SA', deliveryType: 'bullet' };
     const otoPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkOTODeliveryFee', otoBody)
       .then((d) => mapOptions(d?.deliveryCompany ?? [], 'oto'))
       .catch(() => [] as ReturnType<typeof mapOptions>);
 
-    // 2) Your own DC contracts (checkDeliveryFee) — Careem, Barq when DC-activated
+    // 2) Merchant's own DC contracts — bullet delivery only (Careem, Mrsool, DAL)
     const ownBody: Record<string, any> = {
       originCity: params.originCity,
       destinationCity: params.destinationCity,
       weight: params.weight ?? 0.5,
+      deliveryType: 'bullet', // Always request bullet delivery — we only support same-city rapid delivery
     };
     if (params.originLat != null) { ownBody.originLat = String(params.originLat); ownBody.originLon = String(params.originLon); }
     if (params.destinationLat != null) { ownBody.destinationLat = String(params.destinationLat); ownBody.destinationLon = String(params.destinationLon); }
-    if (params.originLat != null || params.destinationLat != null) ownBody.deliveryType = 'bullet';
     const ownPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkDeliveryFee', ownBody)
       .then((d) => mapOptions(d?.deliveryCompany ?? [], 'own'))
       .catch(() => [] as ReturnType<typeof mapOptions>);
