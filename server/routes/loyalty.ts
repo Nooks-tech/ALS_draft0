@@ -492,7 +492,12 @@ loyaltyRouter.post('/earn', async (req, res) => {
         });
       }
 
-      // Also earn Foodics-compatible points (1 stamp = 10 points) for branch redemption
+      // INTERNAL ACCOUNTING ONLY: 1 stamp = 10 internal points.
+      // These points are stored in our loyalty_points table for balance tracking.
+      // Foodics does NOT receive these points — Foodics integration uses discount coupons
+      // created via /api/loyalty/create-stamp-coupon when milestones are reached.
+      // The QR barcode on the Apple Wallet pass contains the member code, which Foodics
+      // uses to look up the customer — not the internal points balance.
       const pointsForStamp = 10;
       const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
         .select('points, lifetime_points')
@@ -1280,7 +1285,7 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
       });
     }
 
-    // Deduct Foodics-compatible points too (1 stamp = 10 points)
+    // Deduct internal points (1 stamp = 10 internal points — NOT Foodics points, see earn endpoint comment)
     const pointsToDeduct = milestone.stamp_number * 10;
     const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
       .select('points').eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();

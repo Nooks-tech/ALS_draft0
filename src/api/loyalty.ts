@@ -42,9 +42,12 @@ export interface LoyaltyBalance {
 
 export interface LoyaltyTransaction {
   id: string;
-  type: 'earn' | 'redeem';
+  type: 'earn' | 'redeem' | 'expire';
+  loyalty_type?: 'cashback' | 'points' | 'stamps' | null;
   points: number;
+  amount_sar?: number | null;
   description: string;
+  expired?: boolean;
   created_at: string;
 }
 
