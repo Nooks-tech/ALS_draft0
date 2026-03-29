@@ -416,11 +416,15 @@ export default function CheckoutScreen() {
       if (promoApplied && promoCode) {
         await consumeNooksPromo(merchantId, promoCode);
       }
-      if (usePoints && pointsToRedeem > 0 && user?.id && merchantId) {
+      if (usePoints && user?.id && merchantId) {
         try {
-          await loyaltyApi.redeem(user.id, pointsToRedeem, orderId, merchantId);
+          if (loyaltyType === 'cashback' && pointsDiscount > 0) {
+            await loyaltyApi.redeemCashback(user.id, pointsDiscount, orderId, merchantId);
+          } else if (pointsToRedeem > 0) {
+            await loyaltyApi.redeem(user.id, pointsToRedeem, orderId, merchantId);
+          }
         } catch (err) {
-          console.warn('[Checkout] Points redemption failed:', err);
+          console.warn('[Checkout] Loyalty redemption failed:', err);
         }
       }
       clearCart();
@@ -435,7 +439,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, router, user?.id]);
+  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, pointsDiscount, loyaltyType, router, user?.id]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {

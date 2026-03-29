@@ -514,11 +514,26 @@ loyaltyRouter.post('/earn', async (req, res) => {
         description: `Earned 1 stamp (order completed)`, source: 'app',
       });
 
-      // Check if any milestone was exactly reached
+      // Check if any milestone was reached (highest milestone where stamp_number <= newStamps)
       const { data: milestones } = await supabaseAdmin.from('loyalty_stamp_milestones')
         .select('id, stamp_number, reward_name, foodics_product_ids')
         .eq('merchant_id', merchantId || '').eq('is_active', true)
-        .eq('stamp_number', newStamps);
+        .lte('stamp_number', newStamps)
+        .order('stamp_number', { ascending: false })
+        .limit(1);
+
+      // Filter out milestones already awarded (unredeemed redemption exists)
+      if (milestones && milestones.length > 0) {
+        const { data: existingRedemption } = await supabaseAdmin.from('loyalty_stamp_redemptions')
+          .select('id')
+          .eq('customer_id', customerId).eq('merchant_id', merchantId || '')
+          .eq('milestone_id', milestones[0].id).is('redeemed_at', null)
+          .maybeSingle();
+        if (existingRedemption) {
+          // Already has an unredeemed reward for this milestone — don't create another
+          milestones.length = 0;
+        }
+      }
 
       let milestoneReached = false;
       let milestoneName = '';
@@ -545,8 +560,14 @@ loyaltyRouter.post('/earn', async (req, res) => {
                 rewardName: hit.reward_name, productIds,
               }),
             });
+            if (!couponRes.ok) {
+              console.error('[Loyalty] Coupon creation returned HTTP', couponRes.status);
+            }
             const couponData = await couponRes.json().catch(() => ({}));
             couponCode = couponData?.couponCode ?? null;
+            if (!couponCode) {
+              console.warn('[Loyalty] No coupon code returned — branch redemption will not work for this milestone');
+            }
           } catch (couponErr) {
             console.error('[Loyalty] Foodics coupon creation failed:', (couponErr as Error).message);
           }

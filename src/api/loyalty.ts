@@ -99,6 +99,12 @@ export const loyaltyApi = {
       { customerId, points, orderId, merchantId }
     ),
 
+  redeemCashback: (customerId: string, amountSar: number, orderId: string, merchantId: string) =>
+    api.post<{ success: boolean; amountRedeemed: number; newBalance: number }>(
+      '/api/loyalty/redeem-cashback',
+      { customerId, amountSar, orderId, merchantId }
+    ),
+
   getHistory: (customerId: string, merchantId?: string) =>
     api.get<{ transactions: LoyaltyTransaction[] }>(
       `/api/loyalty/history?customerId=${encodeURIComponent(customerId)}${merchantId ? `&merchantId=${encodeURIComponent(merchantId)}` : ''}`
