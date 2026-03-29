@@ -514,29 +514,77 @@ loyaltyRouter.post('/earn', async (req, res) => {
         description: `Earned 1 stamp (order completed)`, source: 'app',
       });
 
-      // Check milestone
+      // Check if any milestone was exactly reached
       const { data: milestones } = await supabaseAdmin.from('loyalty_stamp_milestones')
         .select('id, stamp_number, reward_name, foodics_product_ids')
         .eq('merchant_id', merchantId || '').eq('is_active', true)
-        .lte('stamp_number', newStamps)
-        .order('stamp_number', { ascending: false }).limit(1);
+        .eq('stamp_number', newStamps);
 
       let milestoneReached = false;
       let milestoneName = '';
+      let couponCode: string | null = null;
       if (milestones && milestones.length > 0) {
         const hit = milestones[0];
         milestoneReached = true;
         milestoneName = hit.reward_name;
-        // Pre-create redemption record (user can redeem later)
+        const productIds = Array.isArray(hit.foodics_product_ids) ? hit.foodics_product_ids : [];
+
+        // Request Foodics coupon creation via nooksweb relay
+        const NOOKS_API = process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || process.env.NOOKS_API_BASE_URL || '';
+        const INTERNAL_SECRET = process.env.NOOKS_INTERNAL_SECRET || '';
+        if (NOOKS_API && productIds.length > 0) {
+          try {
+            const couponRes = await fetch(`${NOOKS_API.replace(/\/$/, '')}/api/loyalty/create-stamp-coupon`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(INTERNAL_SECRET ? { 'x-nooks-internal-secret': INTERNAL_SECRET } : {}),
+              },
+              body: JSON.stringify({
+                merchantId: merchantId || '', customerId, milestoneId: hit.id,
+                rewardName: hit.reward_name, productIds,
+              }),
+            });
+            const couponData = await couponRes.json().catch(() => ({}));
+            couponCode = couponData?.couponCode ?? null;
+          } catch (couponErr) {
+            console.error('[Loyalty] Foodics coupon creation failed:', (couponErr as Error).message);
+          }
+        }
+
+        // Create redemption record with coupon code
         await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
           customer_id: customerId, merchant_id: merchantId || '',
           milestone_id: hit.id, stamp_number: hit.stamp_number,
+          foodics_coupon_code: couponCode,
         });
+
+        // Push notification to customer
+        try {
+          const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
+          const { data: subs } = await supabaseAdmin.from('push_subscriptions')
+            .select('expo_push_token').eq('user_id', customerId);
+          const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
+          if (tokens.length > 0) {
+            const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+            if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
+            await fetch('https://exp.host/--/api/v2/push/send', {
+              method: 'POST', headers,
+              body: JSON.stringify(tokens.map((t: string) => ({
+                to: t, sound: 'default',
+                title: 'Milestone Reward Unlocked! 🎉',
+                body: `You earned ${hit.stamp_number} stamps! Your reward: ${hit.reward_name}. ${couponCode ? `Show code ${couponCode} at the branch or redeem in-app.` : 'Redeem in the app at checkout.'}`,
+                channelId: 'loyalty',
+              }))),
+            });
+          }
+        } catch { /* best-effort push */ }
       }
 
       notifyPassUpdate(customerId, merchantId || '').catch(() => {});
       return res.json({
         success: true, pointsEarned: pointsForStamp, newStamps, milestoneReached, milestoneName,
+        couponCode,
         newBalance: (ptsBal?.points ?? 0) + pointsForStamp,
       });
     }
@@ -1185,30 +1233,53 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
       return res.status(400).json({ error: `Need ${milestone.stamp_number} stamps. Current: ${currentStamps}` });
     }
 
-    // Reset stamps to 0
+    // Deduct milestone stamps (not reset to 0)
+    const newStampCount = Math.max(0, currentStamps - milestone.stamp_number);
     await supabaseAdmin.from('loyalty_stamps')
-      .update({ stamps: 0, updated_at: new Date().toISOString() })
+      .update({ stamps: newStampCount, updated_at: new Date().toISOString() })
       .eq('customer_id', customerId).eq('merchant_id', merchantId);
 
-    // Create redemption record
-    await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
-      customer_id: customerId, merchant_id: merchantId,
-      milestone_id: milestoneId, stamp_number: milestone.stamp_number,
-      redeemed_at: new Date().toISOString(),
-      redeemed_via: via === 'branch' ? 'branch' : 'app',
-    });
+    // Mark existing unredeemed record as redeemed, or create new one
+    const { data: existingRedemption } = await supabaseAdmin.from('loyalty_stamp_redemptions')
+      .select('id')
+      .eq('customer_id', customerId).eq('merchant_id', merchantId)
+      .eq('milestone_id', milestoneId).is('redeemed_at', null)
+      .maybeSingle();
+
+    if (existingRedemption) {
+      await supabaseAdmin.from('loyalty_stamp_redemptions')
+        .update({ redeemed_at: new Date().toISOString(), redeemed_via: via === 'branch' ? 'branch' : 'app' })
+        .eq('id', existingRedemption.id);
+    } else {
+      await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
+        customer_id: customerId, merchant_id: merchantId,
+        milestone_id: milestoneId, stamp_number: milestone.stamp_number,
+        redeemed_at: new Date().toISOString(),
+        redeemed_via: via === 'branch' ? 'branch' : 'app',
+      });
+    }
+
+    // Deduct Foodics-compatible points too (1 stamp = 10 points)
+    const pointsToDeduct = milestone.stamp_number * 10;
+    const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
+      .select('points').eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();
+    if (ptsBal) {
+      await supabaseAdmin.from('loyalty_points')
+        .update({ points: Math.max(0, ptsBal.points - pointsToDeduct), updated_at: new Date().toISOString() })
+        .eq('customer_id', customerId).eq('merchant_id', merchantId);
+    }
 
     // Log transaction
     await supabaseAdmin.from('loyalty_transactions').insert({
       customer_id: customerId, merchant_id: merchantId,
       type: 'redeem', loyalty_type: 'stamps',
-      points: -(milestone.stamp_number * 10),
-      description: `Redeemed milestone: ${milestone.reward_name}`,
+      points: -pointsToDeduct,
+      description: `Redeemed milestone: ${milestone.reward_name} (-${milestone.stamp_number} stamps)`,
       source: via === 'branch' ? 'branch' : 'app',
     });
 
     notifyPassUpdate(customerId, merchantId).catch(() => {});
-    res.json({ success: true, rewardName: milestone.reward_name, stampsReset: true });
+    res.json({ success: true, rewardName: milestone.reward_name, stampsDeducted: milestone.stamp_number, newStamps: newStampCount });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem milestone' });
   }
