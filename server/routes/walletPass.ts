@@ -521,10 +521,10 @@ function buildPassJson(opts: {
     authenticationToken: authTokenForSerial(opts.serialNumber),
     barcodes: [
       {
-        format: 'PKBarcodeFormatCode128',
+        format: 'PKBarcodeFormatQR',
         message: opts.barcodeMessage,
         messageEncoding: 'iso-8859-1',
-        altText: opts.barcodeMessage,
+        altText: opts.memberCode,
       },
     ],
     storeCard,
@@ -760,7 +760,17 @@ walletPassRouter.get(
       const tier = getTier(lifetimePoints);
       const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
       const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
-      const barcodeMessage = memberProfile.member_code;
+
+      // Foodics Loyalty Adapter QR format: compact JSON with mobile number + country code
+      // See: https://developers.foodics.com/guides/loyalty.html#qr-code-content
+      const customerPhone = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
+      const barcodeMessage = customerPhone
+        ? JSON.stringify({
+            customer_name: memberProfile.display_name || 'Customer',
+            customer_mobile_number: customerPhone,
+            mobile_country_code: 966,
+          })
+        : memberProfile.member_code; // Fallback if no phone number
 
       const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
       const stripPng = createStripPng(750, 246, bgR, bgG, bgB);
@@ -1196,7 +1206,16 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const tier = getTier(lifetimePoints);
     const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
     const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
-    const barcodeMessage = memberProfile.member_code;
+
+    // Foodics Loyalty Adapter QR format
+    const customerPhone2 = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
+    const barcodeMessage = customerPhone2
+      ? JSON.stringify({
+          customer_name: memberProfile.display_name || 'Customer',
+          customer_mobile_number: customerPhone2,
+          mobile_country_code: 966,
+        })
+      : memberProfile.member_code;
 
     const bgRgb = hexToRgb(bgColor);
     const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);

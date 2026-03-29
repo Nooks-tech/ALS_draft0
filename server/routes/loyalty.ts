@@ -494,10 +494,10 @@ loyaltyRouter.post('/earn', async (req, res) => {
 
       // INTERNAL ACCOUNTING ONLY: 1 stamp = 10 internal points.
       // These points are stored in our loyalty_points table for balance tracking.
-      // Foodics does NOT receive these points — Foodics integration uses discount coupons
-      // created via /api/loyalty/create-stamp-coupon when milestones are reached.
-      // The QR barcode on the Apple Wallet pass contains the member code, which Foodics
-      // uses to look up the customer — not the internal points balance.
+      // Foodics does NOT receive these points — Foodics integration uses the adapter
+      // pattern (nooksweb /api/adapter/v1/reward + /redeem endpoints).
+      // The QR code on the Apple Wallet pass contains customer mobile + country code
+      // in Foodics-compatible JSON format for POS scanning.
       const pointsForStamp = 10;
       const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
         .select('points, lifetime_points')
@@ -542,47 +542,15 @@ loyaltyRouter.post('/earn', async (req, res) => {
 
       let milestoneReached = false;
       let milestoneName = '';
-      let couponCode: string | null = null;
       if (milestones && milestones.length > 0) {
         const hit = milestones[0];
         milestoneReached = true;
         milestoneName = hit.reward_name;
-        const productIds = Array.isArray(hit.foodics_product_ids) ? hit.foodics_product_ids : [];
 
-        // Request Foodics coupon creation via nooksweb relay
-        const NOOKS_API = process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || process.env.NOOKS_API_BASE_URL || '';
-        const INTERNAL_SECRET = process.env.NOOKS_INTERNAL_SECRET || '';
-        if (NOOKS_API && productIds.length > 0) {
-          try {
-            const couponRes = await fetch(`${NOOKS_API.replace(/\/$/, '')}/api/loyalty/create-stamp-coupon`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...(INTERNAL_SECRET ? { 'x-nooks-internal-secret': INTERNAL_SECRET } : {}),
-              },
-              body: JSON.stringify({
-                merchantId: merchantId || '', customerId, milestoneId: hit.id,
-                rewardName: hit.reward_name, productIds,
-              }),
-            });
-            if (!couponRes.ok) {
-              console.error('[Loyalty] Coupon creation returned HTTP', couponRes.status);
-            }
-            const couponData = await couponRes.json().catch(() => ({}));
-            couponCode = couponData?.couponCode ?? null;
-            if (!couponCode) {
-              console.warn('[Loyalty] No coupon code returned — branch redemption will not work for this milestone');
-            }
-          } catch (couponErr) {
-            console.error('[Loyalty] Foodics coupon creation failed:', (couponErr as Error).message);
-          }
-        }
-
-        // Create redemption record with coupon code
+        // Create redemption record (redeemable at branch via Foodics adapter or in-app)
         await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
           customer_id: customerId, merchant_id: merchantId || '',
           milestone_id: hit.id, stamp_number: hit.stamp_number,
-          foodics_coupon_code: couponCode,
         });
 
         // Push notification to customer
@@ -598,8 +566,8 @@ loyaltyRouter.post('/earn', async (req, res) => {
               method: 'POST', headers,
               body: JSON.stringify(tokens.map((t: string) => ({
                 to: t, sound: 'default',
-                title: 'Milestone Reward Unlocked! 🎉',
-                body: `You earned ${hit.stamp_number} stamps! Your reward: ${hit.reward_name}. ${couponCode ? `Show code ${couponCode} at the branch or redeem in-app.` : 'Redeem in the app at checkout.'}`,
+                title: 'Milestone Reward Unlocked!',
+                body: `You earned ${hit.stamp_number} stamps! Your reward: ${hit.reward_name}. Show your wallet card at the branch or redeem in the app.`,
                 channelId: 'loyalty',
               }))),
             });
@@ -610,7 +578,6 @@ loyaltyRouter.post('/earn', async (req, res) => {
       notifyPassUpdate(customerId, merchantId || '').catch(() => {});
       return res.json({
         success: true, pointsEarned: pointsForStamp, newStamps, milestoneReached, milestoneName,
-        couponCode,
         newBalance: (ptsBal?.points ?? 0) + pointsForStamp,
       });
     }
