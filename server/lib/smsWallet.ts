@@ -154,6 +154,17 @@ export async function debitMerchantSmsWallet(params: {
   });
 
   if (error) {
+    // Defensive: if the RPC doesn't exist (nooksweb migrations not applied), allow OTP
+    if (error.message.includes('does not exist') || error.message.includes('could not find')) {
+      console.warn('[smsWallet] RPC debit_sms_wallet_balance not found — allowing OTP (wallet not migrated)');
+      return {
+        ok: true,
+        charged: false,
+        reason: 'not_configured' as const,
+        balanceHalalas: 0,
+        chargePerOtpHalalas: runtime.chargePerOtpHalalas,
+      };
+    }
     throw new Error(error.message);
   }
 

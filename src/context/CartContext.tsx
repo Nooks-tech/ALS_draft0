@@ -25,22 +25,28 @@ export type CartContextType = {
   updateQuantity: (uniqueId: string, amount: number) => void;
   totalPrice: number;
   totalItems: number;
-  orderType: 'delivery' | 'pickup';
-  setOrderType: (type: 'delivery' | 'pickup') => void;
+  orderType: 'delivery' | 'pickup' | 'drivethru';
+  setOrderType: (type: 'delivery' | 'pickup' | 'drivethru') => void;
   selectedBranch: any;
   setSelectedBranch: (branch: any) => void;
   deliveryAddress: { address: string; lat?: number; lng?: number; city?: string } | null;
   setDeliveryAddress: (addr: { address: string; lat?: number; lng?: number; city?: string } | null) => void;
+  deliveryFee: number;
+  setDeliveryFee: (fee: number) => void;
+  deliveryOptionId: number | null;
+  setDeliveryOptionId: (id: number | null) => void;
+  deliveryCarrierName: string | null;
+  setDeliveryCarrierName: (name: string | null) => void;
   clearCart: () => void;
   /** Re-order: set cart and order type from a placed order (e.g. for Re-order button). */
-  setCartFromOrder: (order: { items: CartItem[]; orderType: 'delivery' | 'pickup'; branchId?: string; branchName?: string; deliveryAddress?: string; deliveryLat?: number; deliveryLng?: number }) => void;
+  setCartFromOrder: (order: { items: CartItem[]; orderType: 'delivery' | 'pickup' | 'drivethru'; branchId?: string; branchName?: string; deliveryAddress?: string; deliveryLat?: number; deliveryLng?: number }) => void;
 };
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
 type PersistedCart = {
   cartItems?: CartItem[];
-  orderType?: 'delivery' | 'pickup';
+  orderType?: 'delivery' | 'pickup' | 'drivethru';
   selectedBranch?: { id: string; name: string; address: string; distance?: string } | null;
   deliveryAddress?: { address: string; lat?: number; lng?: number; city?: string } | null;
   updatedAt?: number;
@@ -51,9 +57,12 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const { user, initialized } = useAuth();
   const { appName, cafeName } = useMerchantBranding();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
-  const [orderType, setOrderTypeState] = useState<'delivery' | 'pickup'>('pickup');
+  const [orderType, setOrderTypeState] = useState<'delivery' | 'pickup' | 'drivethru'>('pickup');
   const [selectedBranch, setSelectedBranchState] = useState<{ id: string; name: string; address: string; distance?: string } | null>(null);
   const [deliveryAddress, setDeliveryAddressState] = useState<{ address: string; lat?: number; lng?: number; city?: string } | null>(null);
+  const [deliveryFee, setDeliveryFeeState] = useState<number>(0);
+  const [deliveryOptionId, setDeliveryOptionIdState] = useState<number | null>(null);
+  const [deliveryCarrierName, setDeliveryCarrierNameState] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number>(Date.now());
   const prevUserRef = useRef<string | null>(null);
@@ -164,10 +173,19 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     return () => subscription.remove();
   }, [hydrated, initialized, cartItems.length, totalItems, lastUpdatedAt, CART_REMINDER_KEY, appName, cafeName]);
 
-  const setOrderType = useCallback((type: 'delivery' | 'pickup') => {
+  const setOrderType = useCallback((type: 'delivery' | 'pickup' | 'drivethru') => {
     setOrderTypeState(type);
+    if (type === 'pickup') {
+      setDeliveryFeeState(0);
+      setDeliveryOptionIdState(null);
+      setDeliveryCarrierNameState(null);
+    }
     touchCart();
   }, [touchCart]);
+
+  const setDeliveryFee = useCallback((fee: number) => { setDeliveryFeeState(fee); touchCart(); }, [touchCart]);
+  const setDeliveryOptionId = useCallback((id: number | null) => { setDeliveryOptionIdState(id); touchCart(); }, [touchCart]);
+  const setDeliveryCarrierName = useCallback((name: string | null) => { setDeliveryCarrierNameState(name); touchCart(); }, [touchCart]);
 
   const setSelectedBranch = useCallback((branch: any) => {
     setSelectedBranchState(branch);
@@ -235,7 +253,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   const setCartFromOrder = (order: {
     items: CartItem[];
-    orderType: 'delivery' | 'pickup';
+    orderType: 'delivery' | 'pickup' | 'drivethru';
     branchId?: string;
     branchName?: string;
     deliveryAddress?: string;
@@ -274,6 +292,12 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         setSelectedBranch,
         deliveryAddress,
         setDeliveryAddress,
+        deliveryFee,
+        setDeliveryFee,
+        deliveryOptionId,
+        setDeliveryOptionId,
+        deliveryCarrierName,
+        setDeliveryCarrierName,
         clearCart,
         setCartFromOrder,
       }}

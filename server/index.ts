@@ -14,6 +14,8 @@ import { walletPassRouter } from './routes/walletPass';
 import { googleWalletRouter } from './routes/googleWallet';
 import { supportRouter } from './routes/support';
 import { startStaleOrdersCron } from './cron/staleOrders';
+import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
+import { startComplaintEscalationCron } from './cron/complaintEscalation';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -46,4 +48,6 @@ app.use('/api/support', supportRouter);
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`ALS API running on port ${PORT}`);
   startStaleOrdersCron();
+  startLoyaltyExpirationCron();
+  startComplaintEscalationCron();
 });

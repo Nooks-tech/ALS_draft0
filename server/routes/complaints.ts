@@ -122,6 +122,18 @@ complaintsRouter.post('/:orderId', async (req, res) => {
       );
     }
 
+    // Auto-compute liability based on complaint type
+    const LIABILITY_MAP: Record<string, string | null> = {
+      missing_item: 'store',
+      wrong_item: 'store',
+      quality_issue: 'store',
+      damaged_packaging: 'fleet',
+      late_delivery: 'fleet',
+      tampered: 'fleet',
+      other: null,
+    };
+    const suggestedLiability = LIABILITY_MAP[complaint_type] ?? null;
+
     const { data: complaint, error: insertErr } = await supabaseAdmin
       .from('order_complaints')
       .insert({
@@ -133,6 +145,7 @@ complaintsRouter.post('/:orderId', async (req, res) => {
         photo_urls: photo_urls || [],
         items: items || [],
         requested_refund_amount: requestedRefundAmount,
+        suggested_liability: suggestedLiability,
         flagged,
       })
       .select()

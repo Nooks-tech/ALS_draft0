@@ -1,7 +1,9 @@
 /**
- * Foodics API Service
- * Docs: https://developers.foodics.com
- * Fetches menu, branches, and creates orders.
+ * @deprecated Foodics integration is now handled by nooksweb (lib/foodics-orders.ts).
+ * This service uses a global FOODICS_API_TOKEN which is not per-merchant.
+ * Menu/branch fetching comes from nooksweb product sync.
+ * Order creation happens via the nooksweb relay path (createFoodicsOrderForMerchant).
+ * This file will be removed in a future release.
  */
 
 const FOODICS_BASE = process.env.FOODICS_API_URL || 'https://api.foodics.com/v2';

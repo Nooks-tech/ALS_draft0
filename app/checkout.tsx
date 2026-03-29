@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import {
   ArrowLeft,
+  Car,
   ChevronRight,
   Clock,
   MapPin,
@@ -9,6 +10,7 @@ import {
   Star,
   X,
 } from 'lucide-react-native';
+import { DeliveryOptionsPicker } from '../src/components/delivery/DeliveryOptionsPicker';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -76,6 +78,8 @@ export default function CheckoutScreen() {
     orderType,
     selectedBranch,
     deliveryAddress,
+    deliveryFee: cartDeliveryFee,
+    deliveryOptionId,
     clearCart,
   } = useCart();
   const { merchantId } = useMerchant();
@@ -108,6 +112,9 @@ export default function CheckoutScreen() {
   const [couponInput, setCouponInput] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [draftOrderNote, setDraftOrderNote] = useState('');
+  const [carMake, setCarMake] = useState('');
+  const [carColor, setCarColor] = useState('');
+  const [carPlate, setCarPlate] = useState('');
   const [promoValidating, setPromoValidating] = useState(false);
   const [moyasarWebUrl, setMoyasarWebUrl] = useState<string | null>(null);
   const paymentSuccessHandled = useRef(false);
@@ -134,7 +141,7 @@ export default function CheckoutScreen() {
     }
   }, [paymentMethod, resolvedApplePayEnabled]);
 
-  const deliveryFee = orderType === 'delivery' ? 15 : 0;
+  const deliveryFee = orderType === 'delivery' ? (cartDeliveryFee > 0 ? cartDeliveryFee : 15) : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
   const discount = promoApplied ? promoDiscount : 0;
   const subtotalAfterPromo = Math.max(0, subtotalBeforePromo - discount);
@@ -290,6 +297,7 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          carDetails: orderType === 'drivethru' ? { make: carMake, color: carColor, plate: carPlate } : null,
           relayToNooks: false,
         });
       }
@@ -306,6 +314,7 @@ export default function CheckoutScreen() {
             amount: Number(finalTotal.toFixed(2)),
             merchantId,
             pickupLocationCode: pickupCode,
+            deliveryOptionId: deliveryOptionId ?? undefined,
             customer: {
               name: (profile.fullName || 'Customer').trim(),
               phone: (profile.phone || '500000000').trim(),
@@ -657,6 +666,41 @@ export default function CheckoutScreen() {
               <ChevronRight size={20} color="#94a3b8" />
             </TouchableOpacity>
           </View>
+
+          {/* Delivery Options Picker */}
+          {orderType === 'delivery' && deliveryAddress && (
+            <View className="mt-4">
+              <DeliveryOptionsPicker accentColor={primaryColor} />
+            </View>
+          )}
+
+          {/* Curbside / Drive-thru Car Details */}
+          {orderType === 'drivethru' && (
+            <View className="mt-4 bg-slate-50 rounded-[28px] border border-slate-100 p-4">
+              <View className="flex-row items-center mb-3">
+                <Car size={20} color={primaryColor} />
+                <Text className="font-bold text-slate-900 ml-2">{isArabic ? 'تفاصيل السيارة' : 'Car Details'}</Text>
+              </View>
+              <TextInput
+                className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm mb-2"
+                placeholder={isArabic ? 'نوع السيارة (مثل: تويوتا كامري)' : 'Car make (e.g. Toyota Camry)'}
+                value={carMake}
+                onChangeText={setCarMake}
+              />
+              <TextInput
+                className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm mb-2"
+                placeholder={isArabic ? 'لون السيارة' : 'Car color'}
+                value={carColor}
+                onChangeText={setCarColor}
+              />
+              <TextInput
+                className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm"
+                placeholder={isArabic ? 'رقم اللوحة' : 'Plate number'}
+                value={carPlate}
+                onChangeText={setCarPlate}
+              />
+            </View>
+          )}
 
           {/* Promo / Coupon */}
           <View className="mt-5">

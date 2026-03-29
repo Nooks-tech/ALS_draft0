@@ -152,6 +152,7 @@ ordersRouter.post('/commit', async (req, res) => {
       customerPhone,
       customerEmail,
       promoCode,
+      carDetails,
       relayToNooks,
     } = req.body ?? {};
 
@@ -170,8 +171,20 @@ ordersRouter.post('/commit', async (req, res) => {
     if (typeof totalSar !== 'number' || !Number.isFinite(totalSar) || totalSar < 0) {
       return res.status(400).json({ error: 'totalSar must be a valid non-negative number' });
     }
-    if (orderType !== 'delivery' && orderType !== 'pickup') {
-      return res.status(400).json({ error: 'orderType must be delivery or pickup' });
+    if (orderType !== 'delivery' && orderType !== 'pickup' && orderType !== 'drivethru') {
+      return res.status(400).json({ error: 'orderType must be delivery, pickup, or drivethru' });
+    }
+
+    // Subscription enforcement: reject orders for suspended merchants
+    if (supabaseAdmin) {
+      const { data: merchantRow } = await supabaseAdmin
+        .from('merchants')
+        .select('status')
+        .eq('id', merchantId)
+        .maybeSingle();
+      if (merchantRow?.status === 'suspended') {
+        return res.status(403).json({ error: 'Merchant is currently suspended. Orders cannot be placed.' });
+      }
     }
 
     const normalizedStatus =
@@ -209,6 +222,7 @@ ordersRouter.post('/commit', async (req, res) => {
       delivery_fee: normalizedDeliveryFee,
       payment_id: typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null,
       payment_method: typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null,
+      car_details: orderType === 'drivethru' && carDetails && typeof carDetails === 'object' ? carDetails : null,
       updated_at: new Date().toISOString(),
     };
 
@@ -252,6 +266,17 @@ ordersRouter.post('/commit', async (req, res) => {
           ...(item.customizations ? { customizations: item.customizations } : {}),
         })),
       });
+
+      // Store Foodics order ID from relay response (fire-and-forget)
+      const relayData = relayResult as { foodics?: { ok?: boolean; foodicsOrderId?: string } } | null;
+      if (relayData?.foodics?.ok && relayData.foodics.foodicsOrderId) {
+        supabaseAdmin
+          .from('customer_orders')
+          .update({ foodics_order_id: relayData.foodics.foodicsOrderId })
+          .eq('id', id)
+          .then(() => console.log(`[Orders] Stored foodics_order_id for ${id}`))
+          .catch((e: any) => console.warn('[Orders] Failed to store foodics_order_id:', e?.message));
+      }
     }
 
     res.json({ success: true, order: savedOrder, relayResult });

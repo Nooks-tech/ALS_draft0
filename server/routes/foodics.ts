@@ -1,3 +1,8 @@
+/**
+ * @deprecated These routes are unused. Foodics integration is handled by nooksweb
+ * via lib/foodics-orders.ts (per-merchant OAuth tokens from foodics_connections table).
+ * This router will be removed in a future release.
+ */
 import { Router } from 'express';
 import { foodicsService } from '../services/foodics';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';

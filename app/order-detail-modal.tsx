@@ -17,17 +17,37 @@ import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { supabase } from '../src/api/supabase';
 
 const COMPLAINT_WINDOW_MS = 24 * 60 * 60 * 1000;
-const COMPLAINT_TYPES = [
+const STORE_COMPLAINT_TYPES = [
   { value: 'missing_item', label: 'Missing Item' },
   { value: 'wrong_item', label: 'Wrong Item' },
   { value: 'quality_issue', label: 'Quality Issue' },
+] as const;
+
+const FLEET_COMPLAINT_TYPES = [
+  { value: 'damaged_packaging', label: 'Damaged Packaging' },
+  { value: 'late_delivery', label: 'Late Delivery' },
+  { value: 'tampered', label: 'Tampered / Opened' },
+] as const;
+
+const OTHER_COMPLAINT_TYPES = [
   { value: 'other', label: 'Other' },
 ] as const;
 
-const COMPLAINT_TYPE_ARABIC: Record<(typeof COMPLAINT_TYPES)[number]['value'], string> = {
+const ALL_COMPLAINT_TYPE_VALUES = [
+  ...STORE_COMPLAINT_TYPES,
+  ...FLEET_COMPLAINT_TYPES,
+  ...OTHER_COMPLAINT_TYPES,
+] as const;
+
+type ComplaintTypeValue = (typeof ALL_COMPLAINT_TYPE_VALUES)[number]['value'];
+
+const COMPLAINT_TYPE_ARABIC: Record<ComplaintTypeValue, string> = {
   missing_item: 'عنصر مفقود',
   wrong_item: 'عنصر خاطئ',
   quality_issue: 'مشكلة في الجودة',
+  damaged_packaging: 'تغليف تالف',
+  late_delivery: 'تأخر التوصيل',
+  tampered: 'تم العبث / فتح الطلب',
   other: 'أخرى',
 };
 
@@ -518,14 +538,18 @@ export default function OrderDetailModal() {
               {/* Issue type */}
               <Text className="font-bold text-slate-700 mb-2">{isArabic ? 'ما المشكلة التي حدثت؟' : 'What went wrong?'}</Text>
               <View className="flex-row flex-wrap gap-2 mb-4">
-                {COMPLAINT_TYPES.map((ct) => (
+                {[
+                  ...STORE_COMPLAINT_TYPES,
+                  ...(order.orderType === 'delivery' ? FLEET_COMPLAINT_TYPES : []),
+                  ...OTHER_COMPLAINT_TYPES,
+                ].map((ct) => (
                   <Pressable
                     key={ct.value}
                     onPress={() => setComplaintType(ct.value)}
                     className={`px-4 py-2 rounded-full border ${complaintType === ct.value ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white'}`}
                   >
                     <Text className={complaintType === ct.value ? 'text-red-600 font-bold text-sm' : 'text-slate-600 text-sm'}>
-                      {isArabic ? COMPLAINT_TYPE_ARABIC[ct.value] : ct.label}
+                      {isArabic ? COMPLAINT_TYPE_ARABIC[ct.value as ComplaintTypeValue] : ct.label}
                     </Text>
                   </Pressable>
                 ))}

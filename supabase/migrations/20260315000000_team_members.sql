@@ -32,12 +32,14 @@ create or replace function public.current_team_merchant_id() returns uuid as $$
 $$ language sql security definer stable;
 
 -- RLS: owners can manage their merchant's team; managers can read their own row
+drop policy if exists "Owner can manage team" on public.team_members;
 create policy "Owner can manage team"
   on public.team_members for all
   using (
     merchant_id = public.current_owner_merchant_id()
   );
 
+drop policy if exists "Team member can read own" on public.team_members;
 create policy "Team member can read own"
   on public.team_members for select
   using (user_id = auth.uid());

@@ -92,9 +92,10 @@ async function getLoyaltySnapshot(merchantId: string, customerId: string) {
       .order('points_cost', { ascending: true }),
     supabaseAdmin
       .from('loyalty_transactions')
-      .select('id, type, points, description, branch_id, source, actor_role, reference_type, reference_id, created_at')
+      .select('id, type, points, description, branch_id, source, actor_role, reference_type, reference_id, expired, created_at')
       .eq('merchant_id', merchantId)
       .eq('customer_id', customerId)
+      .neq('expired', true)
       .order('created_at', { ascending: false })
       .limit(10),
   ]);
@@ -127,15 +128,17 @@ async function redeemPointsFromBalance(params: {
   if (!supabaseAdmin) throw new Error('Database not configured');
   await ensureLoyaltyMemberProfile(params.merchantId, params.customerId);
   const config = await getMerchantConfig(params.merchantId);
+  const programId = await getActiveProgramId(params.merchantId);
   const pointsToRedeem = Math.floor(Number(params.points));
   if (pointsToRedeem <= 0) throw new Error('Invalid points amount');
 
-  const { data: balance } = await supabaseAdmin
+  let balQuery = supabaseAdmin
     .from('loyalty_points')
     .select('points')
     .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .single();
+    .eq('merchant_id', params.merchantId);
+  if (programId) balQuery = balQuery.eq('program_id', programId);
+  const { data: balance } = await balQuery.single();
 
   if (!balance || balance.points < pointsToRedeem) {
     throw new Error(`Insufficient points. Available: ${balance?.points ?? 0}`);
@@ -143,11 +146,13 @@ async function redeemPointsFromBalance(params: {
 
   const discountSar = +(pointsToRedeem * config.point_value_sar).toFixed(2);
 
-  await supabaseAdmin
+  let updateQuery = supabaseAdmin
     .from('loyalty_points')
     .update({ points: balance.points - pointsToRedeem, updated_at: new Date().toISOString() })
     .eq('customer_id', params.customerId)
     .eq('merchant_id', params.merchantId);
+  if (programId) updateQuery = updateQuery.eq('program_id', programId);
+  await updateQuery;
 
   await supabaseAdmin.from('loyalty_transactions').insert({
     customer_id: params.customerId,
@@ -163,6 +168,7 @@ async function redeemPointsFromBalance(params: {
     reference_type: normalizeOptionalString(params.context?.referenceType),
     reference_id: normalizeOptionalString(params.context?.referenceId),
     metadata: params.context?.metadata ?? {},
+    ...(programId ? { program_id: programId } : {}),
   });
 
   notifyPassUpdate(params.customerId, params.merchantId).catch(() => {});
@@ -420,7 +426,10 @@ export async function earnPoints(
   if (!supabaseAdmin) throw new Error('Database not configured');
   await ensureLoyaltyMemberProfile(merchantId, customerId);
 
-  const { data: alreadyEarned } = await supabaseAdmin
+  // Resolve active loyalty program (null = legacy/no programs configured)
+  const programId = await getActiveProgramId(merchantId);
+
+  let idempotencyQuery = supabaseAdmin
     .from('loyalty_transactions')
     .select('id')
     .eq('customer_id', customerId)
@@ -428,16 +437,18 @@ export async function earnPoints(
     .eq('order_id', orderId)
     .eq('type', 'earn')
     .gt('points', 0)
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  if (programId) idempotencyQuery = idempotencyQuery.eq('program_id', programId);
+  const { data: alreadyEarned } = await idempotencyQuery.maybeSingle();
 
   if (alreadyEarned) {
-    const { data: existingBalance } = await supabaseAdmin
+    let balQuery = supabaseAdmin
       .from('loyalty_points')
       .select('points')
       .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId)
-      .maybeSingle();
+      .eq('merchant_id', merchantId);
+    if (programId) balQuery = balQuery.eq('program_id', programId);
+    const { data: existingBalance } = await balQuery.maybeSingle();
 
     return {
       success: true,
@@ -458,15 +469,16 @@ export async function earnPoints(
     ? new Date(Date.now() + config.expiry_months * 30 * 24 * 60 * 60 * 1000).toISOString()
     : null;
 
-  const { data: existing } = await supabaseAdmin
+  let existQuery = supabaseAdmin
     .from('loyalty_points')
     .select('points, lifetime_points')
     .eq('customer_id', customerId)
-    .eq('merchant_id', merchantId)
-    .single();
+    .eq('merchant_id', merchantId);
+  if (programId) existQuery = existQuery.eq('program_id', programId);
+  const { data: existing } = await existQuery.single();
 
   if (existing) {
-    await supabaseAdmin
+    let updateQuery = supabaseAdmin
       .from('loyalty_points')
       .update({
         points: existing.points + pointsEarned,
@@ -475,12 +487,15 @@ export async function earnPoints(
       })
       .eq('customer_id', customerId)
       .eq('merchant_id', merchantId);
+    if (programId) updateQuery = updateQuery.eq('program_id', programId);
+    await updateQuery;
   } else {
     await supabaseAdmin.from('loyalty_points').insert({
       customer_id: customerId,
       merchant_id: merchantId,
       points: pointsEarned,
       lifetime_points: pointsEarned,
+      ...(programId ? { program_id: programId } : {}),
     });
   }
 
@@ -499,17 +514,19 @@ export async function earnPoints(
     reference_type: normalizeOptionalString(context?.referenceType),
     reference_id: normalizeOptionalString(context?.referenceId),
     metadata: context?.metadata ?? {},
+    ...(programId ? { program_id: programId } : {}),
   });
 
   let stampAwarded = false;
   let stampRewardGranted = false;
   if (config.stamp_enabled && merchantId) {
-    const { data: stampRow } = await supabaseAdmin
+    let stampQuery = supabaseAdmin
       .from('loyalty_stamps')
       .select('stamps, completed_cards')
       .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId)
-      .single();
+      .eq('merchant_id', merchantId);
+    if (programId) stampQuery = stampQuery.eq('program_id', programId);
+    const { data: stampRow } = await stampQuery.single();
 
     let newStamps = (stampRow?.stamps ?? 0) + 1;
     let completedCards = stampRow?.completed_cards ?? 0;
@@ -534,21 +551,25 @@ export async function earnPoints(
         reference_type: normalizeOptionalString(context?.referenceType),
         reference_id: normalizeOptionalString(context?.referenceId),
         metadata: context?.metadata ?? {},
+        ...(programId ? { program_id: programId } : {}),
       });
     }
 
     if (stampRow) {
-      await supabaseAdmin
+      let stampUpdateQuery = supabaseAdmin
         .from('loyalty_stamps')
         .update({ stamps: newStamps, completed_cards: completedCards, updated_at: new Date().toISOString() })
         .eq('customer_id', customerId)
         .eq('merchant_id', merchantId);
+      if (programId) stampUpdateQuery = stampUpdateQuery.eq('program_id', programId);
+      await stampUpdateQuery;
     } else {
       await supabaseAdmin.from('loyalty_stamps').insert({
         customer_id: customerId,
         merchant_id: merchantId,
         stamps: newStamps,
         completed_cards: completedCards,
+        ...(programId ? { program_id: programId } : {}),
       });
     }
   }
@@ -863,5 +884,114 @@ loyaltyRouter.get('/history', async (req, res) => {
     res.json({ transactions: data ?? [] });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get history' });
+  }
+});
+
+
+/* ═══════════════════════════════════════════════════════════════════
+   LOYALTY PROGRAMS – Versioned program management (Retire & Launch)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** Get the active program ID for a merchant, or null if no programs exist (backwards compat). */
+async function getActiveProgramId(merchantId: string): Promise<string | null> {
+  if (!supabaseAdmin) return null;
+  const { data } = await supabaseAdmin
+    .from('loyalty_programs')
+    .select('id')
+    .eq('merchant_id', merchantId)
+    .eq('status', 'active')
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
+/** GET /api/loyalty/programs?merchantId=X — list all programs for a merchant */
+loyaltyRouter.get('/programs', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const merchantId = req.query.merchantId as string;
+    if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+
+    const { data, error } = await supabaseAdmin
+      .from('loyalty_programs')
+      .select('*')
+      .eq('merchant_id', merchantId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ programs: data ?? [], activeProgramId: await getActiveProgramId(merchantId) });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to list programs' });
+  }
+});
+
+/** POST /api/loyalty/programs/retire-and-launch — retire current program and launch a new one */
+loyaltyRouter.post('/programs/retire-and-launch', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { merchantId, gracePeriodDays = 90, newConfig } = req.body;
+    if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+    if (!newConfig || typeof newConfig !== 'object') return res.status(400).json({ error: 'newConfig required' });
+
+    const graceDays = Math.max(7, Math.min(365, Number(gracePeriodDays) || 90));
+    const gracePeriodEnd = new Date(Date.now() + graceDays * 24 * 60 * 60 * 1000).toISOString();
+
+    // Find and retire the current active program (if any)
+    const currentProgramId = await getActiveProgramId(merchantId);
+    if (currentProgramId) {
+      const currentConfig = await getMerchantConfig(merchantId);
+      await supabaseAdmin
+        .from('loyalty_programs')
+        .update({
+          status: 'retiring',
+          grace_period_end: gracePeriodEnd,
+          config_snapshot: currentConfig,
+        })
+        .eq('id', currentProgramId);
+    }
+
+    // Create new active program
+    const { data: newProgram, error: createErr } = await supabaseAdmin
+      .from('loyalty_programs')
+      .insert({
+        merchant_id: merchantId,
+        status: 'active',
+        config_snapshot: newConfig,
+      })
+      .select('id')
+      .single();
+
+    if (createErr) return res.status(500).json({ error: createErr.message });
+
+    // Update loyalty_config with new settings
+    const configPayload: Record<string, unknown> = { merchant_id: merchantId };
+    const allowedFields = [
+      'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
+      'expiry_months', 'stamp_enabled', 'stamp_target', 'stamp_reward_description',
+      'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
+      'wallet_card_label', 'wallet_card_secondary_label', 'pass_template_type',
+    ];
+    for (const key of allowedFields) {
+      if (key in newConfig) configPayload[key] = newConfig[key];
+    }
+
+    await supabaseAdmin
+      .from('loyalty_config')
+      .upsert(configPayload, { onConflict: 'merchant_id' });
+
+    res.json({
+      success: true,
+      retiredProgramId: currentProgramId,
+      newProgramId: newProgram.id,
+      gracePeriodEnd,
+      gracePeriodDays: graceDays,
+    });
+  } catch (err: any) {
+    console.error('[Loyalty] Retire & Launch error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to retire and launch program' });
   }
 });
