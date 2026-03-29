@@ -161,12 +161,36 @@ export default function CheckoutScreen() {
       : Math.min(loyaltyBalance.points, Math.ceil(pointsDiscount / loyaltyBalance.pointValueSar))
     : 0;
 
+  // Foodics Order Calculation Formulas (tax-inclusive pricing — Saudi standard)
+  // See: https://developers.foodics.com/guides/order-calculation-formulas.html
+  //
+  // product tax exclusive unit price = unit_price / (1 + tax_rate)
+  // order subtotal = sum(product tax exclusive total prices)
+  // order discount = discount_percent × order subtotal
+  // order taxes = taxable_amounts × tax_rate
+  // order total = subtotal + charges + taxes - discount + rounding
   const subtotalAfterDiscount = Math.max(0, subtotalAfterPromo - pointsDiscount);
-  const amountExclVAT = subtotalAfterDiscount / (1 + VAT_RATE);
-  const deliveryExclVAT = (orderType === 'delivery' ? deliveryFee : 0) / (1 + VAT_RATE);
-  const itemsExclVAT = amountExclVAT - deliveryExclVAT;
-  const vatAmount = subtotalAfterDiscount - amountExclVAT;
-  const finalTotal = subtotalAfterDiscount;
+
+  // Tax-inclusive: extract VAT from the total (prices already include VAT)
+  const taxRate = VAT_RATE; // 0.15
+  const taxDivisor = 1 + taxRate;
+
+  // Items exclusive of VAT
+  const itemsInclVAT = Math.max(0, totalPrice - discount - pointsDiscount);
+  const itemsExclVAT = +(itemsInclVAT / taxDivisor).toFixed(2);
+
+  // Delivery fee exclusive of VAT (delivery charges are also tax-inclusive in Saudi)
+  const deliveryExclVAT = +(deliveryFee / taxDivisor).toFixed(2);
+
+  // Total exclusive of VAT
+  const amountExclVAT = +(itemsExclVAT + deliveryExclVAT).toFixed(2);
+
+  // VAT amount
+  const vatAmount = +(subtotalAfterDiscount - amountExclVAT).toFixed(2);
+
+  // Rounding: Foodics uses configurable rounding (default: 0.01 SAR, average/half-up)
+  // We round to nearest halala (0.01 SAR) using standard rounding
+  const finalTotal = +subtotalAfterDiscount.toFixed(2);
   const amountHalals = Math.round(finalTotal * 100);
 
   const paymentConfig = useMemo(() => {
