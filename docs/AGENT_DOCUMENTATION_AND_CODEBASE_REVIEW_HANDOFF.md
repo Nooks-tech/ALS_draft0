@@ -696,4 +696,126 @@ Location: `nooksweb-1/supabase/migrations/`. Apply in **timestamp order** on the
 
 ---
 
-*Generated as a handoff summary. Update as the product evolves.*
+---
+
+## Part XX — Claude Code Session (2026-03-29, ~5 hours)
+
+### Session Summary
+
+Major implementation session covering loyalty system overhaul, Foodics adapter integration, and comprehensive auditing across both repos. All changes pushed to GitHub.
+
+### 1. Loyalty System Redesign (complete overhaul)
+
+**Three loyalty systems implemented** — merchant picks ONE in the dashboard:
+- **Cashback**: % per SAR spent, real SAR balance, redeemable at checkout + branch
+- **Points**: points per SAR with configurable value, redeemable at checkout + branch
+- **Stamps**: 1 stamp per order, milestones (max 5) with Foodics menu items as rewards, redeemable at branch via Foodics POS + in-app
+
+**Key architectural decisions:**
+- Soft-transition via `config_version` instead of Retire & Launch programs
+- No tiers (Bronze/Silver/Gold removed)
+- 1 stamp = 10 internal points (Foodics never sees these — internal accounting only)
+- Branch Loyalty sidebar page hidden (not needed with Foodics adapter)
+
+**New database migration**: `20260330000000_loyalty_three_systems.sql`
+- `loyalty_config`: added `loyalty_type`, `cashback_percent`, stamp card design fields, `config_version`, banner URL
+- New tables: `loyalty_stamp_milestones`, `loyalty_stamp_redemptions`, `loyalty_cashback_balances`
+- Config versioning columns on `loyalty_points`, `loyalty_stamps`, `loyalty_transactions`
+
+### 2. Foodics Loyalty Adapter (replaces wrong coupon approach)
+
+**Problem found**: Initial implementation created Foodics discount coupons via `POST /v5/discounts`. This is wrong — Foodics uses an **adapter pattern** where their POS calls OUR endpoints.
+
+**Correct implementation** (Foodics official adapter pattern):
+- `POST /api/adapter/v1/reward` — Foodics POS calls when cashier scans QR. Returns reward type 1 (cashback/points as order discount) or type 2 (stamps as product discount with allowed_products)
+- `POST /api/adapter/v1/redeem` — Foodics POS calls after applying reward. Deducts balance/stamps via ALS, captures `date` + `user_id` for audit, validates `redeemed_products` against milestone products
+- `POST /api/adapter/v1/verify_otp` — Placeholder for future OTP support
+- Auth: `NOOKS_ADAPTER_ACCESS_TOKEN` in Bearer header
+
+**QR code changed**: From Code128 with member_code to PKBarcodeFormatQR with Foodics JSON:
+```json
+{"customer_name":"Ahmed","customer_mobile_number":"548548545","mobile_country_code":966}
+```
+
+**Files deleted**: `lib/foodics-coupons.ts`, `app/api/loyalty/create-stamp-coupon/route.ts`, `app/api/dashboard/loyalty/retire-and-launch/route.ts`
+
+**Registration required**: Email Foodics support@foodics.com to register as loyalty adapter partner.
+
+### 3. Foodics Order Creation Fixes
+
+- Added UUIDv4 `id` field (Foodics requirement)
+- Added `customer_dial_code` (966 for Saudi)
+- Fixed modifier structure: `{modifier_option_id, quantity, unit_price}` instead of `{id}`
+- Added `meta.external_number` for receipt printing
+- Added price validation via `POST /orders_calculator` before creating
+- Fixed delivery address to flat fields (`customer_address_name/description/latitude/longitude`)
+- Fixed charge structure: `amount` instead of `value`
+
+### 4. Foodics Menu Sync Fixes
+
+- Updated product includes: `category,tax_group,branches,modifiers,modifiers.options,modifiers.options.branches,groups`
+- Added branch-specific pricing (pivot.price stored as `branch_prices_json`)
+- Inactive products set as `is_hidden: true`
+- Modifier options sorted by `index`, inactive options filtered
+- Combo/bundle support via `/combos` endpoint
+- Fetches `/settings` for `tax_inclusive_pricing`, `rounding_level`, `rounding_method`, `currency`, `timezone`
+- `per_page=250` for larger menus
+
+### 5. Webhook Fixes
+
+- Numeric Foodics order status codes 1-8 mapped
+- Delivery status codes 1-6 mapped
+- `menu.updated` event triggers catalog re-sync
+- Delivery status resolution from `body.delivery_status`
+
+### 6. Order Calculation Formulas
+
+- Implemented Foodics tax-inclusive formulas in `app/checkout.tsx`
+- Items and delivery fee extracted from inclusive prices separately
+- Rounding to nearest halala (0.01 SAR)
+
+### 7. Loyalty Dashboard (nooksweb)
+
+- Complete rewrite of `app/(dashboard)/dashboard/loyalty/page.tsx`
+- Type selector (cashback/points/stamps) with conditional config sections
+- Stamp milestone editor with Foodics menu item picker (searches `/products`)
+- Wallet card designer: 3 live previews (stamp grid, cashback card, points card)
+- Banner + logo upload, stamp box/icon color pickers
+- Adaptive expiry label per loyalty type
+
+### 8. ALS Server Changes
+
+- Earn endpoint branches by `loyalty_type` (cashback/points/stamps)
+- New endpoints: `redeem-cashback`, `cashback-balance`, `stamp-milestones`, `redeem-stamp-milestone`
+- Both `redeem` and `redeem-cashback` accept user auth OR internal secret (for adapter + app)
+- Cron: cashback expiry, stamp expiry, type-aware push notifications
+- Wallet pass: 3 layouts, QR code as Foodics JSON, no tiers
+
+### 9. Comprehensive Auditing
+
+Multiple audit rounds identified and fixed:
+- 12 loyalty issues (cashback checkout flow, milestone detection, null safety, etc.)
+- 13 Foodics compliance issues (UUID, calculator, modifiers, settings, etc.)
+- 3 adapter spec issues (Type 3 documentation, date/user_id capture, product validation)
+- Auth bug: redeem-cashback was internal-secret-only, blocking app checkout
+
+### 10. Foodics Merchant Requirements
+
+- **Advanced plan** (API included) OR **API license add-on** on Starter/Basic (~40 SAR)
+- Tiers: Starter 423 SAR/mo, Basic 801 SAR/mo, Advanced 1,224 SAR/mo
+- Nooks pays Foodics: $250/month for 0-25 accounts, $8/account/month for 26+
+- Required scopes: `general.read`, `orders.get`, `orders.limited.create`, `orders.limited.pay`, `orders.limited.deliver`, `orders.limited.decline`
+
+### 11. New Environment Variables
+
+- `NOOKS_ADAPTER_ACCESS_TOKEN` — Foodics sends this when calling adapter endpoints
+
+### 12. Git Commits (this session)
+
+All commits pushed to GitHub under `Nooks-tech` org:
+- **ALS_draft0** (`master`): ~10 commits — loyalty overhaul, adapter QR, checkout fixes, cron updates, auth fixes
+- **nooksweb** (`main`): ~10 commits — loyalty page, adapter endpoints, order/sync fixes, webhook hardening
+
+---
+
+*Generated as a handoff summary. Update as the product evolves. Last updated 2026-03-29 (evening).*
