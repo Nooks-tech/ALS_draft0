@@ -121,10 +121,11 @@ export default function CheckoutScreen() {
   const samsungPayInvoiceIdRef = useRef<string | null>(null);
   const orderIdRef = useRef(`order-${Date.now()}`);
 
-  // Loyalty points redemption
+  // Loyalty redemption (points, cashback, or stamps)
   const [usePoints, setUsePoints] = useState(false);
   const [loyaltyBalance, setLoyaltyBalance] = useState<LoyaltyBalance | null>(null);
   const [pointsLoading, setPointsLoading] = useState(false);
+  const loyaltyType = loyaltyBalance?.loyaltyType ?? 'points';
 
   useEffect(() => {
     if (!user?.id || !merchantId) return;
@@ -146,14 +147,18 @@ export default function CheckoutScreen() {
   const discount = promoApplied ? promoDiscount : 0;
   const subtotalAfterPromo = Math.max(0, subtotalBeforePromo - discount);
 
-  // Points discount: applies to items only (not delivery), after promo
+  // Loyalty discount: applies to items only (not delivery), after promo
   const itemsAfterPromo = Math.max(0, totalPrice - discount);
   const maxPointsDiscountSar = loyaltyBalance
-    ? +(loyaltyBalance.points * loyaltyBalance.pointValueSar).toFixed(2)
+    ? loyaltyType === 'cashback'
+      ? +(loyaltyBalance.cashbackBalance ?? 0)
+      : +(loyaltyBalance.points * loyaltyBalance.pointValueSar).toFixed(2)
     : 0;
   const pointsDiscount = usePoints ? Math.min(maxPointsDiscountSar, itemsAfterPromo) : 0;
   const pointsToRedeem = usePoints && loyaltyBalance
-    ? Math.min(loyaltyBalance.points, Math.ceil(pointsDiscount / loyaltyBalance.pointValueSar))
+    ? loyaltyType === 'cashback'
+      ? 0 // cashback is SAR-based, no points to redeem
+      : Math.min(loyaltyBalance.points, Math.ceil(pointsDiscount / loyaltyBalance.pointValueSar))
     : 0;
 
   const subtotalAfterDiscount = Math.max(0, subtotalAfterPromo - pointsDiscount);
@@ -762,8 +767,9 @@ export default function CheckoutScreen() {
             )}
           </View>
 
-          {/* Use Points Toggle */}
-          {user?.id && loyaltyBalance && loyaltyBalance.points > 0 && (
+          {/* Loyalty Redemption Toggle (points or cashback) */}
+          {user?.id && loyaltyBalance && loyaltyType !== 'stamps' && (
+            (loyaltyType === 'cashback' ? (loyaltyBalance.cashbackBalance ?? 0) > 0 : loyaltyBalance.points > 0) && (
             <TouchableOpacity
               onPress={() => setUsePoints(!usePoints)}
               className="mt-5 rounded-[28px] p-4 flex-row items-center justify-between"
@@ -786,7 +792,10 @@ export default function CheckoutScreen() {
                 </View>
                 <View className="ml-3 flex-1">
                   <Text className="font-bold text-slate-900">
-                    {isArabic ? `استخدم ${loyaltyBalance.points} نقطة` : `Use ${loyaltyBalance.points} points`}
+                    {loyaltyType === 'cashback'
+                      ? (isArabic ? `استخدم ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} ر.س كاش باك` : `Use ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} SAR cashback`)
+                      : (isArabic ? `استخدم ${loyaltyBalance.points} نقطة` : `Use ${loyaltyBalance.points} points`)
+                    }
                   </Text>
                   <View className="flex-row items-center flex-wrap mt-0.5">
                     <Text className="text-slate-500 text-xs">{isArabic ? 'وفّر حتى ' : 'Save up to '}</Text>
@@ -813,7 +822,7 @@ export default function CheckoutScreen() {
                 />
               </View>
             </TouchableOpacity>
-          )}
+          ))}
 
           {/* Order Summary */}
           <View className="mt-6 rounded-[28px] bg-slate-50 border border-slate-100 p-5">

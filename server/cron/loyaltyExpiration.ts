@@ -45,7 +45,7 @@ async function expireStalePoints() {
 
   const { data: expiredTxns, error } = await supabaseAdmin
     .from('loyalty_transactions')
-    .select('id, customer_id, merchant_id, points')
+    .select('id, customer_id, merchant_id, points, loyalty_type')
     .eq('type', 'earn')
     .eq('expired', false)
     .not('expires_at', 'is', null)
@@ -104,8 +104,70 @@ async function expireStalePoints() {
       source: 'system',
     });
 
-    sendPush(group.customerId, 'Points Expired', `${group.totalPoints} loyalty points have expired.`);
+    // Type-aware push message
+    const loyaltyType = (expiredTxns.find(t => t.customer_id === group.customerId) as any)?.loyalty_type;
+    if (loyaltyType === 'cashback') {
+      const sarValue = (group.totalPoints * 0.1).toFixed(2); // approximate
+      sendPush(group.customerId, 'Cashback Expired', `${sarValue} SAR cashback has expired.`);
+    } else {
+      sendPush(group.customerId, 'Points Expired', `${group.totalPoints} loyalty points have expired.`);
+    }
     console.log(`[Loyalty Cron] Expired ${group.totalPoints} points for customer ${group.customerId}`);
+  }
+}
+
+// ── 1b. Expire stale cashback balances ──
+
+async function expireStaleCashback() {
+  if (!supabaseAdmin) return;
+
+  // Find cashback transactions that have expired
+  const now = new Date().toISOString();
+  const { data: expiredCbTxns, error } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id, customer_id, merchant_id, amount_sar')
+    .eq('type', 'earn')
+    .eq('loyalty_type', 'cashback')
+    .eq('expired', false)
+    .not('expires_at', 'is', null)
+    .lt('expires_at', now)
+    .limit(BATCH_LIMIT);
+
+  if (error || !expiredCbTxns?.length) return;
+
+  console.log(`[Loyalty Cron] Found ${expiredCbTxns.length} expired cashback transactions`);
+
+  const grouped = new Map<string, { customerId: string; merchantId: string; totalSar: number; txnIds: string[] }>();
+  for (const txn of expiredCbTxns) {
+    const key = `${txn.customer_id}:${txn.merchant_id}`;
+    const existing = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalSar: 0, txnIds: [] };
+    existing.totalSar += Math.abs(txn.amount_sar ?? 0);
+    existing.txnIds.push(txn.id);
+    grouped.set(key, existing);
+  }
+
+  for (const group of grouped.values()) {
+    await supabaseAdmin.from('loyalty_transactions').update({ expired: true }).in('id', group.txnIds);
+
+    // Subtract from cashback balance
+    const { data: bal } = await supabaseAdmin.from('loyalty_cashback_balances')
+      .select('balance_sar, config_version')
+      .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId)
+      .order('config_version', { ascending: false }).limit(1).maybeSingle();
+
+    if (bal) {
+      await supabaseAdmin.from('loyalty_cashback_balances')
+        .update({ balance_sar: Math.max(0, +(bal.balance_sar - group.totalSar).toFixed(2)), updated_at: now })
+        .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId).eq('config_version', bal.config_version);
+    }
+
+    await supabaseAdmin.from('loyalty_transactions').insert({
+      customer_id: group.customerId, merchant_id: group.merchantId,
+      type: 'expire', loyalty_type: 'cashback', amount_sar: -group.totalSar,
+      points: 0, description: `${group.totalSar.toFixed(2)} SAR cashback expired`, source: 'system',
+    });
+
+    sendPush(group.customerId, 'Cashback Expired', `${group.totalSar.toFixed(2)} SAR cashback has expired.`);
   }
 }
 
@@ -154,7 +216,7 @@ async function warnUpcomingExpiry() {
 
   const { data: soonExpiring, error } = await supabaseAdmin
     .from('loyalty_transactions')
-    .select('id, customer_id, merchant_id, points, expires_at')
+    .select('id, customer_id, merchant_id, points, expires_at, loyalty_type')
     .eq('type', 'earn')
     .eq('expired', false)
     .eq('expiry_warned', false)
@@ -190,11 +252,17 @@ async function warnUpcomingExpiry() {
       .update({ expiry_warned: true })
       .in('id', group.txnIds);
 
-    sendPush(
-      group.customerId,
-      'Points Expiring Soon',
-      `You have ${group.totalPoints} points expiring in ${group.daysLeft} day${group.daysLeft === 1 ? '' : 's'}. Use them before they expire!`,
-    );
+    // Type-aware warning push
+    const txnType = (soonExpiring.find(t => t.customer_id === group.customerId) as any)?.loyalty_type;
+    const days = `${group.daysLeft} day${group.daysLeft === 1 ? '' : 's'}`;
+    if (txnType === 'cashback') {
+      const sarValue = (group.totalPoints * 0.1).toFixed(2);
+      sendPush(group.customerId, 'Cashback Expiring Soon', `You have ${sarValue} SAR cashback expiring in ${days}. Use it before it expires!`);
+    } else if (txnType === 'stamps') {
+      sendPush(group.customerId, 'Stamps Expiring Soon', `Your stamp card progress is expiring in ${days}. Complete an order to keep your stamps!`);
+    } else {
+      sendPush(group.customerId, 'Points Expiring Soon', `You have ${group.totalPoints} points expiring in ${days}. Use them before they expire!`);
+    }
   }
 }
 
@@ -205,12 +273,14 @@ export function startLoyaltyExpirationCron() {
   setInterval(async () => {
     await warnUpcomingExpiry();
     await expireStalePoints();
+    await expireStaleCashback();
     await cleanupRetiredPrograms();
   }, POLL_INTERVAL_MS);
   // First run 30s after startup
   setTimeout(async () => {
     await warnUpcomingExpiry();
     await expireStalePoints();
+    await expireStaleCashback();
     await cleanupRetiredPrograms();
   }, 30_000);
 }

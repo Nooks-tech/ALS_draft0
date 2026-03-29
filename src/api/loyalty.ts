@@ -4,6 +4,9 @@
 import { api } from './client';
 
 export interface LoyaltyBalance {
+  loyaltyType: 'cashback' | 'points' | 'stamps';
+  memberCode: string;
+  // Points
   points: number;
   lifetimePoints: number;
   pointsValue: number;
@@ -12,18 +15,29 @@ export interface LoyaltyBalance {
   pointValueSar: number;
   earnMode: 'per_sar' | 'per_order';
   expiryMonths: number | null;
+  // Cashback
+  cashbackBalance: number;
+  cashbackPercent: number;
+  // Stamps
   stampEnabled: boolean;
   stampTarget: number;
   stampRewardDescription: string;
   stamps: number;
   completedCards: number;
+  stampMilestones: Array<{ id: string; stamp_number: number; reward_name: string; foodics_product_ids: string[] }>;
+  availableRedemptions: Array<{ id: string; milestone_id: string; stamp_number: number }>;
+  // Wallet card
   walletCardBgColor: string | null;
   walletCardTextColor: string | null;
   walletCardLogoUrl: string | null;
-  /** 20–200 when set in dashboard; null = follow app in-app logo scale */
   walletCardLogoScale: number | null;
   walletCardLabel: string | null;
   walletCardSecondaryLabel: string | null;
+  walletCardBannerUrl: string | null;
+  walletStampBoxColor: string | null;
+  walletStampIconColor: string | null;
+  walletStampIconUrl: string | null;
+  businessType: string;
 }
 
 export interface LoyaltyTransaction {

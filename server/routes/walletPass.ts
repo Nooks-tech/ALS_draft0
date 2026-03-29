@@ -427,110 +427,83 @@ function buildPassJson(opts: {
   nextRewardName?: string;
   nextRewardCost?: number;
   locations?: Array<{ lat: number; lng: number; name: string }>;
+  loyaltyType?: string;
+  cashbackBalance?: number;
+  cashbackPercent?: number;
+  businessType?: string;
 }): Buffer {
-  const template = opts.templateType ?? 'classic';
-  const worthValue = `${(opts.points * opts.pointValueSar).toFixed(2)} SAR`;
+  const loyaltyType = opts.loyaltyType ?? 'points';
 
   let storeCard: Record<string, unknown[]>;
 
-  switch (template) {
-    case 'minimal':
+  switch (loyaltyType) {
+    case 'cashback':
       storeCard = {
-        headerFields: [
-          { key: 'member', label: 'MEMBER', value: opts.tier },
-        ],
+        headerFields: [],
         primaryFields: [
-          { key: 'points', label: 'POINTS', value: opts.points },
+          { key: 'balance', label: 'CASHBACK BALANCE', value: `${(opts.cashbackBalance ?? 0).toFixed(2)} SAR` },
         ],
         secondaryFields: [
-          { key: 'worth', label: 'WORTH', value: worthValue },
+          { key: 'rate', label: 'CASHBACK RATE', value: `${opts.cashbackPercent ?? 5}% back` },
+          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
         ],
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
-          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn or redeem points.' },
+          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn cashback on your purchase.' },
+          { key: 'redeem', label: 'Redeem', value: 'Cashback can be used at checkout in the app.' },
         ],
       };
       break;
 
-    case 'premium':
+    case 'stamps': {
+      const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget ?? 10);
+      const total = opts.stampTarget ?? 10;
+      const emptyCount = Math.max(0, total - filledCount);
+      const icon = opts.businessType === 'restaurant' ? '\uD83C\uDF54' : '\u2615'; // burger or coffee
+      const stampViz = (icon + ' ').repeat(filledCount) + '\u25CB '.repeat(emptyCount);
+
       storeCard = {
-        headerFields: [
-          { key: 'member', label: 'MEMBER', value: opts.tier },
-        ],
+        headerFields: [],
         primaryFields: [
-          { key: 'points', label: 'POINTS BALANCE', value: opts.points },
+          { key: 'stamps', label: 'STAMPS', value: `${filledCount} / ${total}` },
         ],
         secondaryFields: [
-          { key: 'worth', label: 'WORTH', value: worthValue },
-          { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
+          { key: 'stampCard', label: 'STAMP CARD', value: stampViz.trim() },
         ],
         auxiliaryFields: [
+          ...(opts.nextRewardName ? [{ key: 'nextReward', label: 'NEXT REWARD', value: opts.nextRewardName }] : []),
           { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
-          { key: 'tier', label: 'TIER', value: opts.tier },
         ],
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
-          { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
-          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn or redeem points.' },
-          { key: 'support', label: 'Support', value: 'For issues with your loyalty card, contact the merchant directly via the app.' },
-          { key: 'terms', label: 'Terms', value: 'Points may expire per merchant policy. Rewards are subject to availability.' },
+          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn stamps and redeem rewards.' },
+          { key: 'howItWorks', label: 'How it works', value: 'Earn 1 stamp per completed order. Reach milestones to unlock rewards!' },
         ],
       };
       break;
-
-    default: // classic
-      storeCard = {
-        headerFields: [
-          { key: 'member', label: 'MEMBER', value: opts.tier },
-        ],
-        primaryFields: [
-          { key: 'points', label: 'POINTS BALANCE', value: opts.points },
-        ],
-        secondaryFields: [
-          { key: 'worth', label: 'WORTH', value: worthValue },
-          { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
-        ],
-        auxiliaryFields: [
-          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
-          { key: 'tier', label: 'TIER', value: opts.tier },
-        ],
-        backFields: [
-          { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
-          { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
-          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn or redeem points.' },
-        ],
-      };
-      break;
-  }
-
-  // Add stamp visualization to backFields (or auxiliaryFields for premium)
-  if (opts.stampEnabled && opts.stampTarget && opts.stampTarget > 0) {
-    const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget);
-    const emptyCount = Math.max(0, opts.stampTarget - filledCount);
-    const stampViz = '\u2615'.repeat(filledCount) + ' ' + '\u25CB'.repeat(emptyCount);
-    const stampField = {
-      key: 'stamps',
-      label: 'STAMP CARD',
-      value: `${stampViz} (${filledCount}/${opts.stampTarget})`,
-    };
-    if (template === 'premium' && storeCard.auxiliaryFields) {
-      (storeCard.auxiliaryFields as unknown[]).push(stampField);
-    } else {
-      (storeCard.backFields as unknown[]).push(stampField);
     }
-  }
 
-  // Add next reward progress
-  if (opts.nextRewardName && opts.nextRewardCost) {
-    const remaining = Math.max(0, opts.nextRewardCost - opts.points);
-    const rewardField = {
-      key: 'nextReward',
-      label: 'NEXT REWARD',
-      value: remaining > 0
-        ? `${opts.nextRewardName} (${remaining} more pts)`
-        : `${opts.nextRewardName} — Ready to redeem!`,
-    };
-    (storeCard.backFields as unknown[]).push(rewardField);
+    default: // points
+      storeCard = {
+        headerFields: [],
+        primaryFields: [
+          { key: 'points', label: 'POINTS BALANCE', value: opts.points },
+        ],
+        secondaryFields: [
+          { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
+          { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
+        ],
+        auxiliaryFields: [
+          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
+        ],
+        backFields: [
+          { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
+          { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
+          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn points.' },
+          { key: 'redeem', label: 'Redeem', value: 'Points can be used at checkout in the app.' },
+        ],
+      };
+      break;
   }
 
   const pass: Record<string, unknown> = {
@@ -812,8 +785,9 @@ walletPassRouter.get(
       );
       await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
-      // Fetch stamp data, next reward, and branch locations for pass enrichment
-      const [{ data: stampRow }, { data: cheapestReward }, { data: branches }] = await Promise.all([
+      // Fetch stamp data, next reward, cashback balance, and branch locations
+      const loyaltyType = config?.loyalty_type ?? 'points';
+      const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: nextMilestone }] = await Promise.all([
         supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
           .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
         supabaseAdmin.from('loyalty_rewards').select('name, points_cost')
@@ -822,6 +796,12 @@ walletPassRouter.get(
         supabaseAdmin.from('branch_mappings').select('name, latitude, longitude')
           .eq('merchant_id', merchantId)
           .not('latitude', 'is', null).not('longitude', 'is', null).limit(10),
+        supabaseAdmin.from('loyalty_cashback_balances').select('balance_sar')
+          .eq('customer_id', customerId).eq('merchant_id', merchantId)
+          .order('config_version', { ascending: false }).limit(1).maybeSingle(),
+        supabaseAdmin.from('loyalty_stamp_milestones').select('reward_name, stamp_number')
+          .eq('merchant_id', merchantId).eq('is_active', true)
+          .order('stamp_number', { ascending: true }).limit(1).maybeSingle(),
       ]);
 
       files['pass.json'] = buildPassJson({
@@ -843,11 +823,14 @@ walletPassRouter.get(
         memberCode: memberProfile.member_code,
         customerId,
         hasLogoImage: !!logoUrl,
-        templateType: config?.pass_template_type ?? 'classic',
+        loyaltyType,
+        cashbackBalance: cbRow?.balance_sar ?? 0,
+        cashbackPercent: config?.cashback_percent ?? 5,
+        businessType: config?.business_type ?? 'cafe',
         stamps: stampRow?.stamps ?? 0,
         stampTarget: config?.stamp_target ?? 10,
-        stampEnabled: config?.stamp_enabled ?? false,
-        nextRewardName: cheapestReward?.name ?? undefined,
+        stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
+        nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
         nextRewardCost: cheapestReward?.points_cost ?? undefined,
         locations: (branches ?? [])
           .filter((b: any) => b.latitude && b.longitude)

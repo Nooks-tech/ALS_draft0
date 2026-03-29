@@ -17,15 +17,18 @@ const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 const DEFAULT_CONFIG = {
+  loyalty_type: 'points' as 'cashback' | 'points' | 'stamps',
   earn_mode: 'per_sar' as const,
   points_per_sar: 0.1,
   points_per_order: 10,
   point_value_sar: 0.1,
+  cashback_percent: 5,
   expiry_months: null as number | null,
   stamp_enabled: false,
   stamp_target: 10,
   stamp_reward_description: 'Free item',
   wallet_card_logo_scale: null as number | null,
+  config_version: 1,
 };
 
 async function getMerchantConfig(merchantId: string) {
@@ -286,11 +289,27 @@ loyaltyRouter.put('/config', async (req, res) => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const allowed = [
-      'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
+      'loyalty_type', 'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
+      'cashback_percent',
       'expiry_months', 'stamp_enabled', 'stamp_target', 'stamp_reward_description',
       'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
       'wallet_card_label', 'wallet_card_secondary_label', 'wallet_card_logo_scale',
+      'wallet_card_banner_url', 'wallet_stamp_box_color', 'wallet_stamp_icon_color',
+      'wallet_stamp_icon_url', 'business_type', 'pass_template_type',
     ];
+
+    // Config versioning: if loyalty_type or key rates changed, bump version
+    const currentConfig = await getMerchantConfig(merchantId);
+    const typeChanged = fields.loyalty_type && fields.loyalty_type !== currentConfig.loyalty_type;
+    const rateChanged = (fields.cashback_percent != null && fields.cashback_percent !== currentConfig.cashback_percent)
+      || (fields.points_per_sar != null && fields.points_per_sar !== currentConfig.points_per_sar)
+      || (fields.point_value_sar != null && fields.point_value_sar !== currentConfig.point_value_sar);
+    if (typeChanged || rateChanged) {
+      fields.config_version = (currentConfig.config_version ?? 1) + 1;
+      fields.previous_loyalty_type = currentConfig.loyalty_type ?? 'points';
+      fields.config_changed_at = new Date().toISOString();
+      allowed.push('config_version', 'previous_loyalty_type', 'config_changed_at');
+    }
     const payload: Record<string, unknown> = { merchant_id: merchantId, updated_at: new Date().toISOString() };
     for (const k of allowed) {
       if (k in fields) payload[k] = fields[k];
@@ -354,21 +373,47 @@ loyaltyRouter.get('/balance', async (req, res) => {
     const lifetimePoints = data?.lifetime_points ?? 0;
     const pointsValue = +(points * config.point_value_sar).toFixed(2);
 
+    const loyaltyType = config.loyalty_type ?? 'points';
+
+    // Stamps data
     let stamps = 0;
     let completedCards = 0;
-    if (config.stamp_enabled && merchantId) {
-      const { data: stampData } = await supabaseAdmin
-        .from('loyalty_stamps')
-        .select('stamps, completed_cards')
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId)
-        .single();
+    let stampMilestones: any[] = [];
+    let availableRedemptions: any[] = [];
+    if (loyaltyType === 'stamps' || config.stamp_enabled) {
+      const [{ data: stampData }, { data: milestoneData }, { data: redemptionData }] = await Promise.all([
+        supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
+          .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
+        supabaseAdmin.from('loyalty_stamp_milestones').select('*')
+          .eq('merchant_id', merchantId).eq('is_active', true).order('stamp_number', { ascending: true }),
+        supabaseAdmin.from('loyalty_stamp_redemptions').select('*')
+          .eq('customer_id', customerId).eq('merchant_id', merchantId)
+          .is('redeemed_at', null),
+      ]);
       stamps = stampData?.stamps ?? 0;
       completedCards = stampData?.completed_cards ?? 0;
+      stampMilestones = milestoneData ?? [];
+      availableRedemptions = redemptionData ?? [];
+    }
+
+    // Cashback balance
+    let cashbackBalance = 0;
+    if (loyaltyType === 'cashback') {
+      const { data: cbData } = await supabaseAdmin
+        .from('loyalty_cashback_balances')
+        .select('balance_sar')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .order('config_version', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      cashbackBalance = cbData?.balance_sar ?? 0;
     }
 
     res.json({
+      loyaltyType,
       memberCode: member.member_code,
+      // Points
       points,
       lifetimePoints,
       pointsValue,
@@ -377,16 +422,28 @@ loyaltyRouter.get('/balance', async (req, res) => {
       pointValueSar: config.point_value_sar,
       earnMode: config.earn_mode,
       expiryMonths: config.expiry_months,
-      stampEnabled: config.stamp_enabled,
+      // Cashback
+      cashbackBalance: +cashbackBalance.toFixed(2),
+      cashbackPercent: config.cashback_percent ?? 5,
+      // Stamps
+      stampEnabled: loyaltyType === 'stamps' || config.stamp_enabled,
       stampTarget: config.stamp_target,
       stampRewardDescription: config.stamp_reward_description,
       stamps,
       completedCards,
+      stampMilestones,
+      availableRedemptions,
+      // Wallet card
       walletCardBgColor: config.wallet_card_bg_color || null,
       walletCardTextColor: config.wallet_card_text_color || null,
       walletCardLogoUrl: config.wallet_card_logo_url || null,
       walletCardLabel: config.wallet_card_label || null,
       walletCardSecondaryLabel: config.wallet_card_secondary_label || null,
+      walletCardBannerUrl: config.wallet_card_banner_url || null,
+      walletStampBoxColor: config.wallet_stamp_box_color || null,
+      walletStampIconColor: config.wallet_stamp_icon_color || null,
+      walletStampIconUrl: config.wallet_stamp_icon_url || null,
+      businessType: config.business_type || 'cafe',
       walletCardLogoScale:
         config.wallet_card_logo_scale != null ? Number(config.wallet_card_logo_scale) : null,
     });
@@ -406,10 +463,89 @@ loyaltyRouter.post('/earn', async (req, res) => {
     }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
+    // Branch by loyalty type
+    const config = await getMerchantConfig(merchantId || '');
+    const loyaltyType = config.loyalty_type ?? 'points';
+
+    if (loyaltyType === 'cashback') {
+      await ensureLoyaltyMemberProfile(merchantId || '', customerId);
+      const result = await earnCashback(merchantId || '', customerId, orderId, Number(orderSubtotal));
+      return res.json(result);
+    }
+
+    if (loyaltyType === 'stamps') {
+      await ensureLoyaltyMemberProfile(merchantId || '', customerId);
+      // Increment stamp count
+      const { data: stampRow } = await supabaseAdmin.from('loyalty_stamps')
+        .select('stamps, completed_cards')
+        .eq('customer_id', customerId).eq('merchant_id', merchantId || '').maybeSingle();
+
+      const newStamps = (stampRow?.stamps ?? 0) + 1;
+      if (stampRow) {
+        await supabaseAdmin.from('loyalty_stamps')
+          .update({ stamps: newStamps, updated_at: new Date().toISOString() })
+          .eq('customer_id', customerId).eq('merchant_id', merchantId || '');
+      } else {
+        await supabaseAdmin.from('loyalty_stamps').insert({
+          customer_id: customerId, merchant_id: merchantId || '',
+          stamps: newStamps, completed_cards: 0,
+        });
+      }
+
+      // Also earn Foodics-compatible points (1 stamp = 10 points) for branch redemption
+      const pointsForStamp = 10;
+      const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
+        .select('points, lifetime_points')
+        .eq('customer_id', customerId).eq('merchant_id', merchantId || '').maybeSingle();
+      if (ptsBal) {
+        await supabaseAdmin.from('loyalty_points')
+          .update({ points: ptsBal.points + pointsForStamp, lifetime_points: ptsBal.lifetime_points + pointsForStamp, updated_at: new Date().toISOString() })
+          .eq('customer_id', customerId).eq('merchant_id', merchantId || '');
+      } else {
+        await supabaseAdmin.from('loyalty_points').insert({
+          customer_id: customerId, merchant_id: merchantId || '',
+          points: pointsForStamp, lifetime_points: pointsForStamp,
+        });
+      }
+
+      await supabaseAdmin.from('loyalty_transactions').insert({
+        customer_id: customerId, merchant_id: merchantId || '', order_id: orderId,
+        type: 'earn', loyalty_type: 'stamps', points: pointsForStamp,
+        description: `Earned 1 stamp (order completed)`, source: 'app',
+      });
+
+      // Check milestone
+      const { data: milestones } = await supabaseAdmin.from('loyalty_stamp_milestones')
+        .select('id, stamp_number, reward_name, foodics_product_ids')
+        .eq('merchant_id', merchantId || '').eq('is_active', true)
+        .lte('stamp_number', newStamps)
+        .order('stamp_number', { ascending: false }).limit(1);
+
+      let milestoneReached = false;
+      let milestoneName = '';
+      if (milestones && milestones.length > 0) {
+        const hit = milestones[0];
+        milestoneReached = true;
+        milestoneName = hit.reward_name;
+        // Pre-create redemption record (user can redeem later)
+        await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
+          customer_id: customerId, merchant_id: merchantId || '',
+          milestone_id: hit.id, stamp_number: hit.stamp_number,
+        });
+      }
+
+      notifyPassUpdate(customerId, merchantId || '').catch(() => {});
+      return res.json({
+        success: true, pointsEarned: pointsForStamp, newStamps, milestoneReached, milestoneName,
+        newBalance: (ptsBal?.points ?? 0) + pointsForStamp,
+      });
+    }
+
+    // Default: points
     const result = await earnPoints(customerId, orderId, Number(orderSubtotal), merchantId || '');
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to earn points' });
+    res.status(500).json({ error: err?.message || 'Failed to earn' });
   }
 });
 
@@ -889,7 +1025,197 @@ loyaltyRouter.get('/history', async (req, res) => {
 
 
 /* ═══════════════════════════════════════════════════════════════════
-   LOYALTY PROGRAMS – Versioned program management (Retire & Launch)
+   CASHBACK — earn and redeem real SAR
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** Earn cashback on a completed order */
+async function earnCashback(merchantId: string, customerId: string, orderId: string, orderSubtotal: number) {
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  const config = await getMerchantConfig(merchantId);
+  const percent = config.cashback_percent ?? 5;
+  const cashbackSar = +(orderSubtotal * percent / 100).toFixed(2);
+  if (cashbackSar <= 0) return { success: true, cashbackEarned: 0, newBalance: 0 };
+
+  // Idempotency: check if already earned for this order
+  const { data: existing } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id')
+    .eq('customer_id', customerId).eq('merchant_id', merchantId)
+    .eq('order_id', orderId).eq('type', 'earn').eq('loyalty_type', 'cashback')
+    .limit(1).maybeSingle();
+  if (existing) {
+    const { data: bal } = await supabaseAdmin.from('loyalty_cashback_balances')
+      .select('balance_sar').eq('customer_id', customerId).eq('merchant_id', merchantId)
+      .order('config_version', { ascending: false }).limit(1).maybeSingle();
+    return { success: true, cashbackEarned: 0, newBalance: bal?.balance_sar ?? 0, alreadyEarned: true };
+  }
+
+  // Upsert balance
+  const { data: balRow } = await supabaseAdmin.from('loyalty_cashback_balances')
+    .select('balance_sar, config_version')
+    .eq('customer_id', customerId).eq('merchant_id', merchantId)
+    .order('config_version', { ascending: false }).limit(1).maybeSingle();
+
+  const currentVersion = config.config_version ?? 1;
+  if (balRow) {
+    await supabaseAdmin.from('loyalty_cashback_balances')
+      .update({ balance_sar: +(balRow.balance_sar + cashbackSar).toFixed(2), updated_at: new Date().toISOString() })
+      .eq('customer_id', customerId).eq('merchant_id', merchantId).eq('config_version', balRow.config_version);
+  } else {
+    await supabaseAdmin.from('loyalty_cashback_balances').insert({
+      customer_id: customerId, merchant_id: merchantId,
+      balance_sar: cashbackSar, config_version: currentVersion,
+    });
+  }
+
+  const expiresAt = config.expiry_months
+    ? new Date(Date.now() + config.expiry_months * 30 * 24 * 60 * 60 * 1000).toISOString()
+    : null;
+
+  await supabaseAdmin.from('loyalty_transactions').insert({
+    customer_id: customerId, merchant_id: merchantId, order_id: orderId,
+    type: 'earn', loyalty_type: 'cashback', amount_sar: cashbackSar,
+    points: 0, description: `Earned ${cashbackSar} SAR cashback`,
+    source: 'app', expires_at: expiresAt, config_version: currentVersion,
+  });
+
+  notifyPassUpdate(customerId, merchantId).catch(() => {});
+  return { success: true, cashbackEarned: cashbackSar, newBalance: +((balRow?.balance_sar ?? 0) + cashbackSar).toFixed(2) };
+}
+
+/** POST /api/loyalty/redeem-cashback — redeem cashback SAR at checkout */
+loyaltyRouter.post('/redeem-cashback', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { customerId, merchantId, amountSar, orderId } = req.body;
+    if (!customerId || !merchantId || !orderId) return res.status(400).json({ error: 'customerId, merchantId, orderId required' });
+    const amount = +Number(amountSar).toFixed(2);
+    if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+
+    const { data: balRow } = await supabaseAdmin.from('loyalty_cashback_balances')
+      .select('balance_sar, config_version')
+      .eq('customer_id', customerId).eq('merchant_id', merchantId)
+      .order('config_version', { ascending: false }).limit(1).maybeSingle();
+
+    const balance = balRow?.balance_sar ?? 0;
+    if (balance < amount) return res.status(400).json({ error: `Insufficient cashback. Available: ${balance} SAR` });
+
+    await supabaseAdmin.from('loyalty_cashback_balances')
+      .update({ balance_sar: +(balance - amount).toFixed(2), updated_at: new Date().toISOString() })
+      .eq('customer_id', customerId).eq('merchant_id', merchantId).eq('config_version', balRow!.config_version);
+
+    await supabaseAdmin.from('loyalty_transactions').insert({
+      customer_id: customerId, merchant_id: merchantId, order_id: orderId,
+      type: 'redeem', loyalty_type: 'cashback', amount_sar: -amount,
+      points: 0, description: `Used ${amount} SAR cashback`,
+      source: 'app', config_version: balRow!.config_version,
+    });
+
+    notifyPassUpdate(customerId, merchantId).catch(() => {});
+    res.json({ success: true, amountRedeemed: amount, newBalance: +(balance - amount).toFixed(2) });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to redeem cashback' });
+  }
+});
+
+/** GET /api/loyalty/cashback-balance?customerId=X&merchantId=X */
+loyaltyRouter.get('/cashback-balance', async (req, res) => {
+  try {
+    const customerId = req.query.customerId as string;
+    const merchantId = req.query.merchantId as string;
+    if (!customerId || !merchantId) return res.status(400).json({ error: 'customerId and merchantId required' });
+    if (!await requireMatchingCustomer(req, res, customerId)) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { data } = await supabaseAdmin.from('loyalty_cashback_balances')
+      .select('balance_sar').eq('customer_id', customerId).eq('merchant_id', merchantId)
+      .order('config_version', { ascending: false }).limit(1).maybeSingle();
+
+    res.json({ balance: data?.balance_sar ?? 0 });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to get cashback balance' });
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   STAMP MILESTONES — milestone listing + redemption
+   ═══════════════════════════════════════════════════════════════════ */
+
+/** GET /api/loyalty/stamp-milestones?merchantId=X */
+loyaltyRouter.get('/stamp-milestones', async (req, res) => {
+  try {
+    const merchantId = req.query.merchantId as string;
+    if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { data, error } = await supabaseAdmin.from('loyalty_stamp_milestones')
+      .select('*').eq('merchant_id', merchantId).eq('is_active', true)
+      .order('stamp_number', { ascending: true });
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ milestones: data ?? [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to get milestones' });
+  }
+});
+
+/** POST /api/loyalty/redeem-stamp-milestone — redeem a stamp milestone reward */
+loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { customerId, merchantId, milestoneId, via } = req.body;
+    if (!customerId || !merchantId || !milestoneId) {
+      return res.status(400).json({ error: 'customerId, merchantId, milestoneId required' });
+    }
+
+    // Get milestone
+    const { data: milestone } = await supabaseAdmin.from('loyalty_stamp_milestones')
+      .select('*').eq('id', milestoneId).eq('merchant_id', merchantId).single();
+    if (!milestone) return res.status(404).json({ error: 'Milestone not found' });
+
+    // Check stamps
+    const { data: stampData } = await supabaseAdmin.from('loyalty_stamps')
+      .select('stamps').eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();
+    const currentStamps = stampData?.stamps ?? 0;
+    if (currentStamps < milestone.stamp_number) {
+      return res.status(400).json({ error: `Need ${milestone.stamp_number} stamps. Current: ${currentStamps}` });
+    }
+
+    // Reset stamps to 0
+    await supabaseAdmin.from('loyalty_stamps')
+      .update({ stamps: 0, updated_at: new Date().toISOString() })
+      .eq('customer_id', customerId).eq('merchant_id', merchantId);
+
+    // Create redemption record
+    await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
+      customer_id: customerId, merchant_id: merchantId,
+      milestone_id: milestoneId, stamp_number: milestone.stamp_number,
+      redeemed_at: new Date().toISOString(),
+      redeemed_via: via === 'branch' ? 'branch' : 'app',
+    });
+
+    // Log transaction
+    await supabaseAdmin.from('loyalty_transactions').insert({
+      customer_id: customerId, merchant_id: merchantId,
+      type: 'redeem', loyalty_type: 'stamps',
+      points: -(milestone.stamp_number * 10),
+      description: `Redeemed milestone: ${milestone.reward_name}`,
+      source: via === 'branch' ? 'branch' : 'app',
+    });
+
+    notifyPassUpdate(customerId, merchantId).catch(() => {});
+    res.json({ success: true, rewardName: milestone.reward_name, stampsReset: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to redeem milestone' });
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
+   LOYALTY PROGRAMS – Versioned program management (DEPRECATED - kept for backwards compat)
    ═══════════════════════════════════════════════════════════════════ */
 
 /** Get the active program ID for a merchant, or null if no programs exist (backwards compat). */
