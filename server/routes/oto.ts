@@ -317,6 +317,9 @@ otoRouter.post('/webhook', async (req, res) => {
     if (baseUpdate.delivered_at) {
       updates.delivered_at = baseUpdate.delivered_at;
     }
+    // Persist driver info from OTO webhook for delivery tracking UI
+    if (driverName) updates.driver_name = driverName;
+    if (driverPhone) updates.driver_phone = driverPhone;
 
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
@@ -484,7 +487,7 @@ otoRouter.post('/request-delivery', async (req, res) => {
 
     const optId = req.body.deliveryOptionId ?? process.env.OTO_DELIVERY_OPTION_ID;
     const carrierName = req.body.carrierName ?? 'unknown';
-    console.log('[OTO] Delivery requested:', { userId: user.id, orderId, otoId: result?.otoId, success: result?.success, deliveryOptionId: optId, carrier: carrierName });
+    console.log('[OTO] Delivery requested:', { userId: authUserId, orderId, otoId: result?.otoId, success: result?.success, deliveryOptionId: optId, carrier: carrierName });
     res.json(result);
   } catch (err: any) {
     console.error('[OTO] request-delivery error:', err?.message);

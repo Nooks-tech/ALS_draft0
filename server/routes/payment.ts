@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
-import { calculateCommission, calculateMoyasarFee, paymentService } from '../services/payment';
+import { calculateCommission, calculateMoyasarFee, normalizeMerchantId, paymentService } from '../services/payment';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 
@@ -123,6 +123,184 @@ paymentRouter.post('/initiate', async (req, res) => {
   }
 });
 
+/** POST /api/payment/stcpay/initiate – Initiate STC Pay (sends OTP to mobile) */
+paymentRouter.post('/stcpay/initiate', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    const { orderId, merchantId, mobile, amount } = req.body;
+    console.log('[STC Pay] Initiate request:', { orderId, merchantId, mobile: mobile?.replace(/.(?=.{4})/g, '*') });
+
+    const scopedMerchantId = typeof merchantId === 'string' ? merchantId.trim() : '';
+    if (!scopedMerchantId) {
+      return res.status(400).json({ error: 'merchantId is required' });
+    }
+    if (!orderId || typeof orderId !== 'string') {
+      return res.status(400).json({ error: 'orderId is required' });
+    }
+    if (!mobile || typeof mobile !== 'string') {
+      return res.status(400).json({ error: 'mobile is required' });
+    }
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    // Validate order exists and amount matches
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, total_sar, customer_id, merchant_id, status')
+      .eq('id', orderId)
+      .eq('merchant_id', scopedMerchantId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+    if (orderError) {
+      return res.status(500).json({ error: orderError.message });
+    }
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found for this customer' });
+    }
+
+    const requestedAmount = Number(amount);
+    const persistedAmount = Number(order.total_sar ?? 0);
+    if (!Number.isFinite(requestedAmount) || Math.abs(requestedAmount - persistedAmount) > 0.01) {
+      return res.status(400).json({ error: 'Amount does not match the persisted order total' });
+    }
+    if (order.status === 'Cancelled' || order.status === 'Delivered') {
+      return res.status(400).json({ error: `Cannot initiate payment for order status: ${order.status}` });
+    }
+
+    const session = await paymentService.initiateStcPay({
+      amount: requestedAmount,
+      currency: 'SAR',
+      orderId,
+      mobile,
+      merchantId: scopedMerchantId,
+      metadata: { merchant_id: scopedMerchantId },
+    });
+
+    // Store payment_id on the order
+    const commission = calculateCommission(requestedAmount, Number(order.total_sar ?? 0) - requestedAmount);
+    const { error: updateError } = await supabaseAdmin
+      .from('customer_orders')
+      .update({
+        payment_id: session.id,
+        commission_amount: commission.amount,
+        commission_rate: commission.rate,
+        commission_status: 'pending',
+      })
+      .eq('id', orderId)
+      .eq('merchant_id', scopedMerchantId)
+      .eq('customer_id', user.id);
+    if (updateError) {
+      console.warn('[STC Pay] Commission record failed:', updateError.message);
+    }
+
+    console.log('[STC Pay] Session created:', session.id, 'status:', session.status);
+    res.json({ paymentId: session.id, status: session.status });
+  } catch (error: any) {
+    console.error('[STC Pay] Initiate error:', error?.message);
+    res.status(500).json({ error: error?.message || 'Failed to initiate STC Pay' });
+  }
+});
+
+/** POST /api/payment/stcpay/otp – Verify STC Pay OTP */
+paymentRouter.post('/stcpay/otp', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    const { paymentId, otp } = req.body;
+    console.log('[STC Pay] OTP verification for payment:', paymentId);
+
+    if (!paymentId || typeof paymentId !== 'string') {
+      return res.status(400).json({ error: 'paymentId is required' });
+    }
+    if (!otp || typeof otp !== 'string') {
+      return res.status(400).json({ error: 'otp is required' });
+    }
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    // Look up the order to get the merchant's secret key
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, merchant_id, total_sar, status')
+      .eq('payment_id', paymentId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+    if (orderError) {
+      return res.status(500).json({ error: orderError.message });
+    }
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found for this payment' });
+    }
+
+    const merchantId = normalizeMerchantId(order.merchant_id);
+    if (!merchantId) {
+      return res.status(400).json({ error: 'Merchant ID not found on order' });
+    }
+
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
+    const secretKey = runtimeConfig.secretKey;
+    if (!secretKey) {
+      return res.status(500).json({ error: 'Moyasar secret key is not configured' });
+    }
+
+    const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
+
+    // Call Moyasar to verify the OTP
+    const moyasarRes = await fetch(`https://api.moyasar.com/v1/stc_pays/${paymentId}/proceed`, {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ otp }),
+    });
+    const data = await moyasarRes.json();
+
+    if (!moyasarRes.ok) {
+      console.error('[STC Pay] OTP verification failed:', moyasarRes.status, data);
+      return res.status(moyasarRes.status >= 500 ? 502 : 400).json({
+        error: data?.message || 'OTP verification failed',
+        status: data?.status,
+      });
+    }
+
+    console.log('[STC Pay] OTP result:', data.id, 'status:', data.status);
+
+    // If payment succeeded, update the order
+    if (data.status === 'paid') {
+      const updates: Record<string, unknown> = {
+        payment_id: data.id || paymentId,
+        payment_method: 'stcpay',
+        updated_at: new Date().toISOString(),
+      };
+      const { error: updateError } = await supabaseAdmin
+        .from('customer_orders')
+        .update(updates)
+        .eq('id', order.id)
+        .eq('merchant_id', merchantId);
+      if (updateError) {
+        console.warn('[STC Pay] Order update failed:', updateError.message);
+      }
+
+      // Record Moyasar fee for STC Pay
+      const fee = calculateMoyasarFee(Number(order.total_sar), 'stcpay');
+      await supabaseAdmin
+        .from('customer_orders')
+        .update({ moyasar_fee: fee })
+        .eq('id', order.id)
+        .eq('merchant_id', merchantId);
+    }
+
+    res.json({ paymentId: data.id || paymentId, status: data.status });
+  } catch (error: any) {
+    console.error('[STC Pay] OTP error:', error?.message);
+    res.status(500).json({ error: error?.message || 'Failed to verify OTP' });
+  }
+});
+
 /** POST /api/payment/webhook – Moyasar payment status callback */
 paymentRouter.post('/webhook', async (req, res) => {
   try {
@@ -173,7 +351,7 @@ paymentRouter.post('/webhook', async (req, res) => {
     if (Object.keys(updates).length > 1) {
       let lookup = supabaseAdmin
         .from('customer_orders')
-        .select('id, total_sar')
+        .select('id, total_sar, customer_id')
         .eq('merchant_id', merchantId)
         .limit(1);
 
@@ -191,6 +369,21 @@ paymentRouter.post('/webhook', async (req, res) => {
       if (!order) {
         console.warn('[Payment Webhook] No order row matched webhook payload', { id, metaOrderId, merchantId });
         return res.status(409).json({ error: 'Order not found for webhook payload' });
+      }
+
+      // Validate payment amount matches order total (prevent tampered webhooks)
+      if ((status === 'paid' || status === 'captured') && order.total_sar != null) {
+        const webhookAmountHalals = Number(payload.amount ?? payload.data?.amount ?? 0);
+        const webhookAmountSar = webhookAmountHalals / 100;
+        const tolerance = 1.0; // 1 SAR tolerance for rounding
+        if (Math.abs(webhookAmountSar - Number(order.total_sar)) > tolerance) {
+          console.error('[Payment Webhook] Amount mismatch!', {
+            webhookAmountSar,
+            orderTotalSar: order.total_sar,
+            orderId: order.id,
+          });
+          return res.status(409).json({ error: 'Payment amount does not match order total' });
+        }
       }
 
       const { error: updateError } = await supabaseAdmin
@@ -215,11 +408,220 @@ paymentRouter.post('/webhook', async (req, res) => {
           return res.status(500).json({ error: 'Failed to persist payment fee state' });
         }
       }
+
+      // Save card token when payment succeeds and source includes a token
+      if ((status === 'paid' || status === 'captured') && source?.token?.id) {
+        const tokenObj = source.token;
+        const tokenId: string = tokenObj.id ?? '';
+        const customerId: string = metadata?.customer_id ?? order.customer_id ?? '';
+        if (tokenId && customerId) {
+          const { error: upsertError } = await supabaseAdmin
+            .from('customer_saved_cards')
+            .upsert(
+              {
+                customer_id: customerId,
+                merchant_id: merchantId,
+                token: tokenId,
+                brand: (tokenObj.brand ?? source.company ?? '').toLowerCase() || null,
+                last_four: tokenObj.last_four ?? source.last_four ?? null,
+                name: tokenObj.name ?? source.name ?? null,
+                expires_month: tokenObj.month ?? null,
+                expires_year: tokenObj.year ?? null,
+              },
+              { onConflict: 'customer_id,merchant_id,token' },
+            );
+          if (upsertError) {
+            console.warn('[Payment Webhook] Card token save failed:', upsertError.message);
+          } else {
+            console.log('[Payment Webhook] Card token saved for customer', customerId);
+          }
+        }
+      }
     }
 
     res.json({ received: true });
   } catch (err: any) {
     console.error('[Payment Webhook] Error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to process webhook' });
+  }
+});
+
+/* ─── Saved Cards (Tokenization) ─── */
+
+/** GET /api/payment/saved-cards?merchantId=X – List user's saved cards */
+paymentRouter.get('/saved-cards', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    const merchantId = typeof req.query.merchantId === 'string' ? req.query.merchantId.trim() : '';
+    if (!merchantId) {
+      return res.status(400).json({ error: 'merchantId query param is required' });
+    }
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+    const { data, error } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .select('id, brand, last_four, name, expires_month, expires_year')
+      .eq('customer_id', user.id)
+      .eq('merchant_id', merchantId)
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('[SavedCards] List error:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+    res.json(data ?? []);
+  } catch (err: any) {
+    console.error('[SavedCards] List error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to list saved cards' });
+  }
+});
+
+/** DELETE /api/payment/saved-cards/:id – Delete a saved card */
+paymentRouter.delete('/saved-cards/:id', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    const cardId = req.params.id;
+    if (!cardId) {
+      return res.status(400).json({ error: 'card id is required' });
+    }
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    // Look up the card to get the token and merchant for Moyasar deletion
+    const { data: card, error: lookupError } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .select('id, token, merchant_id')
+      .eq('id', cardId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+    if (lookupError) {
+      return res.status(500).json({ error: lookupError.message });
+    }
+    if (!card) {
+      return res.status(404).json({ error: 'Card not found' });
+    }
+
+    // Delete the token from Moyasar (best-effort — don't block on failure)
+    try {
+      const runtimeConfig = await getMerchantPaymentRuntimeConfig(card.merchant_id);
+      const secretKey = runtimeConfig.secretKey;
+      if (secretKey && card.token) {
+        await fetch(`https://api.moyasar.com/v1/tokens/${card.token}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}`,
+          },
+        });
+        console.log('[SavedCards] Moyasar token deleted:', card.token);
+      }
+    } catch (e: any) {
+      console.warn('[SavedCards] Moyasar token deletion failed (non-blocking):', e?.message);
+    }
+
+    // Delete from our database
+    const { error: deleteError } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .delete()
+      .eq('id', cardId)
+      .eq('customer_id', user.id);
+    if (deleteError) {
+      return res.status(500).json({ error: deleteError.message });
+    }
+
+    res.json({ deleted: true });
+  } catch (err: any) {
+    console.error('[SavedCards] Delete error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to delete saved card' });
+  }
+});
+
+/** POST /api/payment/token-pay – Pay with a saved (tokenized) card */
+paymentRouter.post('/token-pay', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    const { orderId, merchantId, savedCardId } = req.body;
+    const scopedMerchantId = typeof merchantId === 'string' ? merchantId.trim() : '';
+    if (!scopedMerchantId) {
+      return res.status(400).json({ error: 'merchantId is required' });
+    }
+    if (!orderId || typeof orderId !== 'string') {
+      return res.status(400).json({ error: 'orderId is required' });
+    }
+    if (!savedCardId || typeof savedCardId !== 'string') {
+      return res.status(400).json({ error: 'savedCardId is required' });
+    }
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    // Look up the saved card
+    const { data: card, error: cardError } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .select('token')
+      .eq('id', savedCardId)
+      .eq('customer_id', user.id)
+      .eq('merchant_id', scopedMerchantId)
+      .maybeSingle();
+    if (cardError) {
+      return res.status(500).json({ error: cardError.message });
+    }
+    if (!card) {
+      return res.status(404).json({ error: 'Saved card not found' });
+    }
+
+    // Look up the order
+    const { data: order, error: orderError } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status')
+      .eq('id', orderId)
+      .eq('merchant_id', scopedMerchantId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+    if (orderError) {
+      return res.status(500).json({ error: orderError.message });
+    }
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    if (order.status === 'Cancelled' || order.status === 'Delivered') {
+      return res.status(400).json({ error: `Cannot pay for order status: ${order.status}` });
+    }
+
+    const amount = Number(order.total_sar ?? 0);
+    const session = await paymentService.initiateMoyasarTokenPayment({
+      amount,
+      currency: 'SAR',
+      orderId,
+      token: card.token,
+      merchantId: scopedMerchantId,
+      metadata: { merchant_id: scopedMerchantId },
+    });
+
+    // Record commission
+    const commission = calculateCommission(amount, Number(order.delivery_fee ?? 0));
+    const { error: commissionError } = await supabaseAdmin
+      .from('customer_orders')
+      .update({
+        payment_id: session.id,
+        commission_amount: commission.amount,
+        commission_rate: commission.rate,
+        commission_status: 'pending',
+      })
+      .eq('id', orderId)
+      .eq('merchant_id', scopedMerchantId)
+      .eq('customer_id', user.id);
+    if (commissionError) {
+      console.warn('[TokenPay] Commission record failed:', commissionError.message);
+    }
+
+    console.log('[TokenPay] Payment created:', session.id, 'status:', session.status);
+    res.json(session);
+  } catch (err: any) {
+    console.error('[TokenPay] Error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to process token payment' });
   }
 });

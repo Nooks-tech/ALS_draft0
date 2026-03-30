@@ -4,10 +4,14 @@ import {
   Car,
   ChevronRight,
   Clock,
+  CreditCard,
   MapPin,
   Percent,
   Pencil,
+  Plus,
+  Smartphone,
   Star,
+  Trash2,
   X,
 } from 'lucide-react-native';
 import { DeliveryOptionsPicker } from '../src/components/delivery/DeliveryOptionsPicker';
@@ -38,7 +42,7 @@ import {
 } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
-import { paymentApi } from '../src/api/payment';
+import { paymentApi, type SavedCard } from '../src/api/payment';
 // otoApi no longer called from checkout — OTO dispatch triggered by Foodics webhook on cashier accept
 import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
@@ -65,7 +69,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 import { commitOrder } from '../src/api/orders';
 
-export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card';
+export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card' | 'stcpay' | 'saved_card';
 
 const VAT_RATE = 0.15; // 15% Saudi VAT
 
@@ -121,6 +125,36 @@ export default function CheckoutScreen() {
   const samsungPayInvoiceIdRef = useRef<string | null>(null);
   const orderIdRef = useRef(`order-${Date.now()}`);
 
+  // STC Pay flow state
+  const [showStcPaySheet, setShowStcPaySheet] = useState(false);
+  const [stcPayMobile, setStcPayMobile] = useState('');
+  const [stcPayStep, setStcPayStep] = useState<'mobile' | 'otp'>('mobile');
+  const [stcPayOtp, setStcPayOtp] = useState('');
+  const [stcPayPaymentId, setStcPayPaymentId] = useState<string | null>(null);
+  const [stcPayLoading, setStcPayLoading] = useState(false);
+  const [stcPayCountdown, setStcPayCountdown] = useState(0);
+  const stcPayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Saved cards (tokenization)
+  const [savedCards, setSavedCards] = useState<SavedCard[]>([]);
+  const [selectedSavedCardId, setSelectedSavedCardId] = useState<string | null>(null);
+  const [saveCardChecked, setSaveCardChecked] = useState(false);
+  const [tokenPayLoading, setTokenPayLoading] = useState(false);
+
+  // Fetch saved cards on mount
+  useEffect(() => {
+    if (!user?.id || !merchantId) return;
+    paymentApi.getSavedCards(merchantId)
+      .then((cards) => {
+        setSavedCards(cards);
+        if (cards.length > 0) {
+          setSelectedSavedCardId(cards[0].id);
+          setPaymentMethod('saved_card');
+        }
+      })
+      .catch(() => {});
+  }, [user?.id, merchantId]);
+
   // Loyalty redemption (points, cashback, or stamps)
   const [usePoints, setUsePoints] = useState(false);
   const [loyaltyBalance, setLoyaltyBalance] = useState<LoyaltyBalance | null>(null);
@@ -136,6 +170,26 @@ export default function CheckoutScreen() {
       .finally(() => setPointsLoading(false));
   }, [user?.id, merchantId]);
 
+  // Pre-fill STC Pay mobile from profile
+  useEffect(() => {
+    if (profile.phone && !stcPayMobile) {
+      const cleaned = profile.phone.replace(/\D/g, '');
+      // Convert +966XXXXXXXXX or 966XXXXXXXXX to 05XXXXXXXX
+      if (cleaned.startsWith('966') && cleaned.length >= 12) {
+        setStcPayMobile('0' + cleaned.slice(3));
+      } else if (cleaned.startsWith('05') && cleaned.length === 10) {
+        setStcPayMobile(cleaned);
+      }
+    }
+  }, [profile.phone]);
+
+  // Cleanup STC Pay countdown timer
+  useEffect(() => {
+    return () => {
+      if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     if (paymentMethod === 'apple_pay' && !resolvedApplePayEnabled) {
       setPaymentMethod('credit_card');
@@ -149,9 +203,13 @@ export default function CheckoutScreen() {
 
   // Loyalty discount: applies to items only (not delivery), after promo
   const itemsAfterPromo = Math.max(0, totalPrice - discount);
+  const maxCashbackCap = loyaltyBalance?.maxCashbackPerOrderSar ?? null;
   const maxPointsDiscountSar = loyaltyBalance
     ? loyaltyType === 'cashback'
-      ? +(loyaltyBalance.cashbackBalance ?? 0)
+      ? Math.min(
+          +(loyaltyBalance.cashbackBalance ?? 0),
+          ...(maxCashbackCap != null ? [maxCashbackCap] : []),
+        )
       : +(loyaltyBalance.points * loyaltyBalance.pointValueSar).toFixed(2)
     : 0;
   const pointsDiscount = usePoints ? Math.min(maxPointsDiscountSar, itemsAfterPromo) : 0;
@@ -206,9 +264,10 @@ export default function CheckoutScreen() {
         metadata: {
           order_id: orderIdRef.current,
           ...(merchantId ? { merchant_id: merchantId } : {}),
+          ...(user?.id ? { customer_id: user.id } : {}),
         },
         supportedNetworks: ['mada', 'visa', 'mastercard', 'amex'],
-        creditCard: new CreditCardConfig({ saveCard: false, manual: false }),
+        creditCard: new CreditCardConfig({ saveCard: saveCardChecked, manual: false }),
         applePay: resolvedApplePayEnabled
           ? new ApplePayConfig({
               merchantId: APPLE_PAY_MERCHANT_ID,
@@ -222,7 +281,7 @@ export default function CheckoutScreen() {
     } catch {
       return null;
     }
-  }, [amountHalals, appName, customerPaymentsEnabled, merchantId, resolvedApplePayEnabled, resolvedPublishableKey]);
+  }, [amountHalals, appName, customerPaymentsEnabled, merchantId, resolvedApplePayEnabled, resolvedPublishableKey, saveCardChecked, user?.id]);
 
   const applyCoupon = async () => {
     const code = (couponInput || promoCode).trim();
@@ -364,6 +423,7 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true,
         });
       }
@@ -438,6 +498,129 @@ export default function CheckoutScreen() {
     },
     [createOrderAfterPayment]
   );
+
+  // STC Pay: Send OTP to mobile
+  const handleStcPaySendOtp = async () => {
+    const mobile = stcPayMobile.trim();
+    if (!/^05\d{8}$/.test(mobile)) {
+      Alert.alert(isArabic ? 'رقم غير صالح' : 'Invalid Number', isArabic ? 'يرجى إدخال رقم سعودي صالح (05XXXXXXXX)' : 'Please enter a valid Saudi mobile (05XXXXXXXX)');
+      return;
+    }
+    if (!merchantId || !selectedBranch?.id) return;
+
+    setStcPayLoading(true);
+    try {
+      const stcOrderId = orderIdRef.current;
+      // Pre-create the order in Pending status before payment
+      if (user?.id) {
+        await commitOrder({
+          id: stcOrderId,
+          merchantId,
+          branchId: selectedBranch.id,
+          branchName: selectedBranch.name ?? null,
+          totalSar: Number(finalTotal.toFixed(2)),
+          status: 'Pending',
+          items: cartItems.map((item) => ({
+            id: item.id,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            image: item.image,
+            customizations: item.customizations ?? null,
+            uniqueId: item.uniqueId,
+          })),
+          orderType,
+          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
+          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
+          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
+          deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
+          deliveryFee,
+          paymentMethod: 'stcpay',
+          customerName: profile.fullName || null,
+          customerPhone: profile.phone || null,
+          customerEmail: profile.email || null,
+          promoCode: promoApplied ? promoCode : null,
+          relayToNooks: false,
+        });
+      }
+
+      const result = await paymentApi.initiateStcPay(stcOrderId, merchantId, mobile, finalTotal);
+      setStcPayPaymentId(result.paymentId);
+      setStcPayStep('otp');
+      setStcPayOtp('');
+
+      // Start 60-second countdown for resend
+      setStcPayCountdown(60);
+      if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
+      stcPayTimerRef.current = setInterval(() => {
+        setStcPayCountdown((prev) => {
+          if (prev <= 1) {
+            if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } catch (err: unknown) {
+      Alert.alert(
+        isArabic ? 'خطأ في STC Pay' : 'STC Pay Error',
+        err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع' : 'Failed to initiate payment'),
+      );
+    } finally {
+      setStcPayLoading(false);
+    }
+  };
+
+  // STC Pay: Verify OTP
+  const handleStcPayVerifyOtp = async (otpValue?: string) => {
+    const otp = (otpValue || stcPayOtp).trim();
+    if (otp.length !== 6 || !stcPayPaymentId) return;
+
+    setStcPayLoading(true);
+    try {
+      const result = await paymentApi.verifyStcPayOtp(stcPayPaymentId, otp);
+      if (result.status === 'paid') {
+        setShowStcPaySheet(false);
+        setStcPayStep('mobile');
+        setStcPayOtp('');
+        if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
+        createOrderAfterPayment(result.paymentId);
+      } else {
+        Alert.alert(
+          isArabic ? 'فشل التحقق' : 'Verification Failed',
+          isArabic ? 'لم يتم التحقق من الدفع. يرجى المحاولة مرة أخرى.' : 'Payment verification failed. Please try again.',
+        );
+      }
+    } catch (err: unknown) {
+      Alert.alert(
+        isArabic ? 'خطأ في التحقق' : 'Verification Error',
+        err instanceof Error ? err.message : (isArabic ? 'تعذر التحقق من الرمز' : 'Failed to verify OTP'),
+      );
+    } finally {
+      setStcPayLoading(false);
+    }
+  };
+
+  const handleDeleteSavedCard = async (cardId: string) => {
+    try {
+      await paymentApi.deleteSavedCard(cardId);
+      const next = savedCards.filter((c) => c.id !== cardId);
+      setSavedCards(next);
+      if (selectedSavedCardId === cardId) {
+        if (next.length > 0) {
+          setSelectedSavedCardId(next[0].id);
+        } else {
+          setSelectedSavedCardId(null);
+          setPaymentMethod('credit_card');
+        }
+      }
+    } catch {
+      Alert.alert(
+        isArabic ? 'خطأ' : 'Error',
+        isArabic ? 'تعذر حذف البطاقة.' : 'Could not delete card.',
+      );
+    }
+  };
 
   const handlePay = async () => {
     if (isClosed || isBusy) {
@@ -577,15 +760,92 @@ export default function CheckoutScreen() {
       return;
     }
 
+    if (paymentMethod === 'stcpay') {
+      setStcPayStep('mobile');
+      setStcPayOtp('');
+      setStcPayPaymentId(null);
+      setShowStcPaySheet(true);
+      return;
+    }
+
+    // Saved card (token) payment
+    if (paymentMethod === 'saved_card' && selectedSavedCardId) {
+      setTokenPayLoading(true);
+      setSubmitting(true);
+      try {
+        const tokenOrderId = orderIdRef.current;
+        if (user?.id) {
+          await commitOrder({
+            id: tokenOrderId,
+            merchantId,
+            branchId: selectedBranch.id,
+            branchName: selectedBranch.name ?? null,
+            totalSar: Number(finalTotal.toFixed(2)),
+            status: 'Pending',
+            items: cartItems.map((item) => ({
+              id: item.id,
+              name: item.name,
+              price: item.price,
+              quantity: item.quantity,
+              image: item.image,
+              customizations: item.customizations ?? null,
+              uniqueId: item.uniqueId,
+            })),
+            orderType,
+            deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
+            deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
+            deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
+            deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
+            deliveryFee,
+            paymentMethod: 'credit_card',
+            customerName: profile.fullName || null,
+            customerPhone: profile.phone || null,
+            customerEmail: profile.email || null,
+            promoCode: promoApplied ? promoCode : null,
+            relayToNooks: false,
+          });
+        }
+        const session = await paymentApi.payWithSavedCard(tokenOrderId, merchantId, selectedSavedCardId);
+        if (session.status === 'paid' || session.status === 'captured') {
+          createOrderAfterPayment(session.id);
+        } else if (session.url) {
+          // 3DS redirect required
+          paymentSuccessHandled.current = false;
+          samsungPayInvoiceIdRef.current = session.id;
+          setMoyasarWebUrl(session.url);
+        } else {
+          Alert.alert(
+            isArabic ? 'فشل الدفع' : 'Payment Failed',
+            isArabic ? 'تعذر إتمام الدفع ببطاقتك المحفوظة.' : 'Could not complete payment with saved card.',
+          );
+        }
+      } catch (err: unknown) {
+        Alert.alert(
+          isArabic ? 'خطأ في الدفع' : 'Payment Error',
+          err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.'),
+        );
+      } finally {
+        setTokenPayLoading(false);
+        setSubmitting(false);
+      }
+      return;
+    }
+
     setShowPaymentModal(true);
   };
+
+  const selectedSavedCard = savedCards.find((c) => c.id === selectedSavedCardId) ?? null;
 
   const paymentLabel =
     paymentMethod === 'apple_pay'
       ? '\uF8FF Apple Pay'
       : paymentMethod === 'samsung_pay'
         ? 'Samsung Pay'
-        : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
+        : paymentMethod === 'stcpay'
+          ? 'STC Pay'
+          : paymentMethod === 'saved_card' && selectedSavedCard
+            ? `${(selectedSavedCard.brand || 'Card').toUpperCase()} •••• ${selectedSavedCard.last_four || '****'}`
+            : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
 
   if (cartItems.length === 0) {
     return (
@@ -785,6 +1045,11 @@ export default function CheckoutScreen() {
                     <Text className="text-slate-500 text-xs">{isArabic ? 'وفّر حتى ' : 'Save up to '}</Text>
                     <PriceWithSymbol amount={Math.min(maxPointsDiscountSar, itemsAfterPromo)} iconSize={12} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 12 }} />
                   </View>
+                  {loyaltyType === 'cashback' && maxCashbackCap != null && (
+                    <Text className="text-amber-600 text-xs mt-0.5">
+                      {isArabic ? `الحد الأقصى ${maxCashbackCap} ر.س لكل طلب` : `Max ${maxCashbackCap} SAR per order`}
+                    </Text>
+                  )}
                 </View>
               </View>
               <View
@@ -856,6 +1121,14 @@ export default function CheckoutScreen() {
                 <View className="w-12 h-8 bg-blue-900 rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
                   <Text className="text-white font-bold text-xs">S Pay</Text>
                 </View>
+              ) : paymentMethod === 'stcpay' ? (
+                <View className="w-12 h-8 rounded" style={{ justifyContent: 'center', alignItems: 'center', backgroundColor: '#4F3B8E' }}>
+                  <Smartphone size={16} color="#fff" />
+                </View>
+              ) : paymentMethod === 'saved_card' ? (
+                <View className="w-12 h-10 rounded-lg items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
+                  <CreditCard size={20} color={primaryColor} />
+                </View>
               ) : (
                 <View className="w-12 h-10 bg-slate-200 rounded-lg items-center justify-center">
                   <Text className="text-slate-600 font-bold text-xs">••••</Text>
@@ -897,6 +1170,11 @@ export default function CheckoutScreen() {
                 <ActivityIndicator size="small" color="white" />
               ) : paymentMethod === 'samsung_pay' ? (
                 <Text className="text-white font-bold text-base">{isArabic ? 'الدفع عبر Samsung Pay' : 'Pay with Samsung Pay'}</Text>
+              ) : paymentMethod === 'stcpay' ? (
+                <View className="flex-row items-center">
+                  <Smartphone size={18} color="white" />
+                  <Text className="text-white font-bold text-base ml-2">{isArabic ? 'الدفع عبر STC Pay' : 'Pay with STC Pay'}</Text>
+                </View>
               ) : (
                 <View className="flex-row items-center">
                   <Text className="text-white font-bold text-base mr-2">{isArabic ? 'إتمام الطلب' : 'Complete Order'}</Text>
@@ -960,6 +1238,57 @@ export default function CheckoutScreen() {
         >
           <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="bg-white rounded-t-[32px] p-6 pb-10">
             <Text className="text-lg font-bold text-slate-900 mb-4">{isArabic ? 'اختر طريقة الدفع' : 'Select payment method'}</Text>
+            {/* Saved cards — shown above other methods */}
+            {savedCards.length > 0 && (
+              <>
+                {savedCards.map((card) => (
+                  <TouchableOpacity
+                    key={card.id}
+                    onPress={() => {
+                      setSelectedSavedCardId(card.id);
+                      setPaymentMethod('saved_card');
+                      setShowPaymentPicker(false);
+                    }}
+                    className="flex-row items-center p-4 mb-3 rounded-2xl bg-white"
+                    style={{
+                      borderWidth: 1,
+                      borderColor: selectedSavedCardId === card.id && paymentMethod === 'saved_card' ? primaryColor : '#f1f5f9',
+                    }}
+                  >
+                    <View className="bg-slate-100 p-3 rounded-xl">
+                      <CreditCard size={20} color="#64748b" />
+                    </View>
+                    <View className="flex-1 ml-3">
+                      <Text className="font-bold text-slate-800">
+                        {(card.brand || 'Card').toUpperCase()} •••• {card.last_four || '****'}
+                      </Text>
+                      {card.name ? <Text className="text-slate-400 text-xs">{card.name}</Text> : null}
+                    </View>
+                    <TouchableOpacity
+                      onPress={(e) => { e.stopPropagation(); handleDeleteSavedCard(card.id); }}
+                      className="p-2"
+                    >
+                      <Trash2 size={16} color="#ef4444" />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  onPress={() => {
+                    setPaymentMethod('credit_card');
+                    setSelectedSavedCardId(null);
+                    setShowPaymentPicker(false);
+                    setShowPaymentModal(true);
+                  }}
+                  className="flex-row items-center justify-center p-3 mb-4 border-2 border-dashed border-slate-200 rounded-2xl"
+                >
+                  <Plus size={18} color={primaryColor} />
+                  <Text className="font-bold ml-2" style={{ color: primaryColor }}>
+                    {isArabic ? 'إضافة بطاقة جديدة' : 'Add new card'}
+                  </Text>
+                </TouchableOpacity>
+                <View className="h-px bg-slate-100 mb-3" />
+              </>
+            )}
             {resolvedApplePayEnabled && (
               <TouchableOpacity
                 onPress={() => { setPaymentMethod('apple_pay'); setShowPaymentPicker(false); }}
@@ -982,6 +1311,19 @@ export default function CheckoutScreen() {
                 <Text className="ml-3 font-bold text-slate-900">Samsung Pay</Text>
               </TouchableOpacity>
             )}
+            <TouchableOpacity
+              onPress={() => { setPaymentMethod('stcpay'); setShowPaymentPicker(false); }}
+              className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"
+            >
+              <View className="w-12 h-8 rounded items-center justify-center" style={{ backgroundColor: '#4F3B8E' }}>
+                <Smartphone size={16} color="#fff" />
+              </View>
+              <View className="ml-3 flex-1">
+                <Text className="font-bold text-slate-900">STC Pay</Text>
+                <Text className="text-slate-400 text-sm">{isArabic ? 'ادفع عبر محفظة STC Pay' : 'Pay with your STC Pay wallet'}</Text>
+              </View>
+              <ChevronRight size={18} color="#94a3b8" />
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={() => {
                 setPaymentMethod('credit_card');
@@ -1023,6 +1365,26 @@ export default function CheckoutScreen() {
                 }}
               />
             )}
+            {/* Save card checkbox */}
+            <TouchableOpacity
+              onPress={() => setSaveCardChecked(!saveCardChecked)}
+              className="flex-row items-center mt-5 px-1"
+              activeOpacity={0.7}
+            >
+              <View
+                className="w-5 h-5 rounded-md items-center justify-center mr-3"
+                style={{
+                  borderWidth: 1.5,
+                  borderColor: saveCardChecked ? primaryColor : '#cbd5e1',
+                  backgroundColor: saveCardChecked ? primaryColor : 'transparent',
+                }}
+              >
+                {saveCardChecked && <Text className="text-white text-xs font-bold">✓</Text>}
+              </View>
+              <Text className="text-slate-700 font-medium text-sm">
+                {isArabic ? 'حفظ هذه البطاقة للدفع بشكل أسرع' : 'Save this card for faster checkout'}
+              </Text>
+            </TouchableOpacity>
           </ScrollView>
         </SafeAreaView>
       </Modal>
@@ -1096,6 +1458,142 @@ export default function CheckoutScreen() {
             />
           )}
         </SafeAreaView>
+      </Modal>
+
+      {/* STC Pay Bottom Sheet */}
+      <Modal visible={showStcPaySheet} transparent animationType="slide">
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => {
+            setShowStcPaySheet(false);
+            setStcPayStep('mobile');
+            setStcPayOtp('');
+            if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
+          }}
+          className="flex-1 bg-black/50 justify-end"
+        >
+          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="bg-white rounded-t-[32px] p-6 pb-10">
+            {/* Header */}
+            <View className="flex-row items-center justify-between mb-5">
+              <View className="flex-row items-center">
+                <View className="w-10 h-10 rounded-2xl items-center justify-center" style={{ backgroundColor: '#4F3B8E' }}>
+                  <Smartphone size={20} color="#fff" />
+                </View>
+                <Text className="ml-3 text-lg font-bold text-slate-900">STC Pay</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowStcPaySheet(false);
+                  setStcPayStep('mobile');
+                  setStcPayOtp('');
+                  if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
+                }}
+                className="p-2"
+              >
+                <X size={22} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            {stcPayStep === 'mobile' ? (
+              /* Step 1: Phone Number Input */
+              <View>
+                <Text className="text-slate-600 mb-3">
+                  {isArabic ? 'أدخل رقم الجوال المسجل في STC Pay' : 'Enter your STC Pay registered mobile number'}
+                </Text>
+                <View className="flex-row items-center bg-slate-50 rounded-2xl border border-slate-200 px-4 py-3 mb-4">
+                  <Text className="text-slate-400 font-bold mr-2">+966</Text>
+                  <TextInput
+                    value={stcPayMobile}
+                    onChangeText={(text) => setStcPayMobile(text.replace(/[^0-9]/g, '').slice(0, 10))}
+                    placeholder="05XXXXXXXX"
+                    placeholderTextColor="#94a3b8"
+                    keyboardType="phone-pad"
+                    maxLength={10}
+                    className="flex-1 text-slate-900 font-medium text-base"
+                    style={{ textAlign: isArabic ? 'right' : 'left' }}
+                  />
+                </View>
+                <TouchableOpacity
+                  onPress={handleStcPaySendOtp}
+                  disabled={stcPayLoading || stcPayMobile.length !== 10}
+                  className="py-4 rounded-2xl items-center"
+                  style={{
+                    backgroundColor: stcPayMobile.length === 10 ? '#4F3B8E' : '#cbd5e1',
+                  }}
+                >
+                  {stcPayLoading ? (
+                    <ActivityIndicator size="small" color="white" />
+                  ) : (
+                    <Text className="text-white font-bold text-base">
+                      {isArabic ? 'إرسال رمز التحقق' : 'Send OTP'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : (
+              /* Step 2: OTP Input */
+              <View>
+                <Text className="text-slate-600 mb-1">
+                  {isArabic ? 'أدخل رمز التحقق المرسل إلى' : 'Enter the OTP sent to'}
+                </Text>
+                <Text className="text-slate-900 font-bold mb-4">{stcPayMobile}</Text>
+                <View className="bg-slate-50 rounded-2xl border border-slate-200 px-4 py-3 mb-3">
+                  <TextInput
+                    value={stcPayOtp}
+                    onChangeText={(text) => {
+                      const digits = text.replace(/[^0-9]/g, '').slice(0, 6);
+                      setStcPayOtp(digits);
+                      // Auto-submit when 6 digits entered
+                      if (digits.length === 6) {
+                        handleStcPayVerifyOtp(digits);
+                      }
+                    }}
+                    placeholder="000000"
+                    placeholderTextColor="#94a3b8"
+                    keyboardType="number-pad"
+                    maxLength={6}
+                    autoFocus
+                    className="text-center text-slate-900 font-bold text-2xl tracking-[12px]"
+                  />
+                </View>
+                {stcPayCountdown > 0 && (
+                  <Text className="text-slate-400 text-sm text-center mb-3">
+                    {isArabic ? `إعادة الإرسال خلال ${stcPayCountdown} ثانية` : `Resend in ${stcPayCountdown}s`}
+                  </Text>
+                )}
+                {stcPayCountdown === 0 && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setStcPayStep('mobile');
+                      setStcPayOtp('');
+                    }}
+                    className="mb-3"
+                  >
+                    <Text className="text-center font-bold" style={{ color: '#4F3B8E' }}>
+                      {isArabic ? 'إعادة الإرسال' : 'Resend OTP'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  onPress={() => handleStcPayVerifyOtp()}
+                  disabled={stcPayLoading || stcPayOtp.length !== 6}
+                  className="py-4 rounded-2xl items-center"
+                  style={{
+                    backgroundColor: stcPayOtp.length === 6 ? '#4F3B8E' : '#cbd5e1',
+                  }}
+                >
+                  {stcPayLoading ? (
+                    <ActivityIndicator size="small" color="white" />
+                  ) : (
+                    <Text className="text-white font-bold text-base">
+                      {isArabic ? 'تأكيد الدفع' : 'Verify & Pay'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );

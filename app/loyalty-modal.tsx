@@ -1,6 +1,6 @@
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
-import { Award, ChevronDown, Gift, Star, TrendingUp, X } from 'lucide-react-native';
+import { AlertTriangle, ChevronDown, Gift, Star, TrendingUp, X } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
@@ -59,14 +59,7 @@ export default function LoyaltyModal() {
     return () => { cancelled = true; };
   }, [user?.id, merchantId]);
 
-  const tierName = !balance ? 'Bronze' :
-    balance.lifetimePoints >= 5000 ? 'Gold' :
-    balance.lifetimePoints >= 1000 ? 'Silver' : 'Bronze';
-  const tierLabel = tierName === 'Gold' ? (isArabic ? 'ذهبي' : 'Gold') : tierName === 'Silver' ? (isArabic ? 'فضي' : 'Silver') : (isArabic ? 'برونزي' : 'Bronze');
-
-  const tierColor = tierName === 'Gold' ? '#F59E0B' : tierName === 'Silver' ? '#94A3B8' : '#CD7F32';
-  const nextTier = tierName === 'Gold' ? null : tierName === 'Silver' ? { name: 'Gold', points: 5000 } : { name: 'Silver', points: 1000 };
-  const progress = nextTier ? Math.min(100, ((balance?.lifetimePoints ?? 0) / nextTier.points) * 100) : 100;
+  // Tier system removed
 
   return (
     <SafeAreaView className="flex-1 bg-white">
@@ -83,6 +76,26 @@ export default function LoyaltyModal() {
         </View>
       ) : (
         <ScrollView className="flex-1" contentContainerStyle={{ paddingBottom: 40 }}>
+          {/* Loyalty Transition Banner */}
+          {balance?.transitioning && balance?.oldSystemType && (
+            <View className="mx-5 mt-5 rounded-2xl p-4" style={{ backgroundColor: '#FEF3C7' }}>
+              <View className="flex-row items-start">
+                <AlertTriangle size={20} color="#D97706" style={{ marginTop: 2 }} />
+                <View className="flex-1 ml-3">
+                  <Text className="font-bold text-amber-800 text-sm">
+                    {isArabic ? 'انتقال برنامج الولاء' : 'Loyalty Program Transition'}
+                  </Text>
+                  <Text className="text-amber-700 text-xs mt-1">
+                    {isArabic
+                      ? `لديك ${balance.oldSystemBalance} ${balance.oldSystemType === 'cashback' ? 'ر.س كاش باك' : 'نقاط'} متبقية. أنفقها قبل انتهاء صلاحيتها للانتقال إلى برنامج ${balance.loyaltyType === 'stamps' ? 'الطوابع' : balance.loyaltyType === 'points' ? 'النقاط' : 'الكاش باك'} الجديد!`
+                      : `You have ${balance.oldSystemType === 'cashback' ? `${balance.oldSystemBalance} SAR cashback` : `${balance.oldSystemBalance} points`} remaining. Spend them before they expire to unlock our new ${balance.loyaltyType} program!`
+                    }
+                  </Text>
+                </View>
+              </View>
+            </View>
+          )}
+
           {/* Points Balance Card */}
           {(() => {
             const cardLight = isLightColor(primaryColor);
@@ -136,18 +149,6 @@ export default function LoyaltyModal() {
                         {isArabic ? 'نقاطك' : 'Your Points'}
                       </Text>
                     </View>
-                    <View
-                      style={{
-                        flexDirection: 'row', alignItems: 'center',
-                        backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
-                        paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12,
-                      }}
-                    >
-                      <Award size={14} color={tierColor} />
-                      <Text style={{ color: cardTextColor, fontSize: 12, fontWeight: '600', marginLeft: 4 }}>
-                        {tierLabel}
-                      </Text>
-                    </View>
                   </View>
 
                   {/* Points */}
@@ -159,32 +160,6 @@ export default function LoyaltyModal() {
                     <PriceWithSymbol amount={balance?.pointsValue ?? 0} iconSize={14} iconColor={cardSubTextColor} textStyle={{ color: cardSubTextColor, fontSize: 14 }} />
                   </View>
 
-                  {/* Tier Progress */}
-                  {nextTier && (
-                    <View className="mt-5">
-                      <View className="flex-row justify-between mb-1.5">
-                        <Text style={{ color: cardSubTextColor, fontSize: 11 }}>
-                          {balance?.lifetimePoints ?? 0} {isArabic ? 'نقطة' : 'pts'}
-                        </Text>
-                        <Text style={{ color: cardSubTextColor, fontSize: 11 }}>
-                          {isArabic ? `${nextTier.points} نقطة للوصول إلى ${nextTier.name === 'Gold' ? 'الذهبي' : 'الفضي'}` : `${nextTier.points} pts for ${nextTier.name}`}
-                        </Text>
-                      </View>
-                      <View
-                        style={{
-                          height: 6, borderRadius: 3, overflow: 'hidden',
-                          backgroundColor: cardLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.2)',
-                        }}
-                      >
-                        <View
-                          style={{
-                            height: '100%', borderRadius: 3, width: `${progress}%`,
-                            backgroundColor: cardTextColor,
-                          }}
-                        />
-                      </View>
-                    </View>
-                  )}
 
                   {/* Divider */}
                   <View

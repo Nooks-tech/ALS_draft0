@@ -42,6 +42,127 @@ async function getMerchantConfig(merchantId: string) {
   return data ?? DEFAULT_CONFIG;
 }
 
+/**
+ * Determines which loyalty system a customer should earn on and redeem from,
+ * handling the transition period when a merchant switches loyalty types.
+ *
+ * Rules:
+ * - If no previous type (config_version=1 or previous_loyalty_type is null): current type for both
+ * - New users (no earn transactions before the switch): current type immediately
+ * - Old users with balance > 0 on old system: earn on NEW (hidden), redeem on OLD only
+ * - Old users with balance = 0 (spent/expired): fully on new system
+ */
+async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
+  const config = await getMerchantConfig(merchantId);
+  const currentType = config.loyalty_type ?? 'points';
+  const previousType = (config as any).previous_loyalty_type as string | null;
+  const configVersion = config.config_version ?? 1;
+  const configChangedAt = (config as any).config_changed_at as string | null;
+
+  const noTransition = { earn: currentType, redeem: currentType, transitioning: false, oldSystemType: null as string | null, oldBalance: 0 };
+
+  // No previous type means no switch ever happened
+  if (!previousType || configVersion <= 1 || !configChangedAt) {
+    return noTransition;
+  }
+
+  if (!supabaseAdmin) return noTransition;
+
+  // Check if we already have a transition record for this customer at this config version
+  const { data: existingTransition } = await supabaseAdmin
+    .from('loyalty_customer_transitions')
+    .select('*')
+    .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
+    .eq('config_version_at_switch', configVersion)
+    .maybeSingle();
+
+  if (existingTransition?.old_balance_exhausted) {
+    return noTransition; // Already fully transitioned
+  }
+
+  // Check if customer had any earn transactions BEFORE the switch
+  const { count: priorTxCount } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id', { count: 'exact', head: true })
+    .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
+    .eq('type', 'earn')
+    .lt('created_at', configChangedAt);
+
+  if (!priorTxCount || priorTxCount === 0) {
+    // New user — never interacted before switch, go straight to new system
+    if (!existingTransition) {
+      await supabaseAdmin.from('loyalty_customer_transitions').upsert({
+        customer_id: customerId,
+        merchant_id: merchantId,
+        from_loyalty_type: previousType,
+        to_loyalty_type: currentType,
+        config_version_at_switch: configVersion,
+        old_balance_exhausted: true,
+        old_balance_exhausted_at: new Date().toISOString(),
+      }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
+    }
+    return noTransition;
+  }
+
+  // Old user — check their balance on the OLD system
+  let oldBalance = 0;
+  if (previousType === 'cashback') {
+    const { data: cb } = await supabaseAdmin.from('loyalty_cashback_balances')
+      .select('balance_sar')
+      .eq('customer_id', customerId).eq('merchant_id', merchantId)
+      .order('config_version', { ascending: false }).limit(1).maybeSingle();
+    oldBalance = cb?.balance_sar ?? 0;
+  } else if (previousType === 'points') {
+    const { data: pts } = await supabaseAdmin.from('loyalty_points')
+      .select('points')
+      .eq('customer_id', customerId).eq('merchant_id', merchantId)
+      .order('config_version', { ascending: false }).limit(1).maybeSingle();
+    oldBalance = (pts?.points ?? 0) * (config.point_value_sar ?? 0.1);
+  } else if (previousType === 'stamps') {
+    const { data: st } = await supabaseAdmin.from('loyalty_stamps')
+      .select('stamps')
+      .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();
+    oldBalance = st?.stamps ?? 0; // stamps count, not SAR
+  }
+
+  // Create or check transition record
+  if (!existingTransition) {
+    const exhausted = oldBalance <= 0;
+    await supabaseAdmin.from('loyalty_customer_transitions').upsert({
+      customer_id: customerId,
+      merchant_id: merchantId,
+      from_loyalty_type: previousType,
+      to_loyalty_type: currentType,
+      config_version_at_switch: configVersion,
+      old_balance_exhausted: exhausted,
+      ...(exhausted ? { old_balance_exhausted_at: new Date().toISOString() } : {}),
+    }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
+
+    if (exhausted) return noTransition;
+  }
+
+  // Balance > 0: still transitioning
+  if (oldBalance <= 0) {
+    // Balance drained since last check — mark exhausted
+    await supabaseAdmin.from('loyalty_customer_transitions')
+      .update({ old_balance_exhausted: true, old_balance_exhausted_at: new Date().toISOString() })
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .eq('config_version_at_switch', configVersion);
+    return noTransition;
+  }
+
+  return {
+    earn: currentType,
+    redeem: previousType,
+    transitioning: true,
+    oldSystemType: previousType,
+    oldBalance,
+  };
+}
+
 async function requireMatchingCustomer(
   req: Request,
   res: Response,
@@ -410,9 +531,17 @@ loyaltyRouter.get('/balance', async (req, res) => {
       cashbackBalance = cbData?.balance_sar ?? 0;
     }
 
+    // Check if this customer is in a loyalty program transition
+    const route = await getCustomerLoyaltyRoute(merchantId, customerId);
+
     res.json({
       loyaltyType,
       memberCode: member.member_code,
+      // Transition state
+      transitioning: route.transitioning,
+      oldSystemType: route.oldSystemType,
+      oldSystemBalance: route.oldBalance,
+      redeemType: route.redeem, // which system the customer can redeem from
       // Points
       points,
       lifetimePoints,
@@ -425,6 +554,7 @@ loyaltyRouter.get('/balance', async (req, res) => {
       // Cashback
       cashbackBalance: +cashbackBalance.toFixed(2),
       cashbackPercent: config.cashback_percent ?? 5,
+      maxCashbackPerOrderSar: config.max_cashback_per_order_sar ?? null,
       // Stamps
       stampEnabled: loyaltyType === 'stamps' || config.stamp_enabled,
       stampTarget: config.stamp_target,
@@ -513,10 +643,16 @@ loyaltyRouter.post('/earn', async (req, res) => {
         });
       }
 
+      // Per-purchase expiry: each stamp earn gets its own expiry date
+      const stampExpiresAt = config.expiry_months
+        ? new Date(Date.now() + config.expiry_months * 30 * 24 * 60 * 60 * 1000).toISOString()
+        : null;
+
       await supabaseAdmin.from('loyalty_transactions').insert({
         customer_id: customerId, merchant_id: merchantId || '', order_id: orderId,
         type: 'earn', loyalty_type: 'stamps', points: pointsForStamp,
         description: `Earned 1 stamp (order completed)`, source: 'app',
+        expires_at: stampExpiresAt,
       });
 
       // Check if any milestone was reached (highest milestone where stamp_number <= newStamps)
@@ -1143,6 +1279,13 @@ loyaltyRouter.post('/redeem-cashback', async (req, res) => {
     if (!customerId || !merchantId || !orderId) return res.status(400).json({ error: 'customerId, merchantId, orderId required' });
     const amount = +Number(amountSar).toFixed(2);
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+
+    // Enforce max cashback per order cap
+    const config = await getMerchantConfig(merchantId);
+    const maxCap = config.max_cashback_per_order_sar;
+    if (maxCap != null && amount > Number(maxCap)) {
+      return res.status(400).json({ error: `Maximum cashback per order is ${maxCap} SAR` });
+    }
 
     const { data: balRow } = await supabaseAdmin.from('loyalty_cashback_balances')
       .select('balance_sar, config_version')

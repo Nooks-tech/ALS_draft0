@@ -304,3 +304,55 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
     res.status(500).json({ error: err?.message || 'Failed to resolve complaint' });
   }
 });
+
+/** POST /api/complaints/upload – Upload complaint photo (base64 payload)
+ * Body: { image: "data:image/jpeg;base64,..." OR raw base64, filename?: "photo.jpg" }
+ * Returns: { url: "https://..." } - public Supabase storage URL
+ */
+complaintsRouter.post('/upload', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const { image, filename } = req.body;
+    if (!image || typeof image !== 'string') {
+      return res.status(400).json({ error: 'image (base64) is required' });
+    }
+
+    // Strip data URI prefix if present
+    const base64Match = image.match(/^data:image\/([\w+]+);base64,(.+)$/);
+    const mimeExt = base64Match ? base64Match[1].replace('+', '') : 'jpeg';
+    const raw = base64Match ? base64Match[2] : image;
+    const buffer = Buffer.from(raw, 'base64');
+
+    // Max 5MB
+    if (buffer.length > 5 * 1024 * 1024) {
+      return res.status(413).json({ error: 'Image too large. Maximum 5MB.' });
+    }
+
+    const safeName = (filename || `complaint-${Date.now()}.${mimeExt}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const storagePath = `complaints/${user.id}/${safeName}`;
+
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from('complaint-images')
+      .upload(storagePath, buffer, {
+        contentType: `image/${mimeExt}`,
+        upsert: true,
+      });
+
+    if (uploadError) {
+      console.error('[Complaints] Upload error:', uploadError.message);
+      return res.status(500).json({ error: 'Failed to upload image' });
+    }
+
+    const { data: publicUrl } = supabaseAdmin.storage
+      .from('complaint-images')
+      .getPublicUrl(storagePath);
+
+    res.json({ url: publicUrl.publicUrl });
+  } catch (err: any) {
+    console.error('[Complaints] Upload error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to upload' });
+  }
+});

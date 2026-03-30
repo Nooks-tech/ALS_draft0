@@ -224,12 +224,6 @@ function sha1Hex(buf: Buffer): string {
   return crypto.createHash('sha1').update(buf).digest('hex');
 }
 
-function getTier(lifetimePoints: number): string {
-  if (lifetimePoints >= 2000) return 'Gold';
-  if (lifetimePoints >= 1000) return 'Silver';
-  return 'Bronze';
-}
-
 function formatExpiryDate(_lastEarnDate: string | null, expiryMonths: number | null): string {
   if (!expiryMonths) return 'Never';
   return `${Math.max(1, Math.round(expiryMonths))} mo`;
@@ -414,7 +408,6 @@ function buildPassJson(opts: {
   lifetimePoints: number;
   pointValueSar: number;
   earnRate: string;
-  tier: string;
   expiresLabel: string;
   barcodeMessage: string;
   memberCode: string;
@@ -757,7 +750,6 @@ walletPassRouter.get(
         ? `${config?.points_per_order ?? 10} pts/order`
         : `${Math.round(pointsPerSar * 100)}% back`;
 
-      const tier = getTier(lifetimePoints);
       const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
       const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
 
@@ -827,7 +819,7 @@ walletPassRouter.get(
         lifetimePoints,
         pointValueSar,
         earnRate,
-        tier,
+
         expiresLabel,
         barcodeMessage,
         memberCode: memberProfile.member_code,
@@ -1020,7 +1012,6 @@ walletPassRouter.get('/wallet-pass/debug', async (req, res) => {
         cardLabel: 'Debug',
         points: 0, lifetimePoints: 0, pointValueSar: 0.1,
         earnRate: '10% back',
-        tier: 'Bronze',
         expiresLabel: 'Never',
         barcodeMessage: 'NKDEBUG00',
         memberCode: 'NKDEBUG00',
@@ -1150,7 +1141,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       lifetimePoints: 0,
       pointValueSar: 0.1,
       earnRate,
-      tier: 'Bronze',
       expiresLabel: 'Never',
       barcodeMessage: 'NKTEST000',
       memberCode: 'NKTEST000',
@@ -1203,7 +1193,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       ? `${config?.points_per_order ?? 10} pts/order`
       : `${Math.round(pointsPerSar * 100)}% back`;
 
-    const tier = getTier(lifetimePoints);
     const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
     const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
 
@@ -1254,7 +1243,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       lifetimePoints,
       pointValueSar,
       earnRate,
-      tier,
       expiresLabel,
       barcodeMessage,
       memberCode: memberProfile.member_code,

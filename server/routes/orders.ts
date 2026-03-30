@@ -154,6 +154,7 @@ ordersRouter.post('/commit', async (req, res) => {
       promoCode,
       carDetails,
       relayToNooks,
+      loyaltyDiscountSar,
     } = req.body ?? {};
 
     if (!id || typeof id !== 'string') {
@@ -254,6 +255,7 @@ ordersRouter.post('/commit', async (req, res) => {
         customer_phone: typeof customerPhone === 'string' ? customerPhone.trim() || null : null,
         customer_email: typeof customerEmail === 'string' ? customerEmail.trim() || null : null,
         promo_code: typeof promoCode === 'string' ? promoCode.trim() || null : null,
+        loyalty_discount_sar: typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0 ? loyaltyDiscountSar : null,
         delivery_address: payload.delivery_address,
         delivery_lat: payload.delivery_lat,
         delivery_lng: payload.delivery_lng,

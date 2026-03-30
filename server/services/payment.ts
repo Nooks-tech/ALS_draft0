@@ -153,6 +153,7 @@ export interface PaymentInitRequest {
   deliveryFee?: number;
   merchantId?: string | null;
   metadata?: Record<string, string>;
+  saveCard?: boolean;
 }
 
 export interface PaymentSession {
@@ -224,6 +225,74 @@ export const paymentService = {
     };
   },
 
+  /**
+   * Initiate an STC Pay payment via Moyasar.
+   * STC Pay uses a two-step flow: initiate (sends OTP to mobile) then verify OTP.
+   */
+  async initiateStcPay(req: PaymentInitRequest & { mobile: string }): Promise<PaymentSession> {
+    const merchantId = normalizeMerchantId(req.merchantId);
+    if (!merchantId) {
+      throw new Error('merchantId is required for STC Pay');
+    }
+
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
+    if (!runtimeConfig.customerPaymentsEnabled) {
+      throw new Error('Merchant checkout is not enabled for this merchant');
+    }
+
+    const secretKey = runtimeConfig.secretKey;
+    if (!secretKey) {
+      throw new Error('Moyasar secret key is not configured for this merchant');
+    }
+
+    const amountHalals = Math.round(Number(req.amount) * 100);
+    const minAmount = 100; // Moyasar minimum 1 SAR
+    const amount = Math.max(amountHalals, minAmount);
+
+    const body: Record<string, unknown> = {
+      amount: Math.floor(amount),
+      currency: req.currency || 'SAR',
+      description: req.orderId ? `Order ${req.orderId}` : 'ALS Order',
+      source: {
+        type: 'stcpay',
+        mobile: req.mobile,
+      },
+      ...(req.orderId ? { given_id: req.orderId } : {}),
+    };
+
+    if (req.orderId || req.metadata) {
+      body.metadata = {
+        ...(req.orderId ? { order_id: String(req.orderId) } : {}),
+        merchant_id: merchantId,
+        ...(req.metadata || {}),
+      };
+    }
+
+    const res = await fetch('https://api.moyasar.com/v1/payments', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      const errDetail = data?.errors ? JSON.stringify(data.errors) : data?.message;
+      console.error('[Moyasar STC Pay] Payment initiation failed:', res.status, data);
+      throw new Error(data?.message || (data?.errors ? `Validation: ${errDetail}` : 'STC Pay initiation failed'));
+    }
+
+    console.log('[Moyasar STC Pay] Payment created:', data.id, 'status:', data.status);
+    const commission = calculateCommission(req.amount, req.deliveryFee);
+    return {
+      id: data.id,
+      status: data.status || 'initiated',
+      commission,
+    };
+  },
+
   async initiateMoyasar(req: PaymentInitRequest): Promise<PaymentSession> {
     const merchantId = normalizeMerchantId(req.merchantId);
     if (!merchantId) {
@@ -247,6 +316,8 @@ export const paymentService = {
       amount: Math.floor(amount), // Must be integer
       currency: req.currency || 'SAR',
       description: req.orderId ? `Order ${req.orderId}` : 'ALS Order',
+      // Idempotency: derive given_id from orderId so retries don't create duplicate invoices
+      ...(req.orderId ? { given_id: req.orderId } : {}),
     };
     if (req.orderId || req.metadata) {
       body.metadata = {
@@ -263,6 +334,11 @@ export const paymentService = {
           ? `${PAYMENT_REDIRECT_BASE}/api/payment/redirect?to=${encodeURIComponent('alsdraft0://payment/success')}`
           : undefined;
     if (successUrl) body.success_url = successUrl;
+
+    // When the customer opts to save their card, tell Moyasar to tokenize
+    if (req.saveCard) {
+      body.save_card = true;
+    }
 
     const res = await fetch('https://api.moyasar.com/v1/invoices', {
       method: 'POST',
@@ -286,6 +362,83 @@ export const paymentService = {
     return {
       id: data.id,
       url: url || undefined,
+      status: data.status || 'initiated',
+      commission,
+    };
+  },
+
+  /**
+   * Pay using a previously-tokenized card (saved card).
+   * Creates a Moyasar payment with source type "token".
+   */
+  async initiateMoyasarTokenPayment(req: PaymentInitRequest & { token: string }): Promise<PaymentSession> {
+    const merchantId = normalizeMerchantId(req.merchantId);
+    if (!merchantId) {
+      throw new Error('merchantId is required for token payment');
+    }
+
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
+    if (!runtimeConfig.customerPaymentsEnabled) {
+      throw new Error('Merchant checkout is not enabled for this merchant');
+    }
+
+    const secretKey = runtimeConfig.secretKey;
+    if (!secretKey) {
+      throw new Error('Moyasar secret key is not configured for this merchant');
+    }
+
+    const amountHalals = Math.round(Number(req.amount) * 100);
+    const minAmount = 100;
+    const amount = Math.max(amountHalals, minAmount);
+
+    const successUrl =
+      req.successUrl?.startsWith('https://')
+        ? req.successUrl
+        : PAYMENT_REDIRECT_BASE
+          ? `${PAYMENT_REDIRECT_BASE}/api/payment/redirect?to=${encodeURIComponent('alsdraft0://payment/success')}`
+          : undefined;
+
+    const body: Record<string, unknown> = {
+      amount: Math.floor(amount),
+      currency: req.currency || 'SAR',
+      description: req.orderId ? `Order ${req.orderId}` : 'ALS Order',
+      source: {
+        type: 'token',
+        token: req.token,
+      },
+      ...(req.orderId ? { given_id: req.orderId } : {}),
+      ...(successUrl ? { callback_url: successUrl } : {}),
+    };
+
+    if (req.orderId || req.metadata) {
+      body.metadata = {
+        ...(req.orderId ? { order_id: String(req.orderId) } : {}),
+        merchant_id: merchantId,
+        ...(req.metadata || {}),
+      };
+    }
+
+    const res = await fetch('https://api.moyasar.com/v1/payments', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      const errDetail = data?.errors ? JSON.stringify(data.errors) : data?.message;
+      console.error('[Moyasar Token] Payment failed:', res.status, data);
+      throw new Error(data?.message || (data?.errors ? `Validation: ${errDetail}` : 'Token payment failed'));
+    }
+
+    console.log('[Moyasar Token] Payment created:', data.id, 'status:', data.status);
+    const commission = calculateCommission(req.amount, req.deliveryFee);
+    return {
+      id: data.id,
+      url: data.source?.transaction_url || undefined,
       status: data.status || 'initiated',
       commission,
     };

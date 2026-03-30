@@ -2,6 +2,7 @@ import './loadEnv'; // Must be first - loads .env before routes read process.env
 
 import cors from 'cors';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { authRouter } from './routes/auth';
 import { buildRouter } from './routes/build';
 import { foodicsRouter } from './routes/foodics';
@@ -29,6 +30,24 @@ if (!g || !r) {
 
 app.use(cors());
 app.use(express.json());
+
+// Rate limiting for public-facing endpoints
+const orderLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again shortly.' },
+});
+const paymentLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many payment attempts. Please try again shortly.' },
+});
+app.use('/api/orders/commit', orderLimiter);
+app.use('/api/payment/initiate', paymentLimiter);
 
 app.get('/', (_, res) => res.json({ status: 'ok' }));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));

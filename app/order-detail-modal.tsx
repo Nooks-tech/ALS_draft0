@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { AlertTriangle, Camera, Flag, Map, MapPin, MessageSquare, RefreshCw, Store, Truck, X } from 'lucide-react-native';
+import { AlertTriangle, Camera, Flag, Map, MapPin, MessageSquare, Phone, RefreshCw, Store, Truck, User, X } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useTranslation } from 'react-i18next';
 import { useOrders } from '../src/context/OrdersContext';
@@ -443,6 +443,28 @@ export default function OrderDetailModal() {
               {otoStatus?.estimatedDeliveryTime && (
                 <Text className="text-slate-500 text-xs mt-2">{isArabic ? 'الوقت المتوقع للوصول' : 'ETA'}: {otoStatus.estimatedDeliveryTime}</Text>
               )}
+            </View>
+          )}
+
+          {/* Driver info card */}
+          {order.driver_name && (order.status === 'Out for delivery' || order.status === 'Delivered') && (
+            <View className="mx-0 mb-4 rounded-2xl border border-slate-100 bg-white p-4">
+              <View className="flex-row items-center">
+                <View className="w-10 h-10 rounded-full bg-slate-100 items-center justify-center mr-3">
+                  <User size={20} color="#64748b" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-semibold text-slate-800">{order.driver_name}</Text>
+                  {order.driver_phone ? (
+                    <TouchableOpacity onPress={() => Linking.openURL(`tel:${order.driver_phone}`)}>
+                      <View className="flex-row items-center mt-0.5">
+                        <Phone size={13} color={primaryColor} />
+                        <Text style={{ color: primaryColor }} className="text-sm ml-1">{order.driver_phone}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              </View>
             </View>
           )}
 
