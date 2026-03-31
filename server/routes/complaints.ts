@@ -335,7 +335,7 @@ complaintsRouter.post('/upload', async (req, res) => {
     const storagePath = `complaints/${user.id}/${safeName}`;
 
     const { error: uploadError } = await supabaseAdmin.storage
-      .from('complaint-images')
+      .from('complaint-photos')
       .upload(storagePath, buffer, {
         contentType: `image/${mimeExt}`,
         upsert: true,
@@ -347,7 +347,7 @@ complaintsRouter.post('/upload', async (req, res) => {
     }
 
     const { data: publicUrl } = supabaseAdmin.storage
-      .from('complaint-images')
+      .from('complaint-photos')
       .getPublicUrl(storagePath);
 
     res.json({ url: publicUrl.publicUrl });

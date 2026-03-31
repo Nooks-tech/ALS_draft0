@@ -22,6 +22,7 @@ const FEE_RATES = {
   master: 0.0275,
   mastercard: 0.0275,
   amex: 0.0275,
+  stcpay: 0.015,      // 1.5 % (STC Pay wallet)
   international: 0.0375, // 3.75 %
 } as const;
 const MADA_CAP_SAR = 200;

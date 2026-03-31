@@ -270,13 +270,18 @@ async function redeemPointsFromBalance(params: {
 
   const discountSar = +(pointsToRedeem * config.point_value_sar).toFixed(2);
 
+  // Atomic conditional update: only deduct if balance still >= pointsToRedeem (prevents double-spend race)
   let updateQuery = supabaseAdmin
     .from('loyalty_points')
     .update({ points: balance.points - pointsToRedeem, updated_at: new Date().toISOString() })
     .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId);
+    .eq('merchant_id', params.merchantId)
+    .gte('points', pointsToRedeem); // Guard: only succeeds if points still sufficient
   if (programId) updateQuery = updateQuery.eq('program_id', programId);
-  await updateQuery;
+  const { data: updated, error: updateErr } = await updateQuery.select('points').maybeSingle();
+  if (updateErr || !updated) {
+    throw new Error('Redemption failed — balance may have changed. Please try again.');
+  }
 
   await supabaseAdmin.from('loyalty_transactions').insert({
     customer_id: params.customerId,

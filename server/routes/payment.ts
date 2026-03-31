@@ -249,7 +249,7 @@ paymentRouter.post('/stcpay/otp', async (req, res) => {
     const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
 
     // Call Moyasar to verify the OTP
-    const moyasarRes = await fetch(`https://api.moyasar.com/v1/stc_pays/${paymentId}/proceed`, {
+    const moyasarRes = await fetch(`https://api.moyasar.com/v1/stc_pay/${paymentId}/proceed`, {
       method: 'POST',
       headers: {
         Authorization: authHeader,
