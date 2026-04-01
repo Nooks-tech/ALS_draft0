@@ -36,7 +36,20 @@ export function useMenu() {
   const { merchantId } = useMerchant();
   const [products, setProducts] = useState<MenuItem[]>(PRODUCTS.map(mapToMenuItem));
   const [categories, setCategories] = useState<string[]>(CATEGORIES.filter((c) => c !== 'All'));
-  const [branches, setBranches] = useState(BRANCHES);
+  const [branches, setBranches] = useState<Array<{
+    id: string;
+    name: string;
+    name_localized?: string;
+    address: string;
+    distance?: string;
+    oto_warehouse_id?: string;
+    latitude?: number;
+    longitude?: number;
+    open_from?: string;
+    open_till?: string;
+    pickup_promising_time?: number;
+    delivery_promising_time?: number;
+  }>>(BRANCHES);
   // Start with local data immediately; refresh from APIs in background.
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +60,7 @@ export function useMenu() {
     const cacheKey = `@als_menu_${merchantId || 'default'}`;
     let nextProducts = PRODUCTS.map(mapToMenuItem);
     let nextCategories = CATEGORIES.filter((c) => c !== 'All');
-    let nextBranches = BRANCHES;
+    let nextBranches: typeof branches = [...BRANCHES];
     let nextSource: 'local' | 'nooks' = 'local';
 
     AsyncStorage.getItem(cacheKey).then((raw) => {
@@ -90,18 +103,25 @@ export function useMenu() {
           nextBranches = nooksBranches.map((b) => ({
             id: b.id,
             name: b.name,
+            name_localized: b.name_localized,
             address: b.address ?? '',
             distance: b.distance,
             oto_warehouse_id: b.oto_warehouse_id,
             latitude: typeof b.latitude === 'number' ? b.latitude : undefined,
             longitude: typeof b.longitude === 'number' ? b.longitude : undefined,
+            open_from: b.open_from,
+            open_till: b.open_till,
+            pickup_promising_time: b.pickup_promising_time,
+            delivery_promising_time: b.delivery_promising_time,
           }));
           setBranches(nextBranches);
           setSource('nooks');
           nextSource = 'nooks';
         }
 
-        const nooksMenu = await fetchNooksMenu(merchantId);
+        // Pass first branch ID so menu is filtered by branch stock/availability
+        const firstBranchId = nextBranches.length > 0 ? nextBranches[0].id : undefined;
+        const nooksMenu = await fetchNooksMenu(merchantId, firstBranchId);
         if (cancelled) return;
         if (nooksMenu?.categories?.length) {
           const flatProducts = nooksMenu.categories.flatMap((category) =>

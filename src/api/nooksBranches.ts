@@ -12,12 +12,17 @@ const BASE_URL =
 export type NooksBranch = {
   id: string;
   name: string;
+  name_localized?: string;
   address?: string;
   distance?: string;
   /** OTO pickup location code – used for delivery dispatch */
   oto_warehouse_id?: string;
   latitude?: number;
   longitude?: number;
+  open_from?: string;
+  open_till?: string;
+  pickup_promising_time?: number;
+  delivery_promising_time?: number;
   [key: string]: unknown;
 };
 
@@ -31,10 +36,15 @@ export async function fetchNooksBranches(merchantId: string): Promise<NooksBranc
   return list.map((b) => ({
     id: String(b.id),
     name: String(b.name ?? ''),
+    name_localized: typeof b.name_localized === 'string' ? b.name_localized : undefined,
     address: b.address,
     distance: b.distance,
     oto_warehouse_id: b.oto_warehouse_id,
     latitude: typeof b.latitude === 'number' ? b.latitude : undefined,
     longitude: typeof b.longitude === 'number' ? b.longitude : undefined,
+    open_from: typeof b.open_from === 'string' ? b.open_from : undefined,
+    open_till: typeof b.open_till === 'string' ? b.open_till : undefined,
+    pickup_promising_time: typeof b.pickup_promising_time === 'number' ? b.pickup_promising_time : undefined,
+    delivery_promising_time: typeof b.delivery_promising_time === 'number' ? b.delivery_promising_time : undefined,
   }));
 }
