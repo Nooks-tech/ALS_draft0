@@ -7,7 +7,6 @@ import { useTranslation } from 'react-i18next';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
 import { useAuth } from '../src/context/AuthContext';
-import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
 import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
@@ -241,9 +240,8 @@ export default function OrderDetailModal() {
     );
   }
 
-  const branchOto = getBranchOtoConfig(order.branchId ?? '', order.branchName);
-  const branchLat = branchOto?.lat;
-  const branchLon = branchOto?.lon;
+  const branchLat = order.branchLat;
+  const branchLon = order.branchLon;
   const isOutForDelivery = order.status === 'Out for delivery';
   const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
   const canShowMap = branchLat != null && branchLon != null;

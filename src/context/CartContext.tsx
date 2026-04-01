@@ -47,7 +47,7 @@ const CartContext = createContext<CartContextType | undefined>(undefined);
 type PersistedCart = {
   cartItems?: CartItem[];
   orderType?: 'delivery' | 'pickup' | 'drivethru';
-  selectedBranch?: { id: string; name: string; address: string; distance?: string } | null;
+  selectedBranch?: { id: string; name: string; address: string; distance?: string; oto_warehouse_id?: string; latitude?: number; longitude?: number } | null;
   deliveryAddress?: { address: string; lat?: number; lng?: number; city?: string } | null;
   updatedAt?: number;
   expiresAt?: number | null;
@@ -58,7 +58,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const { appName, cafeName } = useMerchantBranding();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [orderType, setOrderTypeState] = useState<'delivery' | 'pickup' | 'drivethru'>('pickup');
-  const [selectedBranch, setSelectedBranchState] = useState<{ id: string; name: string; address: string; distance?: string } | null>(null);
+  const [selectedBranch, setSelectedBranchState] = useState<{ id: string; name: string; address: string; distance?: string; oto_warehouse_id?: string; latitude?: number; longitude?: number } | null>(null);
   const [deliveryAddress, setDeliveryAddressState] = useState<{ address: string; lat?: number; lng?: number; city?: string } | null>(null);
   const [deliveryFee, setDeliveryFeeState] = useState<number>(0);
   const [deliveryOptionId, setDeliveryOptionIdState] = useState<number | null>(null);

@@ -8,26 +8,21 @@ import { getMerchantDeliveryRuntimeConfig } from '../lib/merchantIntegrations';
 
 const OTO_BASE = 'https://api.tryoto.com/rest/v2';
 const OTO_REFRESH_TOKEN = process.env.OTO_REFRESH_TOKEN;
-const OTO_PICKUP_LOCATION_CODE = process.env.OTO_PICKUP_LOCATION_CODE;
-/** Prefer quick delivery (Careem, Barq, Marsool, etc.) - set deliveryOptionId from /api/oto/delivery-options */
-const OTO_DELIVERY_OPTION_ID = process.env.OTO_DELIVERY_OPTION_ID
-  ? parseInt(process.env.OTO_DELIVERY_OPTION_ID, 10)
-  : undefined;
 
-/** Bullet delivery carriers only (comma-separated). Empty = all carriers. Default: careem,mrsool,dal
- * Bullet carriers for Saudi Arabia: Careem (1-2hr), Mrsool/Marsool (2hr), DAL (4hr)
- * Barq is NOT a bullet carrier — it's standard shipping. */
-const OTO_PREFERRED_CARRIERS = (() => {
-  const raw = process.env.OTO_PREFERRED_CARRIERS;
-  if (raw === '') return [];
-  const s = raw || 'careem,mrsool,marsool,dal';
+/** Default bullet delivery carriers (comma-separated). Used when merchant has no preference set. */
+const DEFAULT_PREFERRED_CARRIERS = ['careem', 'mrsool', 'marsool', 'dal'];
+
+/** Parse a comma-separated carrier string into a normalized array. Empty string = all carriers. */
+function parsePreferredCarriers(raw: string | null | undefined): string[] {
+  if (raw === '') return []; // explicit empty = allow all
+  const s = raw || DEFAULT_PREFERRED_CARRIERS.join(',');
   return s.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
-})();
+}
 
-function matchesPreferredCarrier(companyName: string): boolean {
-  if (OTO_PREFERRED_CARRIERS.length === 0) return true;
+function matchesPreferredCarrier(companyName: string, carriers: string[]): boolean {
+  if (carriers.length === 0) return true;
   const n = (companyName || '').toLowerCase();
-  return OTO_PREFERRED_CARRIERS.some((c) => n.includes(c));
+  return carriers.some((c) => n.includes(c));
 }
 
 const tokenCache = new Map<string, { accessToken: string; tokenExpiresAt: number }>();
@@ -112,9 +107,9 @@ export interface OTORequestDeliveryPayload {
   orderId: string;
   amount: number;
   merchantId: string;
-  /** Pickup location code for this branch - overrides OTO_PICKUP_LOCATION_CODE when set */
+  /** Pickup location code for this branch (oto_warehouse_id from nooksweb) */
   pickupLocationCode?: string;
-  /** deliveryOptionId from /api/oto/delivery-options - Mrsool when same-city, etc. */
+  /** deliveryOptionId from dynamic rate shopping (/api/oto/delivery-options) */
   deliveryOptionId?: number;
   customer: {
     name: string;
@@ -171,9 +166,9 @@ export const otoService = {
       throw new Error('Delivery is disabled for this merchant');
     }
 
-    const pickupCode = payload.pickupLocationCode || OTO_PICKUP_LOCATION_CODE;
-    if (!pickupCode && payload.deliveryAddress) {
-      console.warn('[OTO] No pickup location. Set OTO_PICKUP_LOCATION_CODE or pass pickupLocationCode per branch.');
+    const pickupCode = payload.pickupLocationCode;
+    if (!pickupCode) {
+      console.warn('[OTO] No pickup location code for this branch. Set oto_warehouse_id on the branch in nooksweb.');
     }
 
     const customer = payload.customer;
@@ -181,7 +176,7 @@ export const otoService = {
     const lat = payload.deliveryAddress.lat;
     const lon = payload.deliveryAddress.lng;
 
-    const deliveryOptionId = payload.deliveryOptionId ?? OTO_DELIVERY_OPTION_ID;
+    const deliveryOptionId = payload.deliveryOptionId;
     const otoOrder: Record<string, unknown> = {
       orderId: payload.orderId,
       createShipment: 'true',
@@ -235,7 +230,15 @@ export const otoService = {
     length?: number;
     width?: number;
     height?: number;
+    /** Merchant ID for per-merchant OTO token and carrier preferences */
+    merchantId?: string;
   }): Promise<{ deliveryOptionId: number; deliveryCompanyName: string; deliveryOptionName: string; serviceType: string; price: number; avgDeliveryTime: string; source: 'oto' | 'own' }[]> {
+    // Resolve per-merchant OTO token and carrier preferences
+    const scopedMerchantId = normalizeMerchantId(params.merchantId);
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(scopedMerchantId);
+    const refreshToken = resolveScopedRefreshToken(scopedMerchantId, runtimeConfig.refreshToken);
+    const carriers = parsePreferredCarriers(runtimeConfig.preferredCarriers);
+
     const baseBody: Record<string, any> = {
       originCity: params.originCity,
       destinationCity: params.destinationCity,
@@ -263,7 +266,7 @@ export const otoService = {
 
     // 1) OTO's marketplace contracts (checkOTODeliveryFee) — bullet delivery only
     const otoBody = { ...baseBody, originCountry: 'SA', destinationCountry: 'SA', deliveryType: 'bullet' };
-    const otoPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkOTODeliveryFee', otoBody)
+    const otoPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkOTODeliveryFee', otoBody, 'POST', refreshToken)
       .then((d) => mapOptions(d?.deliveryCompany ?? [], 'oto'))
       .catch(() => [] as ReturnType<typeof mapOptions>);
 
@@ -272,11 +275,11 @@ export const otoService = {
       originCity: params.originCity,
       destinationCity: params.destinationCity,
       weight: params.weight ?? 0.5,
-      deliveryType: 'bullet', // Always request bullet delivery — we only support same-city rapid delivery
+      deliveryType: 'bullet',
     };
     if (params.originLat != null) { ownBody.originLat = String(params.originLat); ownBody.originLon = String(params.originLon); }
     if (params.destinationLat != null) { ownBody.destinationLat = String(params.destinationLat); ownBody.destinationLon = String(params.destinationLon); }
-    const ownPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkDeliveryFee', ownBody)
+    const ownPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkDeliveryFee', ownBody, 'POST', refreshToken)
       .then((d) => mapOptions(d?.deliveryCompany ?? [], 'own'))
       .catch(() => [] as ReturnType<typeof mapOptions>);
 
@@ -292,10 +295,10 @@ export const otoService = {
       }
     }
 
-    const filtered = merged.filter((o) => matchesPreferredCarrier(o.deliveryCompanyName));
+    const filtered = merged.filter((o) => matchesPreferredCarrier(o.deliveryCompanyName, carriers));
 
     if (filtered.length > 0) {
-      console.log(`[OTO] ${filtered.length} delivery option(s): ${filtered.map((o) => `${o.deliveryCompanyName} (${o.source})`).join(', ')}`);
+      console.log(`[OTO] ${filtered.length} delivery option(s) for merchant ${scopedMerchantId ?? 'platform'}: ${filtered.map((o) => `${o.deliveryCompanyName} (${o.source})`).join(', ')}`);
     }
     return filtered;
   },

@@ -14,8 +14,10 @@ export type NooksBranch = {
   name: string;
   address?: string;
   distance?: string;
-  /** When Nooks exposes it – used for OTO request-delivery */
+  /** OTO pickup location code – used for delivery dispatch */
   oto_warehouse_id?: string;
+  latitude?: number;
+  longitude?: number;
   [key: string]: unknown;
 };
 
@@ -32,5 +34,7 @@ export async function fetchNooksBranches(merchantId: string): Promise<NooksBranc
     address: b.address,
     distance: b.distance,
     oto_warehouse_id: b.oto_warehouse_id,
+    latitude: typeof b.latitude === 'number' ? b.latitude : undefined,
+    longitude: typeof b.longitude === 'number' ? b.longitude : undefined,
   }));
 }

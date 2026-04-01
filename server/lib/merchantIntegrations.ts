@@ -41,6 +41,8 @@ export type MerchantDeliveryRuntimeConfig = {
   deliveryEnabled: boolean;
   status: 'disconnected' | 'connected' | 'error';
   refreshToken: string | null;
+  /** Comma-separated carrier filter (e.g. "careem,mrsool,dal"). Null = use env default. */
+  preferredCarriers: string | null;
   source: 'merchant' | 'fallback' | 'missing';
 };
 
@@ -139,6 +141,7 @@ export async function getMerchantDeliveryRuntimeConfig(
     deliveryEnabled: Boolean(process.env.OTO_REFRESH_TOKEN),
     status: process.env.OTO_REFRESH_TOKEN ? 'connected' : 'disconnected',
     refreshToken: normalizeOptionalString(process.env.OTO_REFRESH_TOKEN),
+    preferredCarriers: normalizeOptionalString(process.env.OTO_PREFERRED_CARRIERS),
     source: 'fallback',
   };
 
@@ -150,6 +153,7 @@ export async function getMerchantDeliveryRuntimeConfig(
       deliveryEnabled: false,
       status: 'disconnected',
       refreshToken: null,
+      preferredCarriers: null,
       source: 'missing',
     };
   }
@@ -174,6 +178,7 @@ export async function getMerchantDeliveryRuntimeConfig(
       deliveryEnabled: false,
       status: 'disconnected',
       refreshToken: null,
+      preferredCarriers: null,
       source: 'missing',
     };
   }
@@ -199,6 +204,7 @@ export async function getMerchantDeliveryRuntimeConfig(
             ? 'connected'
             : 'disconnected',
     refreshToken: safeDecrypt(refreshTokenEnc, null),
+    preferredCarriers: normalizeOptionalString(data.preferred_carriers),
     source: 'merchant',
   };
 }

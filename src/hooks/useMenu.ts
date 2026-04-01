@@ -93,6 +93,8 @@ export function useMenu() {
             address: b.address ?? '',
             distance: b.distance,
             oto_warehouse_id: b.oto_warehouse_id,
+            latitude: typeof b.latitude === 'number' ? b.latitude : undefined,
+            longitude: typeof b.longitude === 'number' ? b.longitude : undefined,
           }));
           setBranches(nextBranches);
           setSource('nooks');

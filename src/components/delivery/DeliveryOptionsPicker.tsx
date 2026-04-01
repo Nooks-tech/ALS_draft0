@@ -2,13 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import { otoApi, OTODeliveryOption } from '../../api/oto';
 import { useCart } from '../../context/CartContext';
-import { getBranchOtoConfig } from '../../config/branchOtoConfig';
+import { useMerchant } from '../../context/MerchantContext';
 
 type Props = {
   accentColor?: string;
 };
 
 export function DeliveryOptionsPicker({ accentColor = '#0D9488' }: Props) {
+  const { merchantId } = useMerchant();
   const {
     orderType,
     selectedBranch,
@@ -29,8 +30,7 @@ export function DeliveryOptionsPicker({ accentColor = '#0D9488' }: Props) {
       return;
     }
 
-    const branchOto = getBranchOtoConfig(selectedBranch.id, selectedBranch.name);
-    const branchCity = branchOto?.city || 'Riyadh';
+    const branchCity = deliveryAddress.city || 'Riyadh';
     const customerCity = deliveryAddress.city || branchCity;
 
     setLoading(true);
@@ -40,10 +40,11 @@ export function DeliveryOptionsPicker({ accentColor = '#0D9488' }: Props) {
       .getDeliveryOptions({
         originCity: branchCity,
         destinationCity: customerCity,
-        originLat: branchOto?.lat,
-        originLon: branchOto?.lon,
+        originLat: selectedBranch.latitude,
+        originLon: selectedBranch.longitude,
         destinationLat: deliveryAddress.lat,
         destinationLon: deliveryAddress.lng,
+        merchantId,
       })
       .then((res) => {
         const opts = res?.options ?? [];

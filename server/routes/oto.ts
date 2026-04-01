@@ -105,12 +105,13 @@ otoRouter.get('/cities', async (req, res) => {
   }
 });
 
-/** GET /api/oto/verify - quick setup verification */
+/** GET /api/oto/verify?merchantId=X&city=Madinah - quick setup verification */
 otoRouter.get('/verify', async (req, res) => {
   try {
     if (!requireDiagnosticAccess(req, res)) return;
+    const merchantId = (req.query.merchantId as string) || undefined;
     const city = (req.query.city as string) || 'Madinah';
-    const health = await otoService.healthCheck();
+    const health = await otoService.healthCheck(merchantId);
     const cities = await otoService.getCities('SA', 20).catch(() => []);
     const options = await otoService
       .getDeliveryOptions({
@@ -121,13 +122,13 @@ otoRouter.get('/verify', async (req, res) => {
         originLon: CITY_COORDS[city]?.lon,
         destinationLat: CITY_COORDS[city]?.lat,
         destinationLon: CITY_COORDS[city]?.lon,
+        merchantId,
       })
       .catch(() => []);
     const activatedDCs = await otoService.getActivatedDeliveryOptions(city).catch(() => null);
     res.json({
       auth: health,
-      pickupLocationCode: process.env.OTO_PICKUP_LOCATION_CODE ? '✓ set' : '✗ missing',
-      preferredCarriers: process.env.OTO_PREFERRED_CARRIERS || 'careem,mrsool,barq (default)',
+      merchantId: merchantId ?? 'platform (env fallback)',
       sampleCities: cities.slice(0, 10).map((c) => c.name),
       deliveryOptionsCount: options.length,
       sampleOptions: options.map((o) => ({
@@ -152,11 +153,12 @@ const CITY_COORDS: Record<string, { lat: number; lon: number }> = {
   Dammam: { lat: 26.4207, lon: 50.0888 },
 };
 
-/** GET /api/oto/delivery-options?originCity=X&destinationCity=Y&originLat=&originLon=&destinationLat=&destinationLon= - list options. Pass lat/lon for Bullet (Mrsool). Same city = Mrsool eligible. */
+/** GET /api/oto/delivery-options?merchantId=X&originCity=X&destinationCity=Y&originLat=&originLon=&destinationLat=&destinationLon= - list options. Pass lat/lon for Bullet (Mrsool). Same city = Mrsool eligible. */
 otoRouter.get('/delivery-options', async (req, res) => {
   try {
     const user = await requireAuthenticatedAppUser(req, res);
     if (!user) return;
+    const merchantId = (req.query.merchantId as string) || undefined;
     const originCity = (req.query.originCity as string) || 'Riyadh';
     const destinationCity = (req.query.destinationCity as string) || 'Riyadh';
     const serviceType = req.query.serviceType as string | undefined;
@@ -191,6 +193,7 @@ otoRouter.get('/delivery-options', async (req, res) => {
       originLon,
       destinationLat,
       destinationLon,
+      merchantId,
     });
     res.json({ options, serviceType });
   } catch (err: any) {
@@ -485,9 +488,8 @@ otoRouter.post('/request-delivery', async (req, res) => {
       })),
     });
 
-    const optId = req.body.deliveryOptionId ?? process.env.OTO_DELIVERY_OPTION_ID;
     const carrierName = req.body.carrierName ?? 'unknown';
-    console.log('[OTO] Delivery requested:', { userId: authUserId, orderId, otoId: result?.otoId, success: result?.success, deliveryOptionId: optId, carrier: carrierName });
+    console.log('[OTO] Delivery requested:', { userId: authUserId, orderId, merchantId: scopedMerchantId, otoId: result?.otoId, success: result?.success, deliveryOptionId: req.body.deliveryOptionId, carrier: carrierName });
     res.json(result);
   } catch (err: any) {
     console.error('[OTO] request-delivery error:', err?.message);

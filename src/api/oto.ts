@@ -51,6 +51,7 @@ export const otoApi = {
     originLon?: number;
     destinationLat?: number;
     destinationLon?: number;
+    merchantId?: string;
   }) => {
     const q: Record<string, string> = {
       originCity: params.originCity,
@@ -61,6 +62,7 @@ export const otoApi = {
     if (params.originLon != null) q.originLon = String(params.originLon);
     if (params.destinationLat != null) q.destinationLat = String(params.destinationLat);
     if (params.destinationLon != null) q.destinationLon = String(params.destinationLon);
+    if (params.merchantId) q.merchantId = params.merchantId;
     return api.get<{ options: OTODeliveryOption[] }>('/api/oto/delivery-options?' + new URLSearchParams(q).toString());
   },
 

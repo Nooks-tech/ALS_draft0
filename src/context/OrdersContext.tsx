@@ -24,6 +24,9 @@ export type PlacedOrder = {
   deliveryAddress?: string;
   deliveryLat?: number;
   deliveryLng?: number;
+  branchLat?: number;
+  branchLon?: number;
+  otoWarehouseId?: string;
   otoId?: number;
   cancellationReason?: string;
   cancelledBy?: string;

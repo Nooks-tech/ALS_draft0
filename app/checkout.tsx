@@ -46,7 +46,6 @@ import { paymentApi, type SavedCard } from '../src/api/payment';
 // otoApi no longer called from checkout — OTO dispatch triggered by Foodics webhook on cashier accept
 import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
-import { getBranchOtoConfig } from '../src/config/branchOtoConfig';
 
 /** Haversine distance in km. Used when city is missing to detect cross-city delivery. */
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -637,30 +636,19 @@ export default function CheckoutScreen() {
       return;
     }
     if (orderType === 'delivery' && selectedBranch?.id && deliveryAddress?.address) {
-      const branchOto = getBranchOtoConfig(selectedBranch.id, selectedBranch.name);
-      const branchCity = branchOto?.city;
       const customerCity = deliveryAddress.city;
 
-      // City-based check when both cities are known
-      if (branchCity && customerCity && branchCity.toLowerCase() !== customerCity.toLowerCase()) {
-        Alert.alert(
-          'Delivery Not Available',
-          `Delivery is only available within ${branchCity}. Your address is in ${customerCity}. Please select a branch in ${customerCity} or choose pickup.`
-        );
-        return;
-      }
-
-      // Coordinate-based fallback when city is missing (Mapbox/saved addresses often omit city)
-      const branchLat = branchOto?.lat;
-      const branchLon = branchOto?.lon;
+      // Coordinate-based check using branch lat/lon from nooksweb
+      const branchLat = selectedBranch.latitude;
+      const branchLon = selectedBranch.longitude;
       const delLat = deliveryAddress.lat;
       const delLng = deliveryAddress.lng;
-      if (branchCity && branchLat != null && branchLon != null && delLat != null && delLng != null) {
+      if (branchLat != null && branchLon != null && delLat != null && delLng != null) {
         const dist = distanceKm(branchLat, branchLon, delLat, delLng);
         if (dist > 50) {
           Alert.alert(
             'Delivery Not Available',
-            `Delivery is only available within ${branchCity}. Your address is too far from this branch (${Math.round(dist)} km). Please select a branch near your location or choose pickup.`
+            `Your address is too far from this branch (${Math.round(dist)} km).${customerCity ? ` Your address is in ${customerCity}.` : ''} Please select a branch near your location or choose pickup.`
           );
           return;
         }
