@@ -95,11 +95,13 @@ export default function CheckoutScreen() {
     moyasarPublishableKey,
     customerPaymentsEnabled,
     applePayEnabled,
+    applePayMerchantId: brandingApplePayMerchantId,
   } = useMerchantBranding();
   const { user } = useAuth();
   const isArabic = i18n.language === 'ar';
   const resolvedPublishableKey = (moyasarPublishableKey || MOYASAR_PUBLISHABLE_KEY || '').trim();
-  const resolvedApplePayEnabled = Platform.OS === 'ios' && applePayEnabled && Boolean(APPLE_PAY_MERCHANT_ID);
+  const resolvedApplePayMerchantId = (APPLE_PAY_MERCHANT_ID || brandingApplePayMerchantId || '').trim();
+  const resolvedApplePayEnabled = Platform.OS === 'ios' && applePayEnabled && Boolean(resolvedApplePayMerchantId);
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     resolvedApplePayEnabled ? 'apple_pay' : (SAMSUNG_PAY_ENABLED ? 'samsung_pay' : 'credit_card')
@@ -269,7 +271,7 @@ export default function CheckoutScreen() {
         creditCard: new CreditCardConfig({ saveCard: saveCardChecked, manual: false }),
         applePay: resolvedApplePayEnabled
           ? new ApplePayConfig({
-              merchantId: APPLE_PAY_MERCHANT_ID,
+              merchantId: resolvedApplePayMerchantId,
               label: appName || 'Nooks',
               manual: false,
               saveCard: false,
@@ -437,9 +439,9 @@ export default function CheckoutScreen() {
           deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address : undefined,
           deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat : undefined,
           deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng : undefined,
-          otoId,
-          otoDispatchStatus,
-          otoDispatchError,
+          otoId: undefined,
+          otoDispatchStatus: undefined,
+          otoDispatchError: undefined,
           deliveryFee,
           paymentId: resolvedPaymentId,
           paymentMethod: paymentMethod,

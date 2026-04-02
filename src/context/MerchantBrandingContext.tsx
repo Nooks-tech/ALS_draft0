@@ -53,6 +53,7 @@ export type MerchantBranding = {
   moyasarPublishableKey: string | null;
   customerPaymentsEnabled: boolean;
   applePayEnabled: boolean;
+  applePayMerchantId: string | null;
 };
 
 const DEFAULT_BRANDING: MerchantBranding = {
@@ -76,6 +77,7 @@ const DEFAULT_BRANDING: MerchantBranding = {
   moyasarPublishableKey: null,
   customerPaymentsEnabled: false,
   applePayEnabled: false,
+  applePayMerchantId: null,
 };
 
 function normalizeColor(input: unknown): string | null {
@@ -135,6 +137,7 @@ function getBuildTimeBranding(): MerchantBranding {
     moyasarPublishableKey: null,
     customerPaymentsEnabled: false,
     applePayEnabled: false,
+    applePayMerchantId: null,
   };
 }
 
@@ -191,6 +194,10 @@ function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding 
         : null,
     customerPaymentsEnabled: Boolean(data.customerPaymentsEnabled),
     applePayEnabled: Boolean(data.applePayEnabled),
+    applePayMerchantId:
+      typeof data.applePayMerchantId === 'string' && data.applePayMerchantId.trim()
+        ? data.applePayMerchantId.trim()
+        : null,
   };
 }
 
