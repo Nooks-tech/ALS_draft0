@@ -42,125 +42,66 @@ async function getMerchantConfig(merchantId: string) {
   return data ?? DEFAULT_CONFIG;
 }
 
+/** Get or initialize the customer's active loyalty type from loyalty_member_profiles */
+async function getCustomerActiveLoyaltyType(merchantId: string, customerId: string): Promise<string | null> {
+  if (!supabaseAdmin) return null;
+  const { data } = await supabaseAdmin.from('loyalty_member_profiles')
+    .select('active_loyalty_type')
+    .eq('customer_id', customerId).eq('merchant_id', merchantId)
+    .maybeSingle();
+  return data?.active_loyalty_type ?? null;
+}
+
+/** Set the customer's active loyalty type (only if not already set) */
+async function initCustomerLoyaltyType(merchantId: string, customerId: string, loyaltyType: string): Promise<string> {
+  if (!supabaseAdmin) return loyaltyType;
+  // Try to set only if not already set (don't overwrite existing)
+  const { data: existing } = await supabaseAdmin.from('loyalty_member_profiles')
+    .select('active_loyalty_type')
+    .eq('customer_id', customerId).eq('merchant_id', merchantId)
+    .maybeSingle();
+
+  if (existing?.active_loyalty_type) return existing.active_loyalty_type;
+
+  // Set for the first time
+  if (existing) {
+    await supabaseAdmin.from('loyalty_member_profiles')
+      .update({ active_loyalty_type: loyaltyType, loyalty_type_set_at: new Date().toISOString() })
+      .eq('customer_id', customerId).eq('merchant_id', merchantId);
+  }
+  // If no profile exists yet, ensureLoyaltyMemberProfile will be called first by the earn/redeem handler
+  return loyaltyType;
+}
+
 /**
- * Determines which loyalty system a customer should earn on and redeem from,
- * handling the transition period when a merchant switches loyalty types.
+ * Determines which loyalty system a customer should earn on and redeem from.
  *
- * Rules:
- * - If no previous type (config_version=1 or previous_loyalty_type is null): current type for both
- * - New users (no earn transactions before the switch): current type immediately
- * - Old users with balance > 0 on old system: earn on NEW (hidden), redeem on OLD only
- * - Old users with balance = 0 (spent/expired): fully on new system
+ * Per-customer loyalty type rules:
+ * - Each customer has their own active_loyalty_type locked in on first interaction
+ * - Once set, it NEVER changes unless the customer opts in (delete + re-add Apple Pass)
+ * - Old customers keep earning/redeeming on their old type forever
+ * - loyalty_config.loyalty_type can be NULL (unactivated merchant)
  */
 async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
   const config = await getMerchantConfig(merchantId);
-  const currentType = config.loyalty_type ?? 'points';
-  const previousType = (config as any).previous_loyalty_type as string | null;
-  const configVersion = config.config_version ?? 1;
-  const configChangedAt = (config as any).config_changed_at as string | null;
+  const merchantType = config.loyalty_type ?? null; // null = unactivated
 
-  const noTransition = { earn: currentType, redeem: currentType, transitioning: false, oldSystemType: null as string | null, oldBalance: 0 };
-
-  // No previous type means no switch ever happened
-  if (!previousType || configVersion <= 1 || !configChangedAt) {
-    return noTransition;
+  if (!merchantType) {
+    // Merchant has not activated loyalty
+    return { earn: null as string | null, redeem: null as string | null, transitioning: false, oldSystemType: null as string | null, oldBalance: 0 };
   }
 
-  if (!supabaseAdmin) return noTransition;
+  // Get the customer's own locked-in loyalty type
+  const customerType = await getCustomerActiveLoyaltyType(merchantId, customerId);
 
-  // Check if we already have a transition record for this customer at this config version
-  const { data: existingTransition } = await supabaseAdmin
-    .from('loyalty_customer_transitions')
-    .select('*')
-    .eq('customer_id', customerId)
-    .eq('merchant_id', merchantId)
-    .eq('config_version_at_switch', configVersion)
-    .maybeSingle();
-
-  if (existingTransition?.old_balance_exhausted) {
-    return noTransition; // Already fully transitioned
+  if (!customerType) {
+    // New customer — assign them the merchant's current type
+    const assignedType = await initCustomerLoyaltyType(merchantId, customerId, merchantType);
+    return { earn: assignedType, redeem: assignedType, transitioning: false, oldSystemType: null, oldBalance: 0 };
   }
 
-  // Check if customer had any earn transactions BEFORE the switch
-  const { count: priorTxCount } = await supabaseAdmin
-    .from('loyalty_transactions')
-    .select('id', { count: 'exact', head: true })
-    .eq('customer_id', customerId)
-    .eq('merchant_id', merchantId)
-    .eq('type', 'earn')
-    .lt('created_at', configChangedAt);
-
-  if (!priorTxCount || priorTxCount === 0) {
-    // New user — never interacted before switch, go straight to new system
-    if (!existingTransition) {
-      await supabaseAdmin.from('loyalty_customer_transitions').upsert({
-        customer_id: customerId,
-        merchant_id: merchantId,
-        from_loyalty_type: previousType,
-        to_loyalty_type: currentType,
-        config_version_at_switch: configVersion,
-        old_balance_exhausted: true,
-        old_balance_exhausted_at: new Date().toISOString(),
-      }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
-    }
-    return noTransition;
-  }
-
-  // Old user — check their balance on the OLD system
-  let oldBalance = 0;
-  if (previousType === 'cashback') {
-    const { data: cb } = await supabaseAdmin.from('loyalty_cashback_balances')
-      .select('balance_sar')
-      .eq('customer_id', customerId).eq('merchant_id', merchantId)
-      .order('config_version', { ascending: false }).limit(1).maybeSingle();
-    oldBalance = cb?.balance_sar ?? 0;
-  } else if (previousType === 'points') {
-    const { data: pts } = await supabaseAdmin.from('loyalty_points')
-      .select('points')
-      .eq('customer_id', customerId).eq('merchant_id', merchantId)
-      .order('config_version', { ascending: false }).limit(1).maybeSingle();
-    oldBalance = (pts?.points ?? 0) * (config.point_value_sar ?? 0.1);
-  } else if (previousType === 'stamps') {
-    const { data: st } = await supabaseAdmin.from('loyalty_stamps')
-      .select('stamps')
-      .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();
-    oldBalance = st?.stamps ?? 0; // stamps count, not SAR
-  }
-
-  // Create or check transition record
-  if (!existingTransition) {
-    const exhausted = oldBalance <= 0;
-    await supabaseAdmin.from('loyalty_customer_transitions').upsert({
-      customer_id: customerId,
-      merchant_id: merchantId,
-      from_loyalty_type: previousType,
-      to_loyalty_type: currentType,
-      config_version_at_switch: configVersion,
-      old_balance_exhausted: exhausted,
-      ...(exhausted ? { old_balance_exhausted_at: new Date().toISOString() } : {}),
-    }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
-
-    if (exhausted) return noTransition;
-  }
-
-  // Balance > 0: still transitioning
-  if (oldBalance <= 0) {
-    // Balance drained since last check — mark exhausted
-    await supabaseAdmin.from('loyalty_customer_transitions')
-      .update({ old_balance_exhausted: true, old_balance_exhausted_at: new Date().toISOString() })
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId)
-      .eq('config_version_at_switch', configVersion);
-    return noTransition;
-  }
-
-  return {
-    earn: currentType,
-    redeem: previousType,
-    transitioning: true,
-    oldSystemType: previousType,
-    oldBalance,
-  };
+  // Customer has a locked-in type — they stay on it regardless of merchant config changes
+  return { earn: customerType, redeem: customerType, transitioning: false, oldSystemType: null, oldBalance: 0 };
 }
 
 async function requireMatchingCustomer(
@@ -605,18 +546,21 @@ loyaltyRouter.post('/earn', async (req, res) => {
     }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
-    // Branch by loyalty type
+    // Branch by loyalty type (per-customer)
     const config = await getMerchantConfig(merchantId || '');
-    const loyaltyType = config.loyalty_type ?? 'points';
+    if (!config.loyalty_type) {
+      return res.status(400).json({ error: 'Loyalty is not activated for this merchant' });
+    }
+    await ensureLoyaltyMemberProfile(merchantId || '', customerId);
+    const customerType = await initCustomerLoyaltyType(merchantId || '', customerId, config.loyalty_type);
+    const loyaltyType = customerType;
 
     if (loyaltyType === 'cashback') {
-      await ensureLoyaltyMemberProfile(merchantId || '', customerId);
       const result = await earnCashback(merchantId || '', customerId, orderId, Number(orderSubtotal));
       return res.json(result);
     }
 
     if (loyaltyType === 'stamps') {
-      await ensureLoyaltyMemberProfile(merchantId || '', customerId);
       // Increment stamp count
       const { data: stampRow } = await supabaseAdmin.from('loyalty_stamps')
         .select('stamps, completed_cards')

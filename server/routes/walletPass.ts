@@ -663,6 +663,16 @@ walletPassRouter.delete(
         .eq('pass_type_id', passTypeId)
         .eq('serial_number', serialNumber);
 
+      // Flag the customer as having deleted their pass — enables loyalty type switch on re-add
+      const serialParts = serialNumber.match(/^loyalty-(.+)-([0-9a-f-]+)$/);
+      if (serialParts && supabaseAdmin) {
+        const [, sMerchantId, sCustomerId] = serialParts;
+        await supabaseAdmin.from('loyalty_member_profiles')
+          .update({ pass_deleted: true, pass_deleted_at: new Date().toISOString() })
+          .eq('customer_id', sCustomerId).eq('merchant_id', sMerchantId);
+        console.log(`[WalletPass] Flagged pass_deleted for customer ${sCustomerId.substring(0, 8)}…`);
+      }
+
       console.log(`[WalletPass] Device ${deviceId.substring(0, 8)}… unregistered for ${serialNumber}`);
       return res.sendStatus(200);
     } catch (err: any) {
@@ -1195,6 +1205,35 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
     const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
+
+    // Check if customer is re-adding a pass after deletion — this triggers loyalty type switch
+    const { data: memberLoyaltyInfo } = await supabaseAdmin.from('loyalty_member_profiles')
+      .select('active_loyalty_type, pass_deleted')
+      .eq('customer_id', customerId).eq('merchant_id', merchantId)
+      .maybeSingle();
+
+    if (memberLoyaltyInfo?.pass_deleted) {
+      const { data: currentConfig } = await supabaseAdmin.from('loyalty_config')
+        .select('loyalty_type').eq('merchant_id', merchantId).maybeSingle();
+      const newType = currentConfig?.loyalty_type;
+      if (newType && newType !== memberLoyaltyInfo.active_loyalty_type) {
+        // Customer is opting into the new loyalty type
+        await supabaseAdmin.from('loyalty_member_profiles')
+          .update({
+            active_loyalty_type: newType,
+            loyalty_type_opted_in_at: new Date().toISOString(),
+            pass_deleted: false,
+            pass_deleted_at: null,
+          })
+          .eq('customer_id', customerId).eq('merchant_id', merchantId);
+        console.log(`[WalletPass] Customer ${customerId.substring(0, 8)}… switched loyalty type to ${newType}`);
+      } else {
+        // Same type or no type — just clear the deleted flag
+        await supabaseAdmin.from('loyalty_member_profiles')
+          .update({ pass_deleted: false, pass_deleted_at: null })
+          .eq('customer_id', customerId).eq('merchant_id', merchantId);
+      }
+    }
 
     // Foodics Loyalty Adapter QR format
     const customerPhone2 = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();

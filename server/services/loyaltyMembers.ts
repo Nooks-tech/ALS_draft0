@@ -140,6 +140,16 @@ export async function ensureLoyaltyMemberProfile(merchantId: string, customerId:
   }
 
   const memberCode = await createUniqueMemberCode(merchantId);
+
+  // Look up the merchant's current loyalty type to set on the new profile
+  let merchantLoyaltyType: string | null = null;
+  const { data: loyaltyConfig } = await supabaseAdmin
+    .from('loyalty_config')
+    .select('loyalty_type')
+    .eq('merchant_id', merchantId)
+    .maybeSingle();
+  merchantLoyaltyType = loyaltyConfig?.loyalty_type ?? null;
+
   const insertPayload = {
     merchant_id: merchantId,
     customer_id: customerId,
@@ -148,6 +158,7 @@ export async function ensureLoyaltyMemberProfile(merchantId: string, customerId:
     phone_number: profileFields.phoneNumber,
     email: profileFields.email,
     updated_at: new Date().toISOString(),
+    ...(merchantLoyaltyType ? { active_loyalty_type: merchantLoyaltyType, loyalty_type_set_at: new Date().toISOString() } : {}),
   };
   const inserted = await supabaseAdmin
     .from('loyalty_member_profiles')
