@@ -39,6 +39,10 @@ if (buildTimeAppIconFile.trim()) {
 config.expo.ios = {
   ...(config.expo.ios || {}),
   ...(iosBundleId.trim() ? { bundleIdentifier: iosBundleId.trim() } : {}),
+  entitlements: {
+    ...(config.expo.ios?.entitlements || {}),
+    'com.apple.developer.in-app-payments': [applePayMerchantId],
+  },
 };
 const resolvedIcon = config.expo.icon || resolvedAppIconFile;
 config.expo.android = {
