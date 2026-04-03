@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { cancelPayment } from '../services/payment';
 import { otoService } from '../services/oto';
+import { mapOtoStatusToOrderStatus } from '../routes/oto';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -36,16 +37,6 @@ async function sendPush(customerId: string, title: string, body: string) {
       }))),
     });
   } catch { /* best-effort */ }
-}
-
-function mapOtoStatusToOrderStatus(otoStatus: string | undefined): string {
-  if (!otoStatus) return 'Preparing';
-  const s = (otoStatus || '').toLowerCase().replace(/_/g, '');
-  if (s.includes('delivered')) return 'Delivered';
-  if (s.includes('outfordelivery')) return 'Out for delivery';
-  if (s.includes('pickedup') || s.includes('ready')) return 'Ready';
-  if (s.includes('cancelled') || s.includes('canceled')) return 'Cancelled';
-  return 'Preparing';
 }
 
 const STATUS_RANK: Record<string, number> = {

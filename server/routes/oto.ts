@@ -44,7 +44,7 @@ export function mapOtoStatusToOrderStatus(otoStatus: string | undefined): string
   if (!otoStatus) return 'Preparing';
   const s = (otoStatus || '').toLowerCase().replace(/_/g, '');
   if (s.includes('delivered')) return 'Delivered';
-  if (s.includes('outfordelivery')) return 'Out for delivery';
+  if (s.includes('outfordelivery') || s.includes('deliveryattemptfailed') || s.includes('rescheduled') || s.includes('pickupcompleted') || s.includes('received') || s.includes('arrived')) return 'Out for delivery';
   if (s.includes('pickedup') || s.includes('ready')) return 'Ready';
   if (s.includes('cancelled') || s.includes('canceled')) return 'Cancelled';
   return 'Preparing';

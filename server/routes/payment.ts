@@ -249,13 +249,13 @@ paymentRouter.post('/stcpay/otp', async (req, res) => {
     const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
 
     // Call Moyasar to verify the OTP
-    const moyasarRes = await fetch(`https://api.moyasar.com/v1/stc_pay/${paymentId}/proceed`, {
+    const moyasarRes = await fetch(`https://api.moyasar.com/v1/stc_pays/${paymentId}/proceed`, {
       method: 'POST',
       headers: {
         Authorization: authHeader,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ otp }),
+      body: JSON.stringify({ otp_value: otp }),
     });
     const data = await moyasarRes.json();
 
@@ -324,7 +324,6 @@ paymentRouter.post('/webhook', async (req, res) => {
 
     const token =
       req.body?.secret_token as string ||
-      (req.query.secret_token as string) ||
       req.headers['x-moyasar-token'] as string ||
       req.headers['x-webhook-secret'] as string;
     if (token !== expectedWebhookSecret) {

@@ -342,11 +342,18 @@ async function redeemRewardFromBalance(params: {
     normalizeOptionalString(params.context?.referenceId) ||
     `branch-reward:${params.rewardId}:${Date.now()}`;
 
-  await supabaseAdmin
+  // Atomic conditional update: only deduct if balance still >= reward.points_cost (prevents double-spend race)
+  const { data: updated, error: updateErr } = await supabaseAdmin
     .from('loyalty_points')
     .update({ points: balance.points - reward.points_cost, updated_at: new Date().toISOString() })
     .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId);
+    .eq('merchant_id', params.merchantId)
+    .gte('points', reward.points_cost)
+    .select('points')
+    .maybeSingle();
+  if (updateErr || !updated) {
+    throw new Error('Redemption failed — balance may have changed. Please try again.');
+  }
 
   await supabaseAdmin.from('loyalty_transactions').insert({
     customer_id: params.customerId,
@@ -1300,9 +1307,16 @@ loyaltyRouter.post('/redeem-cashback', async (req, res) => {
     const balance = balRow?.balance_sar ?? 0;
     if (balance < amount) return res.status(400).json({ error: `Insufficient cashback. Available: ${balance} SAR` });
 
-    await supabaseAdmin.from('loyalty_cashback_balances')
+    // Atomic conditional update: only deduct if balance still >= amount (prevents double-spend race)
+    const { data: cbUpdated, error: cbUpdateErr } = await supabaseAdmin.from('loyalty_cashback_balances')
       .update({ balance_sar: +(balance - amount).toFixed(2), updated_at: new Date().toISOString() })
-      .eq('customer_id', customerId).eq('merchant_id', merchantId).eq('config_version', balRow!.config_version);
+      .eq('customer_id', customerId).eq('merchant_id', merchantId).eq('config_version', balRow!.config_version)
+      .gte('balance_sar', amount)
+      .select('balance_sar')
+      .maybeSingle();
+    if (cbUpdateErr || !cbUpdated) {
+      return res.status(409).json({ error: 'Redemption failed — balance may have changed. Please try again.' });
+    }
 
     await supabaseAdmin.from('loyalty_transactions').insert({
       customer_id: customerId, merchant_id: merchantId, order_id: orderId,

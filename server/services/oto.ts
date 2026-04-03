@@ -6,8 +6,13 @@
 
 import { getMerchantDeliveryRuntimeConfig } from '../lib/merchantIntegrations';
 
-const OTO_BASE = 'https://api.tryoto.com/rest/v2';
+const OTO_BASE_PRODUCTION = 'https://api.tryoto.com/rest/v2';
+const OTO_BASE_SANDBOX = 'https://staging-api.tryoto.com/rest/v2';
 const OTO_REFRESH_TOKEN = process.env.OTO_REFRESH_TOKEN;
+
+function getOtoBase(environment?: 'sandbox' | 'production'): string {
+  return environment === 'sandbox' ? OTO_BASE_SANDBOX : OTO_BASE_PRODUCTION;
+}
 
 /** Default bullet delivery carriers (comma-separated). Used when merchant has no preference set. */
 const DEFAULT_PREFERRED_CARRIERS = ['careem', 'mrsool', 'marsool', 'dal'];
@@ -41,7 +46,7 @@ export function resolveScopedRefreshToken(
   return refreshToken || OTO_REFRESH_TOKEN || null;
 }
 
-async function getAccessToken(refreshTokenOverride?: string | null): Promise<string> {
+async function getAccessToken(refreshTokenOverride?: string | null, environment?: 'sandbox' | 'production'): Promise<string> {
   const refreshToken = refreshTokenOverride || OTO_REFRESH_TOKEN;
   if (!refreshToken) {
     throw new Error('OTO refresh token not configured');
@@ -51,7 +56,8 @@ async function getAccessToken(refreshTokenOverride?: string | null): Promise<str
     return cached.accessToken;
   }
 
-  const res = await fetch(`${OTO_BASE}/refreshToken`, {
+  const base = getOtoBase(environment);
+  const res = await fetch(`${base}/refreshToken`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: refreshToken }),
@@ -74,33 +80,54 @@ async function getAccessToken(refreshTokenOverride?: string | null): Promise<str
   return token;
 }
 
+const RETRY_STATUS_CODES = new Set([429, 500, 502, 503]);
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1000;
+
 async function otoRequest<T>(
   path: string,
   body: object,
   method: 'GET' | 'POST' = 'POST',
-  refreshTokenOverride?: string | null
+  refreshTokenOverride?: string | null,
+  environment?: 'sandbox' | 'production'
 ): Promise<T> {
-  const token = await getAccessToken(refreshTokenOverride);
+  const token = await getAccessToken(refreshTokenOverride, environment);
+  const base = getOtoBase(environment);
   const url = method === 'GET' && Object.keys(body).length > 0
-    ? `${OTO_BASE}${path}?${new URLSearchParams(body as Record<string, string>).toString()}`
-    : `${OTO_BASE}${path}`;
-  const res = await fetch(url, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: method === 'POST' ? JSON.stringify(body) : undefined,
-  });
+    ? `${base}${path}?${new URLSearchParams(body as Record<string, string>).toString()}`
+    : `${base}${path}`;
 
-  const data = await res.json().catch(() => ({}));
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    }
+    const res = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: method === 'POST' ? JSON.stringify(body) : undefined,
+    });
 
-  if (!res.ok) {
-    throw new Error(data?.message || data?.errors?.[0] || `OTO API error: ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+
+    if (res.ok) {
+      return data as T;
+    }
+
+    lastError = new Error(data?.message || data?.errors?.[0] || `OTO API error: ${res.status}`);
+
+    // Only retry on transient server errors; don't retry client errors like 400, 401, 404
+    if (!RETRY_STATUS_CODES.has(res.status)) {
+      throw lastError;
+    }
+    console.warn(`[OTO] Request to ${path} returned ${res.status}, retry ${attempt + 1}/${MAX_RETRIES}`);
   }
 
-  return data as T;
+  throw lastError!;
 }
 
 export interface OTORequestDeliveryPayload {
@@ -173,6 +200,9 @@ export const otoService = {
 
     const customer = payload.customer;
     const phone = (customer.phone || '').replace(/\D/g, '');
+    if (!phone) {
+      console.warn(`[OTO] No customer phone for order ${payload.orderId} — using fallback '500000000'. Validate customer.phone upstream.`);
+    }
     const lat = payload.deliveryAddress.lat;
     const lon = payload.deliveryAddress.lng;
 
@@ -214,7 +244,7 @@ export const otoService = {
       otoOrder.deliveryOptionId = String(deliveryOptionId);
     }
 
-    const result = await otoRequest<OTOOrderResponse>('/createOrder', otoOrder, 'POST', refreshToken);
+    const result = await otoRequest<OTOOrderResponse>('/createOrder', otoOrder, 'POST', refreshToken, runtimeConfig.environment);
     return result;
   },
 
@@ -266,7 +296,8 @@ export const otoService = {
 
     // 1) OTO's marketplace contracts (checkOTODeliveryFee) — bullet delivery only
     const otoBody = { ...baseBody, originCountry: 'SA', destinationCountry: 'SA', deliveryType: 'bullet' };
-    const otoPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkOTODeliveryFee', otoBody, 'POST', refreshToken)
+    const env = runtimeConfig.environment;
+    const otoPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkOTODeliveryFee', otoBody, 'POST', refreshToken, env)
       .then((d) => mapOptions(d?.deliveryCompany ?? [], 'oto'))
       .catch(() => [] as ReturnType<typeof mapOptions>);
 
@@ -279,7 +310,7 @@ export const otoService = {
     };
     if (params.originLat != null) { ownBody.originLat = String(params.originLat); ownBody.originLon = String(params.originLon); }
     if (params.destinationLat != null) { ownBody.destinationLat = String(params.destinationLat); ownBody.destinationLon = String(params.destinationLon); }
-    const ownPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkDeliveryFee', ownBody, 'POST', refreshToken)
+    const ownPromise = otoRequest<{ deliveryCompany?: any[] }>('/checkDeliveryFee', ownBody, 'POST', refreshToken, env)
       .then((d) => mapOptions(d?.deliveryCompany ?? [], 'own'))
       .catch(() => [] as ReturnType<typeof mapOptions>);
 
@@ -401,9 +432,10 @@ export const otoService = {
     if (!refreshToken) {
       return { cancelled: false, warning: 'OTO refresh token not configured for this merchant' };
     }
+    const env = runtimeConfig.environment;
     // Try cancelOrder first (lightweight, no shipment needed)
     try {
-      await otoRequest<{ success?: boolean }>('/cancelOrder', { orderId: String(orderId) }, 'POST', refreshToken);
+      await otoRequest<{ success?: boolean }>('/cancelOrder', { orderId: String(orderId) }, 'POST', refreshToken, env);
       console.log('[OTO] cancelOrder succeeded for', orderId);
       return { cancelled: true };
     } catch (e: any) {
@@ -416,7 +448,7 @@ export const otoService = {
         await otoRequest<{ success?: boolean }>('/cancelShipment', {
           orderId: String(orderId),
           shipmentId,
-        }, 'POST', refreshToken);
+        }, 'POST', refreshToken, env);
         console.log('[OTO] cancelShipment succeeded for', orderId, shipmentId);
         return { cancelled: true };
       } catch (e: any) {
@@ -435,7 +467,7 @@ export const otoService = {
           await otoRequest<{ success?: boolean }>('/cancelShipment', {
             orderId: String(orderId),
             shipmentId: trackingNumber,
-          }, 'POST', refreshToken);
+          }, 'POST', refreshToken, env);
           console.log('[OTO] cancelShipment (auto-fetched) succeeded for', orderId);
           return { cancelled: true };
         } catch (e: any) {
@@ -453,7 +485,7 @@ export const otoService = {
       const runtimeConfig = await getMerchantDeliveryRuntimeConfig(scopedMerchantId);
       const refreshToken = resolveScopedRefreshToken(scopedMerchantId, runtimeConfig.refreshToken);
       if (!refreshToken) return false;
-      await getAccessToken(refreshToken);
+      await getAccessToken(refreshToken, runtimeConfig.environment);
       const cities = await this.getCities('SA', 1);
       return cities.length > 0;
     } catch {
@@ -475,7 +507,7 @@ export const otoService = {
     }
     const data = await otoRequest<Record<string, unknown>>('/orderDetails', {
       orderId: String(orderId),
-    }, 'GET', refreshToken);
+    }, 'GET', refreshToken, runtimeConfig.environment);
 
     const shipments = Array.isArray(data?.shipments) ? data.shipments as Record<string, unknown>[] : [];
     const latestShipment = shipments[0];
@@ -505,7 +537,7 @@ export const otoService = {
       method: 'post',
       url,
       webhookType,
-    }, 'POST', refreshToken);
+    }, 'POST', refreshToken, runtimeConfig.environment);
     return { success: data?.success !== false, message: data?.message };
   },
 };
