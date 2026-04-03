@@ -116,6 +116,11 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     background_color,
     menu_card_color,
     text_color,
+    tab_text_color,
+    ios_bundle_id,
+    android_package_id,
+    apple_pay_merchant_id,
+    moyasar_publishable_key,
     use_test_builds,
   } = req.body || {};
   if (!merchant_id || typeof merchant_id !== 'string') {
@@ -144,6 +149,11 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     background_color: background_color != null ? String(background_color) : '#f5f5f4',
     menu_card_color: menu_card_color != null ? String(menu_card_color) : '#f5f5f4',
     text_color: text_color != null ? String(text_color) : '#1f2937',
+    tab_text_color: tab_text_color != null ? String(tab_text_color) : '#ffffff',
+    ios_bundle_id: ios_bundle_id != null ? String(ios_bundle_id) : '',
+    android_package_id: android_package_id != null ? String(android_package_id) : '',
+    apple_pay_merchant_id: apple_pay_merchant_id != null ? String(apple_pay_merchant_id) : '',
+    moyasar_publishable_key: moyasar_publishable_key != null ? String(moyasar_publishable_key) : '',
   };
   const useTestBuilds = !(use_test_builds === false || use_test_builds === 'false');
   if (useTestBuilds) {
