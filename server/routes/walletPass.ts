@@ -437,7 +437,7 @@ function buildPassJson(opts: {
           { key: 'balance', label: 'CASHBACK BALANCE', value: `${(opts.cashbackBalance ?? 0).toFixed(2)} SAR` },
         ],
         secondaryFields: [
-          { key: 'rate', label: 'CASHBACK RATE', value: `${opts.cashbackPercent ?? 5}% back` },
+          { key: 'earnRate', label: 'EARN RATE', value: `${opts.cashbackPercent ?? 5}% back` },
           { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
         ],
         backFields: [
@@ -451,9 +451,6 @@ function buildPassJson(opts: {
     case 'stamps': {
       const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget ?? 10);
       const total = opts.stampTarget ?? 10;
-      const emptyCount = Math.max(0, total - filledCount);
-      const icon = opts.businessType === 'restaurant' ? '\uD83C\uDF54' : '\u2615'; // burger or coffee
-      const stampViz = (icon + ' ').repeat(filledCount) + '\u25CB '.repeat(emptyCount);
 
       storeCard = {
         headerFields: [],
@@ -461,10 +458,7 @@ function buildPassJson(opts: {
           { key: 'stamps', label: 'STAMPS', value: `${filledCount} / ${total}` },
         ],
         secondaryFields: [
-          { key: 'stampCard', label: 'STAMP CARD', value: stampViz.trim() },
-        ],
-        auxiliaryFields: [
-          ...(opts.nextRewardName ? [{ key: 'nextReward', label: 'NEXT REWARD', value: opts.nextRewardName }] : []),
+          { key: 'nextReward', label: 'NEXT REWARD', value: `Stamp ${total}` },
           { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
         ],
         backFields: [
@@ -480,13 +474,11 @@ function buildPassJson(opts: {
       storeCard = {
         headerFields: [],
         primaryFields: [
-          { key: 'points', label: 'POINTS BALANCE', value: opts.points },
+          { key: 'balance', label: 'POINTS BALANCE', value: opts.points },
         ],
         secondaryFields: [
           { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
-          { key: 'earn', label: 'EARN RATE', value: opts.earnRate },
-        ],
-        auxiliaryFields: [
+          { key: 'earnRate', label: 'EARN RATE', value: opts.earnRate },
           { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
         ],
         backFields: [
@@ -753,7 +745,7 @@ walletPassRouter.get(
 
       const bgColor = resolveWalletCardBgColor(config, appConfig);
       const textColor = config?.wallet_card_text_color || '#FFFFFF';
-      const cardLabel = config?.wallet_card_label || 'Loyalty Card';
+      const cardLabel = config?.wallet_card_label || merchant?.cafe_name || appConfig?.app_name || 'Loyalty Card';
       const pointValueSar = config?.point_value_sar ?? 0.1;
       const pointsPerSar = config?.points_per_sar ?? 0.1;
       const earnRate = config?.earn_mode === 'per_order'
@@ -1106,7 +1098,7 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       if (config) {
         bgHex = resolveWalletCardBgColor(config, appConfig);
         textColor = hexToRgb(config.wallet_card_text_color || '#FFFFFF');
-        cardLabel = config.wallet_card_label || 'Loyalty Card';
+        cardLabel = config.wallet_card_label || merchant?.cafe_name || appConfig?.app_name || 'Loyalty Card';
         const pps = config.points_per_sar ?? 0.1;
         earnRate = config.earn_mode === 'per_order'
           ? `${config.points_per_order ?? 10} points per order`
@@ -1195,7 +1187,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
 
     const bgColor = resolveWalletCardBgColor(config, appConfig);
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
-    const cardLabel = config?.wallet_card_label || 'Loyalty Card';
+    const cardLabel = config?.wallet_card_label || merchant?.cafe_name || appConfig?.app_name || 'Loyalty Card';
     const pointValueSar = config?.point_value_sar ?? 0.1;
     const pointsPerSar = config?.points_per_sar ?? 0.1;
 
@@ -1234,6 +1226,27 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
           .eq('customer_id', customerId).eq('merchant_id', merchantId);
       }
     }
+
+    // Determine effective loyalty type: member override > config default
+    const loyaltyType = memberLoyaltyInfo?.active_loyalty_type || config?.loyalty_type || 'points';
+
+    // Fetch type-specific balances and branch locations in parallel
+    const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: nextMilestone }] = await Promise.all([
+      supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
+        .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
+      supabaseAdmin.from('loyalty_rewards').select('name, points_cost')
+        .eq('merchant_id', merchantId).eq('is_active', true)
+        .order('points_cost', { ascending: true }).limit(1).maybeSingle(),
+      supabaseAdmin.from('branch_mappings').select('name, latitude, longitude')
+        .eq('merchant_id', merchantId)
+        .not('latitude', 'is', null).not('longitude', 'is', null).limit(10),
+      supabaseAdmin.from('loyalty_cashback_balances').select('balance_sar')
+        .eq('customer_id', customerId).eq('merchant_id', merchantId)
+        .order('config_version', { ascending: false }).limit(1).maybeSingle(),
+      supabaseAdmin.from('loyalty_stamp_milestones').select('reward_name, stamp_number')
+        .eq('merchant_id', merchantId).eq('is_active', true)
+        .order('stamp_number', { ascending: true }).limit(1).maybeSingle(),
+    ]);
 
     // Foodics Loyalty Adapter QR format
     const customerPhone2 = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
@@ -1287,6 +1300,18 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       memberCode: memberProfile.member_code,
       customerId,
       hasLogoImage: !!logoUrl,
+      loyaltyType,
+      cashbackBalance: cbRow?.balance_sar ?? 0,
+      cashbackPercent: config?.cashback_percent ?? 5,
+      businessType: config?.business_type ?? 'cafe',
+      stamps: stampRow?.stamps ?? 0,
+      stampTarget: config?.stamp_target ?? 10,
+      stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
+      nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
+      nextRewardCost: cheapestReward?.points_cost ?? undefined,
+      locations: (branches ?? [])
+        .filter((b: any) => b.latitude && b.longitude)
+        .map((b: any) => ({ lat: Number(b.latitude), lng: Number(b.longitude), name: b.name || 'Branch' })),
     });
 
     const pkpass = await createPassBuffer(files);

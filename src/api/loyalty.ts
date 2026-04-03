@@ -6,6 +6,11 @@ import { api } from './client';
 export interface LoyaltyBalance {
   loyaltyType: 'cashback' | 'points' | 'stamps';
   memberCode: string;
+  // Transition state
+  transitioning?: boolean;
+  oldSystemType?: 'cashback' | 'points' | 'stamps' | null;
+  oldSystemBalance?: number;
+  redeemType?: 'cashback' | 'points' | 'stamps' | null;
   // Points
   points: number;
   lifetimePoints: number;
@@ -18,6 +23,7 @@ export interface LoyaltyBalance {
   // Cashback
   cashbackBalance: number;
   cashbackPercent: number;
+  maxCashbackPerOrderSar?: number | null;
   // Stamps
   stampEnabled: boolean;
   stampTarget: number;
