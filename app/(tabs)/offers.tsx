@@ -324,7 +324,16 @@ export default function OffersScreen() {
     [nooksBanners],
   );
 
-  const cardTitle = balance?.walletCardLabel || 'Your Points';
+  const loyaltyType = balance?.loyaltyType ?? 'points';
+  const loyaltyTabLabel = loyaltyType === 'stamps'
+    ? (isArabic ? 'بطاقة الأختام' : 'Stamps')
+    : loyaltyType === 'cashback'
+      ? (isArabic ? 'كاش باك' : 'Cashback')
+      : (isArabic ? 'النقاط' : 'Points');
+  const cardTitle = balance?.walletCardLabel
+    || (loyaltyType === 'stamps' ? (isArabic ? 'بطاقة الأختام' : 'Stamp Card')
+       : loyaltyType === 'cashback' ? (isArabic ? 'كاش باك' : 'Cashback')
+       : (isArabic ? 'نقاطك' : 'Your Points'));
   const cardLogoUrl = balance?.walletCardLogoUrl || null;
   const cardBgColor = balance?.walletCardBgColor || primaryColor;
   const cardTxtColor = balance?.walletCardTextColor || null;
@@ -341,7 +350,7 @@ export default function OffersScreen() {
           <ArrowLeft size={24} color={textColor} />
         </TouchableOpacity>
         <Text className="text-xl font-bold flex-1" style={{ color: textColor }}>
-          {tab === 'offers' ? (isArabic ? 'العروض' : 'Offers') : (isArabic ? 'النقاط' : 'Points')}
+          {tab === 'offers' ? (isArabic ? 'العروض' : 'Offers') : loyaltyTabLabel}
         </Text>
       </View>
 
@@ -359,7 +368,7 @@ export default function OffersScreen() {
           className="flex-1 py-2.5 items-center"
           style={tab === 'points' ? { backgroundColor: primaryColor } : {}}
         >
-          <Text className="text-sm font-semibold" style={{ color: tab === 'points' ? '#fff' : textColor }}>{isArabic ? 'النقاط' : 'Points'}</Text>
+          <Text className="text-sm font-semibold" style={{ color: tab === 'points' ? '#fff' : textColor }}>{loyaltyTabLabel}</Text>
         </TouchableOpacity>
       </View>
 
@@ -420,22 +429,165 @@ export default function OffersScreen() {
           </View>
         ) : (
           <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-            {/* Points Balance Card */}
+            {/* ── Main Loyalty Card — render ONLY the card matching loyaltyType ── */}
             {(() => {
               const cardLight = isLightColor(cardBgColor);
               const gradientEnd = darkenColor(cardBgColor, 0.35);
               const cardTextColor = cardTxtColor || (cardLight ? '#1f2937' : '#ffffff');
               const cardSubTextColor = cardLight ? 'rgba(31,41,55,0.6)' : 'rgba(255,255,255,0.7)';
+
+              /* ── STAMPS ── */
+              if (loyaltyType === 'stamps') {
+                return (
+                  <View
+                    style={{
+                      borderRadius: 24, overflow: 'hidden',
+                      shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
+                    }}
+                  >
+                    <LinearGradient
+                      colors={[cardBgColor, gradientEnd]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={{ padding: 24, position: 'relative' }}
+                    >
+                      {/* Decorative circles */}
+                      <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
+                      <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
+
+                      {/* Merchant logo top-right */}
+                      {cardLogoUrl && (
+                        <Image
+                          source={{ uri: cardLogoUrl }}
+                          style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
+                          resizeMode="cover"
+                        />
+                      )}
+
+                      {/* Header */}
+                      <View className="flex-row items-center mb-5">
+                        <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                          <Star size={18} color={cardTextColor} fill={cardTextColor} />
+                        </View>
+                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
+                          {cardTitle}
+                        </Text>
+                      </View>
+
+                      {/* Stamp grid */}
+                      <View className="flex-row flex-wrap gap-2">
+                        {Array.from({ length: balance?.stampTarget ?? 10 }).map((_, i) => (
+                          <View
+                            key={i}
+                            className="w-9 h-9 rounded-full items-center justify-center"
+                            style={{
+                              backgroundColor: i < (balance?.stamps ?? 0)
+                                ? (cardLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.25)')
+                                : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)'),
+                            }}
+                          >
+                            {i < (balance?.stamps ?? 0) ? (
+                              <Star size={16} color={cardTextColor} fill={cardTextColor} />
+                            ) : (
+                              <Text style={{ color: cardSubTextColor, fontSize: 11 }}>{i + 1}</Text>
+                            )}
+                          </View>
+                        ))}
+                      </View>
+
+                      {/* Divider */}
+                      <View style={{ height: 1, marginTop: 16, marginBottom: 12, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
+
+                      {/* Remaining info */}
+                      <Text style={{ color: cardSubTextColor, fontSize: 13 }}>
+                        {isArabic
+                          ? `تبقى ${(balance?.stampTarget ?? 10) - (balance?.stamps ?? 0)} للحصول على: ${balance?.stampRewardDescription ?? ''}`
+                          : `${(balance?.stampTarget ?? 10) - (balance?.stamps ?? 0)} remaining to get: ${balance?.stampRewardDescription ?? ''}`}
+                      </Text>
+
+                      {/* Completed cards */}
+                      {(balance?.completedCards ?? 0) > 0 && (
+                        <Text style={{ color: cardTextColor, fontSize: 12, fontWeight: '600', marginTop: 6 }}>
+                          {isArabic ? `بطاقات مكتملة: ${balance?.completedCards}` : `Cards completed: ${balance?.completedCards}`}
+                        </Text>
+                      )}
+                    </LinearGradient>
+                  </View>
+                );
+              }
+
+              /* ── CASHBACK ── */
+              if (loyaltyType === 'cashback') {
+                return (
+                  <View
+                    style={{
+                      borderRadius: 24, overflow: 'hidden',
+                      shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
+                    }}
+                  >
+                    <LinearGradient
+                      colors={[cardBgColor, gradientEnd]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={{ padding: 24, position: 'relative' }}
+                    >
+                      {/* Decorative circles */}
+                      <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
+                      <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
+
+                      {/* Merchant logo top-right */}
+                      {cardLogoUrl && (
+                        <Image
+                          source={{ uri: cardLogoUrl }}
+                          style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
+                          resizeMode="cover"
+                        />
+                      )}
+
+                      {/* Header */}
+                      <View className="flex-row items-center mb-5">
+                        <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                          <Gift size={18} color={cardTextColor} />
+                        </View>
+                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
+                          {cardTitle}
+                        </Text>
+                      </View>
+
+                      {/* Cashback balance */}
+                      <View className="flex-row items-baseline">
+                        <PriceWithSymbol amount={balance?.cashbackBalance ?? 0} iconSize={36} iconColor={cardTextColor} textStyle={{ color: cardTextColor, fontSize: 48, fontWeight: '800', lineHeight: 52 }} />
+                      </View>
+                      <Text style={{ color: cardSubTextColor, fontSize: 14, marginTop: 4 }}>
+                        {isArabic ? 'رصيد الكاش باك' : 'Cashback Balance'}
+                      </Text>
+
+                      {/* Divider */}
+                      <View style={{ height: 1, marginTop: 16, marginBottom: 12, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
+
+                      {/* Earn info */}
+                      <View className="flex-row items-center">
+                        <TrendingUp size={14} color={cardSubTextColor} />
+                        <Text style={{ color: cardSubTextColor, fontSize: 13, marginLeft: 6 }}>
+                          {isArabic
+                            ? `اكسب ${balance?.cashbackPercent ?? 5}% كاش باك على كل طلب`
+                            : `Earn ${balance?.cashbackPercent ?? 5}% cashback on every order`}
+                        </Text>
+                      </View>
+                    </LinearGradient>
+                  </View>
+                );
+              }
+
+              /* ── POINTS (default) ── */
               return (
                 <View
                   style={{
-                    borderRadius: 24,
-                    overflow: 'hidden',
-                    shadowColor: '#000',
-                    shadowOffset: { width: 0, height: 8 },
-                    shadowOpacity: 0.2,
-                    shadowRadius: 16,
-                    elevation: 10,
+                    borderRadius: 24, overflow: 'hidden',
+                    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+                    shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
                   }}
                 >
                   <LinearGradient
@@ -445,35 +597,20 @@ export default function OffersScreen() {
                     style={{ padding: 24, position: 'relative' }}
                   >
                     {/* Decorative circle */}
-                    <View
-                      style={{
-                        position: 'absolute', bottom: -20, left: -20,
-                        width: 80, height: 80, borderRadius: 40,
-                        backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)',
-                      }}
-                    />
+                    <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
 
                     {/* Merchant logo top-right */}
                     {cardLogoUrl && (
                       <Image
                         source={{ uri: cardLogoUrl }}
-                        style={{
-                          position: 'absolute', top: 16, right: 16,
-                          width: 48, height: 48, borderRadius: 14,
-                        }}
+                        style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
                         resizeMode="cover"
                       />
                     )}
 
-                    {/* Header — star always shown + title */}
+                    {/* Header */}
                     <View className="flex-row items-center mb-5">
-                      <View
-                        style={{
-                          width: 36, height: 36, borderRadius: 18,
-                          backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
-                          alignItems: 'center', justifyContent: 'center',
-                        }}
-                      >
+                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
                         <Star size={18} color={cardTextColor} fill={cardTextColor} />
                       </View>
                       <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
@@ -486,71 +623,26 @@ export default function OffersScreen() {
                       {balance?.points ?? 0}
                     </Text>
                     <View className="flex-row items-center mt-1">
-                      <Text style={{ color: cardSubTextColor, fontSize: 14 }}>Worth </Text>
+                      <Text style={{ color: cardSubTextColor, fontSize: 14 }}>{isArabic ? 'القيمة ' : 'Worth '}</Text>
                       <PriceWithSymbol amount={balance?.pointsValue ?? 0} iconSize={14} iconColor={cardSubTextColor} textStyle={{ color: cardSubTextColor, fontSize: 14 }} />
                     </View>
 
                     {/* Divider */}
-                    <View
-                      style={{
-                        height: 1, marginVertical: 16,
-                        backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)',
-                      }}
-                    />
+                    <View style={{ height: 1, marginVertical: 16, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
 
                     {/* Earn rate */}
                     <View className="flex-row items-center">
                       <TrendingUp size={14} color={cardSubTextColor} />
                       <Text style={{ color: cardSubTextColor, fontSize: 13, marginLeft: 6 }}>
                         {balance?.earnMode === 'per_order'
-                          ? `Earn ${balance?.pointsPerOrder ?? 10} points per order`
-                          : `Earn ${Math.round((balance?.pointsPerSar ?? 0.1) * 100)}% back in points`}
+                          ? (isArabic ? `اكسب ${balance?.pointsPerOrder ?? 10} نقطة لكل طلب` : `Earn ${balance?.pointsPerOrder ?? 10} points per order`)
+                          : (isArabic ? `اكسب ${Math.round((balance?.pointsPerSar ?? 0.1) * 100)}% نقاط على كل طلب` : `Earn ${Math.round((balance?.pointsPerSar ?? 0.1) * 100)}% back in points`)}
                       </Text>
                     </View>
                   </LinearGradient>
                 </View>
               );
             })()}
-
-            {/* Stamp Card */}
-            {balance?.stampEnabled && (
-              <View
-                className="mt-5 p-5 rounded-2xl"
-                style={{
-                  backgroundColor: menuCardColor,
-                  borderWidth: 1, borderColor: '#e2e8f0',
-                  shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-                  shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
-                }}
-              >
-                <Text className="font-bold text-slate-800 mb-3">Stamp Card</Text>
-                <View className="flex-row flex-wrap gap-2">
-                  {Array.from({ length: balance.stampTarget }).map((_, i) => (
-                    <View
-                      key={i}
-                      className="w-9 h-9 rounded-full items-center justify-center"
-                      style={{
-                        backgroundColor: i < (balance.stamps ?? 0) ? primaryColor : '#e2e8f0',
-                      }}
-                    >
-                      {i < (balance.stamps ?? 0) ? (
-                        <Star size={16} color="white" fill="white" />
-                      ) : (
-                        <Text className="text-slate-400 text-xs">{i + 1}</Text>
-                      )}
-                    </View>
-                  ))}
-                </View>
-                <Text className="text-slate-500 text-xs mt-3">
-                  تبقى {balance.stampTarget - (balance.stamps ?? 0)} طلبات حتى: {balance.stampRewardDescription}
-                </Text>
-                {(balance.completedCards ?? 0) > 0 && (
-                  <Text className="text-emerald-600 text-xs mt-1 font-semibold">
-                    البطاقات المكتملة: {balance.completedCards}
-                  </Text>
-                )}
-              </View>
-            )}
 
             {/* Add to Apple Wallet — native PKAddPassButton (Apple HIG) */}
             {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && (
@@ -605,7 +697,7 @@ export default function OffersScreen() {
             {/* Rewards Catalog */}
             {rewards.length > 0 && (
               <View className="mt-5">
-                <Text className="text-lg font-bold mb-3" style={{ color: textColor }}>Rewards</Text>
+                <Text className="text-lg font-bold mb-3" style={{ color: textColor }}>{isArabic ? 'المكافآت' : 'Rewards'}</Text>
                 {rewards.map((r) => (
                   <View
                     key={r.id}
@@ -623,7 +715,7 @@ export default function OffersScreen() {
                       <Text className="font-semibold text-sm" style={{ color: textColor }}>{r.name}</Text>
                       {r.description && <Text className="text-xs text-slate-400 mt-0.5">{r.description}</Text>}
                       <Text className="text-xs font-bold mt-1" style={{ color: primaryColor }}>
-                        {r.points_cost} points
+                        {r.points_cost} {isArabic ? 'نقطة' : 'points'}
                       </Text>
                     </View>
                     <TouchableOpacity
@@ -692,7 +784,7 @@ export default function OffersScreen() {
                   ))
                 ) : (
                   <Text className="text-slate-400 text-center py-4">
-                    No transactions yet. Make an order to earn points!
+                    {isArabic ? 'لا توجد معاملات بعد. قم بإجراء طلب لكسب المكافآت!' : 'No transactions yet. Make an order to start earning!'}
                   </Text>
                 )
               )}

@@ -17,7 +17,7 @@ const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 const DEFAULT_CONFIG = {
-  loyalty_type: 'points' as 'cashback' | 'points' | 'stamps',
+  loyalty_type: null as 'cashback' | 'stamps' | null,
   earn_mode: 'per_sar' as const,
   points_per_sar: 0.1,
   points_per_order: 10,
@@ -77,9 +77,11 @@ async function initCustomerLoyaltyType(merchantId: string, customerId: string, l
  * Determines which loyalty system a customer should earn on and redeem from.
  *
  * Per-customer loyalty type rules:
- * - Each customer has their own active_loyalty_type locked in on first interaction
- * - Once set, it NEVER changes unless the customer opts in (delete + re-add Apple Pass)
- * - Old customers keep earning/redeeming on their old type forever
+ * - If customer type matches merchant type -> use it (no transition)
+ * - If customer type differs from merchant type:
+ *   - balance > 0 on old system -> keep old system (earn + redeem on old)
+ *   - balance = 0 on old system -> auto-switch to new, update DB, notify pass
+ * - If customer has no type -> assign merchant's current type
  * - loyalty_config.loyalty_type can be NULL (unactivated merchant)
  */
 async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
@@ -91,7 +93,7 @@ async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
     return { earn: null as string | null, redeem: null as string | null, transitioning: false, oldSystemType: null as string | null, oldBalance: 0 };
   }
 
-  // Get the customer's own locked-in loyalty type
+  // Get the customer's own loyalty type
   const customerType = await getCustomerActiveLoyaltyType(merchantId, customerId);
 
   if (!customerType) {
@@ -100,8 +102,51 @@ async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
     return { earn: assignedType, redeem: assignedType, transitioning: false, oldSystemType: null, oldBalance: 0 };
   }
 
-  // Customer has a locked-in type — they stay on it regardless of merchant config changes
-  return { earn: customerType, redeem: customerType, transitioning: false, oldSystemType: null, oldBalance: 0 };
+  // Customer type matches merchant type — no transition needed
+  if (customerType === merchantType) {
+    return { earn: customerType, redeem: customerType, transitioning: false, oldSystemType: null, oldBalance: 0 };
+  }
+
+  // Customer type differs from merchant type — check old system balance
+  let oldBalance = 0;
+  if (supabaseAdmin) {
+    if (customerType === 'cashback') {
+      const { data: cbData } = await supabaseAdmin
+        .from('loyalty_cashback_balances')
+        .select('balance_sar')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .order('config_version', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      oldBalance = cbData?.balance_sar ?? 0;
+    } else {
+      // stamps (internally points) or legacy points
+      const { data: ptsData } = await supabaseAdmin
+        .from('loyalty_points')
+        .select('points')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .maybeSingle();
+      oldBalance = ptsData?.points ?? 0;
+    }
+  }
+
+  if (oldBalance > 0) {
+    // Keep old system until balance is spent
+    return { earn: customerType, redeem: customerType, transitioning: true, oldSystemType: customerType, oldBalance };
+  }
+
+  // Balance is 0 — auto-switch to new system
+  if (supabaseAdmin) {
+    await supabaseAdmin.from('loyalty_member_profiles')
+      .update({ active_loyalty_type: merchantType, loyalty_type_opted_in_at: new Date().toISOString() })
+      .eq('customer_id', customerId).eq('merchant_id', merchantId);
+    // Trigger pass update so the design changes
+    notifyPassUpdate(customerId, merchantId).catch(() => {});
+    console.log(`[loyalty] Auto-switched customer ${customerId.substring(0, 8)}… from ${customerType} to ${merchantType} (0 balance)`);
+  }
+  return { earn: merchantType, redeem: merchantType, transitioning: false, oldSystemType: customerType, oldBalance: 0 };
 }
 
 async function requireMatchingCustomer(
