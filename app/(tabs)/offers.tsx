@@ -337,6 +337,10 @@ export default function OffersScreen() {
   const cardLogoUrl = balance?.walletCardLogoUrl || null;
   const cardBgColor = balance?.walletCardBgColor || primaryColor;
   const cardTxtColor = balance?.walletCardTextColor || null;
+  const stampBoxColor = balance?.walletStampBoxColor || 'rgba(255,255,255,0.15)';
+  const stampIconColor = balance?.walletStampIconColor || '#FFFFFF';
+  const stampIconUrl = balance?.walletStampIconUrl || null;
+  const bannerUrl = balance?.walletCardBannerUrl || null;
 
   return (
     <View className="flex-1" style={{ backgroundColor }}>
@@ -475,20 +479,33 @@ export default function OffersScreen() {
                         </Text>
                       </View>
 
+                      {/* Banner image behind stamps */}
+                      {bannerUrl && (
+                        <Image
+                          source={{ uri: bannerUrl }}
+                          style={{ position: 'absolute', left: 0, right: 0, top: 60, height: 140, opacity: 0.3 }}
+                          resizeMode="cover"
+                        />
+                      )}
+
                       {/* Stamp grid */}
                       <View className="flex-row flex-wrap gap-2">
                         {Array.from({ length: balance?.stampTarget ?? 10 }).map((_, i) => (
                           <View
                             key={i}
-                            className="w-9 h-9 rounded-full items-center justify-center"
+                            className="w-10 h-10 rounded-xl items-center justify-center"
                             style={{
                               backgroundColor: i < (balance?.stamps ?? 0)
-                                ? (cardLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.25)')
+                                ? stampBoxColor
                                 : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)'),
                             }}
                           >
                             {i < (balance?.stamps ?? 0) ? (
-                              <Star size={16} color={cardTextColor} fill={cardTextColor} />
+                              stampIconUrl ? (
+                                <Image source={{ uri: stampIconUrl }} style={{ width: 20, height: 20 }} resizeMode="contain" />
+                              ) : (
+                                <Star size={16} color={stampIconColor} fill={stampIconColor} />
+                              )
                             ) : (
                               <Text style={{ color: cardSubTextColor, fontSize: 11 }}>{i + 1}</Text>
                             )}

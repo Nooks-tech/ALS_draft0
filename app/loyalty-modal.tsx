@@ -2,7 +2,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { AlertTriangle, ChevronDown, Gift, Star, TrendingUp, X } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { loyaltyApi, type LoyaltyBalance, type LoyaltyTransaction } from '../src/api/loyalty';
@@ -105,10 +105,16 @@ export default function LoyaltyModal() {
           {/* ── Main Loyalty Card — render ONLY the card matching loyaltyType ── */}
           {(() => {
             const cardLabel = balance?.walletCardLabel || cafeName || (isArabic ? 'بطاقة الولاء' : 'Loyalty Card');
-            const cardLight = isLightColor(primaryColor);
-            const gradientEnd = darkenColor(primaryColor, 0.35);
-            const cardTextColor = cardLight ? '#1f2937' : '#ffffff';
+            const cardBgColor = balance?.walletCardBgColor || primaryColor;
+            const cardLight = isLightColor(cardBgColor);
+            const gradientEnd = darkenColor(cardBgColor, 0.35);
+            const cardTextColor = balance?.walletCardTextColor || (cardLight ? '#1f2937' : '#ffffff');
             const cardSubTextColor = cardLight ? 'rgba(31,41,55,0.6)' : 'rgba(255,255,255,0.7)';
+            const stampBoxColor = balance?.walletStampBoxColor || 'rgba(255,255,255,0.15)';
+            const stampIconColor = balance?.walletStampIconColor || '#FFFFFF';
+            const stampIconUrl = balance?.walletStampIconUrl || null;
+            const bannerUrl = balance?.walletCardBannerUrl || null;
+            const cardLogoUrl = balance?.walletCardLogoUrl || null;
 
             const loyaltyType = balance?.loyaltyType ?? 'points';
 
@@ -125,21 +131,32 @@ export default function LoyaltyModal() {
                     }}
                   >
                     <LinearGradient
-                      colors={[primaryColor, gradientEnd]}
+                      colors={[cardBgColor, gradientEnd]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
                       style={{ padding: 24, position: 'relative' }}
                     >
-                      {/* Decorative circles */}
-                      <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
-                      <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
+                      {/* Banner image behind stamps */}
+                      {bannerUrl && (
+                        <Image
+                          source={{ uri: bannerUrl }}
+                          style={{ position: 'absolute', left: 0, right: 0, top: 60, height: 140, opacity: 0.3 }}
+                          resizeMode="cover"
+                        />
+                      )}
+
+                      {/* Merchant logo top-right */}
+                      {cardLogoUrl && (
+                        <Image
+                          source={{ uri: cardLogoUrl }}
+                          style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
+                          resizeMode="cover"
+                        />
+                      )}
 
                       {/* Header */}
                       <View className="flex-row items-center mb-5">
-                        <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                          <Star size={18} color={cardTextColor} fill={cardTextColor} />
-                        </View>
-                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
+                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700' }}>
                           {cardLabel}
                         </Text>
                       </View>
@@ -149,15 +166,19 @@ export default function LoyaltyModal() {
                         {Array.from({ length: balance?.stampTarget ?? 10 }).map((_, i) => (
                           <View
                             key={i}
-                            className="w-9 h-9 rounded-full items-center justify-center"
+                            className="w-10 h-10 rounded-xl items-center justify-center"
                             style={{
                               backgroundColor: i < (balance?.stamps ?? 0)
-                                ? (cardLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.25)')
+                                ? stampBoxColor
                                 : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)'),
                             }}
                           >
                             {i < (balance?.stamps ?? 0) ? (
-                              <Star size={16} color={cardTextColor} fill={cardTextColor} />
+                              stampIconUrl ? (
+                                <Image source={{ uri: stampIconUrl }} style={{ width: 20, height: 20 }} resizeMode="contain" />
+                              ) : (
+                                <Star size={16} color={stampIconColor} fill={stampIconColor} />
+                              )
                             ) : (
                               <Text style={{ color: cardSubTextColor, fontSize: 11 }}>{i + 1}</Text>
                             )}
