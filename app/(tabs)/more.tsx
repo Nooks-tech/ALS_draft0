@@ -12,6 +12,7 @@ import {
   LogOut,
   Mail,
   MapPin,
+  RotateCcw,
   Shield,
   Star,
   User,
@@ -25,7 +26,7 @@ import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, Status
 export default function MoreScreen() {
   const { i18n } = useTranslation();
   const router = useRouter();
-  const { primaryColor, backgroundColor, menuCardColor, textColor } = useMerchantBranding();
+  const { primaryColor, backgroundColor, menuCardColor, textColor, appName, cafeName } = useMerchantBranding();
   const { profile } = useProfile();
   const { signOut } = useAuth();
   const isArabic = i18n.language === 'ar';
@@ -59,9 +60,10 @@ export default function MoreScreen() {
         contactUs: 'اتصل بنا',
         reachOut: 'تواصل معنا',
         about: 'عن التطبيق',
-        learnAbout: 'تعرف على ALS Coffee',
+        learnAbout: `تعرف على ${appName || cafeName || 'التطبيق'}`,
         privacyPolicy: 'سياسة الخصوصية',
         terms: 'الشروط والأحكام',
+        refund: 'سياسة الاسترجاع والإلغاء',
         logOut: 'تسجيل الخروج',
         version: 'الإصدار 1.0.0',
       }
@@ -94,9 +96,10 @@ export default function MoreScreen() {
         contactUs: 'Contact Us',
         reachOut: 'Reach out to us',
         about: 'About',
-        learnAbout: 'Learn about ALS Coffee',
+        learnAbout: `Learn about ${appName || cafeName || 'the app'}`,
         privacyPolicy: 'Privacy Policy',
         terms: 'Terms & Conditions',
+        refund: 'Refund & Cancellation',
         logOut: 'Log Out',
         version: 'Version 1.0.0',
       };
@@ -230,6 +233,7 @@ export default function MoreScreen() {
           <MenuItem icon={Info} title={copy.about} subtitle={copy.learnAbout} onPress={() => router.push('/about-modal')} />
           <MenuItem icon={Shield} title={copy.privacyPolicy} onPress={() => router.push('/privacy-modal')} />
           <MenuItem icon={FileText} title={copy.terms} onPress={() => router.push('/terms-modal')} />
+          <MenuItem icon={RotateCcw} title={copy.refund} onPress={() => router.push('/refund-modal')} />
         </View>
 
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
