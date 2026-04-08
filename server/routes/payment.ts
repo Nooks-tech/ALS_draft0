@@ -1,8 +1,18 @@
+import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { calculateCommission, calculateMoyasarFee, normalizeMerchantId, paymentService } from '../services/payment';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
+import { paymentRateLimit, webhookRateLimit } from '../utils/rateLimit';
+
+/** Constant-time string comparison; safe to call with strings of any length. */
+function safeEqual(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 export const paymentRouter = Router();
 
@@ -46,7 +56,7 @@ paymentRouter.get('/redirect', (req, res) => {
   res.status(400).send('Invalid redirect');
 });
 
-paymentRouter.post('/initiate', async (req, res) => {
+paymentRouter.post('/initiate', paymentRateLimit, async (req, res) => {
   try {
     const user = await requireAuthenticatedAppUser(req, res);
     if (!user) return;
@@ -302,7 +312,7 @@ paymentRouter.post('/stcpay/otp', async (req, res) => {
 });
 
 /** POST /api/payment/webhook – Moyasar payment status callback */
-paymentRouter.post('/webhook', async (req, res) => {
+paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
   try {
     const payload = req.body;
     const id: string = payload.id ?? payload.data?.id ?? '';
@@ -322,11 +332,13 @@ paymentRouter.post('/webhook', async (req, res) => {
       return res.status(503).json({ error: 'Moyasar webhook secret is not configured' });
     }
 
-    const token =
-      req.body?.secret_token as string ||
-      req.headers['x-moyasar-token'] as string ||
-      req.headers['x-webhook-secret'] as string;
-    if (token !== expectedWebhookSecret) {
+    // Moyasar puts the secret in the body. Headers are not officially sent, but kept as a defensive fallback.
+    const rawToken =
+      (req.body?.secret_token as string) ||
+      ((req.headers['x-moyasar-token'] as string) ?? '') ||
+      ((req.headers['x-webhook-secret'] as string) ?? '');
+    const token = String(rawToken || '').trim();
+    if (!safeEqual(token, expectedWebhookSecret)) {
       console.warn('[Payment Webhook] Invalid or missing secret token');
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -337,6 +349,14 @@ paymentRouter.post('/webhook', async (req, res) => {
     }
     if (!supabaseAdmin) {
       return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    // Idempotency: ignore retries from Moyasar (they retry 5x over ~3.5 hours on non-2xx).
+    // Use Moyasar event id when present, fall back to (payment id + status) for older payloads.
+    const eventId = String(payload.id ?? `${id}:${status}`);
+    if (await hasProcessedWebhookEvent('moyasar', eventId)) {
+      console.log('[Payment Webhook] Duplicate event, skipping:', eventId);
+      return res.json({ received: true, duplicate: true });
     }
 
     const metaOrderId = metadata?.order_id;
@@ -370,15 +390,15 @@ paymentRouter.post('/webhook', async (req, res) => {
         return res.status(409).json({ error: 'Order not found for webhook payload' });
       }
 
-      // Validate payment amount matches order total (prevent tampered webhooks)
+      // Validate payment amount matches order total (prevent tampered webhooks).
+      // Compare in halalas (integers) with 1-halala tolerance for legitimate rounding only.
       if ((status === 'paid' || status === 'captured') && order.total_sar != null) {
         const webhookAmountHalals = Number(payload.amount ?? payload.data?.amount ?? 0);
-        const webhookAmountSar = webhookAmountHalals / 100;
-        const tolerance = 1.0; // 1 SAR tolerance for rounding
-        if (Math.abs(webhookAmountSar - Number(order.total_sar)) > tolerance) {
+        const expectedHalals = Math.round(Number(order.total_sar) * 100);
+        if (Math.abs(webhookAmountHalals - expectedHalals) > 1) {
           console.error('[Payment Webhook] Amount mismatch!', {
-            webhookAmountSar,
-            orderTotalSar: order.total_sar,
+            webhookHalals: webhookAmountHalals,
+            expectedHalals,
             orderId: order.id,
           });
           return res.status(409).json({ error: 'Payment amount does not match order total' });
@@ -438,6 +458,7 @@ paymentRouter.post('/webhook', async (req, res) => {
       }
     }
 
+    await recordWebhookEvent('moyasar', eventId, { paymentId: id, status, merchantId });
     res.json({ received: true });
   } catch (err: any) {
     console.error('[Payment Webhook] Error:', err?.message);

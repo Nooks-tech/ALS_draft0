@@ -1,12 +1,64 @@
 /**
  * OTO delivery routes - request driver dispatch when order is placed
  */
+import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { otoService } from '../services/oto';
 import { earnPoints } from './loyalty';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
+import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
+import { webhookRateLimit } from '../utils/rateLimit';
+
+/** Constant-time string comparison; safe to call with strings of any length. */
+function safeEqual(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+/**
+ * Verify OTO webhook signature.
+ * Per OTO docs, the signature is HMAC-SHA256 of `"orderId:status:timestamp"` (or
+ * `"orderId:errorCode:timestamp"` for shipmentError webhooks) signed with the shared
+ * webhook secret, and the result is base64-encoded.
+ *
+ * Falls back to bearer token validation if signature is absent (for backward compat
+ * during migration). Returns true if either method authenticates the request.
+ */
+function verifyOtoWebhook(payload: any, headers: Record<string, any>, query: Record<string, any>): boolean {
+  const secret = OTO_WEBHOOK_SECRET || '';
+  if (!secret) return false;
+
+  const sig = String(payload?.signature ?? headers['x-oto-signature'] ?? '').trim();
+  const orderId = String(payload?.orderId ?? payload?.order_id ?? '').trim();
+  const status = String(payload?.status ?? payload?.dcStatus ?? payload?.errorCode ?? '').trim();
+  const ts = String(payload?.timestamp ?? '').trim();
+
+  if (sig && orderId && status && ts) {
+    const message = `${orderId}:${status}:${ts}`;
+    const expected = crypto.createHmac('sha256', secret).update(message).digest('base64');
+    if (safeEqual(sig, expected)) return true;
+    // Some integrations send hex instead of base64 — try that as a fallback.
+    const expectedHex = crypto.createHmac('sha256', secret).update(message).digest('hex');
+    if (safeEqual(sig, expectedHex)) return true;
+    console.warn('[OTO Webhook] Signature mismatch');
+    return false;
+  }
+
+  // Legacy fallback: bearer token (for accounts that haven't enabled HMAC yet).
+  const token = String(
+    (query.secret_token as string) ||
+      (headers['authorization'] as string) ||
+      (headers['x-oto-secret'] as string) ||
+      '',
+  ).trim();
+  if (!token) return false;
+  if (safeEqual(token, secret)) return true;
+  if (safeEqual(token, `Bearer ${secret}`)) return true;
+  return false;
+}
 
 export const otoRouter = Router();
 
@@ -255,42 +307,61 @@ otoRouter.get('/order-status', async (req, res) => {
  * POST /api/oto/webhook – OTO pushes order status changes here.
  * Payload: { orderId, status, driverName, driverPhone, trackingNumber, deliveryCompany, timestamp, signature }
  */
-otoRouter.post('/webhook', async (req, res) => {
+otoRouter.post('/webhook', webhookRateLimit, async (req, res) => {
   try {
     if (!OTO_WEBHOOK_SECRET) {
       return res.status(503).json({ error: 'OTO webhook secret is not configured' });
-    } else {
-      const token =
-        (req.query.secret_token as string) ||
-        req.headers['authorization'] as string ||
-        req.headers['x-oto-secret'] as string;
-      if (token !== OTO_WEBHOOK_SECRET && token !== `Bearer ${OTO_WEBHOOK_SECRET}`) {
-        console.warn('[OTO Webhook] Invalid secret token');
-        return res.status(401).json({ error: 'Unauthorized' });
-      }
     }
 
-    const payload = req.body;
+    const payload = req.body || {};
+    if (!verifyOtoWebhook(payload, req.headers as Record<string, any>, req.query as Record<string, any>)) {
+      console.warn('[OTO Webhook] Authentication failed');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
     const otoOrderId = payload.orderId ?? payload.order_id;
     const otoStatus = payload.status ?? payload.dcStatus;
     const driverName = payload.driverName;
     const driverPhone = payload.driverPhone;
     const trackingNumber = payload.trackingNumber;
+    const pickupLocationCode = payload.pickupLocationCode ?? payload.pickup_location_code;
 
-    console.log('[OTO Webhook]', { otoOrderId, otoStatus, driverName, trackingNumber });
+    console.log('[OTO Webhook]', { otoOrderId, otoStatus, driverName, trackingNumber, pickupLocationCode });
 
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
     if (!otoOrderId) return res.status(400).json({ error: 'Missing oto order id' });
 
+    // Idempotency: dedupe OTO retries.
+    const eventId = `${otoOrderId}:${otoStatus ?? ''}:${payload.timestamp ?? ''}`;
+    if (await hasProcessedWebhookEvent('oto', eventId)) {
+      console.log('[OTO Webhook] Duplicate event, skipping:', eventId);
+      return res.json({ received: true, duplicate: true });
+    }
+
     const mappedStatus = mapOtoStatusToOrderStatus(otoStatus);
 
-    // Find the order by oto_id
+    // Resolve merchant scope from the pickup location code (which maps to a branch).
+    // This prevents an attacker who guessed an OTO order ID from updating another merchant's order.
+    let scopedMerchantId: string | null = null;
+    if (pickupLocationCode) {
+      const { data: branchRow } = await supabaseAdmin
+        .from('branch_mappings')
+        .select('merchant_id')
+        .eq('oto_warehouse_id', pickupLocationCode)
+        .maybeSingle();
+      scopedMerchantId = (branchRow as { merchant_id?: string } | null)?.merchant_id ?? null;
+    }
+
+    // Find the order by oto_id (scoped to merchant when we know it).
     const numericId = Number(otoOrderId);
-    const { data: order, error: orderLookupError } = await supabaseAdmin
+    let lookup = supabaseAdmin
       .from('customer_orders')
       .select('id, status, customer_id, order_type, total_sar, merchant_id')
-      .eq('oto_id', isNaN(numericId) ? otoOrderId : numericId)
-      .single();
+      .eq('oto_id', isNaN(numericId) ? otoOrderId : numericId);
+    if (scopedMerchantId) {
+      lookup = lookup.eq('merchant_id', scopedMerchantId);
+    }
+    const { data: order, error: orderLookupError } = await lookup.maybeSingle();
 
     if (orderLookupError) {
       console.error('[OTO Webhook] Order lookup failed:', orderLookupError.message);
@@ -327,7 +398,8 @@ otoRouter.post('/webhook', async (req, res) => {
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
       .update(updates)
-      .eq('id', order.id);
+      .eq('id', order.id)
+      .eq('merchant_id', order.merchant_id);
 
     if (updateErr) {
       console.error('[OTO Webhook] DB update failed:', updateErr.message);
@@ -358,6 +430,12 @@ otoRouter.post('/webhook', async (req, res) => {
       );
     }
 
+    await recordWebhookEvent('oto', eventId, {
+      orderId: order.id,
+      otoOrderId: String(otoOrderId),
+      newStatus: mappedStatus,
+      merchantId: order.merchant_id,
+    });
     res.json({ received: true, orderId: order.id, newStatus: mappedStatus });
   } catch (err: any) {
     console.error('[OTO Webhook] Error:', err?.message);

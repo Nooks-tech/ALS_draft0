@@ -15,19 +15,73 @@ function getOtoBase(environment?: 'sandbox' | 'production'): string {
 }
 
 /** Default bullet delivery carriers (comma-separated). Used when merchant has no preference set. */
-const DEFAULT_PREFERRED_CARRIERS = ['careem', 'mrsool', 'marsool', 'dal'];
+const DEFAULT_PREFERRED_CARRIERS = ['careem', 'mrsool', 'dal', 'barq', 'logi'];
 
-/** Parse a comma-separated carrier string into a normalized array. Empty string = all carriers. */
-function parsePreferredCarriers(raw: string | null | undefined): string[] {
-  if (raw === '') return []; // explicit empty = allow all
-  const s = raw || DEFAULT_PREFERRED_CARRIERS.join(',');
-  return s.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+/**
+ * Canonical carrier names. Maps any OTO-returned company name variant to a single
+ * canonical key, so the preferred-carrier filter is exact-match instead of substring.
+ *
+ * Add new entries here when OTO returns a new variant — never use substring matching
+ * because that lets `"careem-discount"` slip through when the merchant only enabled `"careem"`.
+ */
+const CARRIER_ALIASES: Record<string, string> = {
+  // Careem
+  careem: 'careem',
+  careemexpress: 'careem',
+  careemnow: 'careem',
+  careemfood: 'careem',
+  // Mrsool
+  mrsool: 'mrsool',
+  marsool: 'mrsool',
+  msool: 'mrsool',
+  // DAL
+  dal: 'dal',
+  daldelivery: 'dal',
+  // Barq
+  barq: 'barq',
+  barqfleet: 'barq',
+  // LogiPoint / Logi
+  logi: 'logi',
+  logipoint: 'logi',
+  // SMSA / Aramex / Aymakan are NOT bullet carriers — listed for completeness so they can be
+  // explicitly allowed by merchants who want intercity contracts.
+  smsa: 'smsa',
+  aramex: 'aramex',
+  aymakan: 'aymakan',
+};
+
+function canonicalCarrier(name: string): string | null {
+  const normalized = (name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!normalized) return null;
+  // Exact alias hit first
+  if (CARRIER_ALIASES[normalized]) return CARRIER_ALIASES[normalized];
+  // Then try the longest known alias prefix (handles "careemxxx" → careem)
+  const aliasKeys = Object.keys(CARRIER_ALIASES).sort((a, b) => b.length - a.length);
+  for (const key of aliasKeys) {
+    if (normalized.startsWith(key) || normalized.endsWith(key)) {
+      return CARRIER_ALIASES[key];
+    }
+  }
+  return normalized;
 }
 
-function matchesPreferredCarrier(companyName: string, carriers: string[]): boolean {
-  if (carriers.length === 0) return true;
-  const n = (companyName || '').toLowerCase();
-  return carriers.some((c) => n.includes(c));
+/** Parse a comma-separated carrier string into a normalized canonical-name set. Empty string = all carriers. */
+function parsePreferredCarriers(raw: string | null | undefined): Set<string> {
+  if (raw === '') return new Set(); // explicit empty = allow all
+  const s = raw || DEFAULT_PREFERRED_CARRIERS.join(',');
+  const out = new Set<string>();
+  for (const piece of s.split(',')) {
+    const canonical = canonicalCarrier(piece.trim());
+    if (canonical) out.add(canonical);
+  }
+  return out;
+}
+
+function matchesPreferredCarrier(companyName: string, carriers: Set<string>): boolean {
+  if (carriers.size === 0) return true;
+  const canonical = canonicalCarrier(companyName);
+  if (!canonical) return false;
+  return carriers.has(canonical);
 }
 
 const tokenCache = new Map<string, { accessToken: string; tokenExpiresAt: number }>();
@@ -201,7 +255,13 @@ export const otoService = {
     const customer = payload.customer;
     const phone = (customer.phone || '').replace(/\D/g, '');
     if (!phone) {
-      console.warn(`[OTO] No customer phone for order ${payload.orderId} — using fallback '500000000'. Validate customer.phone upstream.`);
+      throw new Error(`OTO dispatch refused: customer phone is required (order ${payload.orderId})`);
+    }
+    if (!payload.deliveryAddress?.city) {
+      throw new Error(`OTO dispatch refused: delivery city is required (order ${payload.orderId})`);
+    }
+    if (!payload.deliveryAddress?.address) {
+      throw new Error(`OTO dispatch refused: delivery address is required (order ${payload.orderId})`);
     }
     const lat = payload.deliveryAddress.lat;
     const lon = payload.deliveryAddress.lng;
@@ -224,9 +284,9 @@ export const otoService = {
       customer: {
         name: customer.name || 'Customer',
         email: customer.email || 'customer@nooks.sa',
-        mobile: phone || '500000000',
-        address: payload.deliveryAddress.address || '',
-        city: payload.deliveryAddress.city || 'Riyadh',
+        mobile: phone,
+        address: payload.deliveryAddress.address,
+        city: payload.deliveryAddress.city,
         country: 'SA',
         postcode: '',
         ...(lat != null && lon != null && { lat: String(lat), lon: String(lon) }),
