@@ -4,13 +4,13 @@
 import { api } from './client';
 
 export interface LoyaltyBalance {
-  loyaltyType: 'cashback' | 'points' | 'stamps';
+  loyaltyType: 'cashback' | 'stamps';
   memberCode: string;
   // Transition state
   transitioning?: boolean;
-  oldSystemType?: 'cashback' | 'points' | 'stamps' | null;
+  oldSystemType?: 'cashback' | 'stamps' | null;
   oldSystemBalance?: number;
-  redeemType?: 'cashback' | 'points' | 'stamps' | null;
+  redeemType?: 'cashback' | 'stamps' | null;
   // Points
   points: number;
   lifetimePoints: number;

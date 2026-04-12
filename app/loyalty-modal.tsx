@@ -93,8 +93,8 @@ export default function LoyaltyModal() {
                   </Text>
                   <Text className="text-amber-700 text-xs mt-1">
                     {isArabic
-                      ? `لديك ${balance.oldSystemBalance} ${balance.oldSystemType === 'cashback' ? 'ر.س كاش باك' : 'نقاط'} متبقية. أنفقها قبل انتهاء صلاحيتها للانتقال إلى برنامج ${balance.loyaltyType === 'stamps' ? 'الطوابع' : balance.loyaltyType === 'points' ? 'النقاط' : 'الكاش باك'} الجديد!`
-                      : `You have ${balance.oldSystemType === 'cashback' ? `${balance.oldSystemBalance} SAR cashback` : `${balance.oldSystemBalance} points`} remaining. Spend them before they expire to unlock our new ${balance.loyaltyType} program!`
+                      ? `لديك ${balance.oldSystemBalance} ${balance.oldSystemType === 'cashback' ? 'ر.س كاش باك' : 'طوابع'} متبقية. أنفقها قبل انتهاء صلاحيتها للانتقال إلى برنامج ${balance.loyaltyType === 'stamps' ? 'الطوابع' : 'الكاش باك'} الجديد!`
+                      : `You have ${balance.oldSystemType === 'cashback' ? `${balance.oldSystemBalance} SAR cashback` : `${balance.oldSystemBalance} stamps`} remaining. Spend them before they expire to unlock our new ${balance.loyaltyType === 'stamps' ? 'stamps' : 'cashback'} program!`
                     }
                   </Text>
                 </View>
@@ -116,7 +116,7 @@ export default function LoyaltyModal() {
             const bannerUrl = balance?.walletCardBannerUrl || null;
             const cardLogoUrl = balance?.walletCardLogoUrl || null;
 
-            const loyaltyType = balance?.loyaltyType ?? 'points';
+            const loyaltyType = balance?.loyaltyType ?? 'stamps';
 
             /* ── STAMPS ── */
             if (loyaltyType === 'stamps') {
@@ -455,29 +455,6 @@ export default function LoyaltyModal() {
           >
             <Text className="font-semibold" style={{ color: primaryColor }}>{isArabic ? 'عرض كتالوج المكافآت' : 'View Rewards Catalog'}</Text>
           </TouchableOpacity>
-
-          {/* Lifetime stats — only show for points (stamps/cashback don't have meaningful lifetime stats) */}
-          {(balance?.loyaltyType ?? 'points') === 'points' && (
-            <View className="mx-5 mt-6 bg-slate-50 rounded-2xl p-5">
-              <Text className="font-bold text-slate-800 mb-3">{isArabic ? 'إحصاءات مدى الحياة' : 'Lifetime Stats'}</Text>
-              <View className="flex-row justify-between">
-                <View>
-                  <Text className="text-slate-500 text-xs">{isArabic ? 'إجمالي المكتسب' : 'Total Earned'}</Text>
-                  <Text className="text-slate-800 font-bold text-lg">{balance?.lifetimePoints ?? 0}</Text>
-                </View>
-                <View>
-                  <Text className="text-slate-500 text-xs">{isArabic ? 'النقاط المستخدمة' : 'Points Used'}</Text>
-                  <Text className="text-slate-800 font-bold text-lg">
-                    {(balance?.lifetimePoints ?? 0) - (balance?.points ?? 0)}
-                  </Text>
-                </View>
-                <View>
-                  <Text className="text-slate-500 text-xs">{isArabic ? 'المتاح' : 'Available'}</Text>
-                  <Text className="font-bold text-lg" style={{ color: primaryColor }}>{balance?.points ?? 0}</Text>
-                </View>
-              </View>
-            </View>
-          )}
 
           {/* Stamp stats */}
           {(balance?.loyaltyType) === 'stamps' && (

@@ -60,10 +60,11 @@ async function expireStalePoints() {
   console.log(`[Loyalty Cron] Found ${expiredTxns.length} expired transactions to process`);
 
   // Group by customer+merchant
-  const grouped = new Map<string, { customerId: string; merchantId: string; totalPoints: number; txnIds: string[] }>();
-  for (const txn of expiredTxns) {
+  type PointsGroup = { customerId: string; merchantId: string; totalPoints: number; txnIds: string[] };
+  const grouped = new Map<string, PointsGroup>();
+  for (const txn of expiredTxns as Array<{ id: string; customer_id: string; merchant_id: string; points: number; loyalty_type?: string }>) {
     const key = `${txn.customer_id}:${txn.merchant_id}`;
-    const existing = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalPoints: 0, txnIds: [] };
+    const existing: PointsGroup = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalPoints: 0, txnIds: [] };
     existing.totalPoints += txn.points;
     existing.txnIds.push(txn.id);
     grouped.set(key, existing);
@@ -137,10 +138,11 @@ async function expireStaleCashback() {
 
   console.log(`[Loyalty Cron] Found ${expiredCbTxns.length} expired cashback transactions`);
 
-  const grouped = new Map<string, { customerId: string; merchantId: string; totalSar: number; txnIds: string[] }>();
-  for (const txn of expiredCbTxns) {
+  type CashbackGroup = { customerId: string; merchantId: string; totalSar: number; txnIds: string[] };
+  const grouped = new Map<string, CashbackGroup>();
+  for (const txn of expiredCbTxns as Array<{ id: string; customer_id: string; merchant_id: string; amount_sar?: number }>) {
     const key = `${txn.customer_id}:${txn.merchant_id}`;
-    const existing = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalSar: 0, txnIds: [] };
+    const existing: CashbackGroup = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalSar: 0, txnIds: [] };
     existing.totalSar += Math.abs(txn.amount_sar ?? 0);
     existing.txnIds.push(txn.id);
     grouped.set(key, existing);
@@ -194,10 +196,11 @@ async function expireStaleStamps() {
   console.log(`[Loyalty Cron] Found ${expiredStampTxns.length} expired stamp transactions`);
 
   // Group by customer+merchant
-  const grouped = new Map<string, { customerId: string; merchantId: string; txnIds: string[]; totalPoints: number }>();
-  for (const txn of expiredStampTxns) {
+  type StampGroup = { customerId: string; merchantId: string; txnIds: string[]; totalPoints: number };
+  const grouped = new Map<string, StampGroup>();
+  for (const txn of expiredStampTxns as Array<{ id: string; customer_id: string; merchant_id: string; points: number }>) {
     const key = `${txn.customer_id}:${txn.merchant_id}`;
-    const existing = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, txnIds: [], totalPoints: 0 };
+    const existing: StampGroup = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, txnIds: [], totalPoints: 0 };
     existing.txnIds.push(txn.id);
     existing.totalPoints += txn.points;
     grouped.set(key, existing);
@@ -307,11 +310,12 @@ async function warnUpcomingExpiry() {
   console.log(`[Loyalty Cron] Found ${soonExpiring.length} transactions to warn about expiry`);
 
   // Group by customer+merchant
-  const grouped = new Map<string, { customerId: string; merchantId: string; totalPoints: number; txnIds: string[]; daysLeft: number }>();
-  for (const txn of soonExpiring) {
+  type WarnGroup = { customerId: string; merchantId: string; totalPoints: number; txnIds: string[]; daysLeft: number };
+  const grouped = new Map<string, WarnGroup>();
+  for (const txn of soonExpiring as Array<{ id: string; customer_id: string; merchant_id: string; points: number; expires_at: string; loyalty_type?: string }>) {
     const key = `${txn.customer_id}:${txn.merchant_id}`;
     const daysLeft = Math.ceil((new Date(txn.expires_at).getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-    const existing = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalPoints: 0, txnIds: [], daysLeft };
+    const existing: WarnGroup = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalPoints: 0, txnIds: [], daysLeft };
     existing.totalPoints += txn.points;
     existing.txnIds.push(txn.id);
     existing.daysLeft = Math.min(existing.daysLeft, daysLeft);

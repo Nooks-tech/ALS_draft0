@@ -272,10 +272,12 @@ ordersRouter.post('/commit', async (req, res) => {
       // Store Foodics order ID from relay response (fire-and-forget)
       const relayData = relayResult as { foodics?: { ok?: boolean; foodicsOrderId?: string } } | null;
       if (relayData?.foodics?.ok && relayData.foodics.foodicsOrderId) {
-        supabaseAdmin
-          .from('customer_orders')
-          .update({ foodics_order_id: relayData.foodics.foodicsOrderId })
-          .eq('id', id)
+        Promise.resolve(
+          supabaseAdmin
+            .from('customer_orders')
+            .update({ foodics_order_id: relayData.foodics.foodicsOrderId })
+            .eq('id', id)
+        )
           .then(() => console.log(`[Orders] Stored foodics_order_id for ${id}`))
           .catch((e: any) => console.warn('[Orders] Failed to store foodics_order_id:', e?.message));
       }

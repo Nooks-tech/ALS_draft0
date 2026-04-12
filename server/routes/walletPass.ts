@@ -425,7 +425,7 @@ function buildPassJson(opts: {
   cashbackPercent?: number;
   businessType?: string;
 }): Buffer {
-  const loyaltyType = opts.loyaltyType ?? 'points';
+  const loyaltyType = opts.loyaltyType ?? 'stamps';
 
   let storeCard: Record<string, unknown[]>;
 
@@ -810,7 +810,7 @@ walletPassRouter.get(
       await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
       // Fetch stamp data, next reward, cashback balance, and branch locations
-      const loyaltyType = config?.loyalty_type ?? 'points';
+      const loyaltyType = config?.loyalty_type ?? 'stamps';
       const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: nextMilestone }] = await Promise.all([
         supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
           .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
@@ -1271,7 +1271,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     }
 
     // Determine effective loyalty type: member override > config default
-    const loyaltyType = memberLoyaltyInfo?.active_loyalty_type || config?.loyalty_type || 'points';
+    const loyaltyType = memberLoyaltyInfo?.active_loyalty_type || config?.loyalty_type || 'stamps';
 
     // Fetch type-specific balances and branch locations in parallel
     const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: nextMilestone }] = await Promise.all([

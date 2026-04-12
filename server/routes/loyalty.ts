@@ -17,7 +17,7 @@ const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 const DEFAULT_CONFIG = {
-  loyalty_type: null as 'cashback' | 'stamps' | null,
+  loyalty_type: null as 'cashback' | 'stamps' | null,  // 'points' removed — only cashback + stamps supported
   earn_mode: 'per_sar' as const,
   points_per_sar: 0.1,
   points_per_order: 10,
@@ -139,10 +139,24 @@ async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
 
   // Balance is 0 — auto-switch to new system
   if (supabaseAdmin) {
+    const now = new Date().toISOString();
     await supabaseAdmin.from('loyalty_member_profiles')
-      .update({ active_loyalty_type: merchantType, loyalty_type_opted_in_at: new Date().toISOString() })
+      .update({ active_loyalty_type: merchantType, loyalty_type_opted_in_at: now })
       .eq('customer_id', customerId).eq('merchant_id', merchantId);
-    // Trigger pass update so the design changes
+
+    // Mark the transition as complete in the tracking table
+    await supabaseAdmin.from('loyalty_customer_transitions')
+      .upsert({
+        customer_id: customerId,
+        merchant_id: merchantId,
+        from_loyalty_type: customerType,
+        to_loyalty_type: merchantType,
+        config_version_at_switch: config.config_version ?? 1,
+        old_balance_exhausted: true,
+        old_balance_exhausted_at: now,
+      }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
+
+    // Trigger pass update so the design changes to the new loyalty type
     notifyPassUpdate(customerId, merchantId).catch(() => {});
     console.log(`[loyalty] Auto-switched customer ${customerId.substring(0, 8)}… from ${customerType} to ${merchantType} (0 balance)`);
   }
@@ -425,7 +439,7 @@ loyaltyRouter.put('/config', async (req, res) => {
       || (fields.point_value_sar != null && fields.point_value_sar !== currentConfig.point_value_sar);
     if (typeChanged || rateChanged) {
       fields.config_version = (currentConfig.config_version ?? 1) + 1;
-      fields.previous_loyalty_type = currentConfig.loyalty_type ?? 'points';
+      fields.previous_loyalty_type = currentConfig.loyalty_type ?? 'stamps';
       fields.config_changed_at = new Date().toISOString();
       allowed.push('config_version', 'previous_loyalty_type', 'config_changed_at');
     }
@@ -492,7 +506,7 @@ loyaltyRouter.get('/balance', async (req, res) => {
     const lifetimePoints = data?.lifetime_points ?? 0;
     const pointsValue = +(points * config.point_value_sar).toFixed(2);
 
-    const loyaltyType = config.loyalty_type ?? 'points';
+    const loyaltyType = config.loyalty_type ?? 'stamps';
 
     // Stamps data
     let stamps = 0;
@@ -646,7 +660,7 @@ loyaltyRouter.post('/earn', async (req, res) => {
 
       // Per-purchase expiry: each stamp earn gets its own expiry date
       const stampExpiresAt = config.expiry_months
-        ? new Date(Date.now() + config.expiry_months * 30 * 24 * 60 * 60 * 1000).toISOString()
+        ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
         : null;
 
       await supabaseAdmin.from('loyalty_transactions').insert({
@@ -780,7 +794,7 @@ export async function earnPoints(
     : Math.floor(orderSubtotal * config.points_per_sar);
 
   const expiresAt = config.expiry_months
-    ? new Date(Date.now() + config.expiry_months * 30 * 24 * 60 * 60 * 1000).toISOString()
+    ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
     : null;
 
   let existQuery = supabaseAdmin
@@ -1251,7 +1265,7 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
   }
 
   const expiresAt = config.expiry_months
-    ? new Date(Date.now() + config.expiry_months * 30 * 24 * 60 * 60 * 1000).toISOString()
+    ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
     : null;
 
   await supabaseAdmin.from('loyalty_transactions').insert({
