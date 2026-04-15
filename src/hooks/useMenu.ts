@@ -1,5 +1,10 @@
 /**
- * Fetches merchant-scoped menu/branches from Nooks public APIs with fallback to local data
+ * Fetches merchant-scoped menu, categories, and branches from Nooks public APIs.
+ * Foodics (via nooksweb sync) is the SINGLE source of truth — there's no local fallback.
+ * If the merchant hasn't connected Foodics yet, the app shows an empty menu.
+ *
+ * Cache layer: AsyncStorage holds the most recent successful Nooks response so the menu
+ * loads instantly on app open while a fresh fetch runs in the background.
  */
 import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -7,7 +12,6 @@ import { AppState } from 'react-native';
 import { MenuProduct } from '../api/foodics';
 import { fetchNooksBranches } from '../api/nooksBranches';
 import { fetchNooksMenu } from '../api/nooksMenu';
-import { BRANCHES, CATEGORIES, PRODUCTS } from '../data/menu';
 import { useMerchant } from '../context/MerchantContext';
 
 export type MenuItem = MenuProduct & {
@@ -16,177 +20,144 @@ export type MenuItem = MenuProduct & {
   nooksProductId?: string | null;
 };
 
-const mapToMenuItem = (p: (typeof PRODUCTS)[0]): MenuItem => ({
-  id: p.id,
-  name: p.name,
-  price: p.price,
-  category: p.category,
-  description: p.description,
-  image: p.image,
-  foodicsProductId: null,
-  nooksProductId: null,
-  modifierGroups: (p.modifierGroups || []).map((g) => ({
-    id: g.id,
-    title: g.title,
-    options: g.options.map((o) => ({ name: o.name, price: o.price || 0 })),
-  })),
-});
+export type MenuBranch = {
+  id: string;
+  name: string;
+  name_localized?: string;
+  address: string;
+  distance?: string;
+  oto_warehouse_id?: string;
+  latitude?: number;
+  longitude?: number;
+  open_from?: string;
+  open_till?: string;
+  pickup_promising_time?: number;
+  delivery_promising_time?: number;
+};
 
 export function useMenu() {
   const { merchantId } = useMerchant();
-  const [products, setProducts] = useState<MenuItem[]>(PRODUCTS.map(mapToMenuItem));
-  const [categories, setCategories] = useState<string[]>(CATEGORIES.filter((c) => c !== 'All'));
-  const [branches, setBranches] = useState<Array<{
-    id: string;
-    name: string;
-    name_localized?: string;
-    address: string;
-    distance?: string;
-    oto_warehouse_id?: string;
-    latitude?: number;
-    longitude?: number;
-    open_from?: string;
-    open_till?: string;
-    pickup_promising_time?: number;
-    delivery_promising_time?: number;
-  }>>(BRANCHES);
-  // Start with local data immediately; refresh from APIs in background.
-  const [loading, setLoading] = useState(false);
+  const [products, setProducts] = useState<MenuItem[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [branches, setBranches] = useState<MenuBranch[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [source, setSource] = useState<'local' | 'nooks'>('local');
+  /** 'nooks' = fetched from Foodics-synced data, 'empty' = no products yet */
+  const [source, setSource] = useState<'nooks' | 'empty'>('empty');
 
   useEffect(() => {
     let cancelled = false;
     const cacheKey = `@als_menu_${merchantId || 'default'}`;
-    let nextProducts = PRODUCTS.map(mapToMenuItem);
-    let nextCategories = CATEGORIES.filter((c) => c !== 'All');
-    let nextBranches: typeof branches = [...BRANCHES];
-    let nextSource: 'local' | 'nooks' = 'local';
 
+    // Load cache immediately so the UI doesn't flash empty on open
     AsyncStorage.getItem(cacheKey).then((raw) => {
       if (!raw || cancelled) return;
       try {
         const cached = JSON.parse(raw) as {
           products?: MenuItem[];
           categories?: string[];
-          branches?: typeof BRANCHES;
-          source?: 'local' | 'nooks';
+          branches?: MenuBranch[];
+          source?: 'nooks' | 'empty';
         };
-        if (cached.products?.length) {
-          nextProducts = cached.products;
-          setProducts(cached.products);
-        }
-        if (cached.categories?.length) {
-          nextCategories = cached.categories;
-          setCategories(cached.categories);
-        }
-        if (cached.branches?.length) {
-          nextBranches = cached.branches;
-          setBranches(cached.branches);
-        }
-        if (cached.source) {
-          nextSource = cached.source;
-          setSource(cached.source);
-        }
+        if (cached.products?.length) setProducts(cached.products);
+        if (cached.categories?.length) setCategories(cached.categories);
+        if (cached.branches?.length) setBranches(cached.branches);
+        if (cached.source) setSource(cached.source);
       } catch {
-        // Ignore invalid cache payload
+        // Ignore corrupt cache
       }
     });
 
     async function fetchMenu() {
       if (!cancelled) setLoading(true);
       try {
-        // Branches: Nooks first, then local fallback
+        // 1) Branches
         const nooksBranches = await fetchNooksBranches(merchantId);
         if (cancelled) return;
-        if (nooksBranches.length > 0) {
-          nextBranches = nooksBranches.map((b) => ({
-            id: b.id,
-            name: b.name,
-            name_localized: b.name_localized,
-            address: b.address ?? '',
-            distance: b.distance,
-            oto_warehouse_id: b.oto_warehouse_id,
-            latitude: typeof b.latitude === 'number' ? b.latitude : undefined,
-            longitude: typeof b.longitude === 'number' ? b.longitude : undefined,
-            open_from: b.open_from,
-            open_till: b.open_till,
-            pickup_promising_time: b.pickup_promising_time,
-            delivery_promising_time: b.delivery_promising_time,
-          }));
-          setBranches(nextBranches);
-          setSource('nooks');
-          nextSource = 'nooks';
-        }
 
-        // Pass first branch ID so menu is filtered by branch stock/availability
+        const nextBranches: MenuBranch[] = nooksBranches.map((b) => ({
+          id: b.id,
+          name: b.name,
+          name_localized: b.name_localized,
+          address: b.address ?? '',
+          distance: b.distance,
+          oto_warehouse_id: b.oto_warehouse_id,
+          latitude: typeof b.latitude === 'number' ? b.latitude : undefined,
+          longitude: typeof b.longitude === 'number' ? b.longitude : undefined,
+          open_from: b.open_from,
+          open_till: b.open_till,
+          pickup_promising_time: b.pickup_promising_time,
+          delivery_promising_time: b.delivery_promising_time,
+        }));
+        setBranches(nextBranches);
+
+        // 2) Menu (filter by first branch's stock if any)
         const firstBranchId = nextBranches.length > 0 ? nextBranches[0].id : undefined;
         const nooksMenu = await fetchNooksMenu(merchantId, firstBranchId);
         if (cancelled) return;
-        if (nooksMenu?.categories?.length) {
-          const flatProducts = nooksMenu.categories.flatMap((category) =>
-            (category.items ?? [])
-              .filter((item) => item.is_available !== false)
-              .map((item) => {
-                const foodicsProductId = typeof item.foodics_product_id === 'string' && item.foodics_product_id.trim()
-                  ? item.foodics_product_id.trim()
-                  : null;
-                const nooksProductId = typeof item.id === 'string' ? item.id : '';
-                if (!foodicsProductId && !nooksProductId) return null;
-                return {
-                  id: foodicsProductId || nooksProductId,
-                  name: item.name || 'Item',
-                  price: Number(item.price ?? 0),
-                  category: category.name || 'Menu',
-                  description: item.description || '',
-                  image: item.image_url || '',
-                  foodicsProductId,
-                  nooksProductId,
-                  modifierGroups: (item.modifier_groups ?? []).map((group) => ({
-                    id: group.id,
-                    title: group.title,
-                    options: (group.options ?? []).map((option) => ({
-                      id: option.id,
-                      name: option.name,
-                      price: Number(option.price ?? 0),
-                    })),
-                  })),
-                } as MenuItem;
-              })
-              .filter((item): item is MenuItem => Boolean(item))
-          );
-          if (flatProducts.length > 0) {
-            nextProducts = flatProducts;
-            nextCategories = nooksMenu.categories.map((c) => c.name).filter(Boolean);
-            setProducts(nextProducts);
-            setCategories(nextCategories);
-            setSource('nooks');
-            nextSource = 'nooks';
-            AsyncStorage.setItem(
-              cacheKey,
-              JSON.stringify({
-                products: nextProducts,
-                categories: nextCategories,
-                branches: nextBranches,
-                source: nextSource,
-              })
-            ).catch(() => {});
-            return;
-          }
+
+        if (!nooksMenu?.categories?.length) {
+          // Foodics not connected or no products synced — show empty menu
+          setProducts([]);
+          setCategories([]);
+          setSource('empty');
+          AsyncStorage.setItem(
+            cacheKey,
+            JSON.stringify({ products: [], categories: [], branches: nextBranches, source: 'empty' })
+          ).catch(() => {});
+          return;
         }
+
+        const flatProducts: MenuItem[] = nooksMenu.categories.flatMap((category) =>
+          (category.items ?? [])
+            .filter((item) => item.is_available !== false)
+            .map((item) => {
+              const foodicsProductId = typeof item.foodics_product_id === 'string' && item.foodics_product_id.trim()
+                ? item.foodics_product_id.trim()
+                : null;
+              const nooksProductId = typeof item.id === 'string' ? item.id : '';
+              if (!foodicsProductId && !nooksProductId) return null;
+              return {
+                id: foodicsProductId || nooksProductId,
+                name: item.name || 'Item',
+                price: Number(item.price ?? 0),
+                category: category.name || 'Menu',
+                description: item.description || '',
+                image: item.image_url || '',
+                foodicsProductId,
+                nooksProductId,
+                modifierGroups: (item.modifier_groups ?? []).map((group) => ({
+                  id: group.id,
+                  title: group.title,
+                  options: (group.options ?? []).map((option) => ({
+                    id: option.id,
+                    name: option.name,
+                    price: Number(option.price ?? 0),
+                  })),
+                })),
+              } as MenuItem;
+            })
+            .filter((item): item is MenuItem => Boolean(item))
+        );
+
+        const nextCategories = nooksMenu.categories.map((c) => c.name).filter(Boolean);
+
+        setProducts(flatProducts);
+        setCategories(nextCategories);
+        setSource('nooks');
         AsyncStorage.setItem(
           cacheKey,
           JSON.stringify({
-            products: nextProducts,
+            products: flatProducts,
             categories: nextCategories,
             branches: nextBranches,
-            source: nextSource,
+            source: 'nooks',
           })
         ).catch(() => {});
       } catch (e) {
         if (cancelled) return;
+        // Fetch failed — keep whatever the cache had, surface the error
         setError(e instanceof Error ? e.message : 'Failed to load menu');
-        setSource('local');
       } finally {
         if (!cancelled) setLoading(false);
       }

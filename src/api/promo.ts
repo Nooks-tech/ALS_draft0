@@ -1,7 +1,7 @@
 /**
- * Promo code validation – checks Supabase (or falls back to hardcoded for demo).
- * Restaurant owner creates codes via Supabase Studio / Retool / Rowy.
- * App calculates discount and sends to Foodics with the order.
+ * Promo code validation – checks Supabase only.
+ * Merchants create codes in the Nooks dashboard (Marketing Studio); they're stored in
+ * the `als_promo_codes` table per merchant. No hardcoded fallback codes.
  */
 import { supabase } from './supabase';
 
@@ -15,13 +15,6 @@ export interface PromoResult {
   name?: string;
   discountAmount: number;
 }
-
-// Fallback codes when Supabase is not configured (for local dev / demo)
-const FALLBACK_PROMOS: Record<string, { type: PromoType; value: number; name: string }> = {
-  TEST2026: { type: 'percentage', value: 0.15, name: 'Test 15% off' },
-  SAVE15: { type: 'percentage', value: 0.15, name: '15% off' },
-  FLAT10: { type: 'amount', value: 10, name: '10 SAR off' },
-};
 
 function calculateDiscount(
   type: PromoType,
@@ -80,20 +73,6 @@ export async function validatePromoCode(
         discountAmount,
       };
     }
-  }
-
-  // Fallback to hardcoded promos when Supabase is not configured
-  const fallback = FALLBACK_PROMOS[code];
-  if (fallback) {
-    const discountAmount = calculateDiscount(fallback.type, fallback.value, subtotal);
-    return {
-      valid: true,
-      code,
-      type: fallback.type,
-      value: fallback.value,
-      name: fallback.name,
-      discountAmount,
-    };
   }
 
   return { valid: false, code, discountAmount: 0 };
