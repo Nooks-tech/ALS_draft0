@@ -302,7 +302,18 @@ export default function CheckoutScreen() {
               return;
             }
           }
-          const discountAmount = calculateNooksPromoDiscount(matched, subtotalBeforePromo);
+          // Scope-aware: 'delivery' applies to deliveryFee only; 'total' (default) to items only.
+          if (matched.scope === 'delivery' && deliveryFee <= 0) {
+            Alert.alert(
+              isArabic ? 'كود توصيل فقط' : 'Delivery-only code',
+              isArabic
+                ? 'هذا الكود يخصم رسوم التوصيل فقط. اختر التوصيل لاستخدامه.'
+                : 'This code only discounts the delivery fee. Switch to delivery to use it.',
+            );
+            setPromoValidating(false);
+            return;
+          }
+          const discountAmount = calculateNooksPromoDiscount(matched, totalPrice, deliveryFee);
           if (discountAmount > 0) {
             setPromoDiscount(discountAmount);
             setPromoApplied(true);
@@ -313,7 +324,7 @@ export default function CheckoutScreen() {
           }
         }
       }
-      const result = await validatePromoCode(code, subtotalBeforePromo);
+      const result = await validatePromoCode(code, totalPrice);
       if (result.valid) {
         setPromoDiscount(result.discountAmount);
         setPromoApplied(true);
