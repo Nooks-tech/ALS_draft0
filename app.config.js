@@ -123,9 +123,7 @@ if (!splashUpdated) {
 
 config.expo.extra = {
   ...(config.expo.extra || {}),
-  eas: {
-    projectId: 'fb36734a-26d7-4ea6-8eec-35bb94bdbfda',
-  },
+  // projectId is set by `eas init` in app.json under extra.eas.projectId — don't hardcode here
   mapboxToken: process.env.EXPO_PUBLIC_MAPBOX_TOKEN || '',
   moyasarPublishableKey: process.env.EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY || '',
   merchantId: process.env.EXPO_PUBLIC_MERCHANT_ID || '',

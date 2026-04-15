@@ -1,8 +1,8 @@
 {
   "expo": {
     "name": "ALS_draft0",
-    "slug": "ALS_draft0",
-    "owner": "nooks-business",
+    "slug": "Nooks",
+    "owner": "abdullah_alsaedi",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -66,7 +66,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "fb36734a-26d7-4ea6-8eec-35bb94bdbfda"
+        "projectId": "23466554-dacc-421e-8642-efa95bbbcd7c"
       }
     }
   }
