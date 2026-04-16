@@ -555,15 +555,33 @@ function buildPassJson(opts: {
   cashbackBalance?: number;
   cashbackPercent?: number;
   businessType?: string;
+  /**
+   * All active stamp milestones for the merchant, sorted by stamp_number asc.
+   * The first 2 render as secondary fields, next 2 as auxiliary fields; any
+   * overflow lands in backFields.
+   */
+  milestones?: Array<{ stamp_number: number; reward_name: string }>;
 }): Buffer {
   const loyaltyType = opts.loyaltyType ?? 'stamps';
 
   let storeCard: Record<string, unknown[]>;
 
+  // Card Title sits on the top-right of the pass via a single right-aligned
+  // header field. Pairs with `logoText: ''` at the pass top level so the
+  // merchant logo sits alone on the top-left.
+  const titleHeader = [
+    {
+      key: 'cardTitle',
+      label: '',
+      value: (opts.cardLabel || '').trim() || 'Loyalty Card',
+      textAlignment: 'PKTextAlignmentRight',
+    },
+  ];
+
   switch (loyaltyType) {
     case 'cashback':
       storeCard = {
-        headerFields: [],
+        headerFields: titleHeader,
         primaryFields: [
           { key: 'balance', label: 'CASHBACK BALANCE', value: `${(opts.cashbackBalance ?? 0).toFixed(2)} SAR` },
         ],
@@ -582,25 +600,56 @@ function buildPassJson(opts: {
     case 'stamps': {
       const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget ?? 10);
       const total = opts.stampTarget ?? 10;
-      const nextReward = opts.nextRewardName && opts.nextRewardName.trim()
-        ? opts.nextRewardName.trim()
-        : `Stamp ${total}`;
 
-      // The stamp grid lives in strip.png, so the front of the pass shows:
-      //   header bar   → logoText (Card Title) on the left, no header fields
-      //   strip image  → the rendered stamp grid (matches dashboard preview)
-      //   primary      → empty so the strip has full vertical breathing room
-      //   secondary    → STAMPS X/Y on the left, NEXT REWARD on the right
-      //   barcode      → QR (set on the parent pass object)
+      // Map the merchant's configured milestones onto Apple's field slots.
+      // Layout goal (mirroring the dashboard preview):
+      //   header  → Card Title on the right, logo on the left
+      //   strip   → rendered stamp grid (accurate per-customer fill)
+      //   primary → empty (the strip is the focal point)
+      //   secondary + auxiliary → milestones, two per row, across two rows
+      //   backFields → any milestones beyond the 4th plus help text
+      const sortedMilestones = (opts.milestones ?? [])
+        .filter((m) => m && typeof m.stamp_number === 'number')
+        .slice()
+        .sort((a, b) => a.stamp_number - b.stamp_number);
+
+      const buildMilestoneField = (
+        m: { stamp_number: number; reward_name: string },
+        alignRight: boolean,
+      ) => {
+        const field: Record<string, unknown> = {
+          key: `milestone_${m.stamp_number}`,
+          label: `STAMP ${m.stamp_number}`,
+          value: (m.reward_name || '').trim() || '—',
+        };
+        if (alignRight) field.textAlignment = 'PKTextAlignmentRight';
+        return field;
+      };
+
+      const secondaryMilestones = sortedMilestones.slice(0, 2);
+      const auxiliaryMilestones = sortedMilestones.slice(2, 4);
+      const overflowMilestones = sortedMilestones.slice(4);
+
+      const secondaryFields = secondaryMilestones.map((m, i) =>
+        buildMilestoneField(m, i === secondaryMilestones.length - 1 && secondaryMilestones.length > 1),
+      );
+      const auxiliaryFields = auxiliaryMilestones.map((m, i) =>
+        buildMilestoneField(m, i === auxiliaryMilestones.length - 1 && auxiliaryMilestones.length > 1),
+      );
+
       storeCard = {
-        headerFields: [],
+        headerFields: titleHeader,
         primaryFields: [],
-        secondaryFields: [
-          { key: 'stampsCount', label: 'STAMPS', value: `${filledCount} / ${total}` },
-          { key: 'nextReward', label: 'NEXT REWARD', value: nextReward, textAlignment: 'PKTextAlignmentRight' },
-        ],
+        secondaryFields,
+        auxiliaryFields,
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
+          { key: 'stampsSummary', label: 'Stamps', value: `${filledCount} / ${total}` },
+          ...overflowMilestones.map((m) => ({
+            key: `milestone_${m.stamp_number}_back`,
+            label: `Stamp ${m.stamp_number}`,
+            value: (m.reward_name || '').trim() || '—',
+          })),
           { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn stamps and redeem rewards.' },
           { key: 'howItWorks', label: 'How it works', value: 'Earn 1 stamp per completed order. Reach milestones to unlock rewards!' },
         ],
@@ -610,7 +659,7 @@ function buildPassJson(opts: {
 
     default: // points
       storeCard = {
-        headerFields: [],
+        headerFields: titleHeader,
         primaryFields: [
           { key: 'balance', label: 'POINTS BALANCE', value: opts.points },
         ],
@@ -639,7 +688,9 @@ function buildPassJson(opts: {
     backgroundColor: opts.bgColor,
     foregroundColor: opts.fgColor,
     labelColor: opts.labelColor,
-    logoText: opts.logoText,
+    // Card Title is rendered as a right-aligned headerField so the logo sits
+    // alone on the top-left. Keeping logoText would duplicate the title.
+    logoText: '',
     webServiceURL: WEB_SERVICE_URL,
     authenticationToken: authTokenForSerial(opts.serialNumber),
     barcodes: [
@@ -930,7 +981,7 @@ walletPassRouter.get(
 
       // Fetch stamp data, next reward, cashback balance, and branch locations
       const loyaltyType = config?.loyalty_type ?? 'stamps';
-      const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: nextMilestone }] = await Promise.all([
+      const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
         supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
           .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
         supabaseAdmin.from('loyalty_rewards').select('name, points_cost')
@@ -944,8 +995,11 @@ walletPassRouter.get(
           .order('config_version', { ascending: false }).limit(1).maybeSingle(),
         supabaseAdmin.from('loyalty_stamp_milestones').select('reward_name, stamp_number')
           .eq('merchant_id', merchantId).eq('is_active', true)
-          .order('stamp_number', { ascending: true }).limit(1).maybeSingle(),
+          .order('stamp_number', { ascending: true }),
       ]);
+      const activeMilestones = (milestoneRows ?? []) as Array<{ stamp_number: number; reward_name: string }>;
+      const currentStampsForNext = stampRow?.stamps ?? 0;
+      const nextMilestone = activeMilestones.find((m) => m.stamp_number > currentStampsForNext) ?? activeMilestones[0] ?? null;
 
       // Stamps loyalty: render the stamp grid as the strip image so the pass
       // mirrors the dashboard's preview (filled boxes match the customer's
@@ -994,6 +1048,7 @@ walletPassRouter.get(
         stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
         nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
         nextRewardCost: cheapestReward?.points_cost ?? undefined,
+        milestones: activeMilestones,
         locations: (branches ?? [])
           .filter((b: any) => b.latitude && b.longitude)
           .map((b: any) => ({ lat: Number(b.latitude), lng: Number(b.longitude), name: b.name || 'Branch' })),
@@ -1393,7 +1448,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const loyaltyType = memberLoyaltyInfo?.active_loyalty_type || config?.loyalty_type || 'stamps';
 
     // Fetch type-specific balances and branch locations in parallel
-    const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: nextMilestone }] = await Promise.all([
+    const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
       supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
         .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
       supabaseAdmin.from('loyalty_rewards').select('name, points_cost')
@@ -1407,8 +1462,11 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
         .order('config_version', { ascending: false }).limit(1).maybeSingle(),
       supabaseAdmin.from('loyalty_stamp_milestones').select('reward_name, stamp_number')
         .eq('merchant_id', merchantId).eq('is_active', true)
-        .order('stamp_number', { ascending: true }).limit(1).maybeSingle(),
+        .order('stamp_number', { ascending: true }),
     ]);
+    const activeMilestones = (milestoneRows ?? []) as Array<{ stamp_number: number; reward_name: string }>;
+    const currentStampsForNext = stampRow?.stamps ?? 0;
+    const nextMilestone = activeMilestones.find((m) => m.stamp_number > currentStampsForNext) ?? activeMilestones[0] ?? null;
 
     // Foodics Loyalty Adapter QR format
     const customerPhone2 = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
@@ -1491,6 +1549,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
       nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
       nextRewardCost: cheapestReward?.points_cost ?? undefined,
+      milestones: activeMilestones,
       locations: (branches ?? [])
         .filter((b: any) => b.latitude && b.longitude)
         .map((b: any) => ({ lat: Number(b.latitude), lng: Number(b.longitude), name: b.name || 'Branch' })),

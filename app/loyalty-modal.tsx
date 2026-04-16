@@ -135,23 +135,26 @@ export default function LoyaltyModal() {
                       end={{ x: 1, y: 1 }}
                       style={{ padding: 24, position: 'relative' }}
                     >
-                      {/* Merchant logo top-right */}
-                      {cardLogoUrl && (
-                        <Image
-                          source={{ uri: cardLogoUrl }}
-                          style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
-                          resizeMode="cover"
-                        />
-                      )}
-
-                      {/* Header */}
-                      <View className="flex-row items-center mb-5">
-                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700' }}>
+                      {/* Top row: logo on the left, Card Title on the right (matches dashboard + Apple Pass) */}
+                      <View className="flex-row items-center justify-between mb-5" style={{ gap: 12 }}>
+                        {cardLogoUrl ? (
+                          <Image
+                            source={{ uri: cardLogoUrl }}
+                            style={{ width: 40, height: 40, borderRadius: 12 }}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={{ width: 40, height: 40 }} />
+                        )}
+                        <Text
+                          numberOfLines={1}
+                          style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', flex: 1, textAlign: 'right' }}
+                        >
                           {cardLabel}
                         </Text>
                       </View>
 
-                      {/* Stamp grid */}
+                      {/* Stamp grid — filled vs empty boxes reflect the customer's live stamp count */}
                       <View className="flex-row flex-wrap gap-2">
                         {Array.from({ length: balance?.stampTarget ?? 10 }).map((_, i) => (
                           <View
@@ -176,15 +179,28 @@ export default function LoyaltyModal() {
                         ))}
                       </View>
 
-                      {/* Divider */}
-                      <View style={{ height: 1, marginTop: 16, marginBottom: 12, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
-
-                      {/* Remaining info */}
-                      <Text style={{ color: cardSubTextColor, fontSize: 13 }}>
-                        {isArabic
-                          ? `تبقى ${(balance?.stampTarget ?? 10) - (balance?.stamps ?? 0)} للحصول على: ${balance?.stampRewardDescription ?? ''}`
-                          : `${(balance?.stampTarget ?? 10) - (balance?.stamps ?? 0)} remaining to get: ${balance?.stampRewardDescription ?? ''}`}
-                      </Text>
+                      {/* Milestone rewards — one line per configured milestone */}
+                      {(balance?.stampMilestones ?? []).length > 0 && (
+                        <View style={{ marginTop: 16 }}>
+                          <View style={{ height: 1, marginBottom: 10, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
+                          {(balance?.stampMilestones ?? [])
+                            .slice()
+                            .sort((a, b) => a.stamp_number - b.stamp_number)
+                            .map((m) => (
+                              <View key={m.id ?? m.stamp_number} className="flex-row items-center justify-between" style={{ marginTop: 4, gap: 12 }}>
+                                <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
+                                  {isArabic ? `الختم ${m.stamp_number}` : `STAMP ${m.stamp_number}`}
+                                </Text>
+                                <Text
+                                  numberOfLines={1}
+                                  style={{ color: cardTextColor, fontSize: 13, fontWeight: '600', flex: 1, textAlign: 'right' }}
+                                >
+                                  {(m.reward_name || '').trim() || '—'}
+                                </Text>
+                              </View>
+                            ))}
+                        </View>
+                      )}
                     </LinearGradient>
                   </View>
 
@@ -234,12 +250,23 @@ export default function LoyaltyModal() {
                       <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
                       <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
 
-                      {/* Header */}
-                      <View className="flex-row items-center mb-5">
-                        <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                          <Gift size={18} color={cardTextColor} />
-                        </View>
-                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
+                      {/* Top row: logo on the left, Card Title on the right (matches dashboard + Apple Pass) */}
+                      <View className="flex-row items-center justify-between mb-5" style={{ gap: 12 }}>
+                        {cardLogoUrl ? (
+                          <Image
+                            source={{ uri: cardLogoUrl }}
+                            style={{ width: 40, height: 40, borderRadius: 12 }}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                            <Gift size={18} color={cardTextColor} />
+                          </View>
+                        )}
+                        <Text
+                          numberOfLines={1}
+                          style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', flex: 1, textAlign: 'right' }}
+                        >
                           {cardLabel}
                         </Text>
                       </View>
