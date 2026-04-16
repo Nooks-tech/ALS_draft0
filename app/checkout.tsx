@@ -67,6 +67,7 @@ import { useProfile } from '../src/context/ProfileContext';
 import { useAuth } from '../src/context/AuthContext';
 import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 import { commitOrder } from '../src/api/orders';
+import { useMenu } from '../src/hooks/useMenu';
 
 export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card' | 'stcpay' | 'saved_card';
 
@@ -161,6 +162,49 @@ export default function CheckoutScreen() {
   const [loyaltyBalance, setLoyaltyBalance] = useState<LoyaltyBalance | null>(null);
   const [pointsLoading, setPointsLoading] = useState(false);
   const loyaltyType = loyaltyBalance?.loyaltyType ?? 'points';
+
+  // Stamp milestone redemptions selected by the customer (free reward items added to the order)
+  const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<Set<string>>(new Set());
+  const toggleMilestone = useCallback((milestoneId: string) => {
+    setSelectedMilestoneIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(milestoneId)) next.delete(milestoneId);
+      else next.add(milestoneId);
+      return next;
+    });
+  }, []);
+
+  // Menu products — used to look up Foodics reward items and add them as free line items
+  const { products: menuProducts } = useMenu();
+
+  /**
+   * Free line items to attach to the order for each selected stamp milestone.
+   * We look up each milestone's `foodics_product_ids` against the menu and add
+   * them at price 0. If a reward product is missing from the synced menu we
+   * silently skip it — the redemption itself still runs server-side.
+   */
+  const rewardItemsForOrder = useMemo(() => {
+    if (!loyaltyBalance || selectedMilestoneIds.size === 0) return [];
+    const out: Array<{ id: string; name: string; price: number; quantity: number; image: string; customizations: null; uniqueId: string }> = [];
+    for (const milestoneId of selectedMilestoneIds) {
+      const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === milestoneId);
+      if (!milestone) continue;
+      for (const foodicsId of milestone.foodics_product_ids ?? []) {
+        const product = menuProducts.find((p) => p.foodicsProductId === foodicsId);
+        if (!product) continue;
+        out.push({
+          id: product.id,
+          name: `🎁 ${product.name}`,
+          price: 0,
+          quantity: 1,
+          image: product.image ?? '',
+          customizations: null,
+          uniqueId: `reward-${milestone.id}-${foodicsId}`,
+        });
+      }
+    }
+    return out;
+  }, [loyaltyBalance, selectedMilestoneIds, menuProducts]);
 
   useEffect(() => {
     if (!user?.id || !merchantId) return;
@@ -376,7 +420,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Preparing',
-          items: cartItems.map((item) => ({
+          items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price,
@@ -413,7 +457,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Preparing',
-          items: cartItems.map((item) => ({
+          items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price,
@@ -479,6 +523,19 @@ export default function CheckoutScreen() {
           console.warn('[Checkout] Loyalty redemption failed:', err);
         }
       }
+      // Redeem any selected stamp milestones — deducts stamps and marks the
+      // redemption row as used. Runs after the order is placed so we never
+      // deduct stamps for an order that failed at checkout.
+      if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
+        for (const milestoneId of selectedMilestoneIds) {
+          try {
+            await loyaltyApi.redeemStampMilestone(user.id, merchantId, milestoneId);
+          } catch (err) {
+            console.warn('[Checkout] Stamp milestone redemption failed:', milestoneId, err);
+          }
+        }
+        setSelectedMilestoneIds(new Set());
+      }
       clearCart();
       setShowPaymentModal(false);
       setMoyasarWebUrl(null);
@@ -491,7 +548,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, pointsDiscount, loyaltyType, router, user?.id]);
+  }, [cartItems, rewardItemsForOrder, selectedMilestoneIds, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, pointsDiscount, loyaltyType, router, user?.id]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {
@@ -532,7 +589,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Pending',
-          items: cartItems.map((item) => ({
+          items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price,
@@ -717,7 +774,7 @@ export default function CheckoutScreen() {
             branchName: selectedBranch.name ?? null,
             totalSar: Number(finalTotal.toFixed(2)),
             status: 'Pending',
-            items: cartItems.map((item) => ({
+            items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
               id: item.id,
               name: item.name,
               price: item.price,
@@ -783,7 +840,7 @@ export default function CheckoutScreen() {
             branchName: selectedBranch.name ?? null,
             totalSar: Number(finalTotal.toFixed(2)),
             status: 'Pending',
-            items: cartItems.map((item) => ({
+            items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
               id: item.id,
               name: item.name,
               price: item.price,
@@ -1073,6 +1130,63 @@ export default function CheckoutScreen() {
               </View>
             </TouchableOpacity>
           ))}
+
+          {/* Stamp Rewards Redemption — customer has hit one or more milestones and can add the reward items free to this order */}
+          {user?.id && loyaltyBalance && loyaltyType === 'stamps' && (loyaltyBalance.availableRedemptions ?? []).length > 0 && (
+            <View className="mt-5 rounded-[28px] p-4" style={{ borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc' }}>
+              <View className="flex-row items-center mb-2">
+                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
+                  <Star size={18} color="#94a3b8" fill="#94a3b8" />
+                </View>
+                <View className="ml-3 flex-1">
+                  <Text className="font-bold text-slate-900">
+                    {isArabic ? 'مكافآت الختم المتاحة' : 'Available stamp rewards'}
+                  </Text>
+                  <Text className="text-slate-500 text-xs mt-0.5">
+                    {isArabic ? 'اختر المكافأة لإضافتها مجانًا إلى طلبك' : 'Tap to add the reward free to your order'}
+                  </Text>
+                </View>
+              </View>
+              {loyaltyBalance.availableRedemptions.map((redemption) => {
+                const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === redemption.milestone_id);
+                if (!milestone) return null;
+                const selected = selectedMilestoneIds.has(milestone.id);
+                return (
+                  <TouchableOpacity
+                    key={redemption.id}
+                    onPress={() => toggleMilestone(milestone.id)}
+                    className="flex-row items-center justify-between rounded-2xl px-3 py-3 mt-2"
+                    style={{
+                      borderWidth: 1,
+                      borderColor: selected ? primaryColor : '#e2e8f0',
+                      backgroundColor: selected ? `${primaryColor}10` : '#fff',
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View className="flex-1 pr-3">
+                      <Text className="font-semibold text-slate-900">
+                        {milestone.reward_name || (isArabic ? 'مكافأة' : 'Reward')}
+                      </Text>
+                      <Text className="text-xs text-slate-500 mt-0.5">
+                        {isArabic ? `عند الختم رقم ${milestone.stamp_number}` : `At stamp ${milestone.stamp_number}`}
+                      </Text>
+                    </View>
+                    <View
+                      style={{
+                        width: 22, height: 22, borderRadius: 11,
+                        borderWidth: 2,
+                        borderColor: selected ? primaryColor : '#cbd5e1',
+                        backgroundColor: selected ? primaryColor : '#fff',
+                        alignItems: 'center', justifyContent: 'center',
+                      }}
+                    >
+                      {selected && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' }} />}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
 
           {/* Order Summary */}
           <View className="mt-6 rounded-[28px] bg-slate-50 border border-slate-100 p-5">

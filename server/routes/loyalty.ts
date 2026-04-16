@@ -1379,7 +1379,12 @@ loyaltyRouter.get('/stamp-milestones', async (req, res) => {
 /** POST /api/loyalty/redeem-stamp-milestone — redeem a stamp milestone reward */
 loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
   try {
-    if (!requireNooksInternalRequest(req, res)) return;
+    // Accept either: user auth (app checkout) OR internal secret (Foodics adapter via nooksweb)
+    const hasInternalSecret = req.headers['x-nooks-internal-secret'] === (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+    if (!hasInternalSecret) {
+      const { customerId: bodyCustomerId } = req.body ?? {};
+      if (!await requireMatchingCustomer(req, res, bodyCustomerId)) return;
+    }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
     const { customerId, merchantId, milestoneId, via } = req.body;
