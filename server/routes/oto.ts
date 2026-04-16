@@ -469,7 +469,11 @@ otoRouter.post('/create-pickup', async (req, res) => {
       country: 'SA',
       contactName: contactName || name,
       contactEmail: contactEmail || 'merchant@nooks.sa',
-      type: 'branch',
+      // OTO gates `type: 'branch'` to Enterprise plans (error OTO1167 on
+      // Free/Starter/Scale). `warehouse` is allowed on every tier and
+      // behaves identically for dispatch — we only read back the returned
+      // pickupLocationCode later and pass it to createOrder.
+      type: 'warehouse',
       lat,
       lon,
       status: 'active',
