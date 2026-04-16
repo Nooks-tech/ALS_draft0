@@ -243,7 +243,7 @@ async function buildStampGridStripPng(opts: {
 
   const W = 750;
   const H = 246;
-  const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 10));
+  const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 8));
   const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
   // Match the dashboard StampCardPreview grid: 1 row when 5 or fewer, otherwise 2 rows.
   const cols = total <= 5 ? total : Math.ceil(total / 2);
@@ -598,8 +598,8 @@ function buildPassJson(opts: {
       break;
 
     case 'stamps': {
-      const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget ?? 10);
-      const total = opts.stampTarget ?? 10;
+      const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget ?? 8);
+      const total = opts.stampTarget ?? 8;
 
       // Map the merchant's configured milestones onto Apple's field slots.
       // Layout goal (identical to the dashboard preview and the in-app card):
@@ -1006,7 +1006,7 @@ walletPassRouter.get(
       if (loyaltyType === 'stamps') {
         const stampGrid = await buildStampGridStripPng({
           stamps: stampRow?.stamps ?? 0,
-          stampTarget: config?.stamp_target ?? 10,
+          stampTarget: config?.stamp_target ?? 8,
           bgColor,
           stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
           stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
@@ -1043,7 +1043,7 @@ walletPassRouter.get(
         cashbackPercent: config?.cashback_percent ?? 5,
         businessType: config?.business_type ?? 'cafe',
         stamps: stampRow?.stamps ?? 0,
-        stampTarget: config?.stamp_target ?? 10,
+        stampTarget: config?.stamp_target ?? 8,
         stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
         nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
         nextRewardCost: cheapestReward?.points_cost ?? undefined,
@@ -1508,7 +1508,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     if (loyaltyType === 'stamps') {
       const stampGrid = await buildStampGridStripPng({
         stamps: stampRow?.stamps ?? 0,
-        stampTarget: config?.stamp_target ?? 10,
+        stampTarget: config?.stamp_target ?? 8,
         bgColor,
         stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
         stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
@@ -1544,7 +1544,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       cashbackPercent: config?.cashback_percent ?? 5,
       businessType: config?.business_type ?? 'cafe',
       stamps: stampRow?.stamps ?? 0,
-      stampTarget: config?.stamp_target ?? 10,
+      stampTarget: config?.stamp_target ?? 8,
       stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
       nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
       nextRewardCost: cheapestReward?.points_cost ?? undefined,

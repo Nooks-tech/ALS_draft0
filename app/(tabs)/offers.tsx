@@ -490,7 +490,7 @@ export default function OffersScreen() {
 
                       {/* Stamp grid */}
                       <View className="flex-row flex-wrap gap-2">
-                        {Array.from({ length: balance?.stampTarget ?? 10 }).map((_, i) => (
+                        {Array.from({ length: balance?.stampTarget ?? 8 }).map((_, i) => (
                           <View
                             key={i}
                             className="w-10 h-10 rounded-xl items-center justify-center"
@@ -519,8 +519,8 @@ export default function OffersScreen() {
                       {/* Remaining info */}
                       <Text style={{ color: cardSubTextColor, fontSize: 13 }}>
                         {isArabic
-                          ? `تبقى ${(balance?.stampTarget ?? 10) - (balance?.stamps ?? 0)} للحصول على: ${balance?.stampRewardDescription ?? ''}`
-                          : `${(balance?.stampTarget ?? 10) - (balance?.stamps ?? 0)} remaining to get: ${balance?.stampRewardDescription ?? ''}`}
+                          ? `تبقى ${(balance?.stampTarget ?? 8) - (balance?.stamps ?? 0)} للحصول على: ${balance?.stampRewardDescription ?? ''}`
+                          : `${(balance?.stampTarget ?? 8) - (balance?.stamps ?? 0)} remaining to get: ${balance?.stampRewardDescription ?? ''}`}
                       </Text>
 
                       {/* Completed cards */}

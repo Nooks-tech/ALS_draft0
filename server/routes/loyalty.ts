@@ -25,7 +25,7 @@ const DEFAULT_CONFIG = {
   cashback_percent: 5,
   expiry_months: null as number | null,
   stamp_enabled: false,
-  stamp_target: 10,
+  stamp_target: 8,
   stamp_reward_description: 'Free item',
   wallet_card_logo_scale: null as number | null,
   config_version: 1,

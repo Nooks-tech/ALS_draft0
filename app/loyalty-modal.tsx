@@ -156,7 +156,7 @@ export default function LoyaltyModal() {
 
                       {/* Stamp grid — filled vs empty boxes reflect the customer's live stamp count */}
                       <View className="flex-row flex-wrap gap-2">
-                        {Array.from({ length: balance?.stampTarget ?? 10 }).map((_, i) => (
+                        {Array.from({ length: balance?.stampTarget ?? 8 }).map((_, i) => (
                           <View
                             key={i}
                             className="w-10 h-10 rounded-xl items-center justify-center"
@@ -241,8 +241,8 @@ export default function LoyaltyModal() {
                         <Text className="text-slate-800 font-bold mt-2 text-center">{isArabic ? 'استبدل' : 'Redeem'}</Text>
                         <Text className="text-slate-500 text-xs text-center mt-1">
                           {isArabic
-                            ? `اجمع ${balance?.stampTarget ?? 10} أختام للمكافأة`
-                            : `Collect ${balance?.stampTarget ?? 10} stamps for a reward`}
+                            ? `اجمع ${balance?.stampTarget ?? 8} أختام للمكافأة`
+                            : `Collect ${balance?.stampTarget ?? 8} stamps for a reward`}
                         </Text>
                       </View>
                     </View>
@@ -511,7 +511,7 @@ export default function LoyaltyModal() {
                 </View>
                 <View>
                   <Text className="text-slate-500 text-xs">{isArabic ? 'الهدف' : 'Target'}</Text>
-                  <Text className="font-bold text-lg" style={{ color: primaryColor }}>{balance?.stampTarget ?? 10}</Text>
+                  <Text className="font-bold text-lg" style={{ color: primaryColor }}>{balance?.stampTarget ?? 8}</Text>
                 </View>
               </View>
             </View>
