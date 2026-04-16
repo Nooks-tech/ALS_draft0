@@ -216,6 +216,128 @@ function createStripPng(w: number, h: number, r: number, g: number, b: number): 
   ]);
 }
 
+/**
+ * Render the stamp-card grid as the wallet pass strip image so the pass
+ * mirrors the dashboard's loyalty preview 1:1 within Apple's storeCard
+ * template. Each box reflects the customer's progress (filled vs empty)
+ * and uses the merchant's configured colors and stamp icon.
+ *
+ * Returns null if `sharp` is unavailable or rendering fails so the caller
+ * can fall back to the solid background strip.
+ */
+async function buildStampGridStripPng(opts: {
+  stamps: number;
+  stampTarget: number;
+  bgColor: string;
+  stampBoxColor: string;
+  stampIconColor: string;
+  stampIconUrl?: string | null;
+  businessType: 'cafe' | 'restaurant';
+}): Promise<Buffer | null> {
+  let sharpMod: typeof import('sharp');
+  try {
+    sharpMod = (await import('sharp')).default;
+  } catch {
+    return null;
+  }
+
+  const W = 750;
+  const H = 246;
+  const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 10));
+  const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
+  // Match the dashboard StampCardPreview grid: 1 row when 5 or fewer, otherwise 2 rows.
+  const cols = total <= 5 ? total : Math.ceil(total / 2);
+  const rows = Math.ceil(total / cols);
+
+  const padding = 20;
+  const gap = 12;
+  const maxBoxW = (W - padding * 2 - gap * (cols - 1)) / cols;
+  const maxBoxH = (H - padding * 2 - gap * (rows - 1)) / rows;
+  const boxSize = Math.max(40, Math.floor(Math.min(maxBoxW, maxBoxH)));
+
+  const gridW = cols * boxSize + (cols - 1) * gap;
+  const gridH = rows * boxSize + (rows - 1) * gap;
+  const startX = Math.round((W - gridW) / 2);
+  const startY = Math.round((H - gridH) / 2);
+  const radius = Math.max(2, Math.round(boxSize * 0.18));
+
+  function toRgba(hex: string, alpha: number): string {
+    let h = (hex || '').replace('#', '').trim();
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return `rgba(16,185,129,${alpha})`;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+
+  // Optionally embed the merchant's uploaded stamp icon as an inline data URI.
+  // libvips/librsvg supports <image href="data:..."> which keeps everything in
+  // a single SVG and avoids a second sharp.composite pass.
+  let customDataUrl: string | null = null;
+  if (opts.stampIconUrl) {
+    try {
+      const r = await fetch(opts.stampIconUrl);
+      if (r.ok) {
+        const buf = Buffer.from(await r.arrayBuffer());
+        const ct = r.headers.get('content-type') || 'image/png';
+        customDataUrl = `data:${ct};base64,${buf.toString('base64')}`;
+      }
+    } catch {
+      /* fall through with default icons */
+    }
+  }
+
+  // Default outline icons (24x24 viewBox) used when the merchant hasn't
+  // uploaded a custom stamp image. Two variants — coffee cup and fork+knife
+  // — to match the dashboard's businessType-driven default.
+  const defaultPath: Record<string, string> = {
+    cafe: 'M5 11h12v3a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4v-3z M17 11h2.5a2.5 2.5 0 0 1 0 5H17 M8 4v3 M12 4v3 M16 4v3',
+    restaurant: 'M6 3v8c0 1.1 0.9 2 2 2v8 M6 11h4 M10 3v8c0 1.1-0.9 2-2 2 M16 3c-1.1 0-2 0.9-2 2v6c0 1.1 0.9 2 2 2v8',
+  };
+  const iconPath = defaultPath[opts.businessType] || defaultPath.cafe;
+
+  const parts: string[] = [];
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+  parts.push(`<rect width="${W}" height="${H}" fill="${opts.bgColor}"/>`);
+
+  for (let i = 0; i < total; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = startX + col * (boxSize + gap);
+    const y = startY + row * (boxSize + gap);
+    const isFilled = i < filled;
+    const boxFill = isFilled ? toRgba(opts.stampBoxColor, 1) : toRgba(opts.stampBoxColor, 0.22);
+
+    parts.push(`<rect x="${x}" y="${y}" width="${boxSize}" height="${boxSize}" rx="${radius}" fill="${boxFill}"/>`);
+
+    const iconSize = Math.round(boxSize * (customDataUrl ? 0.6 : 0.55));
+    const iconX = x + Math.round((boxSize - iconSize) / 2);
+    const iconY = y + Math.round((boxSize - iconSize) / 2);
+    const iconOpacity = isFilled ? 1 : 0.35;
+
+    if (customDataUrl) {
+      parts.push(
+        `<image href="${customDataUrl}" xlink:href="${customDataUrl}" x="${iconX}" y="${iconY}" width="${iconSize}" height="${iconSize}" opacity="${iconOpacity}" preserveAspectRatio="xMidYMid meet"/>`,
+      );
+    } else {
+      const scale = iconSize / 24;
+      parts.push(
+        `<g transform="translate(${iconX} ${iconY}) scale(${scale})" opacity="${iconOpacity}"><path d="${iconPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
+      );
+    }
+  }
+
+  parts.push('</svg>');
+
+  try {
+    return await sharpMod(Buffer.from(parts.join(''))).png({ compressionLevel: 6 }).toBuffer();
+  } catch (err: any) {
+    console.warn('[WalletPass] stamp grid render failed:', err?.message);
+    return null;
+  }
+}
+
 const ICON_1X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAIAAADZ8fBYAAAAJUlEQVR4nGNgmNJBEzRq7qi5o+aOmjtq7qi5o+aOmjtq7qAyFwCzp6UqMm3T+QAAAABJRU5ErkJggg==', 'base64');
 const ICON_2X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADoAAAA6CAIAAABu2d1/AAAAZUlEQVR4nO3OAQkAMAzAsMm/gAm+jHZQiIDM7LuEH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXYsP2s6Uw9dI6msAAAAASUVORK5CYII=', 'base64');
 const ICON_3X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAFcAAABXCAIAAAD+qk47AAAA9ElEQVR4nO3OQQ0AIAADsclHAIKR0XuQVEC3e775QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfFPhBgR8U+EGBHxT4QYEfBDx2KM69DQL8FwAAAABJRU5ErkJggg==', 'base64');
@@ -446,8 +568,8 @@ function buildPassJson(opts: {
           { key: 'balance', label: 'CASHBACK BALANCE', value: `${(opts.cashbackBalance ?? 0).toFixed(2)} SAR` },
         ],
         secondaryFields: [
-          { key: 'earnRate', label: 'EARN RATE', value: `${opts.cashbackPercent ?? 5}% back` },
-          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
+          { key: 'cashbackRate', label: 'CASHBACK RATE', value: `${opts.cashbackPercent ?? 5}% back` },
+          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel, textAlignment: 'PKTextAlignmentRight' },
         ],
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
@@ -460,17 +582,22 @@ function buildPassJson(opts: {
     case 'stamps': {
       const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget ?? 10);
       const total = opts.stampTarget ?? 10;
+      const nextReward = opts.nextRewardName && opts.nextRewardName.trim()
+        ? opts.nextRewardName.trim()
+        : `Stamp ${total}`;
 
+      // The stamp grid lives in strip.png, so the front of the pass shows:
+      //   header bar   → logoText (Card Title) on the left, no header fields
+      //   strip image  → the rendered stamp grid (matches dashboard preview)
+      //   primary      → empty so the strip has full vertical breathing room
+      //   secondary    → STAMPS X/Y on the left, NEXT REWARD on the right
+      //   barcode      → QR (set on the parent pass object)
       storeCard = {
-        headerFields: [
-          { key: 'count', label: 'STAMPS', value: `${filledCount} / ${total}` },
-        ],
-        primaryFields: [
-          { key: 'stampViz', label: '', value: '\u25CF'.repeat(filledCount) + ' ' + '\u25CB'.repeat(Math.max(0, total - filledCount)) },
-        ],
+        headerFields: [],
+        primaryFields: [],
         secondaryFields: [
-          { key: 'nextReward', label: 'NEXT REWARD', value: `Stamp ${total}` },
-          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
+          { key: 'stampsCount', label: 'STAMPS', value: `${filledCount} / ${total}` },
+          { key: 'nextReward', label: 'NEXT REWARD', value: nextReward, textAlignment: 'PKTextAlignmentRight' },
         ],
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
@@ -781,17 +908,12 @@ walletPassRouter.get(
       const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
       const solidStripPng = createStripPng(750, 246, bgR, bgG, bgB);
 
-      // Strip is always a solid color that matches the card background so the
-      // pass visually mirrors the dashboard's loyalty-card preview (which has
-      // no banner image).
-      const stripBuffer: Buffer = solidStripPng;
-
       const files: Record<string, Buffer> = {
         'icon.png': ICON_1X,
         'icon@2x.png': ICON_2X,
         'icon@3x.png': ICON_3X,
-        'strip.png': stripBuffer,
-        'strip@2x.png': stripBuffer,
+        'strip.png': solidStripPng,
+        'strip@2x.png': solidStripPng,
       };
 
       const logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url);
@@ -824,6 +946,25 @@ walletPassRouter.get(
           .eq('merchant_id', merchantId).eq('is_active', true)
           .order('stamp_number', { ascending: true }).limit(1).maybeSingle(),
       ]);
+
+      // Stamps loyalty: render the stamp grid as the strip image so the pass
+      // mirrors the dashboard's preview (filled boxes match the customer's
+      // current stamp count, colors and icon respect the merchant's config).
+      if (loyaltyType === 'stamps') {
+        const stampGrid = await buildStampGridStripPng({
+          stamps: stampRow?.stamps ?? 0,
+          stampTarget: config?.stamp_target ?? 10,
+          bgColor,
+          stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
+          stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
+          stampIconUrl: config?.wallet_stamp_icon_url ?? null,
+          businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
+        });
+        if (stampGrid) {
+          files['strip.png'] = stampGrid;
+          files['strip@2x.png'] = stampGrid;
+        }
+      }
 
       files['pass.json'] = buildPassJson({
         serialNumber,
@@ -1282,23 +1423,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const bgRgb = hexToRgb(bgColor);
     const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
     const solidStripPng = createStripPng(750, 246, bgR, bgG, bgB);
-
-    // Use merchant banner image as strip if available, otherwise solid color
-    let stripBuffer: Buffer;
-    if (config?.wallet_card_banner_url) {
-      try {
-        const bannerRes = await fetch(config.wallet_card_banner_url);
-        if (bannerRes.ok) {
-          stripBuffer = Buffer.from(await bannerRes.arrayBuffer());
-        } else {
-          stripBuffer = solidStripPng;
-        }
-      } catch {
-        stripBuffer = solidStripPng;
-      }
-    } else {
-      stripBuffer = solidStripPng;
-    }
+    const stripBuffer: Buffer = solidStripPng;
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,
@@ -1319,6 +1444,25 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       Number(appConfig?.in_app_logo_scale ?? 100) || 100,
     );
     await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
+
+    // Stamps loyalty: replace the solid strip with the rendered stamp grid so
+    // the pass front mirrors the dashboard's stamp-card preview 1:1 (colors,
+    // icons, filled-vs-empty layout).
+    if (loyaltyType === 'stamps') {
+      const stampGrid = await buildStampGridStripPng({
+        stamps: stampRow?.stamps ?? 0,
+        stampTarget: config?.stamp_target ?? 10,
+        bgColor,
+        stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
+        stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
+        stampIconUrl: config?.wallet_stamp_icon_url ?? null,
+        businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
+      });
+      if (stampGrid) {
+        files['strip.png'] = stampGrid;
+        files['strip@2x.png'] = stampGrid;
+      }
+    }
 
     files['pass.json'] = buildPassJson({
       serialNumber: `loyalty-${merchantId}-${customerId}`,
