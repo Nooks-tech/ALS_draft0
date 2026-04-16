@@ -355,16 +355,25 @@ function resolveWalletCardBgColor(
   return brandBg || '#0D9488';
 }
 
+/**
+ * The wallet pass logo text shown in the header mirrors the Loyalty dashboard's
+ * Card Title (wallet_card_label). The dashboard preview renders that field in
+ * the top-left of the card, so the pass should use the same source of truth.
+ * Fallbacks (merchant name, app name) kick in only if the merchant leaves the
+ * Card Title blank.
+ */
 function resolveWalletLogoText(
   merchantName: string | null | undefined,
   appName: string | null | undefined,
   cardLabel: string,
 ): string {
-  const app = typeof appName === 'string' ? appName.trim() : '';
-  if (app) return app;
+  const label = typeof cardLabel === 'string' ? cardLabel.trim() : '';
+  if (label) return label;
   const merchant = typeof merchantName === 'string' ? merchantName.trim() : '';
   if (merchant) return merchant;
-  return cardLabel;
+  const app = typeof appName === 'string' ? appName.trim() : '';
+  if (app) return app;
+  return 'Loyalty Card';
 }
 
 async function attachWalletLogosToFiles(
@@ -772,22 +781,10 @@ walletPassRouter.get(
       const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
       const solidStripPng = createStripPng(750, 246, bgR, bgG, bgB);
 
-      // Use merchant banner image as strip if available, otherwise solid color
-      let stripBuffer: Buffer;
-      if (config?.wallet_card_banner_url) {
-        try {
-          const bannerRes = await fetch(config.wallet_card_banner_url);
-          if (bannerRes.ok) {
-            stripBuffer = Buffer.from(await bannerRes.arrayBuffer());
-          } else {
-            stripBuffer = solidStripPng;
-          }
-        } catch {
-          stripBuffer = solidStripPng;
-        }
-      } else {
-        stripBuffer = solidStripPng;
-      }
+      // Strip is always a solid color that matches the card background so the
+      // pass visually mirrors the dashboard's loyalty-card preview (which has
+      // no banner image).
+      const stripBuffer: Buffer = solidStripPng;
 
       const files: Record<string, Buffer> = {
         'icon.png': ICON_1X,
@@ -1106,7 +1103,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
     let passDescription = 'Loyalty Card';
     let earnRate = '10% back in points';
     let logoUrl: string | null = null;
-    let bannerUrl: string | null = null;
 
     const merchantId = req.query.merchantId as string;
     let inAppLogoScale = 100;
@@ -1122,7 +1118,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
         textColor = hexToRgb(config.wallet_card_text_color || '#FFFFFF');
         cardLabel = config.wallet_card_label || merchant?.cafe_name || appConfig?.app_name || 'Loyalty Card';
         passDescription = merchant?.cafe_name || config.wallet_card_label || appConfig?.app_name || 'Loyalty Card';
-        bannerUrl = config.wallet_card_banner_url || null;
         const pps = config.points_per_sar ?? 0.1;
         earnRate = config.earn_mode === 'per_order'
           ? `${config.points_per_order ?? 10} points per order`
@@ -1141,24 +1136,7 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
     }
 
     const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgHex);
-    const solidTestStrip = createStripPng(750, 246, bgR, bgG, bgB);
-
-    // Use merchant banner image as strip if available, otherwise solid color
-    let testStripBuffer: Buffer;
-    if (bannerUrl) {
-      try {
-        const bannerRes = await fetch(bannerUrl);
-        if (bannerRes.ok) {
-          testStripBuffer = Buffer.from(await bannerRes.arrayBuffer());
-        } else {
-          testStripBuffer = solidTestStrip;
-        }
-      } catch {
-        testStripBuffer = solidTestStrip;
-      }
-    } else {
-      testStripBuffer = solidTestStrip;
-    }
+    const testStripBuffer: Buffer = createStripPng(750, 246, bgR, bgG, bgB);
 
     const files: Record<string, Buffer> = {
       'icon.png': ICON_1X,

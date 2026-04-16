@@ -113,7 +113,6 @@ export default function LoyaltyModal() {
             const stampBoxColor = balance?.walletStampBoxColor || 'rgba(255,255,255,0.15)';
             const stampIconColor = balance?.walletStampIconColor || '#FFFFFF';
             const stampIconUrl = balance?.walletStampIconUrl || null;
-            const bannerUrl = balance?.walletCardBannerUrl || null;
             const cardLogoUrl = balance?.walletCardLogoUrl || null;
 
             const loyaltyType = balance?.loyaltyType ?? 'stamps';
@@ -136,15 +135,6 @@ export default function LoyaltyModal() {
                       end={{ x: 1, y: 1 }}
                       style={{ padding: 24, position: 'relative' }}
                     >
-                      {/* Banner image behind stamps */}
-                      {bannerUrl && (
-                        <Image
-                          source={{ uri: bannerUrl }}
-                          style={{ position: 'absolute', left: 0, right: 0, top: 60, height: 140, opacity: 0.3 }}
-                          resizeMode="cover"
-                        />
-                      )}
-
                       {/* Merchant logo top-right */}
                       {cardLogoUrl && (
                         <Image
