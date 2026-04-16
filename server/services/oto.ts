@@ -447,7 +447,14 @@ export const otoService = {
     return data;
   },
 
-  /** POST /createPickupLocation - create a new pickup location */
+  /**
+   * POST /createPickupLocation — create a new pickup location on OTO.
+   *
+   * Scoped to the merchant's own OTO refresh token when merchantId is supplied,
+   * so auto-setup during Foodics sync hits the correct OTO account. If no
+   * merchantId is supplied, falls back to the platform OTO_REFRESH_TOKEN env
+   * (useful for internal tooling only).
+   */
   async createPickupLocation(payload: {
     code: string;
     name: string;
@@ -461,11 +468,23 @@ export const otoService = {
     lat?: number;
     lon?: number;
     status?: 'active' | 'inactive';
+    merchantId?: string | null;
     [key: string]: any;
   }): Promise<{ success: boolean; pickupLocationCode?: string; warhouseId?: string; message?: string }> {
+    const scopedMerchantId = normalizeMerchantId(payload.merchantId ?? null);
+    const runtimeConfig = await getMerchantDeliveryRuntimeConfig(scopedMerchantId);
+    const refreshToken = resolveScopedRefreshToken(scopedMerchantId, runtimeConfig.refreshToken);
+    if (!refreshToken) {
+      throw new Error('OTO refresh token is not configured for this merchant');
+    }
+    // Don't forward the scoping field to OTO — it's internal.
+    const { merchantId: _merchantId, ...otoPayload } = payload;
     const data = await otoRequest<{ success: boolean; pickupLocationCode?: string; warhouseId?: string; message?: string }>(
       '/createPickupLocation',
-      payload
+      otoPayload,
+      'POST',
+      refreshToken,
+      runtimeConfig.environment,
     );
     return data;
   },

@@ -443,16 +443,24 @@ otoRouter.post('/webhook', webhookRateLimit, async (req, res) => {
   }
 });
 
-/** POST /api/oto/create-pickup – Create an OTO pickup location for a branch */
+/**
+ * POST /api/oto/create-pickup — create an OTO pickup location (warehouse)
+ * for a branch, scoped to the merchant's own OTO account. nooksweb calls
+ * this from its Foodics sync so every synced branch gets a matching OTO
+ * warehouse automatically.
+ *
+ * Body: { merchantId?, code, name, city, address?, contactName?, contactEmail?, contactPhone?, lat?, lon? }
+ */
 otoRouter.post('/create-pickup', async (req, res) => {
   try {
     if (!requireNooksInternalRequest(req, res)) return;
 
-    const { code, name, city, address, contactName, contactEmail, contactPhone, lat, lon } = req.body;
+    const { merchantId, code, name, city, address, contactName, contactEmail, contactPhone, lat, lon } = req.body;
     if (!code || !name || !city) {
       return res.status(400).json({ error: 'code, name, and city are required' });
     }
     const result = await otoService.createPickupLocation({
+      merchantId: typeof merchantId === 'string' ? merchantId.trim() || null : null,
       code,
       name,
       mobile: contactPhone || '500000000',
@@ -466,7 +474,7 @@ otoRouter.post('/create-pickup', async (req, res) => {
       lon,
       status: 'active',
     });
-    console.log('[OTO] Pickup location created:', { code, success: result.success, pickupLocationCode: result.pickupLocationCode });
+    console.log('[OTO] Pickup location created:', { merchantId, code, success: result.success, pickupLocationCode: result.pickupLocationCode });
     res.json(result);
   } catch (err: any) {
     console.error('[OTO] create-pickup error:', err?.message);
