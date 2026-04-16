@@ -84,7 +84,7 @@ async function initCustomerLoyaltyType(merchantId: string, customerId: string, l
  * - If customer has no type -> assign merchant's current type
  * - loyalty_config.loyalty_type can be NULL (unactivated merchant)
  */
-async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
+export async function getCustomerLoyaltyRoute(merchantId: string, customerId: string) {
   const config = await getMerchantConfig(merchantId);
   const merchantType = config.loyalty_type ?? null; // null = unactivated
 
@@ -506,7 +506,13 @@ loyaltyRouter.get('/balance', async (req, res) => {
     const lifetimePoints = data?.lifetime_points ?? 0;
     const pointsValue = +(points * config.point_value_sar).toFixed(2);
 
-    const loyaltyType = config.loyalty_type ?? 'stamps';
+    // The CUSTOMER'S effective loyalty type — not the raw config.
+    // If the merchant changed type while the customer still has balance on
+    // the old system, they keep the old type until the balance is spent.
+    // Once the old balance reaches 0, this call auto-migrates them to the
+    // merchant's current type (see getCustomerLoyaltyRoute for the logic).
+    const route = await getCustomerLoyaltyRoute(merchantId, customerId);
+    const loyaltyType = (route.redeem as 'cashback' | 'stamps' | null) ?? config.loyalty_type ?? 'stamps';
 
     // Stamps data
     let stamps = 0;
@@ -542,9 +548,6 @@ loyaltyRouter.get('/balance', async (req, res) => {
         .maybeSingle();
       cashbackBalance = cbData?.balance_sar ?? 0;
     }
-
-    // Check if this customer is in a loyalty program transition
-    const route = await getCustomerLoyaltyRoute(merchantId, customerId);
 
     res.json({
       loyaltyType,

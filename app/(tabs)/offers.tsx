@@ -1,4 +1,4 @@
-import { LinearGradient } from 'expo-linear-gradient';
+import Svg, { Rect } from 'react-native-svg';
 
 type ExpoWalletBridge = {
   addPass?: (base64: string) => Promise<unknown>;
@@ -48,7 +48,6 @@ import {
 } from '../../src/api/loyalty';
 import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
-import { PriceWithSymbol } from '../../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
 import { AppleWalletAddPassButton } from '../../src/components/apple-wallet/AppleWalletAddPassButton';
@@ -59,19 +58,142 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   return { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) };
 }
 
-function darkenColor(hex: string, amount: number): string {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return hex;
-  const r = Math.max(0, Math.round(rgb.r * (1 - amount)));
-  const g = Math.max(0, Math.round(rgb.g * (1 - amount)));
-  const b = Math.max(0, Math.round(rgb.b * (1 - amount)));
-  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
-}
-
 function isLightColor(hex: string): boolean {
   const rgb = hexToRgb(hex);
   if (!rgb) return false;
   return (rgb.r * 299 + rgb.g * 587 + rgb.b * 114) / 1000 > 160;
+}
+
+function hexWithAlpha(hex: string, alpha: number): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+}
+
+/**
+ * Stamp card grid — identical layout rules as the dashboard preview and the
+ * Apple Pass strip image. Columns: stampTarget when ≤5, else ceil/2 so 6-8
+ * stamps lay out as two rows. Filled boxes use the merchant's stamp_box_color
+ * at full opacity; empty boxes sit at 22% of that same color.
+ */
+function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl }: {
+  stampTarget: number;
+  stamps: number;
+  boxColor: string;
+  iconColor: string;
+  iconUrl: string | null;
+}) {
+  const total = Math.max(1, Math.min(20, Math.round(stampTarget)));
+  const filled = Math.max(0, Math.min(total, Math.round(stamps)));
+  const cols = total <= 5 ? total : Math.ceil(total / 2);
+  const emptyBg = hexWithAlpha(boxColor, 0.22);
+  const cellWidthPct = `${100 / cols}%` as const;
+
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
+      {Array.from({ length: total }).map((_, i) => {
+        const isFilled = i < filled;
+        return (
+          <View key={i} style={{ width: cellWidthPct, paddingHorizontal: 4, paddingVertical: 4 }}>
+            <View style={{
+              aspectRatio: 1,
+              borderRadius: 14,
+              backgroundColor: isFilled ? boxColor : emptyBg,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              {iconUrl ? (
+                <Image
+                  source={{ uri: iconUrl }}
+                  style={{ width: '55%', height: '55%', opacity: isFilled ? 1 : 0.35 }}
+                  resizeMode="contain"
+                />
+              ) : (
+                <Star
+                  size={Math.min(26, Math.floor(200 / cols))}
+                  color={iconColor}
+                  fill={iconColor}
+                  style={{ opacity: isFilled ? 1 : 0.35 }}
+                />
+              )}
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/**
+ * The QR visual at the bottom of the loyalty card. Uses the same fixed 21×21
+ * matrix the dashboard preview renders, so the in-app card visually matches
+ * the merchant's dashboard preview. The Apple Pass itself carries the real
+ * scannable QR (generated from the customer's member code).
+ */
+const QR_MATRIX = [
+  [1,1,1,1,1,1,1,0,1,0,1,0,1,0,1,1,1,1,1,1,1],
+  [1,0,0,0,0,0,1,0,0,1,0,1,1,0,1,0,0,0,0,0,1],
+  [1,0,1,1,1,0,1,0,1,1,0,0,1,0,1,0,1,1,1,0,1],
+  [1,0,1,1,1,0,1,0,0,1,1,0,0,0,1,0,1,1,1,0,1],
+  [1,0,1,1,1,0,1,0,1,0,1,1,0,0,1,0,1,1,1,0,1],
+  [1,0,0,0,0,0,1,0,0,0,1,0,1,0,1,0,0,0,0,0,1],
+  [1,1,1,1,1,1,1,0,1,0,1,0,1,0,1,1,1,1,1,1,1],
+  [0,0,0,0,0,0,0,0,1,1,0,1,0,0,0,0,0,0,0,0,0],
+  [1,0,1,0,1,1,1,1,0,0,1,0,1,1,1,0,1,0,1,0,0],
+  [0,1,0,1,0,0,0,1,1,0,1,1,0,0,1,1,0,1,0,1,0],
+  [1,1,0,1,1,0,1,0,0,1,0,1,1,0,1,0,1,0,1,1,1],
+  [0,1,1,0,0,1,0,0,1,1,0,0,1,1,0,0,1,1,0,0,0],
+  [1,0,1,1,0,1,1,1,0,0,1,0,1,0,1,1,0,1,1,0,1],
+  [0,0,0,0,0,0,0,0,1,0,1,1,0,1,0,0,1,0,0,1,0],
+  [1,1,1,1,1,1,1,0,0,1,0,1,1,0,1,0,1,0,1,1,1],
+  [1,0,0,0,0,0,1,0,1,1,0,0,1,1,0,1,0,1,0,0,0],
+  [1,0,1,1,1,0,1,0,1,0,1,0,1,0,1,1,1,0,1,1,1],
+  [1,0,1,1,1,0,1,0,0,1,1,1,0,1,0,0,1,1,0,1,0],
+  [1,0,1,1,1,0,1,0,1,0,0,1,1,0,1,0,1,0,1,0,1],
+  [1,0,0,0,0,0,1,0,0,1,0,0,1,1,0,1,0,0,1,1,0],
+  [1,1,1,1,1,1,1,0,1,0,1,1,0,1,1,0,1,1,0,1,1],
+];
+
+function MemberQrCard({ memberCode }: { memberCode: string }) {
+  const size = 150;
+  const cellSize = size / 21;
+  const cells: React.ReactNode[] = [];
+  QR_MATRIX.forEach((row, y) => {
+    row.forEach((cell, x) => {
+      if (cell === 1) {
+        cells.push(
+          <Rect
+            key={`${y}-${x}`}
+            x={x * cellSize}
+            y={y * cellSize}
+            width={cellSize}
+            height={cellSize}
+            fill="#111"
+          />,
+        );
+      }
+    });
+  });
+
+  return (
+    <View style={{
+      marginTop: 18,
+      backgroundColor: '#ffffff',
+      borderRadius: 14,
+      paddingVertical: 14,
+      alignItems: 'center',
+    }}>
+      <Svg width={size} height={size}>
+        <Rect width={size} height={size} fill="#ffffff" />
+        {cells}
+      </Svg>
+      {memberCode ? (
+        <Text style={{ color: '#111', fontSize: 12, fontWeight: '600', letterSpacing: 1.5, marginTop: 8 }}>
+          {memberCode}
+        </Text>
+      ) : null}
+    </View>
+  );
 }
 
 function formatExpiry(validUntil?: string): string {
@@ -324,23 +446,26 @@ export default function OffersScreen() {
     [nooksBanners],
   );
 
-  const loyaltyType = balance?.loyaltyType ?? 'points';
+  // The server returns the customer's EFFECTIVE loyalty type (account for
+  // in-flight transitions). Only stamps or cashback — points is deprecated.
+  // When the merchant hasn't activated loyalty yet, this stays null and the
+  // card renders a "not yet active" empty state.
+  const loyaltyType: 'stamps' | 'cashback' | null =
+    balance?.loyaltyType === 'stamps' || balance?.loyaltyType === 'cashback'
+      ? balance.loyaltyType
+      : null;
   const loyaltyTabLabel = loyaltyType === 'stamps'
     ? (isArabic ? 'بطاقة الأختام' : 'Stamps')
     : loyaltyType === 'cashback'
       ? (isArabic ? 'كاش باك' : 'Cashback')
-      : (isArabic ? 'النقاط' : 'Points');
+      : (isArabic ? 'الولاء' : 'Loyalty');
   const cardTitle = balance?.walletCardLabel
     || (loyaltyType === 'stamps' ? (isArabic ? 'بطاقة الأختام' : 'Stamp Card')
        : loyaltyType === 'cashback' ? (isArabic ? 'كاش باك' : 'Cashback')
-       : (isArabic ? 'نقاطك' : 'Your Points'));
+       : (isArabic ? 'بطاقة الولاء' : 'Loyalty Card'));
   const cardLogoUrl = balance?.walletCardLogoUrl || null;
   const cardBgColor = balance?.walletCardBgColor || primaryColor;
   const cardTxtColor = balance?.walletCardTextColor || null;
-  const stampBoxColor = balance?.walletStampBoxColor || 'rgba(255,255,255,0.15)';
-  const stampIconColor = balance?.walletStampIconColor || '#FFFFFF';
-  const stampIconUrl = balance?.walletStampIconUrl || null;
-  const bannerUrl = balance?.walletCardBannerUrl || null;
 
   return (
     <View className="flex-1" style={{ backgroundColor }}>
@@ -433,230 +558,163 @@ export default function OffersScreen() {
           </View>
         ) : (
           <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-            {/* ── Main Loyalty Card — render ONLY the card matching loyaltyType ── */}
+            {/* Main Loyalty Card — shows ONE card matching the user's effective
+                loyalty type (never both). Mirrors the dashboard's Wallet Card
+                Designer preview 1:1 (flat background, logo top-left, Card Title
+                top-right, stamp grid / cashback balance, milestone grid, QR
+                card at the bottom). When the merchant switches the loyalty
+                system and the customer's balance hits 0, the server
+                auto-migrates their active_loyalty_type; the next balance
+                fetch returns the new type and this card re-renders. */}
             {(() => {
               const cardLight = isLightColor(cardBgColor);
-              const gradientEnd = darkenColor(cardBgColor, 0.35);
               const cardTextColor = cardTxtColor || (cardLight ? '#1f2937' : '#ffffff');
-              const cardSubTextColor = cardLight ? 'rgba(31,41,55,0.6)' : 'rgba(255,255,255,0.7)';
+              const cardSubTextColor = cardLight ? 'rgba(31,41,55,0.7)' : 'rgba(255,255,255,0.75)';
+              const memberCode = balance?.memberCode || '';
+
+              const cardShell = {
+                borderRadius: 28,
+                overflow: 'hidden' as const,
+                backgroundColor: cardBgColor,
+                padding: 20,
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 8 },
+                shadowOpacity: 0.2,
+                shadowRadius: 16,
+                elevation: 10,
+              };
+
+              const headerRow = (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                  {cardLogoUrl ? (
+                    <Image
+                      source={{ uri: cardLogoUrl }}
+                      style={{ width: 40, height: 40 }}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <View style={{ width: 40, height: 40 }} />
+                  )}
+                  <Text
+                    numberOfLines={1}
+                    style={{ flex: 1, color: cardTextColor, fontSize: 18, fontWeight: '600', textAlign: 'right' }}
+                  >
+                    {cardTitle}
+                  </Text>
+                </View>
+              );
 
               /* ── STAMPS ── */
               if (loyaltyType === 'stamps') {
+                const stampTarget = Math.max(1, balance?.stampTarget ?? 8);
+                const stamps = Math.max(0, Math.min(stampTarget, balance?.stamps ?? 0));
+                const filledMilestones = (balance?.stampMilestones ?? [])
+                  .filter((m) => (m.reward_name || '').trim().length > 0)
+                  .slice()
+                  .sort((a, b) => a.stamp_number - b.stamp_number)
+                  .slice(0, 4);
+                const boxColor = balance?.walletStampBoxColor || '#10B981';
+                const iconColor = balance?.walletStampIconColor || '#FFFFFF';
+                const iconUrl = balance?.walletStampIconUrl || null;
+
                 return (
-                  <View
-                    style={{
-                      borderRadius: 24, overflow: 'hidden',
-                      shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
-                    }}
-                  >
-                    <LinearGradient
-                      colors={[cardBgColor, gradientEnd]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={{ padding: 24, position: 'relative' }}
-                    >
-                      {/* Decorative circles */}
-                      <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
-                      <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
-
-                      {/* Merchant logo top-right */}
-                      {cardLogoUrl && (
-                        <Image
-                          source={{ uri: cardLogoUrl }}
-                          style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
-                          resizeMode="cover"
-                        />
-                      )}
-
-                      {/* Header */}
-                      <View className="flex-row items-center mb-5">
-                        <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                          <Star size={18} color={cardTextColor} fill={cardTextColor} />
-                        </View>
-                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
-                          {cardTitle}
-                        </Text>
+                  <View style={cardShell}>
+                    {headerRow}
+                    <View style={{ height: 16 }} />
+                    <StampGrid
+                      stampTarget={stampTarget}
+                      stamps={stamps}
+                      boxColor={boxColor}
+                      iconColor={iconColor}
+                      iconUrl={iconUrl}
+                    />
+                    {filledMilestones.length > 0 && (
+                      <View style={{ marginTop: 16, flexDirection: 'row', flexWrap: 'wrap' }}>
+                        {filledMilestones.map((m, i) => {
+                          const isRightCol = i % 2 === 1;
+                          return (
+                            <View
+                              key={m.id ?? m.stamp_number}
+                              style={{
+                                width: '50%',
+                                marginTop: i >= 2 ? 12 : 0,
+                                alignItems: isRightCol ? 'flex-end' : 'flex-start',
+                              }}
+                            >
+                              <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
+                                {isArabic ? `الختم ${m.stamp_number}` : `STAMP ${m.stamp_number}`}
+                              </Text>
+                              <Text
+                                numberOfLines={1}
+                                style={{ color: cardTextColor, fontSize: 14, fontWeight: '600', marginTop: 3 }}
+                              >
+                                {(m.reward_name || '').trim()}
+                              </Text>
+                            </View>
+                          );
+                        })}
                       </View>
-
-                      {/* Banner image behind stamps */}
-                      {bannerUrl && (
-                        <Image
-                          source={{ uri: bannerUrl }}
-                          style={{ position: 'absolute', left: 0, right: 0, top: 60, height: 140, opacity: 0.3 }}
-                          resizeMode="cover"
-                        />
-                      )}
-
-                      {/* Stamp grid */}
-                      <View className="flex-row flex-wrap gap-2">
-                        {Array.from({ length: balance?.stampTarget ?? 8 }).map((_, i) => (
-                          <View
-                            key={i}
-                            className="w-10 h-10 rounded-xl items-center justify-center"
-                            style={{
-                              backgroundColor: i < (balance?.stamps ?? 0)
-                                ? stampBoxColor
-                                : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)'),
-                            }}
-                          >
-                            {i < (balance?.stamps ?? 0) ? (
-                              stampIconUrl ? (
-                                <Image source={{ uri: stampIconUrl }} style={{ width: 20, height: 20 }} resizeMode="contain" />
-                              ) : (
-                                <Star size={16} color={stampIconColor} fill={stampIconColor} />
-                              )
-                            ) : (
-                              <Text style={{ color: cardSubTextColor, fontSize: 11 }}>{i + 1}</Text>
-                            )}
-                          </View>
-                        ))}
-                      </View>
-
-                      {/* Divider */}
-                      <View style={{ height: 1, marginTop: 16, marginBottom: 12, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
-
-                      {/* Remaining info */}
-                      <Text style={{ color: cardSubTextColor, fontSize: 13 }}>
-                        {isArabic
-                          ? `تبقى ${(balance?.stampTarget ?? 8) - (balance?.stamps ?? 0)} للحصول على: ${balance?.stampRewardDescription ?? ''}`
-                          : `${(balance?.stampTarget ?? 8) - (balance?.stamps ?? 0)} remaining to get: ${balance?.stampRewardDescription ?? ''}`}
-                      </Text>
-
-                      {/* Completed cards */}
-                      {(balance?.completedCards ?? 0) > 0 && (
-                        <Text style={{ color: cardTextColor, fontSize: 12, fontWeight: '600', marginTop: 6 }}>
-                          {isArabic ? `بطاقات مكتملة: ${balance?.completedCards}` : `Cards completed: ${balance?.completedCards}`}
-                        </Text>
-                      )}
-                    </LinearGradient>
+                    )}
+                    <MemberQrCard memberCode={memberCode} />
                   </View>
                 );
               }
 
               /* ── CASHBACK ── */
               if (loyaltyType === 'cashback') {
+                const cashbackBalance = balance?.cashbackBalance ?? 0;
+                const cashbackPercent = balance?.cashbackPercent ?? 5;
+                const expiryLabel = balance?.expiryMonths
+                  ? (isArabic ? `${balance.expiryMonths} شهر` : `${balance.expiryMonths} mo`)
+                  : (isArabic ? 'لا ينتهي' : 'Never');
+
                 return (
-                  <View
-                    style={{
-                      borderRadius: 24, overflow: 'hidden',
-                      shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
-                    }}
-                  >
-                    <LinearGradient
-                      colors={[cardBgColor, gradientEnd]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={{ padding: 24, position: 'relative' }}
-                    >
-                      {/* Decorative circles */}
-                      <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
-                      <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
-
-                      {/* Merchant logo top-right */}
-                      {cardLogoUrl && (
-                        <Image
-                          source={{ uri: cardLogoUrl }}
-                          style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
-                          resizeMode="cover"
-                        />
-                      )}
-
-                      {/* Header */}
-                      <View className="flex-row items-center mb-5">
-                        <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                          <Gift size={18} color={cardTextColor} />
-                        </View>
-                        <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
-                          {cardTitle}
+                  <View style={cardShell}>
+                    {headerRow}
+                    <Text style={{ color: cardTextColor, fontSize: 44, fontWeight: '700', lineHeight: 52, marginTop: 24 }}>
+                      {cashbackBalance.toFixed(2)} SAR
+                    </Text>
+                    <Text style={{ color: cardSubTextColor, fontSize: 13, letterSpacing: 1.5, marginTop: 4 }}>
+                      {isArabic ? 'رصيد الكاش باك' : 'CASHBACK BALANCE'}
+                    </Text>
+                    <View style={{
+                      height: 1,
+                      marginTop: 18,
+                      marginBottom: 14,
+                      backgroundColor: cardLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.22)',
+                    }} />
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                      <View>
+                        <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
+                          {isArabic ? 'نسبة الكاش باك' : 'CASHBACK RATE'}
+                        </Text>
+                        <Text style={{ color: cardTextColor, fontSize: 15, fontWeight: '600', marginTop: 4 }}>
+                          {isArabic ? `${cashbackPercent}% كاش باك` : `${cashbackPercent}% back`}
                         </Text>
                       </View>
-
-                      {/* Cashback balance */}
-                      <View className="flex-row items-baseline">
-                        <PriceWithSymbol amount={balance?.cashbackBalance ?? 0} iconSize={36} iconColor={cardTextColor} textStyle={{ color: cardTextColor, fontSize: 48, fontWeight: '800', lineHeight: 52 }} />
-                      </View>
-                      <Text style={{ color: cardSubTextColor, fontSize: 14, marginTop: 4 }}>
-                        {isArabic ? 'رصيد الكاش باك' : 'Cashback Balance'}
-                      </Text>
-
-                      {/* Divider */}
-                      <View style={{ height: 1, marginTop: 16, marginBottom: 12, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
-
-                      {/* Earn info */}
-                      <View className="flex-row items-center">
-                        <TrendingUp size={14} color={cardSubTextColor} />
-                        <Text style={{ color: cardSubTextColor, fontSize: 13, marginLeft: 6 }}>
-                          {isArabic
-                            ? `اكسب ${balance?.cashbackPercent ?? 5}% كاش باك على كل طلب`
-                            : `Earn ${balance?.cashbackPercent ?? 5}% cashback on every order`}
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
+                          {isArabic ? 'ينتهي' : 'EXPIRES'}
+                        </Text>
+                        <Text style={{ color: cardTextColor, fontSize: 15, fontWeight: '600', marginTop: 4 }}>
+                          {expiryLabel}
                         </Text>
                       </View>
-                    </LinearGradient>
+                    </View>
+                    <MemberQrCard memberCode={memberCode} />
                   </View>
                 );
               }
 
-              /* ── POINTS (default) ── */
+              /* ── Merchant hasn't picked a loyalty type yet ── */
               return (
-                <View
-                  style={{
-                    borderRadius: 24, overflow: 'hidden',
-                    shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-                    shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
-                  }}
-                >
-                  <LinearGradient
-                    colors={[cardBgColor, gradientEnd]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={{ padding: 24, position: 'relative' }}
-                  >
-                    {/* Decorative circle */}
-                    <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
-
-                    {/* Merchant logo top-right */}
-                    {cardLogoUrl && (
-                      <Image
-                        source={{ uri: cardLogoUrl }}
-                        style={{ position: 'absolute', top: 16, right: 16, width: 48, height: 48, borderRadius: 14 }}
-                        resizeMode="cover"
-                      />
-                    )}
-
-                    {/* Header */}
-                    <View className="flex-row items-center mb-5">
-                      <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                        <Star size={18} color={cardTextColor} fill={cardTextColor} />
-                      </View>
-                      <Text style={{ color: cardTextColor, fontSize: 16, fontWeight: '700', marginLeft: 10 }}>
-                        {cardTitle}
-                      </Text>
-                    </View>
-
-                    {/* Points */}
-                    <Text style={{ color: cardTextColor, fontSize: 48, fontWeight: '800', lineHeight: 52 }}>
-                      {balance?.points ?? 0}
-                    </Text>
-                    <View className="flex-row items-center mt-1">
-                      <Text style={{ color: cardSubTextColor, fontSize: 14 }}>{isArabic ? 'القيمة ' : 'Worth '}</Text>
-                      <PriceWithSymbol amount={balance?.pointsValue ?? 0} iconSize={14} iconColor={cardSubTextColor} textStyle={{ color: cardSubTextColor, fontSize: 14 }} />
-                    </View>
-
-                    {/* Divider */}
-                    <View style={{ height: 1, marginVertical: 16, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
-
-                    {/* Earn rate */}
-                    <View className="flex-row items-center">
-                      <TrendingUp size={14} color={cardSubTextColor} />
-                      <Text style={{ color: cardSubTextColor, fontSize: 13, marginLeft: 6 }}>
-                        {balance?.earnMode === 'per_order'
-                          ? (isArabic ? `اكسب ${balance?.pointsPerOrder ?? 10} نقطة لكل طلب` : `Earn ${balance?.pointsPerOrder ?? 10} points per order`)
-                          : (isArabic ? `اكسب ${Math.round((balance?.pointsPerSar ?? 0.1) * 100)}% نقاط على كل طلب` : `Earn ${Math.round((balance?.pointsPerSar ?? 0.1) * 100)}% back in points`)}
-                      </Text>
-                    </View>
-                  </LinearGradient>
+                <View style={{ padding: 32, alignItems: 'center' }}>
+                  <Gift size={36} color="#94a3b8" />
+                  <Text style={{ color: textColor, marginTop: 10, textAlign: 'center' }}>
+                    {isArabic
+                      ? 'لم يتم تفعيل برنامج الولاء بعد.'
+                      : 'Loyalty program not yet active.'}
+                  </Text>
                 </View>
               );
             })()}

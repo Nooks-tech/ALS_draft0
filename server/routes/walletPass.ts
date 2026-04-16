@@ -15,6 +15,7 @@ import * as zlib from 'zlib';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { ensureLoyaltyMemberProfile } from '../services/loyaltyMembers';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
+import { getCustomerLoyaltyRoute } from './loyalty';
 
 export const walletPassRouter = Router();
 
@@ -979,7 +980,13 @@ walletPassRouter.get(
       await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
       // Fetch stamp data, next reward, cashback balance, and branch locations
-      const loyaltyType = config?.loyalty_type ?? 'stamps';
+      // Effective type for the customer — same auto-migration contract as
+      // the /api/loyalty/balance endpoint (keep old type until balance hits 0,
+      // then migrate to the merchant's current config type).
+      const route = await getCustomerLoyaltyRoute(merchantId, customerId);
+      const loyaltyType = (route.redeem as 'cashback' | 'stamps' | null)
+        || config?.loyalty_type
+        || 'stamps';
       const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
         supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
           .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
@@ -1444,7 +1451,15 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     }
 
     // Determine effective loyalty type: member override > config default
-    const loyaltyType = memberLoyaltyInfo?.active_loyalty_type || config?.loyalty_type || 'stamps';
+    // Ask the loyalty module for the customer's effective type. This handles
+    // the transition contract (customer keeps old type until balance hits 0,
+    // then auto-migrates to the merchant's current type) exactly the same way
+    // the /api/loyalty/balance endpoint does.
+    const route = await getCustomerLoyaltyRoute(merchantId, customerId);
+    const loyaltyType = (route.redeem as 'cashback' | 'stamps' | null)
+      || memberLoyaltyInfo?.active_loyalty_type
+      || config?.loyalty_type
+      || 'stamps';
 
     // Fetch type-specific balances and branch locations in parallel
     const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
