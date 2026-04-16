@@ -172,7 +172,18 @@ async function otoRequest<T>(
       return data as T;
     }
 
-    lastError = new Error(data?.message || data?.errors?.[0] || `OTO API error: ${res.status}`);
+    // Log the full response body once per failure so we don't have to guess
+    // what OTO rejected. Bodies are small JSON, usually a few fields.
+    try {
+      console.warn(`[OTO] ${method} ${path} → ${res.status}`, JSON.stringify(data).slice(0, 500));
+    } catch { /* ignore logging errors */ }
+
+    const otoMessage =
+      (typeof data?.message === 'string' && data.message) ||
+      (Array.isArray(data?.errors) && typeof data.errors[0] === 'string' && data.errors[0]) ||
+      (typeof data?.error === 'string' && data.error) ||
+      (data && typeof data === 'object' ? JSON.stringify(data).slice(0, 200) : '');
+    lastError = new Error(otoMessage ? `OTO API error: ${res.status} ${otoMessage}` : `OTO API error: ${res.status}`);
 
     // Only retry on transient server errors; don't retry client errors like 400, 401, 404
     if (!RETRY_STATUS_CODES.has(res.status)) {
