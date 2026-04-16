@@ -179,30 +179,48 @@ export default function LoyaltyModal() {
                         ))}
                       </View>
 
-                      {/* Milestone rewards — only milestones with a reward name are shown,
-                          so blank rows the merchant may have saved don't clutter the card. */}
+                      {/* Milestone rewards — 2x2 grid matching Apple Pass
+                          secondaryFields (top row) + auxiliaryFields (bottom
+                          row). Capped at 4 because that's what a storeCard
+                          pass can fit on the front; the dashboard UI enforces
+                          the same cap so the card always looks identical. */}
                       {(() => {
                         const filledMilestones = (balance?.stampMilestones ?? [])
                           .filter((m) => (m.reward_name || '').trim().length > 0)
                           .slice()
-                          .sort((a, b) => a.stamp_number - b.stamp_number);
+                          .sort((a, b) => a.stamp_number - b.stamp_number)
+                          .slice(0, 4);
                         if (filledMilestones.length === 0) return null;
                         return (
                           <View style={{ marginTop: 16 }}>
-                            <View style={{ height: 1, marginBottom: 10, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
-                            {filledMilestones.map((m) => (
-                              <View key={m.id ?? m.stamp_number} className="flex-row items-center justify-between" style={{ marginTop: 4, gap: 12 }}>
-                                <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
-                                  {isArabic ? `الختم ${m.stamp_number}` : `STAMP ${m.stamp_number}`}
-                                </Text>
-                                <Text
-                                  numberOfLines={1}
-                                  style={{ color: cardTextColor, fontSize: 13, fontWeight: '600', flex: 1, textAlign: 'right' }}
-                                >
-                                  {(m.reward_name || '').trim()}
-                                </Text>
-                              </View>
-                            ))}
+                            <View style={{ height: 1, marginBottom: 12, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                              {filledMilestones.map((m, i) => {
+                                const isRightCol = i % 2 === 1;
+                                return (
+                                  <View
+                                    key={m.id ?? m.stamp_number}
+                                    style={{
+                                      width: '50%',
+                                      paddingLeft: isRightCol ? 6 : 0,
+                                      paddingRight: isRightCol ? 0 : 6,
+                                      marginTop: i >= 2 ? 10 : 0,
+                                      alignItems: isRightCol ? 'flex-end' : 'flex-start',
+                                    }}
+                                  >
+                                    <Text style={{ color: cardSubTextColor, fontSize: 10, letterSpacing: 1 }}>
+                                      {isArabic ? `الختم ${m.stamp_number}` : `STAMP ${m.stamp_number}`}
+                                    </Text>
+                                    <Text
+                                      numberOfLines={1}
+                                      style={{ color: cardTextColor, fontSize: 13, fontWeight: '600', marginTop: 2 }}
+                                    >
+                                      {(m.reward_name || '').trim()}
+                                    </Text>
+                                  </View>
+                                );
+                              })}
+                            </View>
                           </View>
                         );
                       })()}

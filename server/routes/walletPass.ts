@@ -602,19 +602,21 @@ function buildPassJson(opts: {
       const total = opts.stampTarget ?? 10;
 
       // Map the merchant's configured milestones onto Apple's field slots.
-      // Layout goal (mirroring the dashboard preview):
-      //   header  → Card Title on the right, logo on the left
-      //   strip   → rendered stamp grid (accurate per-customer fill)
-      //   primary → empty (the strip is the focal point)
-      //   secondary + auxiliary → milestones, two per row, across two rows
-      //   backFields → any milestones beyond the 4th plus help text
-      // Only milestones with an actual reward name are surfaced — empty rows
-      // the merchant may have left behind would render as "—" entries which
-      // look broken on the pass front.
+      // Layout goal (identical to the dashboard preview and the in-app card):
+      //   header    → Card Title on the right, logo on the left
+      //   strip     → rendered stamp grid (accurate per-customer fill)
+      //   primary   → empty (the strip is the focal point)
+      //   secondary → 1st + 2nd milestone (top row of the 2x2)
+      //   auxiliary → 3rd + 4th milestone (bottom row of the 2x2)
+      // The storeCard template can only fit 4 milestones on the pass front.
+      // The Loyalty dashboard enforces that same cap when the merchant adds
+      // milestones, so we slice here only defensively — in case older rows
+      // still exist in the DB.
       const sortedMilestones = (opts.milestones ?? [])
         .filter((m) => m && typeof m.stamp_number === 'number' && (m.reward_name || '').trim().length > 0)
         .slice()
-        .sort((a, b) => a.stamp_number - b.stamp_number);
+        .sort((a, b) => a.stamp_number - b.stamp_number)
+        .slice(0, 4);
 
       const buildMilestoneField = (
         m: { stamp_number: number; reward_name: string },
@@ -631,7 +633,6 @@ function buildPassJson(opts: {
 
       const secondaryMilestones = sortedMilestones.slice(0, 2);
       const auxiliaryMilestones = sortedMilestones.slice(2, 4);
-      const overflowMilestones = sortedMilestones.slice(4);
 
       const secondaryFields = secondaryMilestones.map((m, i) =>
         buildMilestoneField(m, i === secondaryMilestones.length - 1 && secondaryMilestones.length > 1),
@@ -648,11 +649,6 @@ function buildPassJson(opts: {
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
           { key: 'stampsSummary', label: 'Stamps', value: `${filledCount} / ${total}` },
-          ...overflowMilestones.map((m) => ({
-            key: `milestone_${m.stamp_number}_back`,
-            label: `Stamp ${m.stamp_number}`,
-            value: (m.reward_name || '').trim() || '—',
-          })),
           { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn stamps and redeem rewards.' },
           { key: 'howItWorks', label: 'How it works', value: 'Earn 1 stamp per completed order. Reach milestones to unlock rewards!' },
         ],
