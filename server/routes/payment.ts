@@ -316,9 +316,12 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
   try {
     const payload = req.body;
     const id: string = payload.id ?? payload.data?.id ?? '';
-    const status: string = payload.status ?? payload.data?.status ?? '';
+    let status: string = payload.status ?? payload.data?.status ?? '';
     const metadata = payload.metadata ?? payload.data?.metadata ?? {};
-    const source = payload.source ?? payload.data?.source ?? {};
+    // Moyasar's source object is loosely typed (differs per payment method).
+    // Typed as any to preserve the existing card-token / card-metadata reads
+    // downstream without having to enumerate every field Moyasar may send.
+    let source: any = payload.source ?? payload.data?.source ?? {};
     const merchantId: string = metadata?.merchant_id ?? '';
     if (!merchantId) {
       console.warn('[Payment Webhook] Missing merchant_id metadata');
@@ -326,27 +329,63 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
     }
 
     const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
-    const expectedWebhookSecret = runtimeConfig.webhookSecret;
+    const merchantSecretKey = runtimeConfig.secretKey;
 
-    if (!expectedWebhookSecret) {
-      return res.status(503).json({ error: 'Moyasar webhook secret is not configured' });
+    if (!merchantSecretKey) {
+      return res.status(503).json({ error: 'Merchant Moyasar secret key is not configured' });
     }
-
-    // Moyasar puts the secret in the body. Headers are not officially sent, but kept as a defensive fallback.
-    const rawToken =
-      (req.body?.secret_token as string) ||
-      ((req.headers['x-moyasar-token'] as string) ?? '') ||
-      ((req.headers['x-webhook-secret'] as string) ?? '');
-    const token = String(rawToken || '').trim();
-    if (!safeEqual(token, expectedWebhookSecret)) {
-      console.warn('[Payment Webhook] Invalid or missing secret token');
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    console.log('[Payment Webhook]', { id, status, orderId: metadata?.order_id, merchantId, company: source?.company });
     if (!id) {
       return res.status(400).json({ error: 'payment id is required' });
     }
+
+    // Webhook bodies are untrusted — Moyasar doesn't sign them, and the
+    // optional "secret_token" field is a weak shared-secret at best. Instead
+    // we verify the payment by calling Moyasar's own API with the merchant's
+    // secret key (which we already store to process payments). A forged body
+    // with status=paid can't survive this check because Moyasar will return
+    // the real payment state, or 401/403 if the payment doesn't belong to
+    // this merchant's account.
+    const verifyRes = await fetch(
+      `https://api.moyasar.com/v1/payments/${encodeURIComponent(id)}`,
+      {
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${merchantSecretKey}:`).toString('base64')}`,
+          Accept: 'application/json',
+        },
+      },
+    );
+    if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 404) {
+      console.warn('[Payment Webhook] Moyasar rejects this payment for this merchant:', verifyRes.status);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!verifyRes.ok) {
+      console.warn('[Payment Webhook] Moyasar verify failed:', verifyRes.status);
+      return res.status(502).json({ error: 'Could not verify payment with Moyasar' });
+    }
+    const verified = (await verifyRes.json()) as {
+      id?: string;
+      status?: string;
+      amount?: number;
+      source?: { company?: string; token?: { id?: string; brand?: string; last_four?: string; format?: string } };
+      metadata?: Record<string, string>;
+    };
+
+    const verifiedMerchantId = (verified.metadata?.merchant_id ?? '').trim();
+    if (verifiedMerchantId && verifiedMerchantId !== merchantId) {
+      console.warn('[Payment Webhook] merchant_id mismatch between webhook and Moyasar:', {
+        webhook: merchantId,
+        moyasar: verifiedMerchantId,
+      });
+      return res.status(400).json({ error: 'merchant_id mismatch' });
+    }
+
+    // Trust only Moyasar's authoritative response from here on. If the
+    // webhook body tried to lie about status/amount/source, it's ignored.
+    status = String(verified.status ?? status ?? '').toLowerCase();
+    if (verified.amount != null) payload.amount = verified.amount;
+    source = { ...source, ...(verified.source ?? {}) };
+
+    console.log('[Payment Webhook]', { id, status, orderId: metadata?.order_id, merchantId, company: source?.company });
     if (!supabaseAdmin) {
       return res.status(503).json({ error: 'Database not configured' });
     }
