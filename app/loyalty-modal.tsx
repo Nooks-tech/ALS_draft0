@@ -179,14 +179,18 @@ export default function LoyaltyModal() {
                         ))}
                       </View>
 
-                      {/* Milestone rewards — one line per configured milestone */}
-                      {(balance?.stampMilestones ?? []).length > 0 && (
-                        <View style={{ marginTop: 16 }}>
-                          <View style={{ height: 1, marginBottom: 10, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
-                          {(balance?.stampMilestones ?? [])
-                            .slice()
-                            .sort((a, b) => a.stamp_number - b.stamp_number)
-                            .map((m) => (
+                      {/* Milestone rewards — only milestones with a reward name are shown,
+                          so blank rows the merchant may have saved don't clutter the card. */}
+                      {(() => {
+                        const filledMilestones = (balance?.stampMilestones ?? [])
+                          .filter((m) => (m.reward_name || '').trim().length > 0)
+                          .slice()
+                          .sort((a, b) => a.stamp_number - b.stamp_number);
+                        if (filledMilestones.length === 0) return null;
+                        return (
+                          <View style={{ marginTop: 16 }}>
+                            <View style={{ height: 1, marginBottom: 10, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)' }} />
+                            {filledMilestones.map((m) => (
                               <View key={m.id ?? m.stamp_number} className="flex-row items-center justify-between" style={{ marginTop: 4, gap: 12 }}>
                                 <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
                                   {isArabic ? `الختم ${m.stamp_number}` : `STAMP ${m.stamp_number}`}
@@ -195,12 +199,13 @@ export default function LoyaltyModal() {
                                   numberOfLines={1}
                                   style={{ color: cardTextColor, fontSize: 13, fontWeight: '600', flex: 1, textAlign: 'right' }}
                                 >
-                                  {(m.reward_name || '').trim() || '—'}
+                                  {(m.reward_name || '').trim()}
                                 </Text>
                               </View>
                             ))}
-                        </View>
-                      )}
+                          </View>
+                        );
+                      })()}
                     </LinearGradient>
                   </View>
 

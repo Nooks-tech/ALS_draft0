@@ -608,8 +608,11 @@ function buildPassJson(opts: {
       //   primary → empty (the strip is the focal point)
       //   secondary + auxiliary → milestones, two per row, across two rows
       //   backFields → any milestones beyond the 4th plus help text
+      // Only milestones with an actual reward name are surfaced — empty rows
+      // the merchant may have left behind would render as "—" entries which
+      // look broken on the pass front.
       const sortedMilestones = (opts.milestones ?? [])
-        .filter((m) => m && typeof m.stamp_number === 'number')
+        .filter((m) => m && typeof m.stamp_number === 'number' && (m.reward_name || '').trim().length > 0)
         .slice()
         .sort((a, b) => a.stamp_number - b.stamp_number);
 
