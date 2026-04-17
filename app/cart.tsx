@@ -1,19 +1,16 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ArrowRight, Bike, ChevronLeft, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import React from 'react';
-import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
-import { useOperations } from '../src/context/OperationsContext';
-
 export default function CartScreen() {
   const router = useRouter();
   const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
-  const { isClosed, isBusy } = useOperations();
   const isArabic = i18n.language === 'ar';
   const rowDirection = isArabic ? 'row-reverse' : 'row';
   const {
@@ -36,15 +33,10 @@ export default function CartScreen() {
   const ForwardIcon = isArabic ? ChevronLeft : ChevronRight;
 
   const handleCheckout = () => {
-    if (isClosed || isBusy) {
-      Alert.alert(
-        isArabic ? 'الطلب غير متاح' : 'Ordering Unavailable',
-        isClosed
-          ? (isArabic ? 'المتجر مغلق حالياً.' : 'Store is currently closed.')
-          : (isArabic ? 'المتجر مشغول حالياً ولا يستقبل طلبات جديدة.' : 'Store is currently busy and not accepting new orders.')
-      );
-      return;
-    }
+    // Branch open/busy status is now evaluated at checkout against the
+    // customer's chosen (pickup) or nearest (delivery) branch. Don't block
+    // here — let the customer proceed and see a branch-specific message
+    // on the checkout screen if needed.
     if (orderType === 'delivery' && !deliveryAddress?.address) {
       router.push('/order-type');
       return;
@@ -233,13 +225,8 @@ export default function CartScreen() {
 
       {!!cartItems.length && (
         <View className="p-6 pt-4 pb-8 bg-white border-t border-slate-100">
-              {(isClosed || isBusy) && (
-            <Text className="text-center text-red-500 font-bold mb-2">
-              {isClosed ? (isArabic ? 'المتجر مغلق - لا يمكن إتمام الطلب' : 'Store is closed - checkout unavailable') : (isArabic ? 'المتجر مشغول - إتمام الطلب متوقف مؤقتاً' : 'Store is busy - checkout temporarily unavailable')}
-            </Text>
-          )}
           <TouchableOpacity
-            style={{ backgroundColor: (isClosed || isBusy) ? '#94a3b8' : primaryColor, flexDirection: rowDirection }}
+            style={{ backgroundColor: primaryColor, flexDirection: rowDirection }}
             className="p-5 rounded-[28px] items-center shadow-xl"
             activeOpacity={0.9}
             onPress={handleCheckout}

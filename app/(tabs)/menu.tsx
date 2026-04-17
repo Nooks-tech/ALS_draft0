@@ -32,12 +32,10 @@ import {
 } from 'react-native';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
 import { PriceWithSymbol } from '../../src/components/common/PriceWithSymbol';
-import { StoreStatusBanner } from '../../src/components/common/StoreStatusBanner';
 import { useCart } from '../../src/context/CartContext';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useMenuContext } from '../../src/context/MenuContext';
-import { useOperations } from '../../src/context/OperationsContext';
 
 type SliderItem = { id: string; image: string; title: string; subtitle: string };
 
@@ -47,7 +45,6 @@ export default function MenuScreen() {
   const { merchantId } = useMerchant();
   const { products, categories, loading } = useMenuContext();
   const { primaryColor, logoUrl, inAppLogoScale, backgroundColor, menuCardColor, textColor, tabTextColor } = useMerchantBranding();
-  const { isClosed, isBusy } = useOperations();
   const router = useRouter();
   const headerBg = primaryColor;
   const accent = primaryColor;
@@ -423,8 +420,10 @@ export default function MenuScreen() {
       {/* STICKY CATEGORY BAR */}
       {categoryBar}
 
-      {/* STORE STATUS BANNER */}
-      <StoreStatusBanner />
+      {/* Store status is evaluated at checkout against the customer's
+          selected or nearest branch — not globally on the menu — so
+          merchants with one branch closed and another open don't confuse
+          browsing customers. */}
 
       {/* MAIN LIST */}
       {loading && sections.length === 0 ? (
@@ -558,27 +557,17 @@ export default function MenuScreen() {
         </Modal>
       )}
 
-      {/* FLOATING CART – always visible when items exist; blocked on closed/busy with message */}
+      {/* FLOATING CART — browsing isn't gated by branch status. Checkout
+          is where we validate the customer's selected / nearest branch. */}
       {!!totalItems && (
         <View
           className="absolute left-5 right-5 z-[120]"
           style={{ bottom: Platform.OS === 'ios' ? 104 : 88 }}
         >
           <TouchableOpacity
-            onPress={() => {
-              if (isClosed || isBusy) {
-                Alert.alert(
-                  isArabic ? 'الطلب غير متاح' : 'Ordering Unavailable',
-                  isClosed
-                    ? (isArabic ? 'المتجر مغلق حالياً.' : 'Store is currently closed.')
-                    : (isArabic ? 'المتجر مشغول حالياً ولا يستقبل طلبات جديدة.' : 'Store is currently busy and not accepting new orders.')
-                );
-                return;
-              }
-              router.push('/cart');
-            }}
+            onPress={() => router.push('/cart')}
             className="p-5 rounded-[28px] flex-row items-center shadow-2xl"
-            style={{ backgroundColor: (isClosed || isBusy) ? '#94a3b8' : accent }}
+            style={{ backgroundColor: accent }}
             activeOpacity={0.8}
           >
             <View className="flex-row items-center flex-1">

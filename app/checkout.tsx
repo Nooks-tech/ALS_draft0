@@ -693,11 +693,17 @@ export default function CheckoutScreen() {
 
   const handlePay = async () => {
     if (isClosed || isBusy) {
+      const branchName = selectedBranch?.name
+        ?? (isArabic ? 'هذا الفرع' : 'This branch');
       Alert.alert(
-        'Ordering Unavailable',
+        isArabic ? 'الطلب غير متاح' : 'Ordering Unavailable',
         isClosed
-          ? 'Store is currently closed.'
-          : 'Store is currently busy and not accepting new orders.'
+          ? (isArabic
+              ? `${branchName} مغلق حالياً.`
+              : `${branchName} is currently closed.`)
+          : (isArabic
+              ? `${branchName} مشغول حالياً ولا يستقبل طلبات جديدة.`
+              : `${branchName} is currently busy and not accepting new orders.`),
       );
       return;
     }
@@ -933,6 +939,62 @@ export default function CheckoutScreen() {
         contentContainerStyle={{ paddingBottom: 200 }}
       >
         <View className="px-5 pt-5">
+          {/* Branch-specific status banner. Only shown when the customer's
+              selected (pickup) or nearest (delivery) branch is closed or
+              busy, so they know before filling out the rest of checkout.
+              We deliberately don't reroute to a different branch — some
+              merchants' next-closest branch is in a different city. */}
+          {(isClosed || isBusy) && (
+            <View
+              className="mb-4 rounded-2xl p-4 flex-row items-start"
+              style={{
+                backgroundColor: isClosed ? '#fef2f2' : '#fffbeb',
+                borderWidth: 1,
+                borderColor: isClosed ? '#fecaca' : '#fde68a',
+              }}
+            >
+              <View style={{ marginTop: 2 }}>
+                {isClosed ? (
+                  <X size={20} color="#dc2626" />
+                ) : (
+                  <Clock size={20} color="#d97706" />
+                )}
+              </View>
+              <View className="ml-3 flex-1">
+                <Text
+                  style={{
+                    color: isClosed ? '#991b1b' : '#92400e',
+                    fontWeight: '700',
+                    fontSize: 14,
+                  }}
+                >
+                  {isClosed
+                    ? (isArabic
+                        ? `${selectedBranch?.name ?? 'هذا الفرع'} مغلق حالياً`
+                        : `${selectedBranch?.name ?? 'This branch'} is currently closed`)
+                    : (isArabic
+                        ? `${selectedBranch?.name ?? 'هذا الفرع'} مشغول حالياً`
+                        : `${selectedBranch?.name ?? 'This branch'} is currently busy`)}
+                </Text>
+                <Text
+                  style={{
+                    color: isClosed ? '#b91c1c' : '#a16207',
+                    fontSize: 12,
+                    marginTop: 4,
+                  }}
+                >
+                  {orderType === 'delivery'
+                    ? (isArabic
+                        ? 'هذا هو الفرع الأقرب لعنوانك. لا يمكن استقبال الطلبات الآن.'
+                        : "This is the branch closest to your address. Orders can't be placed right now.")
+                    : (isArabic
+                        ? 'لا يمكن استقبال الطلبات من هذا الفرع الآن.'
+                        : "Orders can't be placed at this branch right now.")}
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Delivery & Order Details (display only, no change) */}
           <View className="bg-slate-50 rounded-[28px] border border-slate-100 overflow-hidden">
             <View className="flex-row items-center px-4 py-4">
