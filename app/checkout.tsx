@@ -89,7 +89,7 @@ export default function CheckoutScreen() {
   const { merchantId } = useMerchant();
   const { addOrder } = useOrders();
   const { profile } = useProfile();
-  const { isClosed, isBusy } = useOperations();
+  const { isClosed, isBusy, isPickupOnly } = useOperations();
   const {
     primaryColor,
     appName,
@@ -692,9 +692,9 @@ export default function CheckoutScreen() {
   };
 
   const handlePay = async () => {
+    const branchName = selectedBranch?.name
+      ?? (isArabic ? 'هذا الفرع' : 'This branch');
     if (isClosed || isBusy) {
-      const branchName = selectedBranch?.name
-        ?? (isArabic ? 'هذا الفرع' : 'This branch');
       Alert.alert(
         isArabic ? 'الطلب غير متاح' : 'Ordering Unavailable',
         isClosed
@@ -704,6 +704,15 @@ export default function CheckoutScreen() {
           : (isArabic
               ? `${branchName} مشغول حالياً ولا يستقبل طلبات جديدة.`
               : `${branchName} is currently busy and not accepting new orders.`),
+      );
+      return;
+    }
+    if (orderType === 'delivery' && isPickupOnly) {
+      Alert.alert(
+        isArabic ? 'التوصيل غير متاح' : 'Delivery Unavailable',
+        isArabic
+          ? `${branchName} للاستلام فقط. يرجى التبديل إلى الاستلام أو استخدام عنوان توصيل أقرب لفرع يوفر التوصيل.`
+          : `${branchName} is pickup-only. Switch to Pickup or use a delivery address closer to a delivery-capable branch.`,
       );
       return;
     }
@@ -939,6 +948,35 @@ export default function CheckoutScreen() {
         contentContainerStyle={{ paddingBottom: 200 }}
       >
         <View className="px-5 pt-5">
+          {/* Delivery-chosen-but-branch-is-pickup-only: block with a clear
+              message. We do NOT silently pick a different branch (merchant
+              policy — the next-closest branch could be in a different
+              city). Customer must switch order type to Pickup or change
+              their delivery address to one closer to a delivery-capable
+              branch. */}
+          {orderType === 'delivery' && isPickupOnly && !isClosed && !isBusy && (
+            <View
+              className="mb-4 rounded-2xl p-4 flex-row items-start"
+              style={{ backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a' }}
+            >
+              <View style={{ marginTop: 2 }}>
+                <X size={20} color="#d97706" />
+              </View>
+              <View className="ml-3 flex-1">
+                <Text style={{ color: '#92400e', fontWeight: '700', fontSize: 14 }}>
+                  {isArabic
+                    ? `${selectedBranch?.name ?? 'هذا الفرع'} لا يوفر خدمة التوصيل`
+                    : `${selectedBranch?.name ?? 'This branch'} does not offer delivery`}
+                </Text>
+                <Text style={{ color: '#a16207', fontSize: 12, marginTop: 4 }}>
+                  {isArabic
+                    ? 'هذا هو الفرع الأقرب لعنوانك وهو للاستلام فقط. يرجى التبديل إلى الاستلام أو استخدام عنوان آخر قريب من فرع يوفر التوصيل.'
+                    : "This is the branch closest to your address and it's pickup-only. Switch to Pickup, or use a delivery address near a delivery-capable branch."}
+                </Text>
+              </View>
+            </View>
+          )}
+
           {/* Branch-specific status banner. Only shown when the customer's
               selected (pickup) or nearest (delivery) branch is closed or
               busy, so they know before filling out the rest of checkout.
