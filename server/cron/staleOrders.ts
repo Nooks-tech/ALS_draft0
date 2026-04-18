@@ -40,7 +40,7 @@ async function sendPush(customerId: string, title: string, body: string) {
 }
 
 const STATUS_RANK: Record<string, number> = {
-  'Pending': 0, 'Preparing': 1, 'Ready': 2, 'Out for delivery': 3, 'Delivered': 4, 'Cancelled': 5,
+  'Placed': 0, 'Pending': 0, 'Accepted': 1, 'Preparing': 2, 'Ready': 3, 'Out for delivery': 4, 'Delivered': 5, 'Cancelled': 6,
 };
 
 async function syncOtoStatuses() {
@@ -50,7 +50,7 @@ async function syncOtoStatuses() {
     .from('customer_orders')
     .select('id, status, customer_id, oto_id, merchant_id')
     .eq('order_type', 'delivery')
-    .in('status', ['Preparing', 'Ready', 'Out for delivery'])
+    .in('status', ['Placed', 'Accepted', 'Preparing', 'Ready', 'Out for delivery'])
     .not('oto_id', 'is', null)
     .limit(50);
 
@@ -90,7 +90,7 @@ async function checkStaleOrders() {
     .from('customer_orders')
     .select('*')
     .eq('order_type', 'delivery')
-    .in('status', ['Ready', 'Preparing'])
+    .in('status', ['Ready', 'Preparing', 'Accepted', 'Placed'])
     .not('oto_id', 'is', null)
     .lt('updated_at', cutoff)
     .limit(20);

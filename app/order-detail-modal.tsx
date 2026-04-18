@@ -10,7 +10,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
-import { submitComplaint, getOrderComplaint, type ComplaintRow } from '../src/api/orders';
+import { submitComplaint, getOrderComplaint, customerMarkReceived, type ComplaintRow } from '../src/api/orders';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { supabase } from '../src/api/supabase';
@@ -91,6 +91,42 @@ export default function OrderDetailModal() {
       setLoadingComplaint(false);
     }).catch(() => setLoadingComplaint(false));
   }, [orderId, order?.status]);
+
+  // "Mark received" fallback for pickup orders where the cashier never
+  // closed the ticket. We unlock the button 45 minutes after ready_at.
+  const CUSTOMER_RECEIVED_UNLOCK_MS = 45 * 60 * 1000;
+  const [markReceivedLoading, setMarkReceivedLoading] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    if (order?.status !== 'Ready' || order.orderType !== 'pickup') return;
+    const t = setInterval(() => setNowTick(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, [order?.status, order?.orderType]);
+  const readyAtMs = order?.readyAt ? Date.parse(order.readyAt) : null;
+  const receivedUnlockRemainingMs =
+    readyAtMs != null && Number.isFinite(readyAtMs)
+      ? Math.max(0, CUSTOMER_RECEIVED_UNLOCK_MS - (nowTick - readyAtMs))
+      : CUSTOMER_RECEIVED_UNLOCK_MS;
+  const showMarkReceived = order?.status === 'Ready' && order.orderType === 'pickup';
+  const canMarkReceived = showMarkReceived && receivedUnlockRemainingMs <= 0;
+
+  const handleMarkReceived = async () => {
+    if (!orderId || markReceivedLoading) return;
+    setMarkReceivedLoading(true);
+    try {
+      const result = await customerMarkReceived(String(orderId));
+      if (!result.success) {
+        Alert.alert(
+          isArabic ? 'خطأ' : 'Error',
+          result.error || (isArabic ? 'لم نستطع تحديث الطلب' : 'Could not update order'),
+        );
+      }
+    } catch (e: any) {
+      Alert.alert(isArabic ? 'خطأ' : 'Error', e?.message || 'Network error');
+    } finally {
+      setMarkReceivedLoading(false);
+    }
+  };
 
   // OTO polling
   useEffect(() => {
@@ -390,6 +426,35 @@ export default function OrderDetailModal() {
             </View>
           )}
 
+          {showMarkReceived && (
+            <View className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-100">
+              <Text className="text-slate-700 text-sm mb-3" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+                {canMarkReceived
+                  ? (isArabic
+                      ? 'إذا استلمت طلبك ولم يقم الكاشير بتأكيد الاستلام، يمكنك تأكيده بنفسك.'
+                      : 'If you already picked up your order and the cashier forgot to confirm it, you can mark it yourself.')
+                  : (isArabic
+                      ? `يمكنك تأكيد استلام الطلب بعد ٤٥ دقيقة من جاهزيته. متبقي ${Math.ceil(receivedUnlockRemainingMs / 60000)} دقيقة.`
+                      : `You can confirm receipt 45 minutes after the order was marked ready. ${Math.ceil(receivedUnlockRemainingMs / 60000)} min remaining.`)}
+              </Text>
+              <TouchableOpacity
+                onPress={handleMarkReceived}
+                disabled={!canMarkReceived || markReceivedLoading}
+                className={`p-3 rounded-xl items-center ${canMarkReceived ? '' : 'opacity-50'}`}
+                style={{ backgroundColor: canMarkReceived ? primaryColor : '#cbd5e1' }}
+                activeOpacity={0.8}
+              >
+                {markReceivedLoading ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text className="text-white font-bold">
+                    {isArabic ? 'تأكيد استلام الطلب' : 'Mark as received'}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+
           {order.orderType === 'delivery' && order.deliveryAddress && (
             <View className="flex-row items-start mb-4 p-3 bg-slate-50 rounded-xl">
               <MapPin size={18} color={primaryColor} style={{ marginTop: 2 }} />
@@ -419,6 +484,7 @@ export default function OrderDetailModal() {
                 driverLon={otoStatus?.driverLon}
                 branchName={order.branchName}
                 accentColor={primaryColor}
+                etaLabel={otoStatus?.estimatedDeliveryTime ?? null}
               />
               <View className="flex-row flex-wrap gap-2 mt-2">
                 <View className="flex-row items-center gap-1.5">
@@ -438,9 +504,6 @@ export default function OrderDetailModal() {
                   </View>
                 )}
               </View>
-              {otoStatus?.estimatedDeliveryTime && (
-                <Text className="text-slate-500 text-xs mt-2">{isArabic ? 'الوقت المتوقع للوصول' : 'ETA'}: {otoStatus.estimatedDeliveryTime}</Text>
-              )}
             </View>
           )}
 

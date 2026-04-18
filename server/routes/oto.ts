@@ -10,6 +10,7 @@ import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
 import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
 import { webhookRateLimit } from '../utils/rateLimit';
+import { ORDER_PUSH_COPY, sendLocalizedPushToCustomer } from '../utils/localizedPush';
 
 /** Constant-time string comparison; safe to call with strings of any length. */
 function safeEqual(a: string, b: string): boolean {
@@ -253,6 +254,20 @@ otoRouter.get('/delivery-options', async (req, res) => {
   }
 });
 
+/** Haversine distance in meters between two WGS84 coords. */
+function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (v: number) => (v * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const DRIVER_CLOSE_BY_METERS = 1000;
+
 /** GET /api/oto/order-status?otoId=123 - OTO order details via GET /orderDetails (driver position, tracking). Syncs status to Supabase customer_orders when oto_id matches. */
 otoRouter.get('/order-status', async (req, res) => {
   try {
@@ -273,7 +288,7 @@ otoRouter.get('/order-status', async (req, res) => {
     let merchantId: string | null = null;
     const { data: order } = await supabaseAdmin
       .from('customer_orders')
-      .select('merchant_id, customer_id')
+      .select('id, merchant_id, customer_id, delivery_lat, delivery_lng, driver_close_notified_at')
       .eq('oto_id', otoId)
       .maybeSingle();
     if (!order || order.customer_id !== user.id) {
@@ -297,6 +312,39 @@ otoRouter.get('/order-status', async (req, res) => {
         .eq('oto_id', otoId);
       if (error) console.warn('[OTO] Supabase status sync failed:', error.message);
     }
+
+    // 1-km proximity push — fire once per order. OTO doesn't emit a dedicated
+    // "driver close by" event, so we compute it every time the mobile app
+    // polls driver location (every ~10 s while Out for delivery).
+    if (
+      !order.driver_close_notified_at &&
+      status?.driverLat != null &&
+      status?.driverLon != null &&
+      order.delivery_lat != null &&
+      order.delivery_lng != null &&
+      order.customer_id
+    ) {
+      const distance = haversineMeters(
+        Number(status.driverLat),
+        Number(status.driverLon),
+        Number(order.delivery_lat),
+        Number(order.delivery_lng),
+      );
+      if (Number.isFinite(distance) && distance <= DRIVER_CLOSE_BY_METERS) {
+        const stamp = new Date().toISOString();
+        const { error: stampErr } = await supabaseAdmin
+          .from('customer_orders')
+          .update({ driver_close_notified_at: stamp })
+          .eq('id', order.id)
+          .is('driver_close_notified_at', null);
+        // Only push if we actually won the race (stamp applied to a previously
+        // unstamped row) — otherwise a concurrent poll already sent it.
+        if (!stampErr) {
+          sendLocalizedPushToCustomer(order.customer_id, ORDER_PUSH_COPY.driverCloseBy).catch(() => {});
+        }
+      }
+    }
+
     res.json(status);
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get order status' });
@@ -374,7 +422,7 @@ otoRouter.post('/webhook', webhookRateLimit, async (req, res) => {
 
     // Don't regress status (e.g. don't go from Delivered back to Out for delivery)
     const STATUS_RANK: Record<string, number> = {
-      'Pending': 0, 'Preparing': 1, 'Ready': 2, 'Out for delivery': 3, 'Delivered': 4, 'Cancelled': 5,
+      'Placed': 0, 'Pending': 0, 'Accepted': 1, 'Preparing': 2, 'Ready': 3, 'Out for delivery': 4, 'Delivered': 5, 'Cancelled': 6,
     };
     const currentRank = STATUS_RANK[order.status] ?? 0;
     const newRank = STATUS_RANK[mappedStatus] ?? 0;
@@ -391,6 +439,11 @@ otoRouter.post('/webhook', webhookRateLimit, async (req, res) => {
     if (baseUpdate.delivered_at) {
       updates.delivered_at = baseUpdate.delivered_at;
     }
+    // Mirror the Foodics webhook: stamp ready_at on first Ready transition
+    // so the mobile app's 45-min "mark received" fallback has an anchor.
+    if (mappedStatus === 'Ready' && order.status !== 'Ready') {
+      updates.ready_at = new Date().toISOString();
+    }
     // Persist driver info from OTO webhook for delivery tracking UI
     if (driverName) updates.driver_name = driverName;
     if (driverPhone) updates.driver_phone = driverPhone;
@@ -406,28 +459,16 @@ otoRouter.post('/webhook', webhookRateLimit, async (req, res) => {
       return res.status(500).json({ error: 'Failed to persist delivery status' });
     }
 
-    // Push notifications for key transitions
+    // Push notifications for key transitions (localized EN / AR)
     if (mappedStatus === 'Out for delivery' && order.customer_id) {
-      sendPushToCustomer(
-        order.customer_id,
-        'Order On The Way!',
-        `Your order is out for delivery${driverName ? ` with ${driverName}` : ''}.`,
-      );
+      sendLocalizedPushToCustomer(order.customer_id, ORDER_PUSH_COPY.outForDelivery).catch(() => {});
     } else if (mappedStatus === 'Delivered' && order.customer_id) {
-      sendPushToCustomer(
-        order.customer_id,
-        'Order Delivered',
-        'Your order has been delivered. Enjoy!',
-      );
+      sendLocalizedPushToCustomer(order.customer_id, ORDER_PUSH_COPY.delivered).catch(() => {});
       earnPoints(order.customer_id, order.id, order.total_sar ?? 0, order.merchant_id ?? '').catch(
         (e: any) => console.warn('[OTO Webhook] Auto-earn loyalty failed:', e?.message),
       );
     } else if (mappedStatus === 'Cancelled' && order.customer_id) {
-      sendPushToCustomer(
-        order.customer_id,
-        'Delivery Cancelled',
-        'The delivery for your order has been cancelled. Please contact support.',
-      );
+      sendLocalizedPushToCustomer(order.customer_id, ORDER_PUSH_COPY.cancelledByStore).catch(() => {});
     }
 
     await recordWebhookEvent('oto', eventId, {

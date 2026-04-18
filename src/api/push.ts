@@ -10,6 +10,7 @@ export async function registerPushToken(params: {
   merchantId: string;
   customerId: string;
   token: string;
+  appLanguage?: string;
 }): Promise<void> {
   if (!BASE_URL.trim() || !params.merchantId.trim() || !params.customerId.trim() || !params.token.trim()) {
     return;
@@ -23,6 +24,7 @@ export async function registerPushToken(params: {
       customerId: params.customerId,
       token: params.token,
       platform: Platform.OS,
+      ...(params.appLanguage ? { appLanguage: params.appLanguage } : {}),
     }),
   });
   if (!res.ok) {

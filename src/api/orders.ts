@@ -198,6 +198,18 @@ export async function customerCancelOrder(orderId: string): Promise<{ success: b
   return api.post<{ success: boolean; refundStatus?: string; error?: string }>(`/api/orders/${orderId}/customer-cancel`, {});
 }
 
+export async function customerMarkReceived(orderId: string): Promise<{
+  success: boolean;
+  status?: string;
+  error?: string;
+  unlocksInMs?: number;
+}> {
+  return api.post<{ success: boolean; status?: string; error?: string; unlocksInMs?: number }>(
+    `/api/orders/${orderId}/customer-received`,
+    {},
+  );
+}
+
 export async function holdOrder(orderId: string): Promise<{ success: boolean; error?: string }> {
   return api.post<{ success: boolean; error?: string }>(`/api/orders/${orderId}/hold`, {});
 }

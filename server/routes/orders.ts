@@ -188,10 +188,12 @@ ordersRouter.post('/commit', async (req, res) => {
       }
     }
 
+    // Default to 'Placed' so the stepper's first step is active the moment the
+    // row lands. Foodics webhooks then advance it: 2 (Active) → 'Accepted'.
     const normalizedStatus =
       typeof status === 'string' && status.trim()
         ? status.trim()
-        : 'Pending';
+        : 'Placed';
     const normalizedDeliveryFee =
       typeof deliveryFee === 'number' && Number.isFinite(deliveryFee) ? deliveryFee : null;
 
@@ -260,13 +262,38 @@ ordersRouter.post('/commit', async (req, res) => {
         delivery_lat: payload.delivery_lat,
         delivery_lng: payload.delivery_lng,
         delivery_city: payload.delivery_city,
-        items: items.map((item: any) => ({
-          product_id: String(item.id ?? item.product_id ?? ''),
-          name: String(item.name ?? 'Item'),
-          quantity: Number(item.quantity ?? 1),
-          price_sar: Number(item.price ?? item.price_sar ?? 0),
-          ...(item.customizations ? { customizations: item.customizations } : {}),
-        })),
+        items: items.map((item: any) => {
+          // Foodics expects the product's own unit_price here, and gets each
+          // modifier's surcharge via the separate options[] array. If we sent
+          // the already-summed display price, Foodics would add the modifier
+          // prices on top again and the merchant POS total would diverge
+          // from what the customer paid. Prefer basePrice (stamped by the
+          // product screen) and fall back to price-minus-customizations for
+          // older carts that still hold only the summed price.
+          const rawBase =
+            item.basePrice ?? item.base_price ?? item.unitBasePrice ?? null;
+          let basePrice: number;
+          if (typeof rawBase === 'number' && Number.isFinite(rawBase)) {
+            basePrice = rawBase;
+          } else {
+            const customizations = item.customizations ?? {};
+            const modifierSum = Object.values(customizations).reduce(
+              (sum: number, opt: any) => sum + Number(opt?.price ?? 0),
+              0,
+            );
+            basePrice = Math.max(
+              0,
+              Number(item.price ?? item.price_sar ?? 0) - Number(modifierSum || 0),
+            );
+          }
+          return {
+            product_id: String(item.id ?? item.product_id ?? ''),
+            name: String(item.name ?? 'Item'),
+            quantity: Number(item.quantity ?? 1),
+            price_sar: basePrice,
+            ...(item.customizations ? { customizations: item.customizations } : {}),
+          };
+        }),
       });
 
       // Store Foodics order ID from relay response (fire-and-forget)
@@ -408,7 +435,9 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
           windowExpired: true,
         });
       }
-      if (order.status !== 'Preparing') {
+      // Customer can cancel only while the merchant hasn't started preparing
+      // the order yet. "Placed" and "Accepted" are both pre-kitchen states.
+      if (!['Placed', 'Accepted', 'Pending', 'Preparing'].includes(order.status)) {
         return res.status(400).json({
           error: 'Cannot cancel — order preparation has already progressed.',
         });
@@ -571,7 +600,7 @@ ordersRouter.post('/:id/hold', async (req, res) => {
     if (Date.now() - createdAt > holdWindowMs) {
       return res.status(400).json({ error: 'Edit window expired', windowExpired: true });
     }
-    if (order.status !== 'Preparing') {
+    if (!['Placed', 'Accepted', 'Pending', 'Preparing'].includes(order.status)) {
       return res.status(400).json({ error: 'Order is no longer editable' });
     }
 
@@ -605,12 +634,12 @@ ordersRouter.post('/:id/resume', async (req, res) => {
 
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
-      .update({ status: 'Preparing', updated_at: new Date().toISOString() })
+      .update({ status: 'Placed', updated_at: new Date().toISOString() })
       .eq('id', orderId)
       .eq('status', 'On Hold');
 
     if (updateErr) return res.status(500).json({ error: updateErr.message });
-    res.json({ success: true, orderId, status: 'Preparing' });
+    res.json({ success: true, orderId, status: 'Placed' });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to resume order' });
   }
@@ -677,7 +706,8 @@ ordersRouter.get('/:id/status', async (req, res) => {
     const createdAt = new Date(order.created_at).getTime();
     const elapsed = Date.now() - createdAt;
     const canCustomerCancel =
-      (order.status === 'Preparing' && elapsed <= CUSTOMER_CANCEL_WINDOW_MS) ||
+      (['Placed', 'Accepted', 'Pending', 'Preparing'].includes(order.status) &&
+        elapsed <= CUSTOMER_CANCEL_WINDOW_MS) ||
       order.status === 'On Hold';
     const cancelTimeRemaining = order.status === 'On Hold'
       ? CUSTOMER_CANCEL_WINDOW_MS
@@ -702,6 +732,84 @@ ordersRouter.get('/:id/status', async (req, res) => {
   }
 });
 
+/*
+ * ── POST /api/orders/:id/customer-received ──
+ *
+ * Fallback for pickup orders where the cashier forgot to close the ticket
+ * after handing the order over. The customer can tap "I received my order"
+ * on the tracking screen after 45 minutes in Ready state — we stamp the
+ * order as Delivered, fire the loyalty earn, and notify them.
+ *
+ * Refuses early presses (< 45 min since ready_at) and anything other than
+ * a pickup order already in Ready.
+ */
+const CUSTOMER_RECEIVED_UNLOCK_MS = 45 * 60 * 1000;
+ordersRouter.post('/:id/customer-received', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const orderId = req.params.id;
+    const { data: order, error } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, customer_id, status, order_type, ready_at, total_sar, merchant_id')
+      .eq('id', orderId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    if (order.order_type !== 'pickup') {
+      return res.status(400).json({ error: 'This action is only available for pickup orders' });
+    }
+    if (order.status !== 'Ready') {
+      return res.status(400).json({ error: `Order must be in Ready state (currently ${order.status})` });
+    }
+    if (!order.ready_at) {
+      return res.status(400).json({ error: 'Order has no ready timestamp yet' });
+    }
+
+    const readyAtMs = Date.parse(order.ready_at);
+    if (!Number.isFinite(readyAtMs)) {
+      return res.status(500).json({ error: 'Invalid ready_at timestamp' });
+    }
+    const elapsed = Date.now() - readyAtMs;
+    if (elapsed < CUSTOMER_RECEIVED_UNLOCK_MS) {
+      return res.status(400).json({
+        error: 'Not available yet',
+        unlocksInMs: CUSTOMER_RECEIVED_UNLOCK_MS - elapsed,
+      });
+    }
+
+    const now = new Date().toISOString();
+    const { error: updateErr } = await supabaseAdmin
+      .from('customer_orders')
+      .update({ status: 'Delivered', delivered_at: now, updated_at: now })
+      .eq('id', orderId)
+      .eq('status', 'Ready');
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+    // Fire loyalty earn (idempotency is enforced by the loyalty route itself).
+    if (order.customer_id && order.merchant_id) {
+      earnPoints(order.customer_id, order.id, order.total_sar ?? 0, order.merchant_id).catch(
+        (e: any) => console.warn('[orders] customer-received loyalty earn failed:', e?.message),
+      );
+    }
+
+    sendPushToCustomer(
+      order.customer_id,
+      'Order Received',
+      'Thanks — we marked your pickup order as received.',
+    ).catch(() => {});
+
+    res.json({ success: true, status: 'Delivered' });
+  } catch (err: any) {
+    console.error('[orders] customer-received error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to mark received' });
+  }
+});
+
 /* ── Update status (dashboard) ── */
 ordersRouter.patch('/:id/status', async (req, res) => {
   try {
@@ -712,7 +820,7 @@ ordersRouter.patch('/:id/status', async (req, res) => {
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
     if (!status) return res.status(400).json({ error: 'status is required' });
 
-    const validStatuses = ['Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold', 'Pending'];
+    const validStatuses = ['Placed', 'Accepted', 'Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold', 'Pending'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
     }

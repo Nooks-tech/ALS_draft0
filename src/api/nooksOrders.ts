@@ -65,13 +65,29 @@ export function buildNooksOrderPayload(
     ...(order.orderType ? { order_type: order.orderType } : {}),
     ...(order.branchName ? { branch_name: order.branchName } : {}),
     ...(order.deliveryFee != null ? { delivery_fee: order.deliveryFee } : {}),
-    items: order.items.map((i) => ({
-      product_id: i.id,
-      name: i.name,
-      quantity: i.quantity,
-      price_sar: i.price,
-      ...(i.customizations ? { customizations: i.customizations } : {}),
-    })),
+    items: order.items.map((i) => {
+      // Send the product's own base unit price — Foodics adds modifier
+      // surcharges itself from options[]. See server/routes/orders.ts for
+      // the matching logic on the other relay path.
+      const rawBase = (i as { basePrice?: number }).basePrice;
+      let basePrice: number;
+      if (typeof rawBase === 'number' && Number.isFinite(rawBase)) {
+        basePrice = rawBase;
+      } else {
+        const modifierSum = Object.values(i.customizations ?? {}).reduce(
+          (sum: number, opt: any) => sum + Number(opt?.price ?? 0),
+          0,
+        );
+        basePrice = Math.max(0, Number(i.price ?? 0) - Number(modifierSum || 0));
+      }
+      return {
+        product_id: i.id,
+        name: i.name,
+        quantity: i.quantity,
+        price_sar: basePrice,
+        ...(i.customizations ? { customizations: i.customizations } : {}),
+      };
+    }),
     ...(order.promoCode && { promo_code: order.promoCode }),
     ...(order.paymentId && { payment_id: order.paymentId }),
     ...(order.paymentMethod && { payment_method: order.paymentMethod }),

@@ -1,18 +1,72 @@
 import { Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
-type OrderStatus = 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled';
+type OrderStatus =
+  | 'Placed'
+  | 'Accepted'
+  | 'Preparing'
+  | 'Ready'
+  | 'Out for delivery'
+  | 'Delivered'
+  | 'Cancelled';
 
-const STATUS_STEPS: { key: OrderStatus; label: string }[] = [
-  { key: 'Preparing', label: 'Preparing' },
-  { key: 'Ready', label: 'Ready' },
-  { key: 'Out for delivery', label: 'On the way' },
-  { key: 'Delivered', label: 'Delivered' },
+// Full lifecycle in canonical order. The stepper renders a subset depending
+// on orderType: pickup skips "Out for delivery" and terminates at Ready,
+// delivery skips Ready and terminates at Delivered.
+const STATUS_ORDER: OrderStatus[] = [
+  'Placed',
+  'Accepted',
+  'Preparing',
+  'Ready',
+  'Out for delivery',
+  'Delivered',
 ];
 
-const STATUS_ORDER: OrderStatus[] = ['Preparing', 'Ready', 'Out for delivery', 'Delivered'];
-
 const DEFAULT_ACCENT = '#0D9488';
+
+function labelFor(key: OrderStatus, isArabic: boolean): string {
+  switch (key) {
+    case 'Placed':
+      return isArabic ? 'تم الإرسال' : 'Placed';
+    case 'Accepted':
+      return isArabic ? 'تم القبول' : 'Accepted';
+    case 'Preparing':
+      return isArabic ? 'قيد التحضير' : 'Preparing';
+    case 'Ready':
+      return isArabic ? 'جاهز' : 'Ready';
+    case 'Out for delivery':
+      return isArabic ? 'في الطريق' : 'On the way';
+    case 'Delivered':
+      return isArabic ? 'تم التوصيل' : 'Delivered';
+    default:
+      return String(key);
+  }
+}
+
+function subLabelFor(
+  status: OrderStatus,
+  orderType: 'delivery' | 'pickup',
+  isArabic: boolean
+): string | null {
+  switch (status) {
+    case 'Placed':
+      return isArabic ? 'بانتظار قبول المتجر' : 'Waiting for the store to accept';
+    case 'Accepted':
+      return isArabic ? 'قبل المتجر طلبك' : 'The store accepted your order';
+    case 'Preparing':
+      return isArabic ? 'طلبك قيد التحضير' : 'Your order is being prepared';
+    case 'Ready':
+      return orderType === 'pickup'
+        ? (isArabic ? 'جاهز للاستلام!' : 'Ready for pickup!')
+        : (isArabic ? 'استلمه السائق' : 'Picked up by driver');
+    case 'Out for delivery':
+      return isArabic ? 'السائق في الطريق' : 'Driver is on the way';
+    case 'Delivered':
+      return isArabic ? 'تم توصيل الطلب' : 'Order delivered';
+    default:
+      return null;
+  }
+}
 
 export function OrderStatusStepper({
   status,
@@ -25,23 +79,28 @@ export function OrderStatusStepper({
 }) {
   const { i18n } = useTranslation();
   const isArabic = i18n.language === 'ar';
-  const steps = orderType === 'delivery'
-    ? STATUS_STEPS
-    : STATUS_STEPS.filter((s) => s.key !== 'Out for delivery');
+
+  // Pickup: Placed → Accepted → Preparing → Ready  (4 steps)
+  // Delivery: Placed → Accepted → Preparing → Out for delivery → Delivered  (5 steps)
+  const steps: OrderStatus[] =
+    orderType === 'delivery'
+      ? ['Placed', 'Accepted', 'Preparing', 'Out for delivery', 'Delivered']
+      : ['Placed', 'Accepted', 'Preparing', 'Ready'];
 
   const currentIndex = STATUS_ORDER.indexOf(status);
   const effectiveIndex = currentIndex < 0 ? 0 : currentIndex;
 
   return (
     <View className="mb-6">
-      {steps.map((step, index) => {
-        const stepIndex = STATUS_ORDER.indexOf(step.key);
+      {steps.map((stepKey, index) => {
+        const stepIndex = STATUS_ORDER.indexOf(stepKey);
         const isCompleted = stepIndex <= effectiveIndex || status === 'Delivered';
-        const isCurrent = step.key === status;
+        const isCurrent = stepKey === status;
         const isLast = index === steps.length - 1;
+        const sub = isCurrent ? subLabelFor(status, orderType, isArabic) : null;
 
         return (
-          <View key={step.key} className="flex-row">
+          <View key={stepKey} className="flex-row">
             <View className="items-center" style={{ width: 32 }}>
               <View
                 style={isCompleted ? { backgroundColor: accentColor } : undefined}
@@ -71,20 +130,9 @@ export function OrderStatusStepper({
                   isCurrent ? 'text-slate-900' : isCompleted ? 'text-slate-600' : 'text-slate-400'
                 }`}
               >
-                {step.key === 'Preparing' ? (isArabic ? 'قيد التحضير' : 'Preparing')
-                  : step.key === 'Ready' ? (isArabic ? 'جاهز' : 'Ready')
-                  : step.key === 'Out for delivery' ? (isArabic ? 'في الطريق' : 'On the way')
-                  : step.key === 'Delivered' ? (isArabic ? 'تم التوصيل' : 'Delivered')
-                  : step.label}
+                {labelFor(stepKey, isArabic)}
               </Text>
-              {isCurrent && (
-                <Text className="text-slate-500 text-xs mt-0.5">
-                  {status === 'Preparing' && (isArabic ? 'طلبك قيد التحضير' : 'Your order is being prepared')}
-                  {status === 'Ready' && (orderType === 'pickup' ? (isArabic ? 'جاهز للاستلام!' : 'Ready for pickup!') : (isArabic ? 'استلمه السائق' : 'Picked up by driver'))}
-                  {status === 'Out for delivery' && (isArabic ? 'السائق في الطريق' : 'Driver is on the way')}
-                  {status === 'Delivered' && (isArabic ? 'تم توصيل الطلب' : 'Order delivered')}
-                </Text>
-              )}
+              {sub && <Text className="text-slate-500 text-xs mt-0.5">{sub}</Text>}
             </View>
           </View>
         );

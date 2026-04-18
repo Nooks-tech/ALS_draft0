@@ -10,10 +10,17 @@ import { useMerchantBranding } from './MerchantBrandingContext';
 export type CartItem = {
   id: string;
   name: string;
+  /** Display unit price — base + selected modifier surcharges. */
   price: number;
+  /**
+   * Product base price with NO modifier surcharges mixed in. Relayed to
+   * Foodics as `unit_price` so modifiers, which are sent as a separate
+   * `options[]` array with their own `unit_price`, are not double-counted.
+   */
+  basePrice?: number;
   quantity: number;
   image: string;
-  customizations?: { [key: string]: any }; 
+  customizations?: { [key: string]: any };
   uniqueId: string;
 };
 

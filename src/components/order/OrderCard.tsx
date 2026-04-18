@@ -6,7 +6,7 @@ import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
 interface OrderProps {
   id: string;
-  status: 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled' | 'On Hold';
+  status: 'Placed' | 'Accepted' | 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled' | 'On Hold';
   price: number;
   date: string;
   items: string;
@@ -19,6 +19,8 @@ export const OrderCard = ({ id, status, price, date, items, refundStatus, onPres
   const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
   const isArabic = i18n.language === 'ar';
   const statusLabel =
+    status === 'Placed' ? (isArabic ? 'تم الإرسال' : 'Placed') :
+    status === 'Accepted' ? (isArabic ? 'تم القبول' : 'Accepted') :
     status === 'Preparing' ? (isArabic ? 'قيد التحضير' : 'Preparing') :
     status === 'Ready' ? (isArabic ? 'جاهز' : 'Ready') :
     status === 'Out for delivery' ? (isArabic ? 'خرج للتوصيل' : 'Out for delivery') :
@@ -29,6 +31,8 @@ export const OrderCard = ({ id, status, price, date, items, refundStatus, onPres
 
   const getStatusColor = () => {
     switch (status) {
+      case 'Placed': return 'bg-slate-100 text-slate-700';
+      case 'Accepted': return 'bg-amber-100 text-amber-700';
       case 'Preparing': return 'bg-yellow-100 text-yellow-700';
       case 'Ready': return 'bg-green-100 text-green-700';
       case 'Out for delivery': return 'bg-blue-100 text-blue-700';

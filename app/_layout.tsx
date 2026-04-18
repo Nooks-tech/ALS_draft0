@@ -149,6 +149,11 @@ export default function RootLayout() {
 function PushTokenRegistrar() {
   const { user } = useAuth();
   const { merchantId } = useMerchant();
+  // i18n is lazy-loaded; read the current language via require so this
+  // component stays dependency-light for the rest of the tree.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const i18nInstance = require('../src/i18n').default as { language?: string };
+  const appLanguage = (i18nInstance?.language || 'en').startsWith('ar') ? 'ar' : 'en';
 
   useEffect(() => {
     let cancelled = false;
@@ -162,6 +167,7 @@ function PushTokenRegistrar() {
           merchantId,
           customerId: user.id,
           token,
+          appLanguage,
         });
       } catch (err: any) {
         // Non-blocking: push registration failures are logged for diagnostics.
@@ -172,7 +178,7 @@ function PushTokenRegistrar() {
     return () => {
       cancelled = true;
     };
-  }, [user?.id, merchantId]);
+  }, [user?.id, merchantId, appLanguage]);
 
   return null;
 }

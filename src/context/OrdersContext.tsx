@@ -7,7 +7,7 @@ import { notifyOrderStatusUpdate } from '../utils/orderNotifications';
 import type { CartItem } from './CartContext';
 import { useAuth } from './AuthContext';
 
-const ORDER_STATUSES = ['Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold'] as const;
+const ORDER_STATUSES = ['Placed', 'Accepted', 'Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold'] as const;
 const MAX_HISTORY_ORDERS = 30;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
@@ -35,6 +35,7 @@ export type PlacedOrder = {
   refundFee?: number;
   refundMethod?: string;
   createdAt?: string;
+  readyAt?: string;
   deliveryFee?: number;
   paymentId?: string;
   paymentMethod?: string;
@@ -118,6 +119,7 @@ function rowToOrder(row: OrderRow): PlacedOrder {
     refundFee: row.refund_fee ?? undefined,
     refundMethod: row.refund_method ?? undefined,
     createdAt: row.created_at,
+    readyAt: (row as { ready_at?: string }).ready_at ?? undefined,
     deliveryFee: row.delivery_fee ?? undefined,
     paymentId: row.payment_id ?? undefined,
     paymentMethod: row.payment_method ?? undefined,
@@ -229,7 +231,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         serverPersisted?: boolean;
       },
       generatedId?: string,
-      initialStatus: OrderStatus = 'Preparing'
+      initialStatus: OrderStatus = 'Placed'
     ) => {
       const id = generatedId ?? `order-${Date.now()}`;
       const now = new Date().toISOString();

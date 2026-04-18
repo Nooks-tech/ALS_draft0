@@ -33,13 +33,11 @@ export default function ProductScreen() {
       if (isEditMode && cartItem?.customizations && Object.keys(cartItem.customizations).length > 0) {
         setSelectedOptions(cartItem.customizations);
       } else {
-        const initial: {[key: string]: any} = {};
-        product.modifierGroups.forEach((group: any) => {
-          if (group.options?.length > 0) {
-            initial[group.title] = group.options[0];
-          }
-        });
-        setSelectedOptions(initial);
+        // No auto-selected modifiers on a fresh product — the customer picks
+        // only what they want. Tapping an option selects it; tapping it again
+        // deselects it. Prevents the old bug where modifiers were mandatory
+        // and silently added to the price.
+        setSelectedOptions({});
       }
     }
   }, [product?.id, product?.modifierGroups, isEditMode, cartItem?.uniqueId, cartItem?.customizations]);
@@ -59,15 +57,8 @@ export default function ProductScreen() {
     return total;
   }, [product, selectedOptions]);
 
-  const initialOptions = useMemo(() => {
-    const initial: {[key: string]: any} = {};
-    product?.modifierGroups?.forEach((group: any) => {
-      if (group.options?.length > 0) {
-        initial[group.title] = group.options[0];
-      }
-    });
-    return initial;
-  }, [product]);
+  // No forced defaults anymore — an empty selection means "no modifiers".
+  const initialOptions = useMemo<{[key: string]: any}>(() => ({}), []);
 
   if (!product) {
     return (
@@ -81,16 +72,37 @@ export default function ProductScreen() {
   }
 
   const toggleOption = (groupTitle: string, optionObj: any) => {
-    setSelectedOptions(prev => ({ ...prev, [groupTitle]: optionObj }));
+    setSelectedOptions(prev => {
+      const current = prev[groupTitle];
+      // Tapping the same option a second time clears it so optional modifiers
+      // aren't stuck on once touched.
+      if (current && current.name === optionObj.name) {
+        const next = { ...prev };
+        delete next[groupTitle];
+        return next;
+      }
+      return { ...prev, [groupTitle]: optionObj };
+    });
   };
 
   const handleSave = () => {
-    const optsToUse = Object.keys(selectedOptions).length > 0 ? selectedOptions : initialOptions;
+    // `price` is the display unit price (base + chosen modifier surcharges).
+    // `basePrice` is the product-only price — it's what we relay to Foodics
+    // as `unit_price`, with modifiers sent separately in `options[]`.
+    // Keeping the two fields distinct is how we avoid Foodics double-counting
+    // modifier surcharges.
+    const optsToUse = selectedOptions;
+    const itemPayload = {
+      ...product,
+      basePrice: product.price,
+      price: currentPrice,
+      customizations: optsToUse,
+    };
     if (isEditMode && uniqueId && cartItem) {
       updateQuantity(uniqueId, -cartItem.quantity);
-      addToCart({ ...product, price: currentPrice, customizations: optsToUse }, quantity);
+      addToCart(itemPayload, quantity);
     } else {
-      addToCart({ ...product, price: currentPrice, customizations: optsToUse }, quantity);
+      addToCart(itemPayload, quantity);
     }
     router.back();
   };
@@ -121,10 +133,18 @@ export default function ProductScreen() {
         <View className="mb-8">
           {product.modifierGroups?.map((group: any) => (
             <View key={group.title} className="mb-8">
-              <Text className="text-lg font-bold text-slate-800 mb-4" style={{ textAlign: isArabic ? 'right' : 'left' }}>{group.title}</Text>
+              <View className="mb-4" style={{ flexDirection: rowDirection, alignItems: 'center' }}>
+                <Text className="text-lg font-bold text-slate-800" style={{ textAlign: isArabic ? 'right' : 'left' }}>{group.title}</Text>
+                <Text
+                  className="text-xs font-semibold text-slate-400 uppercase tracking-widest"
+                  style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}
+                >
+                  {isArabic ? 'اختياري' : 'Optional'}
+                </Text>
+              </View>
               <View className="flex-row flex-wrap" style={{ flexDirection: rowDirection }}>
                 {group.options.map((opt: any) => {
-                  const selected = selectedOptions[group.title] || initialOptions[group.title];
+                  const selected = selectedOptions[group.title];
                   const isSelected = selected?.name === opt.name;
                   const hasExtraPrice = (opt.price ?? 0) > 0;
                   return (
