@@ -19,6 +19,12 @@ import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
 import { startComplaintEscalationCron } from './cron/complaintEscalation';
 
 const app = express();
+// Railway terminates TLS at its edge and sets X-Forwarded-For before the
+// request reaches us. express-rate-limit blows up with ValidationError on
+// every request if we don't opt into trusting exactly one hop of proxy.
+// A literal `1` is the safest value — trusting a wider chain would let
+// callers spoof their IP by injecting forwarded headers themselves.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3001;
 
 // Build webhook: warn at startup if env is missing (avoids cryptic 500 on first POST)

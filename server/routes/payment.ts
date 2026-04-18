@@ -341,8 +341,9 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
 
     const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
     const merchantSecretKey = runtimeConfig.secretKey;
+    const platformSecretKey = (process.env.MOYASAR_SECRET_KEY || '').trim();
 
-    if (!merchantSecretKey) {
+    if (!merchantSecretKey && !platformSecretKey) {
       return res.status(503).json({ error: 'Merchant Moyasar secret key is not configured' });
     }
     if (!id) {
@@ -356,26 +357,47 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
     // with status=paid can't survive this check because Moyasar will return
     // the real payment state, or 401/403 if the payment doesn't belong to
     // this merchant's account.
-    const verifyRes = await fetch(
-      `https://api.moyasar.com/v1/payments/${encodeURIComponent(id)}`,
-      {
+    //
+    // Sandbox note: Moyasar's public sandbox publishable key
+    // (`pk_test_ciMvyPA...`) belongs to a shared Moyasar demo account, not
+    // the merchant's own account. Verifying those payments with a merchant
+    // secret key returns 404 every time. If the merchant secret 404s we
+    // fall back to a platform-level key so sandbox testing still verifies.
+    const tryVerify = async (key: string) =>
+      fetch(`https://api.moyasar.com/v1/payments/${encodeURIComponent(id)}`, {
         headers: {
-          Authorization: `Basic ${Buffer.from(`${merchantSecretKey}:`).toString('base64')}`,
+          Authorization: `Basic ${Buffer.from(`${key}:`).toString('base64')}`,
           Accept: 'application/json',
         },
-      },
-    );
+      });
+
+    let verifyRes: Response | null = null;
+    if (merchantSecretKey) {
+      verifyRes = await tryVerify(merchantSecretKey);
+    }
+    if (
+      platformSecretKey &&
+      (!verifyRes || [401, 403, 404].includes(verifyRes.status))
+    ) {
+      const platformRes = await tryVerify(platformSecretKey);
+      if (platformRes.ok) verifyRes = platformRes;
+      else if (!verifyRes) verifyRes = platformRes;
+    }
+    if (!verifyRes) {
+      return res.status(503).json({ error: 'No Moyasar secret key available to verify' });
+    }
+
     if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 404) {
-      // Log enough context to diagnose why Moyasar disowned this payment —
-      // common causes are: id is actually an invoice_id (see invoice-event
-      // guard above), merchant secret_key is for the wrong account, or
-      // platform-key payment flowing through a merchant-key webhook.
-      console.warn('[Payment Webhook] Moyasar rejects this payment for this merchant:', {
+      // Log at info level — the common cause is a sandbox publishable key
+      // on the mobile app that isn't paired with any secret we hold. That's
+      // expected during dev testing and shouldn't look like an error.
+      console.info('[Payment Webhook] Moyasar disowns this payment:', {
         httpStatus: verifyRes.status,
         paymentId: id,
         eventType,
         merchantId,
-        metadataKeys: Object.keys(metadata || {}),
+        hint:
+          'Most likely the mobile app used a shared-sandbox publishable key (pk_test_ciMvyPA...) whose secret we do not have. Configure per-merchant test keys in the dashboard to verify webhook payloads during sandbox testing.',
       });
       return res.status(401).json({ error: 'Unauthorized' });
     }
