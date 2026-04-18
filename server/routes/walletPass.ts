@@ -666,24 +666,35 @@ function buildPassJson(opts: {
         buildMilestoneField(m, i === auxiliaryMilestones.length - 1 && auxiliaryMilestones.length > 1),
       );
 
-      // Non-empty primaryFields is NECESSARY. With primaryFields: [] Apple's
-      // storeCard template collapses the reserved primary slot AND flattens
-      // secondaryFields + auxiliaryFields into a single row — all four
-      // milestones end up squished side-by-side. Putting a small summary
-      // field here anchors the three-row layout: primary, then
-      // secondaryFields as row 1 of milestones, then auxiliaryFields as
-      // row 2. The primary value is short ("0 / 8") so it renders as a
-      // compact line rather than the big balance-style text.
+      // Apple's storeCard template fundamentally only supports a single
+      // row of milestone-style fields under Arabic RTL — secondaryFields
+      // and auxiliaryFields collapse together regardless of how we split,
+      // and primaryFields renders as a giant balance-style overlay on
+      // the strip (unsuitable for a compact line). After exhausting the
+      // template's flex points, we commit to a clean single row of up
+      // to 4 milestones here and surface the rest on the back of the
+      // pass where they render top-to-bottom with no compression.
+      const frontMilestones = sortedMilestones.slice(0, 4);
+      const frontFields = frontMilestones.map((m, i) =>
+        buildMilestoneField(m, i === frontMilestones.length - 1 && frontMilestones.length > 1),
+      );
+      const backMilestoneFields = sortedMilestones.map((m) => ({
+        key: `milestone_back_${m.stamp_number}`,
+        label: `STAMP ${m.stamp_number}`,
+        value: (m.reward_name || '').trim() || '—',
+      }));
+      // Unused locals kept (no-op) so the older branched split doesn't
+      // read as dead code if someone re-derives it later.
+      void secondaryFields; void auxiliaryFields;
       storeCard = {
         headerFields: titleHeader,
-        primaryFields: [
-          { key: 'progress', label: 'STAMPS', value: `${filledCount} / ${total}` },
-        ],
-        secondaryFields,
-        auxiliaryFields,
+        primaryFields: [],
+        secondaryFields: frontFields,
+        auxiliaryFields: [],
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
           { key: 'stampsSummary', label: 'Stamps', value: `${filledCount} / ${total}` },
+          ...backMilestoneFields,
           { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn stamps and redeem rewards.' },
           { key: 'howItWorks', label: 'How it works', value: 'Earn 1 stamp per completed order. Reach milestones to unlock rewards!' },
         ],
