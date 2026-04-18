@@ -192,18 +192,18 @@ export default function LoyaltyModal() {
                       colors={[cardBgColor, gradientEnd]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
-                      style={{ paddingTop: 0, paddingBottom: 24, paddingLeft: 0, paddingRight: 16, position: 'relative' }}
+                      style={{ paddingTop: 20, paddingBottom: 24, paddingLeft: 20, paddingRight: 20, position: 'relative' }}
                     >
                       {/* Top row: logo on the left, Card Title on the right (matches dashboard + Apple Pass) */}
                       <View className="flex-row items-start justify-between mb-5" style={{ gap: 12 }}>
                         {cardLogoUrl ? (
                           <Image
                             source={{ uri: cardLogoUrl }}
-                            style={{ width: 80, height: 80, borderRadius: 18 }}
+                            style={{ width: 72, height: 72, borderRadius: 16 }}
                             resizeMode="cover"
                           />
                         ) : (
-                          <View style={{ width: 80, height: 80 }} />
+                          <View style={{ width: 72, height: 72 }} />
                         )}
                         <Text
                           numberOfLines={1}
@@ -358,22 +358,22 @@ export default function LoyaltyModal() {
                       colors={[primaryColor, gradientEnd]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
-                      style={{ paddingTop: 0, paddingBottom: 24, paddingLeft: 0, paddingRight: 16, position: 'relative' }}
+                      style={{ paddingTop: 20, paddingBottom: 24, paddingLeft: 20, paddingRight: 20, position: 'relative' }}
                     >
                       {/* Decorative circles */}
                       <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
-                      <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
+                      <View style={{ position: 'absolute', bottom: -20, left: -20, width: 72, height: 72, borderRadius: 36, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
 
                       {/* Top row: logo on the left, Card Title on the right (matches dashboard + Apple Pass) */}
                       <View className="flex-row items-start justify-between mb-5" style={{ gap: 12 }}>
                         {cardLogoUrl ? (
                           <Image
                             source={{ uri: cardLogoUrl }}
-                            style={{ width: 80, height: 80, borderRadius: 18 }}
+                            style={{ width: 72, height: 72, borderRadius: 16 }}
                             resizeMode="cover"
                           />
                         ) : (
-                          <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
                             <Gift size={26} color={cardTextColor} />
                           </View>
                         )}
@@ -449,11 +449,11 @@ export default function LoyaltyModal() {
                     colors={[primaryColor, gradientEnd]}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
-                    style={{ paddingTop: 0, paddingBottom: 24, paddingLeft: 0, paddingRight: 16, position: 'relative' }}
+                    style={{ paddingTop: 20, paddingBottom: 24, paddingLeft: 20, paddingRight: 20, position: 'relative' }}
                   >
                     {/* Decorative circles */}
                     <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
-                    <View style={{ position: 'absolute', bottom: -20, left: -20, width: 80, height: 80, borderRadius: 40, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
+                    <View style={{ position: 'absolute', bottom: -20, left: -20, width: 72, height: 72, borderRadius: 36, backgroundColor: cardLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)' }} />
 
                     {/* Header */}
                     <View className="flex-row items-start justify-between mb-5">
