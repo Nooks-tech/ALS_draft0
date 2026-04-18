@@ -33,11 +33,20 @@ export default function ProductScreen() {
       if (isEditMode && cartItem?.customizations && Object.keys(cartItem.customizations).length > 0) {
         setSelectedOptions(cartItem.customizations);
       } else {
-        // No auto-selected modifiers on a fresh product — the customer picks
-        // only what they want. Tapping an option selects it; tapping it again
-        // deselects it. Prevents the old bug where modifiers were mandatory
-        // and silently added to the price.
-        setSelectedOptions({});
+        // Pre-select the first option of every REQUIRED modifier group so
+        // Foodics doesn't reject the order with "A required modifier is
+        // missing". A group is treated as required unless the backend
+        // explicitly sent minimum_options === 0. Null/missing defaults to
+        // required — Foodics enforces this on some groups even when its
+        // own API doesn't surface a minimum_options value.
+        const initial: {[key: string]: any} = {};
+        product.modifierGroups.forEach((group: any) => {
+          const isOptional = Number(group.minimumOptions) === 0;
+          if (!isOptional && group.options?.length > 0) {
+            initial[group.title] = group.options[0];
+          }
+        });
+        setSelectedOptions(initial);
       }
     }
   }, [product?.id, product?.modifierGroups, isEditMode, cartItem?.uniqueId, cartItem?.customizations]);
@@ -72,11 +81,15 @@ export default function ProductScreen() {
   }
 
   const toggleOption = (groupTitle: string, optionObj: any) => {
+    const group = product?.modifierGroups?.find((g: any) => g.title === groupTitle);
+    const isOptional = Number(group?.minimumOptions) === 0;
     setSelectedOptions(prev => {
       const current = prev[groupTitle];
-      // Tapping the same option a second time clears it so optional modifiers
-      // aren't stuck on once touched.
+      // For optional groups, tapping the same option a second time clears
+      // it. For required groups, deselection would break Foodics, so a
+      // second tap is a no-op and only a different option can replace it.
       if (current && current.name === optionObj.name) {
+        if (!isOptional) return prev;
         const next = { ...prev };
         delete next[groupTitle];
         return next;
@@ -131,15 +144,23 @@ export default function ProductScreen() {
           <PriceWithSymbol amount={currentPrice} iconSize={20} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 20 }} />
         </View>
         <View className="mb-8">
-          {product.modifierGroups?.map((group: any) => (
+          {product.modifierGroups?.map((group: any) => {
+            const isOptional = Number(group.minimumOptions) === 0;
+            return (
             <View key={group.title} className="mb-8">
               <View className="mb-4" style={{ flexDirection: rowDirection, alignItems: 'center' }}>
                 <Text className="text-lg font-bold text-slate-800" style={{ textAlign: isArabic ? 'right' : 'left' }}>{group.title}</Text>
                 <Text
-                  className="text-xs font-semibold text-slate-400 uppercase tracking-widest"
-                  style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}
+                  className="text-xs font-semibold uppercase tracking-widest"
+                  style={{
+                    marginLeft: isArabic ? 0 : 8,
+                    marginRight: isArabic ? 8 : 0,
+                    color: isOptional ? '#94a3b8' : '#ef4444',
+                  }}
                 >
-                  {isArabic ? 'اختياري' : 'Optional'}
+                  {isOptional
+                    ? (isArabic ? 'اختياري' : 'Optional')
+                    : (isArabic ? 'مطلوب' : 'Required')}
                 </Text>
               </View>
               <View className="flex-row flex-wrap" style={{ flexDirection: rowDirection }}>
@@ -163,7 +184,8 @@ export default function ProductScreen() {
                 })}
               </View>
             </View>
-          ))}
+            );
+          })}
         </View>
         </View>
       </ScrollView>

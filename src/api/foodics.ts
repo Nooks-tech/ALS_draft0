@@ -13,6 +13,15 @@ export interface MenuProduct {
   modifierGroups: Array<{
     id: string;
     title: string;
+    /**
+     * Minimum options the customer must pick from this group. Null or
+     * undefined means Foodics didn't send a value, which we treat as
+     * required (1) — safer default because Foodics will reject the order
+     * with "A required modifier is missing" if we under-select.
+     */
+    minimumOptions?: number | null;
+    /** Maximum options the customer may pick. Defaults to 1 per group. */
+    maximumOptions?: number | null;
     options: Array<{ name: string; price: number }>;
   }>;
 }

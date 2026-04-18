@@ -126,15 +126,22 @@ export function useMenu() {
                 image: item.image_url || '',
                 foodicsProductId,
                 nooksProductId,
-                modifierGroups: (item.modifier_groups ?? []).map((group) => ({
-                  id: group.id,
-                  title: group.title,
-                  options: (group.options ?? []).map((option) => ({
-                    id: option.id,
-                    name: option.name,
-                    price: Number(option.price ?? 0),
-                  })),
-                })),
+                modifierGroups: (item.modifier_groups ?? []).map((group) => {
+                  const rawGroup = group as Record<string, unknown>;
+                  const minOpt = rawGroup.minimum_options;
+                  const maxOpt = rawGroup.maximum_options;
+                  return {
+                    id: group.id,
+                    title: group.title,
+                    minimumOptions: typeof minOpt === 'number' ? minOpt : null,
+                    maximumOptions: typeof maxOpt === 'number' ? maxOpt : null,
+                    options: (group.options ?? []).map((option) => ({
+                      id: option.id,
+                      name: option.name,
+                      price: Number(option.price ?? 0),
+                    })),
+                  };
+                }),
               } as MenuItem;
             })
             .filter((item): item is MenuItem => Boolean(item))
