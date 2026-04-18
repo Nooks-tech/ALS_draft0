@@ -1,11 +1,12 @@
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { AlertTriangle, ChevronDown, Gift, Star, TrendingUp, X } from 'lucide-react-native';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { loyaltyApi, type LoyaltyBalance, type LoyaltyTransaction } from '../src/api/loyalty';
+import { supabase } from '../src/api/supabase';
 import { useAuth } from '../src/context/AuthContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
@@ -44,20 +45,78 @@ export default function LoyaltyModal() {
   const [showHistory, setShowHistory] = useState(false);
   const isArabic = i18n.language === 'ar';
 
-  useEffect(() => {
+  // Single reload helper — used by mount, screen focus, and Realtime
+  // subscription so the displayed balance reflects the most recent earn
+  // regardless of how the user got back to this screen.
+  const loadLoyalty = useCallback(async (opts?: { showSpinner?: boolean }) => {
     if (!user?.id) return;
-    let cancelled = false;
-    Promise.all([
-      loyaltyApi.getBalance(user.id, merchantId).catch(() => null),
-      loyaltyApi.getHistory(user.id, merchantId).catch(() => ({ transactions: [] as LoyaltyTransaction[] })),
-    ]).then(([bal, hist]) => {
-      if (cancelled) return;
+    if (opts?.showSpinner) setLoading(true);
+    try {
+      const [bal, hist] = await Promise.all([
+        loyaltyApi.getBalance(user.id, merchantId).catch(() => null),
+        loyaltyApi.getHistory(user.id, merchantId).catch(() => ({ transactions: [] as LoyaltyTransaction[] })),
+      ]);
       if (bal) setBalance(bal);
       if (hist) setTransactions(hist.transactions);
+    } finally {
       setLoading(false);
-    });
-    return () => { cancelled = true; };
+    }
   }, [user?.id, merchantId]);
+
+  // Initial load shows the spinner.
+  useEffect(() => {
+    if (!user?.id) return;
+    void loadLoyalty({ showSpinner: true });
+  }, [user?.id, merchantId, loadLoyalty]);
+
+  // Refresh every time the user focuses this screen — handles the
+  // common case "place an order, wait for it to complete, come back
+  // to the loyalty screen" without forcing them to close and reopen.
+  useFocusEffect(
+    useCallback(() => {
+      void loadLoyalty();
+    }, [loadLoyalty]),
+  );
+
+  // Realtime: if the customer has the loyalty screen open while an order
+  // completes on another surface, their balance updates live. We subscribe
+  // to both cashback and stamps tables because the merchant could flip
+  // modes mid-session. The transactions listener also refreshes history.
+  const reloadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!supabase || !user?.id) return;
+    const scheduleReload = () => {
+      if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
+      reloadDebounceRef.current = setTimeout(() => { void loadLoyalty(); }, 500);
+    };
+    const channel = supabase
+      .channel(`loyalty-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'loyalty_transactions', filter: `customer_id=eq.${user.id}` },
+        scheduleReload,
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'loyalty_cashback_balances', filter: `customer_id=eq.${user.id}` },
+        scheduleReload,
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'loyalty_stamps', filter: `customer_id=eq.${user.id}` },
+        scheduleReload,
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'loyalty_points', filter: `customer_id=eq.${user.id}` },
+        scheduleReload,
+      )
+      .subscribe();
+    return () => {
+      if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id, loadLoyalty]);
 
   // Tier system removed
 
