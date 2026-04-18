@@ -234,15 +234,6 @@ async function buildStampGridStripPng(opts: {
   stampIconColor: string;
   stampIconUrl?: string | null;
   businessType: 'cafe' | 'restaurant';
-  /**
-   * Milestone rewards to render INSIDE the strip (below the stamp grid)
-   * as a 2x2 grid. Apple Wallet storeCard's secondaryFields/auxiliaryFields
-   * get compressed onto a single row under Arabic RTL, so we stamp the
-   * visual into the PNG ourselves to guarantee the two-row layout the
-   * merchant expects.
-   */
-  milestones?: Array<{ stamp_number: number; reward_name: string }>;
-  textColor?: string;
 }): Promise<Buffer | null> {
   let sharpMod: typeof import('sharp');
   try {
@@ -252,43 +243,30 @@ async function buildStampGridStripPng(opts: {
   }
 
   const W = 750;
+  // Strip contains ONLY the stamp grid. Milestones come back via
+  // pass.json secondaryFields/auxiliaryFields so Apple Wallet renders
+  // them with its own RTL-capable Arabic text engine — SVG text via
+  // sharp has no Arabic font and produced tofu boxes.
+  const H = 300;
   const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 8));
   const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
   // Match the dashboard StampCardPreview grid: 1 row when 5 or fewer, otherwise 2 rows.
   const cols = total <= 5 ? total : Math.ceil(total / 2);
   const rows = Math.ceil(total / cols);
 
-  // Milestones get painted into the strip too (see opts.milestones comment
-  // on the function signature). Strip height grows to fit up to a 2x2
-  // milestone block beneath the stamp grid. Strip is 2-3x Apple's nominal
-  // spec; iOS renders it fine in practice.
-  const visibleMilestones = (opts.milestones ?? [])
-    .filter((m) => m && typeof m.stamp_number === 'number' && (m.reward_name || '').trim().length > 0)
-    .slice()
-    .sort((a, b) => a.stamp_number - b.stamp_number)
-    .slice(0, 4);
-  const milestoneRows = visibleMilestones.length === 0
-    ? 0
-    : visibleMilestones.length <= 2 ? 1 : 2;
-  const milestoneRowH = 68;
-  const milestoneBlockH = milestoneRows * milestoneRowH + (milestoneRows > 0 ? 20 : 0);
-  const stampAreaH = 300;
-  const H = stampAreaH + milestoneBlockH;
-
-  // Boxes now fill the full strip width end-to-end (padding=4 on each
-  // side, gap=8 between cells). Boxes are allowed to be rectangular —
-  // forcing squares caps us at box_height and leaves a ~23% empty
-  // margin on both sides of the grid, which is what the merchant was
-  // objecting to. Typical result for 8 stamps at 4×2: 179×142 boxes.
+  // Boxes fill the full strip width end-to-end (padding=4 on each side,
+  // gap=8 between cells). Boxes are allowed to be rectangular —
+  // forcing squares caps us at box_height and leaves large side
+  // margins. Typical result for 8 stamps at 4×2: 179×142 boxes.
   const padding = 4;
   const gap = 8;
   const boxW = Math.max(40, Math.floor((W - padding * 2 - gap * (cols - 1)) / cols));
-  const boxH = Math.max(40, Math.floor((stampAreaH - padding * 2 - gap * (rows - 1)) / rows));
+  const boxH = Math.max(40, Math.floor((H - padding * 2 - gap * (rows - 1)) / rows));
 
   const gridW = cols * boxW + (cols - 1) * gap;
   const gridH = rows * boxH + (rows - 1) * gap;
   const startX = Math.round((W - gridW) / 2);
-  const startY = Math.round((stampAreaH - gridH) / 2);
+  const startY = Math.round((H - gridH) / 2);
   // Corner radius scales off the shorter box dimension so rectangular
   // boxes don't look like pills.
   const radius = Math.max(2, Math.round(Math.min(boxW, boxH) * 0.18));
@@ -363,39 +341,6 @@ async function buildStampGridStripPng(opts: {
     }
   }
 
-  // ── Milestones block — 2x2 grid below the stamps. Rendered INSIDE the
-  // strip so Apple's storeCard field compression can't collapse them into
-  // a single row. Each cell has "STAMP N" as the label and the reward
-  // name as the value, wrapped by SVG to stay within its column.
-  if (visibleMilestones.length > 0) {
-    const textFill = (opts.textColor || '#ffffff').trim();
-    const labelFill = textFill === '#ffffff'
-      ? 'rgba(255,255,255,0.65)'
-      : toRgba(textFill, 0.7);
-    const mStartY = stampAreaH + 10;
-    const colW = (W - padding * 2) / 2;
-    const divY = stampAreaH + 4;
-    parts.push(
-      `<line x1="${padding + 20}" x2="${W - padding - 20}" y1="${divY}" y2="${divY}" stroke="${toRgba(textFill, 0.12)}" stroke-width="1"/>`,
-    );
-    visibleMilestones.forEach((m, i) => {
-      const isRightCol = i % 2 === 1;
-      const rowIdx = Math.floor(i / 2);
-      const cellX = padding + (isRightCol ? colW : 0);
-      const cellY = mStartY + rowIdx * milestoneRowH;
-      const innerX = isRightCol ? cellX + colW - 20 : cellX + 20;
-      const anchor = isRightCol ? 'end' : 'start';
-      const label = `STAMP ${m.stamp_number}`;
-      const reward = (m.reward_name || '').trim();
-      parts.push(
-        `<text x="${innerX}" y="${cellY + 20}" fill="${labelFill}" font-size="18" font-family="Arial, sans-serif" font-weight="700" text-anchor="${anchor}" letter-spacing="2">${escapeXml(label)}</text>`,
-      );
-      parts.push(
-        `<text x="${innerX}" y="${cellY + 48}" fill="${textFill}" font-size="24" font-family="Arial, sans-serif" font-weight="600" text-anchor="${anchor}">${escapeXml(reward)}</text>`,
-      );
-    });
-  }
-
   parts.push('</svg>');
 
   try {
@@ -406,14 +351,6 @@ async function buildStampGridStripPng(opts: {
   }
 }
 
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
 
 const ICON_1X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAB0AAAAdCAIAAADZ8fBYAAAAJUlEQVR4nGNgmNJBEzRq7qi5o+aOmjtq7qi5o+aOmjtq7qAyFwCzp6UqMm3T+QAAAABJRU5ErkJggg==', 'base64');
 const ICON_2X = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAADoAAAA6CAIAAABu2d1/AAAAZUlEQVR4nO3OAQkAMAzAsMm/gAm+jHZQiIDM7LuEH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXQ1+UFeDH9TV4Ad1NfhBXYsP2s6Uw9dI6msAAAAASUVORK5CYII=', 'base64');
@@ -722,21 +659,21 @@ function buildPassJson(opts: {
         return field;
       };
 
-      // Milestones are rendered INSIDE the strip PNG now (see
-      // buildStampGridStripPng) because Apple's storeCard field engine
-      // compresses secondary+auxiliary into a single squished row when
-      // the pass renders under Arabic RTL. Leaving these empty lets the
-      // strip own the milestone layout end-to-end.
-      // Keep buildMilestoneField / sortedMilestones around only so the
-      // older code paths referencing them don't break; unused locally.
-      void buildMilestoneField;
-      void sortedMilestones;
+      const secondaryMilestones = sortedMilestones.slice(0, 2);
+      const auxiliaryMilestones = sortedMilestones.slice(2, 4);
+
+      const secondaryFields = secondaryMilestones.map((m, i) =>
+        buildMilestoneField(m, i === secondaryMilestones.length - 1 && secondaryMilestones.length > 1),
+      );
+      const auxiliaryFields = auxiliaryMilestones.map((m, i) =>
+        buildMilestoneField(m, i === auxiliaryMilestones.length - 1 && auxiliaryMilestones.length > 1),
+      );
 
       storeCard = {
         headerFields: titleHeader,
         primaryFields: [],
-        secondaryFields: [],
-        auxiliaryFields: [],
+        secondaryFields,
+        auxiliaryFields,
         backFields: [
           { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
           { key: 'stampsSummary', label: 'Stamps', value: `${filledCount} / ${total}` },
@@ -1109,8 +1046,6 @@ walletPassRouter.get(
           stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
           stampIconUrl: config?.wallet_stamp_icon_url ?? null,
           businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
-          milestones: activeMilestones,
-          textColor,
         });
         if (stampGrid) {
           files['strip.png'] = stampGrid;
@@ -1621,8 +1556,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
         stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
         stampIconUrl: config?.wallet_stamp_icon_url ?? null,
         businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
-        milestones: activeMilestones,
-        textColor,
       });
       if (stampGrid) {
         files['strip.png'] = stampGrid;
