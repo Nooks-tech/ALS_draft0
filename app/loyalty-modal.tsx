@@ -199,11 +199,11 @@ export default function LoyaltyModal() {
                         {cardLogoUrl ? (
                           <Image
                             source={{ uri: cardLogoUrl }}
-                            style={{ width: 72, height: 72, borderRadius: 16 }}
+                            style={{ width: 52, height: 52, borderRadius: 12 }}
                             resizeMode="cover"
                           />
                         ) : (
-                          <View style={{ width: 72, height: 72 }} />
+                          <View style={{ width: 52, height: 52 }} />
                         )}
                         <Text
                           numberOfLines={1}
@@ -369,12 +369,12 @@ export default function LoyaltyModal() {
                         {cardLogoUrl ? (
                           <Image
                             source={{ uri: cardLogoUrl }}
-                            style={{ width: 72, height: 72, borderRadius: 16 }}
+                            style={{ width: 52, height: 52, borderRadius: 12 }}
                             resizeMode="cover"
                           />
                         ) : (
-                          <View style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                            <Gift size={26} color={cardTextColor} />
+                          <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                            <Gift size={22} color={cardTextColor} />
                           </View>
                         )}
                         <Text
