@@ -192,7 +192,7 @@ export default function LoyaltyModal() {
                       colors={[cardBgColor, gradientEnd]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
-                      style={{ paddingTop: 8, paddingBottom: 24, paddingLeft: 8, paddingRight: 16, position: 'relative' }}
+                      style={{ paddingTop: 0, paddingBottom: 24, paddingLeft: 0, paddingRight: 16, position: 'relative' }}
                     >
                       {/* Top row: logo on the left, Card Title on the right (matches dashboard + Apple Pass) */}
                       <View className="flex-row items-start justify-between mb-5" style={{ gap: 12 }}>
@@ -358,7 +358,7 @@ export default function LoyaltyModal() {
                       colors={[primaryColor, gradientEnd]}
                       start={{ x: 0, y: 0 }}
                       end={{ x: 1, y: 1 }}
-                      style={{ paddingTop: 8, paddingBottom: 24, paddingLeft: 8, paddingRight: 16, position: 'relative' }}
+                      style={{ paddingTop: 0, paddingBottom: 24, paddingLeft: 0, paddingRight: 16, position: 'relative' }}
                     >
                       {/* Decorative circles */}
                       <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
@@ -449,7 +449,7 @@ export default function LoyaltyModal() {
                     colors={[primaryColor, gradientEnd]}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
-                    style={{ paddingTop: 8, paddingBottom: 24, paddingLeft: 8, paddingRight: 16, position: 'relative' }}
+                    style={{ paddingTop: 0, paddingBottom: 24, paddingLeft: 0, paddingRight: 16, position: 'relative' }}
                   >
                     {/* Decorative circles */}
                     <View style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: 60, backgroundColor: cardLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)' }} />
