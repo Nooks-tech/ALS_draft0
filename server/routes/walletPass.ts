@@ -243,23 +243,25 @@ async function buildStampGridStripPng(opts: {
   }
 
   const W = 750;
-  // Strip contains ONLY the stamp grid. Milestones come back via
-  // pass.json secondaryFields/auxiliaryFields so Apple Wallet renders
-  // them with its own RTL-capable Arabic text engine — SVG text via
-  // sharp has no Arabic font and produced tofu boxes.
-  const H = 300;
+  // Strip stays at Apple's storeCard spec (~196pt → 246px at 2x). Going
+  // taller (we tried 300) made Apple flatten secondaryFields +
+  // auxiliaryFields into a single compressed row of 4, losing the
+  // two-row milestone layout the merchant asked for. At 246 px, Apple
+  // keeps enough vertical room below the strip to render secondary AND
+  // auxiliary as separate rows.
+  const H = 246;
   const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 8));
   const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
   // Match the dashboard StampCardPreview grid: 1 row when 5 or fewer, otherwise 2 rows.
   const cols = total <= 5 ? total : Math.ceil(total / 2);
   const rows = Math.ceil(total / cols);
 
-  // Boxes fill the full strip width end-to-end (padding=4 on each side,
-  // gap=8 between cells). Boxes are allowed to be rectangular —
-  // forcing squares caps us at box_height and leaves large side
-  // margins. Typical result for 8 stamps at 4×2: 179×142 boxes.
+  // Boxes fill the full strip width end-to-end. Rectangular (wider than
+  // tall) at H=246 because H limits boxH more than W limits boxW; this
+  // is a deliberate trade so the strip height stays within Apple's spec
+  // and the milestone auxiliary row actually shows up below.
   const padding = 4;
-  const gap = 8;
+  const gap = 6;
   const boxW = Math.max(40, Math.floor((W - padding * 2 - gap * (cols - 1)) / cols));
   const boxH = Math.max(40, Math.floor((H - padding * 2 - gap * (rows - 1)) / rows));
 
