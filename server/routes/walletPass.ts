@@ -243,25 +243,20 @@ async function buildStampGridStripPng(opts: {
   }
 
   const W = 750;
-  // Strip stays at Apple's storeCard spec (~196pt → 246px at 2x). Going
-  // taller (we tried 300) made Apple flatten secondaryFields +
-  // auxiliaryFields into a single compressed row of 4, losing the
-  // two-row milestone layout the merchant asked for. At 246 px, Apple
-  // keeps enough vertical room below the strip to render secondary AND
-  // auxiliary as separate rows.
-  const H = 246;
+  // Strip at 300 px gives proper tall stamp boxes. Apple's auxiliaryFields
+  // row DOES render as a distinct second row below secondaryFields as
+  // long as primaryFields has a non-empty entry (see pass.json build
+  // for stamps — we inject a small "STAMPS: X / Y" primary field to
+  // keep the three-row template layout active).
+  const H = 300;
   const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 8));
   const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
   // Match the dashboard StampCardPreview grid: 1 row when 5 or fewer, otherwise 2 rows.
   const cols = total <= 5 ? total : Math.ceil(total / 2);
   const rows = Math.ceil(total / cols);
 
-  // Boxes fill the full strip width end-to-end. Rectangular (wider than
-  // tall) at H=246 because H limits boxH more than W limits boxW; this
-  // is a deliberate trade so the strip height stays within Apple's spec
-  // and the milestone auxiliary row actually shows up below.
   const padding = 4;
-  const gap = 6;
+  const gap = 8;
   const boxW = Math.max(40, Math.floor((W - padding * 2 - gap * (cols - 1)) / cols));
   const boxH = Math.max(40, Math.floor((H - padding * 2 - gap * (rows - 1)) / rows));
 
@@ -671,9 +666,19 @@ function buildPassJson(opts: {
         buildMilestoneField(m, i === auxiliaryMilestones.length - 1 && auxiliaryMilestones.length > 1),
       );
 
+      // Non-empty primaryFields is NECESSARY. With primaryFields: [] Apple's
+      // storeCard template collapses the reserved primary slot AND flattens
+      // secondaryFields + auxiliaryFields into a single row — all four
+      // milestones end up squished side-by-side. Putting a small summary
+      // field here anchors the three-row layout: primary, then
+      // secondaryFields as row 1 of milestones, then auxiliaryFields as
+      // row 2. The primary value is short ("0 / 8") so it renders as a
+      // compact line rather than the big balance-style text.
       storeCard = {
         headerFields: titleHeader,
-        primaryFields: [],
+        primaryFields: [
+          { key: 'progress', label: 'STAMPS', value: `${filledCount} / ${total}` },
+        ],
         secondaryFields,
         auxiliaryFields,
         backFields: [
