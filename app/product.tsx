@@ -41,7 +41,7 @@ export default function ProductScreen() {
         // own API doesn't surface a minimum_options value.
         const initial: {[key: string]: any} = {};
         product.modifierGroups.forEach((group: any) => {
-          const isOptional = Number(group.minimumOptions) === 0;
+          const isOptional = group.minimumOptions === 0;
           if (!isOptional && group.options?.length > 0) {
             initial[group.title] = group.options[0];
           }
@@ -82,7 +82,9 @@ export default function ProductScreen() {
 
   const toggleOption = (groupTitle: string, optionObj: any) => {
     const group = product?.modifierGroups?.find((g: any) => g.title === groupTitle);
-    const isOptional = Number(group?.minimumOptions) === 0;
+    // Explicit 0 only — null/undefined falls through to "required" semantics
+    // because Foodics sometimes enforces a minimum it doesn't announce.
+    const isOptional = group?.minimumOptions === 0;
     setSelectedOptions(prev => {
       const current = prev[groupTitle];
       // For optional groups, tapping the same option a second time clears
@@ -145,7 +147,7 @@ export default function ProductScreen() {
         </View>
         <View className="mb-8">
           {product.modifierGroups?.map((group: any) => {
-            const isOptional = Number(group.minimumOptions) === 0;
+            const isOptional = group.minimumOptions === 0;
             return (
             <View key={group.title} className="mb-8">
               <View className="mb-4" style={{ flexDirection: rowDirection, alignItems: 'center' }}>
