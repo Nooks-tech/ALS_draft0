@@ -243,15 +243,22 @@ async function buildStampGridStripPng(opts: {
   }
 
   const W = 750;
-  const H = 246;
+  // Taller than Apple's nominal 246 (≈123pt @2x) so the stamp grid can
+  // grow vertically — otherwise boxes are height-bottlenecked at ~97px
+  // and the grid floats in a narrow central band with large side margins.
+  // iOS tolerates strip PNGs a bit taller than spec in practice.
+  const H = 300;
   const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 8));
   const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
   // Match the dashboard StampCardPreview grid: 1 row when 5 or fewer, otherwise 2 rows.
   const cols = total <= 5 ? total : Math.ceil(total / 2);
   const rows = Math.ceil(total / cols);
 
-  const padding = 20;
-  const gap = 12;
+  // Tight padding + tight gaps so the grid uses the full strip width, as
+  // requested by the merchant — prior 20/12 left ~43% of the strip as
+  // empty green margin.
+  const padding = 8;
+  const gap = 10;
   const maxBoxW = (W - padding * 2 - gap * (cols - 1)) / cols;
   const maxBoxH = (H - padding * 2 - gap * (rows - 1)) / rows;
   const boxSize = Math.max(40, Math.floor(Math.min(maxBoxW, maxBoxH)));
@@ -312,7 +319,10 @@ async function buildStampGridStripPng(opts: {
 
     parts.push(`<rect x="${x}" y="${y}" width="${boxSize}" height="${boxSize}" rx="${radius}" fill="${boxFill}"/>`);
 
-    const iconSize = Math.round(boxSize * (customDataUrl ? 0.6 : 0.55));
+    // Inner icon/logo is slightly larger than before: merchants with an
+    // uploaded stamp logo now fill 68% of the box (up from 60%), and the
+    // built-in coffee/restaurant glyphs fill 62% (up from 55%).
+    const iconSize = Math.round(boxSize * (customDataUrl ? 0.68 : 0.62));
     const iconX = x + Math.round((boxSize - iconSize) / 2);
     const iconY = y + Math.round((boxSize - iconSize) / 2);
     const iconOpacity = isFilled ? 1 : 0.35;
@@ -356,7 +366,16 @@ function formatExpiryDate(_lastEarnDate: string | null, expiryMonths: number | n
 const WALLET_LOGO_SLOT_1X = { w: 160, h: 50 };
 const WALLET_LOGO_SLOT_2X = { w: 320, h: 100 };
 const WALLET_LOGO_SLOT_3X = { w: 480, h: 150 };
-const WALLET_LOGO_LEFT_BIAS = 0.05;
+/**
+ * Fraction of the Apple-allocated logo slot that the artwork itself is
+ * allowed to fill. Apple's slot is 160×50pt; rendering edge-to-edge makes
+ * the logo look comically large next to the in-app header logo (which
+ * renders into a ~36pt slot). Capping to 60% of the slot height — plus
+ * top-left anchoring with transparent padding to the right and bottom —
+ * makes the wallet pass logo visually match the in-app.
+ */
+const WALLET_LOGO_ARTWORK_HEIGHT_RATIO = 0.6;
+const WALLET_LOGO_ARTWORK_WIDTH_RATIO = 0.7;
 
 /**
  * Apple Wallet logo rendering:
@@ -387,10 +406,15 @@ async function buildWalletLogoPngBuffers(
     const meta = await trimmed.metadata();
     const sourceW = meta.width ?? slotW;
     const sourceH = meta.height ?? slotH;
-    const fitRatio = Math.min(slotW / sourceW, slotH / sourceH);
+    // Constrain the artwork to a fraction of the full slot so it visually
+    // matches the in-app header logo rather than sprawling across Apple's
+    // max 160×50pt slot.
+    const artworkMaxW = slotW * WALLET_LOGO_ARTWORK_WIDTH_RATIO;
+    const artworkMaxH = slotH * WALLET_LOGO_ARTWORK_HEIGHT_RATIO;
+    const fitRatio = Math.min(artworkMaxW / sourceW, artworkMaxH / sourceH);
     const baseW = Math.max(1, sourceW * fitRatio);
     const baseH = Math.max(1, sourceH * fitRatio);
-    const appliedScale = Math.min(scale, slotW / baseW, slotH / baseH);
+    const appliedScale = Math.min(scale, artworkMaxW / baseW, artworkMaxH / baseH);
     const targetW = Math.max(1, Math.round(baseW * appliedScale));
     const targetH = Math.max(1, Math.round(baseH * appliedScale));
 
@@ -404,9 +428,11 @@ async function buildWalletLogoPngBuffers(
       .png({ compressionLevel: 6, effort: 10 })
       .toBuffer();
 
-    const remainingX = Math.max(0, slotW - targetW);
-    const left = Math.max(0, Math.round((remainingX / 2) - (slotW * WALLET_LOGO_LEFT_BIAS)));
-    const top = Math.max(0, Math.round((slotH - targetH) / 2));
+    // Top-left anchor: the logo sits flush with the upper-left of Apple's
+    // slot, with transparent padding filling the rest. This mirrors where
+    // the in-app header places the logo.
+    const left = 0;
+    const top = 0;
 
     return sharpMod({
       create: {
