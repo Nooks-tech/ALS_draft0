@@ -199,11 +199,11 @@ export default function LoyaltyModal() {
                         {cardLogoUrl ? (
                           <Image
                             source={{ uri: cardLogoUrl }}
-                            style={{ width: 40, height: 40, borderRadius: 12 }}
+                            style={{ width: 56, height: 56, borderRadius: 14 }}
                             resizeMode="cover"
                           />
                         ) : (
-                          <View style={{ width: 40, height: 40 }} />
+                          <View style={{ width: 56, height: 56 }} />
                         )}
                         <Text
                           numberOfLines={1}
@@ -213,30 +213,62 @@ export default function LoyaltyModal() {
                         </Text>
                       </View>
 
-                      {/* Stamp grid — filled vs empty boxes reflect the customer's live stamp count */}
-                      <View className="flex-row flex-wrap gap-2">
-                        {Array.from({ length: balance?.stampTarget ?? 8 }).map((_, i) => (
-                          <View
-                            key={i}
-                            className="w-10 h-10 rounded-xl items-center justify-center"
-                            style={{
-                              backgroundColor: i < (balance?.stamps ?? 0)
-                                ? stampBoxColor
-                                : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)'),
-                            }}
-                          >
-                            {i < (balance?.stamps ?? 0) ? (
-                              stampIconUrl ? (
-                                <Image source={{ uri: stampIconUrl }} style={{ width: 20, height: 20 }} resizeMode="contain" />
-                              ) : (
-                                <Star size={16} color={stampIconColor} fill={stampIconColor} />
-                              )
-                            ) : (
-                              <Text style={{ color: cardSubTextColor, fontSize: 11 }}>{i + 1}</Text>
-                            )}
+                      {/*
+                        Stamp grid — the boxes now stretch to fill the card
+                        width end-to-end so the layout matches the Apple
+                        Wallet strip and dashboard preview. Uses flexBasis
+                        percentages so RN's flex engine sizes each box
+                        based on cols per row, minus the inter-box gap.
+                      */}
+                      {(() => {
+                        const stampTarget = balance?.stampTarget ?? 8;
+                        const stampCount = balance?.stamps ?? 0;
+                        const cols = stampTarget <= 5 ? stampTarget : Math.ceil(stampTarget / 2);
+                        const gapPx = 10;
+                        return (
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: gapPx, columnGap: gapPx }}>
+                            {Array.from({ length: stampTarget }).map((_, i) => {
+                              const filled = i < stampCount;
+                              return (
+                                <View
+                                  key={i}
+                                  style={{
+                                    width: `${100 / cols}%`,
+                                    // Nudge each box inward by half the gap so
+                                    // the column-gap math stays tidy without
+                                    // needing flexBasis%.
+                                    paddingLeft: i % cols === 0 ? 0 : gapPx / 2,
+                                    paddingRight: (i + 1) % cols === 0 ? 0 : gapPx / 2,
+                                  }}
+                                >
+                                  <View
+                                    style={{
+                                      width: '100%',
+                                      aspectRatio: 1.25,
+                                      borderRadius: 14,
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      backgroundColor: filled
+                                        ? stampBoxColor
+                                        : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)'),
+                                    }}
+                                  >
+                                    {filled ? (
+                                      stampIconUrl ? (
+                                        <Image source={{ uri: stampIconUrl }} style={{ width: 34, height: 34 }} resizeMode="contain" />
+                                      ) : (
+                                        <Star size={28} color={stampIconColor} fill={stampIconColor} />
+                                      )
+                                    ) : (
+                                      <Text style={{ color: cardSubTextColor, fontSize: 13 }}>{i + 1}</Text>
+                                    )}
+                                  </View>
+                                </View>
+                              );
+                            })}
                           </View>
-                        ))}
-                      </View>
+                        );
+                      })()}
 
                       {/* Milestone rewards — 2x2 grid matching Apple Pass
                           secondaryFields (top row) + auxiliaryFields (bottom
@@ -337,12 +369,12 @@ export default function LoyaltyModal() {
                         {cardLogoUrl ? (
                           <Image
                             source={{ uri: cardLogoUrl }}
-                            style={{ width: 40, height: 40, borderRadius: 12 }}
+                            style={{ width: 56, height: 56, borderRadius: 14 }}
                             resizeMode="cover"
                           />
                         ) : (
-                          <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                            <Gift size={18} color={cardTextColor} />
+                          <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: cardLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                            <Gift size={26} color={cardTextColor} />
                           </View>
                         )}
                         <Text

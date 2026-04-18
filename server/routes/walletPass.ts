@@ -244,9 +244,7 @@ async function buildStampGridStripPng(opts: {
 
   const W = 750;
   // Taller than Apple's nominal 246 (≈123pt @2x) so the stamp grid can
-  // grow vertically — otherwise boxes are height-bottlenecked at ~97px
-  // and the grid floats in a narrow central band with large side margins.
-  // iOS tolerates strip PNGs a bit taller than spec in practice.
+  // grow vertically. iOS tolerates strip PNGs a bit taller than spec.
   const H = 300;
   const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 8));
   const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
@@ -254,20 +252,23 @@ async function buildStampGridStripPng(opts: {
   const cols = total <= 5 ? total : Math.ceil(total / 2);
   const rows = Math.ceil(total / cols);
 
-  // Tight padding + tight gaps so the grid uses the full strip width, as
-  // requested by the merchant — prior 20/12 left ~43% of the strip as
-  // empty green margin.
-  const padding = 8;
-  const gap = 10;
-  const maxBoxW = (W - padding * 2 - gap * (cols - 1)) / cols;
-  const maxBoxH = (H - padding * 2 - gap * (rows - 1)) / rows;
-  const boxSize = Math.max(40, Math.floor(Math.min(maxBoxW, maxBoxH)));
+  // Boxes now fill the full strip width end-to-end (padding=4 on each
+  // side, gap=8 between cells). Boxes are allowed to be rectangular —
+  // forcing squares caps us at box_height and leaves a ~23% empty
+  // margin on both sides of the grid, which is what the merchant was
+  // objecting to. Typical result for 8 stamps at 4×2: 179×142 boxes.
+  const padding = 4;
+  const gap = 8;
+  const boxW = Math.max(40, Math.floor((W - padding * 2 - gap * (cols - 1)) / cols));
+  const boxH = Math.max(40, Math.floor((H - padding * 2 - gap * (rows - 1)) / rows));
 
-  const gridW = cols * boxSize + (cols - 1) * gap;
-  const gridH = rows * boxSize + (rows - 1) * gap;
+  const gridW = cols * boxW + (cols - 1) * gap;
+  const gridH = rows * boxH + (rows - 1) * gap;
   const startX = Math.round((W - gridW) / 2);
   const startY = Math.round((H - gridH) / 2);
-  const radius = Math.max(2, Math.round(boxSize * 0.18));
+  // Corner radius scales off the shorter box dimension so rectangular
+  // boxes don't look like pills.
+  const radius = Math.max(2, Math.round(Math.min(boxW, boxH) * 0.18));
 
   function toRgba(hex: string, alpha: number): string {
     let h = (hex || '').replace('#', '').trim();
@@ -312,19 +313,19 @@ async function buildStampGridStripPng(opts: {
   for (let i = 0; i < total; i++) {
     const col = i % cols;
     const row = Math.floor(i / cols);
-    const x = startX + col * (boxSize + gap);
-    const y = startY + row * (boxSize + gap);
+    const x = startX + col * (boxW + gap);
+    const y = startY + row * (boxH + gap);
     const isFilled = i < filled;
     const boxFill = isFilled ? toRgba(opts.stampBoxColor, 1) : toRgba(opts.stampBoxColor, 0.22);
 
-    parts.push(`<rect x="${x}" y="${y}" width="${boxSize}" height="${boxSize}" rx="${radius}" fill="${boxFill}"/>`);
+    parts.push(`<rect x="${x}" y="${y}" width="${boxW}" height="${boxH}" rx="${radius}" fill="${boxFill}"/>`);
 
-    // Inner icon/logo is slightly larger than before: merchants with an
-    // uploaded stamp logo now fill 68% of the box (up from 60%), and the
-    // built-in coffee/restaurant glyphs fill 62% (up from 55%).
-    const iconSize = Math.round(boxSize * (customDataUrl ? 0.68 : 0.62));
-    const iconX = x + Math.round((boxSize - iconSize) / 2);
-    const iconY = y + Math.round((boxSize - iconSize) / 2);
+    // Icon size is keyed off the SHORTER box dimension so the logo stays
+    // comfortably inside rectangular cells. Merchants with an uploaded
+    // stamp logo now fill 72% of that dimension; built-in glyphs 66%.
+    const iconSize = Math.round(Math.min(boxW, boxH) * (customDataUrl ? 0.72 : 0.66));
+    const iconX = x + Math.round((boxW - iconSize) / 2);
+    const iconY = y + Math.round((boxH - iconSize) / 2);
     const iconOpacity = isFilled ? 1 : 0.35;
 
     if (customDataUrl) {
@@ -367,15 +368,13 @@ const WALLET_LOGO_SLOT_1X = { w: 160, h: 50 };
 const WALLET_LOGO_SLOT_2X = { w: 320, h: 100 };
 const WALLET_LOGO_SLOT_3X = { w: 480, h: 150 };
 /**
- * Fraction of the Apple-allocated logo slot that the artwork itself is
- * allowed to fill. Apple's slot is 160×50pt; rendering edge-to-edge makes
- * the logo look comically large next to the in-app header logo (which
- * renders into a ~36pt slot). Capping to 60% of the slot height — plus
- * top-left anchoring with transparent padding to the right and bottom —
- * makes the wallet pass logo visually match the in-app.
+ * Fraction of the Apple-allocated logo slot that the artwork is allowed
+ * to fill. 60%×70% was too conservative — the logo looked tiny next to
+ * the pass title on real devices. Raising to 90%×95% lets the artwork
+ * breathe without overflowing Apple's reserved 160×50pt region.
  */
-const WALLET_LOGO_ARTWORK_HEIGHT_RATIO = 0.6;
-const WALLET_LOGO_ARTWORK_WIDTH_RATIO = 0.7;
+const WALLET_LOGO_ARTWORK_HEIGHT_RATIO = 0.9;
+const WALLET_LOGO_ARTWORK_WIDTH_RATIO = 0.95;
 
 /**
  * Apple Wallet logo rendering:
