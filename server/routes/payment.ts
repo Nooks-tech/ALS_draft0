@@ -315,6 +315,17 @@ paymentRouter.post('/stcpay/otp', async (req, res) => {
 paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
   try {
     const payload = req.body;
+    const eventType: string = String(payload.type ?? payload.event ?? '').toLowerCase();
+    // Moyasar fires separate event streams for payments and invoices. We
+    // only care about the payment-level events here (paid, captured,
+    // voided, refunded). Invoice-level events (invoice_*) carry an invoice
+    // id in `id`, which causes our `/v1/payments/{id}` re-verify call to
+    // 404 and pollutes the logs. Ack them and move on — the matching
+    // payment_* event arrives separately.
+    if (eventType.startsWith('invoice_')) {
+      console.log('[Payment Webhook] Ignoring invoice-level event:', eventType);
+      return res.json({ received: true, ignored: true, reason: 'invoice_event' });
+    }
     const id: string = payload.id ?? payload.data?.id ?? '';
     let status: string = payload.status ?? payload.data?.status ?? '';
     const metadata = payload.metadata ?? payload.data?.metadata ?? {};
@@ -355,7 +366,17 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
       },
     );
     if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 404) {
-      console.warn('[Payment Webhook] Moyasar rejects this payment for this merchant:', verifyRes.status);
+      // Log enough context to diagnose why Moyasar disowned this payment —
+      // common causes are: id is actually an invoice_id (see invoice-event
+      // guard above), merchant secret_key is for the wrong account, or
+      // platform-key payment flowing through a merchant-key webhook.
+      console.warn('[Payment Webhook] Moyasar rejects this payment for this merchant:', {
+        httpStatus: verifyRes.status,
+        paymentId: id,
+        eventType,
+        merchantId,
+        metadataKeys: Object.keys(metadata || {}),
+      });
       return res.status(401).json({ error: 'Unauthorized' });
     }
     if (!verifyRes.ok) {
