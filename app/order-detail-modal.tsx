@@ -128,7 +128,12 @@ export default function OrderDetailModal() {
     }
   };
 
-  // OTO polling
+  // OTO-DISABLED 2026-04-19: we used to poll OTO every 10 s while the order
+  // was Out for delivery to get driver lat/lon. Delivery now runs through
+  // Foodics DMS which doesn't expose GPS — the driver pin / ETA map is
+  // hidden and no polling is required. Re-enable if we bring a
+  // third-party carrier back.
+  /*
   useEffect(() => {
     if (!order?.otoId) return;
     let cancelled = false;
@@ -146,6 +151,8 @@ export default function OrderDetailModal() {
       if (driverPollRef.current) clearInterval(driverPollRef.current);
     };
   }, [order?.otoId, order?.status]);
+  */
+  void otoStatus; void setOtoStatus; void driverPollRef; void otoApi;
 
   const handleReorder = useCallback(() => {
     if (!order) return;
@@ -279,8 +286,14 @@ export default function OrderDetailModal() {
   const branchLat = order.branchLat;
   const branchLon = order.branchLon;
   const isOutForDelivery = order.status === 'Out for delivery';
-  const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
-  const canShowMap = branchLat != null && branchLon != null;
+  // OTO-DISABLED 2026-04-19: Foodics DMS has no GPS feed. Hide the driver
+  // map and ETA card — customer sees the stepper + "your order is on the
+  // way" text instead of a live pin. Flip to the commented expression to
+  // re-enable when we bring a carrier adapter that exposes lat/lon back.
+  const showDriverMap = false;
+  const canShowMap = false;
+  // const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
+  // const canShowMap = branchLat != null && branchLon != null;
 
   const isDelivered = order.status === 'Delivered';
   const deliveredAt = order.createdAt ? new Date(order.createdAt).getTime() : 0;

@@ -1074,12 +1074,16 @@ export default function CheckoutScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Delivery Options Picker */}
+          {/* OTO-DISABLED 2026-04-19: picker used to let the customer choose a
+              carrier (Mrsool, Careem, Barq, etc.) surfaced by OTO. We now
+              dispatch through Foodics DMS with a flat delivery fee — no
+              picker needed. Re-enable if we reintroduce multi-carrier.
           {orderType === 'delivery' && deliveryAddress && (
             <View className="mt-4">
               <DeliveryOptionsPicker accentColor={primaryColor} />
             </View>
           )}
+          */}
 
           {/* Curbside / Drive-thru Car Details */}
           {orderType === 'drivethru' && (

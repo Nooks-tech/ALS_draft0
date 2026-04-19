@@ -44,6 +44,11 @@ const STATUS_RANK: Record<string, number> = {
 };
 
 async function syncOtoStatuses() {
+  // OTO-DISABLED 2026-04-19: delivery moved to Foodics DMS. No OTO orders
+  // are being created anymore so there's nothing to sync; short-circuit
+  // the cron work. Leaving the function body below for reference.
+  return;
+  // eslint-disable-next-line @typescript-eslint/no-unreachable-code
   if (!supabaseAdmin) return;
 
   const { data: activeOrders, error } = await supabaseAdmin
