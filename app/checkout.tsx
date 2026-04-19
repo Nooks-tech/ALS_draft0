@@ -43,6 +43,7 @@ import {
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { paymentApi, type SavedCard } from '../src/api/payment';
+import { getDeliveryQuote } from '../src/api/deliveryQuote';
 // otoApi no longer called from checkout — OTO dispatch triggered by Foodics webhook on cashier accept
 import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
@@ -165,6 +166,16 @@ export default function CheckoutScreen() {
 
   // Stamp milestone redemptions selected by the customer (free reward items added to the order)
   const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<Set<string>>(new Set());
+
+  // Delivery fee quote from Foodics. Re-runs whenever the branch or
+  // delivery coordinates change. `withinServiceArea === false` blocks
+  // the Pay button because the customer's address falls outside every
+  // zone the merchant configured inside Foodics — letting them pay
+  // anyway would produce an order the kitchen can't fulfil.
+  const [deliveryQuoteLoading, setDeliveryQuoteLoading] = useState(false);
+  const [deliveryQuoteFee, setDeliveryQuoteFee] = useState<number | null>(null);
+  const [deliveryQuoteWithin, setDeliveryQuoteWithin] = useState<boolean>(true);
+  const [deliveryQuoteReason, setDeliveryQuoteReason] = useState<'out_of_zone' | 'error' | null>(null);
   const toggleMilestone = useCallback((milestoneId: string) => {
     setSelectedMilestoneIds((prev) => {
       const next = new Set(prev);
@@ -241,7 +252,69 @@ export default function CheckoutScreen() {
     }
   }, [paymentMethod, resolvedApplePayEnabled]);
 
-  const deliveryFee = orderType === 'delivery' ? (cartDeliveryFee > 0 ? cartDeliveryFee : 15) : 0;
+  // Fetch the delivery fee from Foodics whenever the customer's address
+  // or branch changes. Cart items don't affect the fee (it's zone-keyed)
+  // so they're intentionally left out of the dep array to avoid
+  // re-quoting on every + / − tap. For pickup orders we clear the quote
+  // state so a previous delivery quote doesn't leak into the UI.
+  useEffect(() => {
+    if (orderType !== 'delivery') {
+      setDeliveryQuoteFee(null);
+      setDeliveryQuoteWithin(true);
+      setDeliveryQuoteReason(null);
+      setDeliveryQuoteLoading(false);
+      return;
+    }
+    if (!merchantId || !selectedBranch?.id || !deliveryAddress?.lat || !deliveryAddress?.lng) {
+      setDeliveryQuoteFee(null);
+      setDeliveryQuoteWithin(true);
+      setDeliveryQuoteReason(null);
+      setDeliveryQuoteLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDeliveryQuoteLoading(true);
+    (async () => {
+      const quote = await getDeliveryQuote({
+        merchantId,
+        branchId: selectedBranch.id,
+        items: cartItems.map((i) => ({
+          product_id: i.id,
+          quantity: i.quantity,
+          price_sar: i.basePrice ?? i.price,
+        })),
+        lat: deliveryAddress.lat!,
+        lng: deliveryAddress.lng!,
+        address: deliveryAddress.address,
+      });
+      if (cancelled) return;
+      if (quote.withinServiceArea) {
+        setDeliveryQuoteFee(quote.feeSar);
+        setDeliveryQuoteWithin(true);
+        setDeliveryQuoteReason(null);
+      } else {
+        setDeliveryQuoteFee(null);
+        setDeliveryQuoteWithin(false);
+        setDeliveryQuoteReason(quote.reason);
+      }
+      setDeliveryQuoteLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderType, merchantId, selectedBranch?.id, deliveryAddress?.lat, deliveryAddress?.lng]);
+
+  // Delivery fee resolution order:
+  //   1. Foodics quote (zone-aware, from the merchant's own config)
+  //   2. Legacy cart fee left over from a stale delivery-options picker
+  //   3. 15 SAR flat fallback — only hit if Foodics has no zones set up
+  //      AND there's no legacy fee, which should never happen in prod
+  //      but keeps checkout rendering sanely during dev.
+  const deliveryFee =
+    orderType === 'delivery'
+      ? (deliveryQuoteFee != null ? deliveryQuoteFee : cartDeliveryFee > 0 ? cartDeliveryFee : 15)
+      : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
   const discount = promoApplied ? promoDiscount : 0;
   const subtotalAfterPromo = Math.max(0, subtotalBeforePromo - discount);
@@ -1362,6 +1435,25 @@ export default function CheckoutScreen() {
 
       {/* Footer */}
       <View className="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-100 px-5 pt-4 pb-10">
+        {/* Out-of-delivery-area banner. The Pay button stays disabled
+            while this is showing — customer has to pick a different
+            address or switch to pickup. */}
+        {orderType === 'delivery' && !deliveryQuoteWithin && !deliveryQuoteLoading && (
+          <View className="mb-3 rounded-2xl bg-red-50 border border-red-100 p-3">
+            <Text className="text-red-700 text-sm font-bold" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+              {deliveryQuoteReason === 'out_of_zone'
+                ? (isArabic
+                    ? 'عنوانك خارج منطقة التوصيل للمتجر'
+                    : "This address is outside the store's delivery area")
+                : (isArabic
+                    ? 'تعذر حساب رسوم التوصيل — حاول مرة أخرى أو اختر الاستلام'
+                    : "Couldn't get a delivery quote — try again or switch to pickup")}
+            </Text>
+            <Text className="text-red-600 text-xs mt-1" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+              {isArabic ? 'اختر عنواناً آخر أو غيّر نوع الطلب إلى الاستلام' : 'Pick a different address or switch order type to pickup'}
+            </Text>
+          </View>
+        )}
         <View className="rounded-[28px] bg-slate-50 border border-slate-100 p-4">
           <View className="flex-row items-center justify-between">
             <View>
@@ -1381,9 +1473,9 @@ export default function CheckoutScreen() {
           ) : (
             <TouchableOpacity
               onPress={handlePay}
-              disabled={submitting}
+              disabled={submitting || deliveryQuoteLoading || !deliveryQuoteWithin}
               className="px-6 py-4 rounded-[24px] min-w-[190px] items-center flex-row justify-center"
-              style={{ backgroundColor: primaryColor }}
+              style={{ backgroundColor: primaryColor, opacity: (submitting || deliveryQuoteLoading || !deliveryQuoteWithin) ? 0.5 : 1 }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color="white" />
