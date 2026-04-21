@@ -59,6 +59,8 @@ export type OrderRow = {
   payment_id: string | null;
   payment_method: string | null;
   moyasar_fee: number | null;
+  driver_name: string | null;
+  driver_phone: string | null;
   created_at: string;
   updated_at: string;
 };

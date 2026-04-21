@@ -43,6 +43,8 @@ export type PlacedOrder = {
   customerName?: string;
   customerPhone?: string;
   customerEmail?: string;
+  driver_name?: string;
+  driver_phone?: string;
   otoDispatchStatus?: 'success' | 'failed';
   otoDispatchError?: string;
 };
@@ -123,6 +125,8 @@ function rowToOrder(row: OrderRow): PlacedOrder {
     deliveryFee: row.delivery_fee ?? undefined,
     paymentId: row.payment_id ?? undefined,
     paymentMethod: row.payment_method ?? undefined,
+    driver_name: row.driver_name ?? undefined,
+    driver_phone: row.driver_phone ?? undefined,
   };
 }
 
