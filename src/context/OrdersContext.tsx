@@ -245,7 +245,15 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         createdAt: now,
       };
       setOrders((prev) => {
-        const next = [placed, ...prev];
+        // Dedupe by id — the screen that calls addOrder also has a
+        // Supabase Realtime subscription open (see subscribeToOrders
+        // below) and both can fire for the same row in a race. If
+        // Realtime gets there first the array already contains this
+        // order, so "next = [placed, ...prev]" would show it twice with
+        // different statuses (optimistic vs server). Filter first.
+        const existing = prev.find((o) => o.id === placed.id);
+        const merged = existing ? { ...existing, ...placed } : placed;
+        const next = [merged, ...prev.filter((o) => o.id !== placed.id)];
         persistOrdersCache(next);
         return next;
       });

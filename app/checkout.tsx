@@ -580,7 +580,9 @@ export default function CheckoutScreen() {
           serverPersisted: Boolean(user?.id),
         },
         orderId,
-        'Preparing'
+        // Match what we actually wrote to DB. Using 'Preparing' here
+        // flashed the wrong badge until the Realtime UPDATE arrived.
+        'Placed'
       );
       if (promoApplied && promoCode) {
         await consumeNooksPromo(merchantId, promoCode);
