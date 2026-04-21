@@ -19,38 +19,38 @@ export type LocalizedCopy = { title: string; body: string };
 export type Copy = { en: LocalizedCopy; ar: LocalizedCopy };
 
 export const ORDER_PUSH_COPY = {
-  accepted: {
-    en: { title: 'Order accepted', body: 'Great news — the store accepted your order and is starting to prepare it.' },
-    ar: { title: 'تم قبول طلبك', body: 'المتجر قبل طلبك وبدأ في تحضيره.' },
+  acceptedDelivery: {
+    en: { title: 'Your order is in the kitchen', body: "Cooking now — we'll get a driver on the way as soon as it's ready." },
+    ar: { title: 'طلبك في المطبخ', body: 'يتم تحضيره الآن — بنرسلك سائق بمجرد ما يكون جاهز.' },
   },
-  preparing: {
-    en: { title: 'Preparing your order', body: 'The kitchen is working on your order now.' },
-    ar: { title: 'جاري تحضير طلبك', body: 'المطبخ يحضر طلبك الآن.' },
-  },
-  readyPickup: {
-    en: { title: 'Order ready!', body: 'Your order is ready for pickup at the store.' },
-    ar: { title: 'طلبك جاهز!', body: 'يمكنك استلام طلبك من المتجر الآن.' },
+  acceptedPickup: {
+    en: { title: 'Your order is in the kitchen', body: "Cooking now — we'll ping you the moment it's ready to pick up." },
+    ar: { title: 'طلبك في المطبخ', body: 'يتم تحضيره الآن — بنخبرك بمجرد ما يكون جاهز للاستلام.' },
   },
   outForDelivery: {
-    en: { title: 'On the way', body: 'Your order has left the store and is on its way.' },
-    ar: { title: 'في الطريق', body: 'طلبك خرج من المتجر وهو في الطريق إليك.' },
+    en: { title: 'Your driver is rolling out', body: 'Food is with them and heading your way.' },
+    ar: { title: 'السائق انطلق إليك', body: 'طلبك معه وجاي في طريقه.' },
   },
   driverCloseBy: {
-    en: { title: 'Driver is close by', body: 'Your driver is less than 1 km away.' },
-    ar: { title: 'السائق قريب منك', body: 'السائق على بعد أقل من كيلومتر.' },
+    en: { title: 'Almost at your door', body: 'Your driver is less than a minute away.' },
+    ar: { title: 'اقترب السائق من عندك', body: 'باقي أقل من دقيقة ويصلك.' },
   },
   delivered: {
-    en: { title: 'Order delivered', body: 'Your order has been delivered. Enjoy!' },
-    ar: { title: 'تم توصيل الطلب', body: 'تم توصيل طلبك. نتمنى لك وجبة شهية!' },
+    en: { title: 'Delivered — enjoy!', body: "Your order just landed. Dig in while it's hot." },
+    ar: { title: 'وصل طلبك — بالهنا والشفا!', body: 'طلبك وصل توك. استمتع فيه وهو ساخن.' },
+  },
+  received: {
+    en: { title: 'Thanks for picking up!', body: "Hope it's every bit as good as it smells." },
+    ar: { title: 'شكراً لاستلامك', body: 'إن شاء الله يكون بقدر ريحته الحلوة.' },
   },
   cancelledByStore: {
     en: {
-      title: 'Order cancelled',
-      body: "The store couldn't fulfil your order. Your payment has been reversed in full.",
+      title: "Couldn't make it work this time",
+      body: 'The store had to cancel your order. No charge on your card — promise.',
     },
     ar: {
-      title: 'تم إلغاء الطلب',
-      body: 'لم يتمكن المتجر من تنفيذ طلبك. تم إرجاع المبلغ بالكامل.',
+      title: 'ما قدرنا ننفذ الطلب',
+      body: 'اضطر المتجر لإلغاء طلبك. ما خصمنا شي من بطاقتك، وعد.',
     },
   },
 } as const;
