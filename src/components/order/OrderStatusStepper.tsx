@@ -10,34 +10,45 @@ type OrderStatus =
   | 'Delivered'
   | 'Cancelled';
 
-// Full lifecycle in canonical order. The stepper renders a subset depending
-// on orderType: pickup skips "Out for delivery" and terminates at Ready,
-// delivery skips Ready and terminates at Delivered.
-const STATUS_ORDER: OrderStatus[] = [
+const DEFAULT_ACCENT = '#0D9488';
+
+// Pickup: Placed → Preparing → Received (= Delivered)  — 3 steps
+// Delivery: Placed → Preparing → Out for delivery → Delivered  — 4 steps
+//
+// "Accepted" collapsed into "Preparing" on 2026-04-21 after merchants
+// reported that the brief lingering "Accepted" state between the cashier
+// tap and delivery_status=1 felt like noise. "Ready" dropped from pickup
+// for the same reason — customers hear "ready for pickup" from staff in
+// person; showing an intermediate stepper state added confusion.
+const PICKUP_STEPS: OrderStatus[] = ['Placed', 'Preparing', 'Delivered'];
+const DELIVERY_STEPS: OrderStatus[] = [
   'Placed',
-  'Accepted',
   'Preparing',
-  'Ready',
   'Out for delivery',
   'Delivered',
 ];
 
-const DEFAULT_ACCENT = '#0D9488';
-
-function labelFor(key: OrderStatus, isArabic: boolean): string {
+function labelFor(
+  key: OrderStatus,
+  orderType: 'delivery' | 'pickup',
+  isArabic: boolean,
+): string {
   switch (key) {
     case 'Placed':
       return isArabic ? 'تم الإرسال' : 'Placed';
-    case 'Accepted':
-      return isArabic ? 'تم القبول' : 'Accepted';
     case 'Preparing':
       return isArabic ? 'قيد التحضير' : 'Preparing';
-    case 'Ready':
-      return isArabic ? 'جاهز' : 'Ready';
     case 'Out for delivery':
       return isArabic ? 'في الطريق' : 'On the way';
     case 'Delivered':
-      return isArabic ? 'تم التوصيل' : 'Delivered';
+      return orderType === 'pickup'
+        ? (isArabic ? 'تم الاستلام' : 'Received')
+        : (isArabic ? 'تم التوصيل' : 'Delivered');
+    // Legacy dead-states retained for backward-compat on older orders.
+    case 'Accepted':
+      return isArabic ? 'تم القبول' : 'Accepted';
+    case 'Ready':
+      return isArabic ? 'جاهز' : 'Ready';
     default:
       return String(key);
   }
@@ -46,26 +57,35 @@ function labelFor(key: OrderStatus, isArabic: boolean): string {
 function subLabelFor(
   status: OrderStatus,
   orderType: 'delivery' | 'pickup',
-  isArabic: boolean
+  isArabic: boolean,
 ): string | null {
   switch (status) {
     case 'Placed':
       return isArabic ? 'بانتظار قبول المتجر' : 'Waiting for the store to accept';
-    case 'Accepted':
-      return isArabic ? 'قبل المتجر طلبك' : 'The store accepted your order';
     case 'Preparing':
       return isArabic ? 'طلبك قيد التحضير' : 'Your order is being prepared';
-    case 'Ready':
-      return orderType === 'pickup'
-        ? (isArabic ? 'جاهز للاستلام!' : 'Ready for pickup!')
-        : (isArabic ? 'استلمه السائق' : 'Picked up by driver');
     case 'Out for delivery':
       return isArabic ? 'السائق في الطريق' : 'Driver is on the way';
     case 'Delivered':
-      return isArabic ? 'تم توصيل الطلب' : 'Order delivered';
+      return orderType === 'pickup'
+        ? (isArabic ? 'استلمت طلبك' : 'Order received')
+        : (isArabic ? 'تم توصيل الطلب' : 'Order delivered');
     default:
       return null;
   }
+}
+
+// Legacy rows written before 2026-04-21 may still carry "Accepted" or
+// "Ready". Fold them into the new canonical states so the stepper math
+// works regardless.
+function normalizeStatus(
+  status: OrderStatus,
+  orderType: 'delivery' | 'pickup',
+): OrderStatus {
+  if (status === 'Accepted') return 'Preparing';
+  if (status === 'Ready' && orderType === 'pickup') return 'Delivered';
+  if (status === 'Ready' && orderType === 'delivery') return 'Preparing';
+  return status;
 }
 
 export function OrderStatusStepper({
@@ -80,24 +100,18 @@ export function OrderStatusStepper({
   const { i18n } = useTranslation();
   const isArabic = i18n.language === 'ar';
 
-  // Pickup: Placed → Accepted → Preparing → Ready  (4 steps)
-  // Delivery: Placed → Accepted → Preparing → Out for delivery → Delivered  (5 steps)
-  const steps: OrderStatus[] =
-    orderType === 'delivery'
-      ? ['Placed', 'Accepted', 'Preparing', 'Out for delivery', 'Delivered']
-      : ['Placed', 'Accepted', 'Preparing', 'Ready'];
-
-  const currentIndex = STATUS_ORDER.indexOf(status);
+  const steps = orderType === 'delivery' ? DELIVERY_STEPS : PICKUP_STEPS;
+  const normalized = normalizeStatus(status, orderType);
+  const currentIndex = steps.indexOf(normalized);
   const effectiveIndex = currentIndex < 0 ? 0 : currentIndex;
 
   return (
     <View className="mb-6">
       {steps.map((stepKey, index) => {
-        const stepIndex = STATUS_ORDER.indexOf(stepKey);
-        const isCompleted = stepIndex <= effectiveIndex || status === 'Delivered';
-        const isCurrent = stepKey === status;
+        const isCompleted = index <= effectiveIndex || normalized === 'Delivered';
+        const isCurrent = stepKey === normalized;
         const isLast = index === steps.length - 1;
-        const sub = isCurrent ? subLabelFor(status, orderType, isArabic) : null;
+        const sub = isCurrent ? subLabelFor(normalized, orderType, isArabic) : null;
 
         return (
           <View key={stepKey} className="flex-row">
@@ -130,7 +144,7 @@ export function OrderStatusStepper({
                   isCurrent ? 'text-slate-900' : isCompleted ? 'text-slate-600' : 'text-slate-400'
                 }`}
               >
-                {labelFor(stepKey, isArabic)}
+                {labelFor(stepKey, orderType, isArabic)}
               </Text>
               {sub && <Text className="text-slate-500 text-xs mt-0.5">{sub}</Text>}
             </View>

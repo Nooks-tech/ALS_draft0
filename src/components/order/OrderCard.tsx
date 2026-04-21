@@ -7,6 +7,7 @@ import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 interface OrderProps {
   id: string;
   status: 'Placed' | 'Accepted' | 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled' | 'On Hold';
+  orderType?: 'delivery' | 'pickup';
   price: number;
   date: string;
   items: string;
@@ -14,29 +15,36 @@ interface OrderProps {
   onPress?: () => void;
 }
 
-export const OrderCard = ({ id, status, price, date, items, refundStatus, onPress }: OrderProps) => {
+export const OrderCard = ({ id, status, orderType, price, date, items, refundStatus, onPress }: OrderProps) => {
   const { i18n } = useTranslation();
   const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
   const isArabic = i18n.language === 'ar';
-  const statusLabel =
-    status === 'Placed' ? (isArabic ? 'تم الإرسال' : 'Placed') :
-    status === 'Accepted' ? (isArabic ? 'تم القبول' : 'Accepted') :
-    status === 'Preparing' ? (isArabic ? 'قيد التحضير' : 'Preparing') :
-    status === 'Ready' ? (isArabic ? 'جاهز' : 'Ready') :
-    status === 'Out for delivery' ? (isArabic ? 'خرج للتوصيل' : 'Out for delivery') :
-    status === 'Delivered' ? (isArabic ? 'تم التوصيل' : 'Delivered') :
-    status === 'Cancelled' ? (isArabic ? 'ملغي' : 'Cancelled') :
-    status === 'On Hold' ? (isArabic ? 'قيد الانتظار' : 'On Hold') :
+  // Normalize the legacy "Accepted" / "Ready" statuses into the 3-step
+  // pickup / 4-step delivery lifecycles the rest of the app now uses.
+  const displayStatus: OrderProps['status'] =
+    status === 'Accepted' ? 'Preparing' :
+    status === 'Ready' && orderType === 'pickup' ? 'Delivered' :
+    status === 'Ready' && orderType === 'delivery' ? 'Preparing' :
     status;
+  const statusLabel =
+    displayStatus === 'Placed' ? (isArabic ? 'تم الإرسال' : 'Placed') :
+    displayStatus === 'Preparing' ? (isArabic ? 'قيد التحضير' : 'Preparing') :
+    displayStatus === 'Out for delivery' ? (isArabic ? 'خرج للتوصيل' : 'Out for delivery') :
+    displayStatus === 'Delivered'
+      ? orderType === 'pickup'
+        ? (isArabic ? 'تم الاستلام' : 'Received')
+        : (isArabic ? 'تم التوصيل' : 'Delivered')
+      :
+    displayStatus === 'Cancelled' ? (isArabic ? 'ملغي' : 'Cancelled') :
+    displayStatus === 'On Hold' ? (isArabic ? 'قيد الانتظار' : 'On Hold') :
+    displayStatus;
 
   const getStatusColor = () => {
-    switch (status) {
+    switch (displayStatus) {
       case 'Placed': return 'bg-slate-100 text-slate-700';
-      case 'Accepted': return 'bg-amber-100 text-amber-700';
       case 'Preparing': return 'bg-yellow-100 text-yellow-700';
-      case 'Ready': return 'bg-green-100 text-green-700';
       case 'Out for delivery': return 'bg-blue-100 text-blue-700';
-      case 'Delivered': return 'bg-gray-100 text-gray-600';
+      case 'Delivered': return orderType === 'pickup' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600';
       case 'Cancelled': return 'bg-red-100 text-red-600';
       case 'On Hold': return 'bg-orange-100 text-orange-600';
       default: return 'bg-gray-100 text-gray-600';

@@ -291,6 +291,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
             // Service-role fallback (and guest-mode path): send to nooksweb public orders API
             // so dashboard pages still receive orders even when direct app insert is unavailable.
             await submitOrderToNooks({
+              id,
               merchant_id: order.merchantId,
               branch_id: order.branchId,
               total_sar: order.total,
@@ -320,6 +321,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
             // Even when direct insert succeeds, mirror to nooksweb API with payment_id dedupe
             // so dashboard pages always receive orders from one canonical ingestion path.
             await submitOrderToNooks({
+              id,
               merchant_id: order.merchantId,
               branch_id: order.branchId,
               total_sar: order.total,

@@ -40,6 +40,7 @@ export default function OrdersScreen() {
             <OrderCard
               id={item.id.replace('order-', '')}
               status={item.status}
+              orderType={item.orderType}
               price={item.total}
               date={item.date}
               items={orderItemsSummary(item)}

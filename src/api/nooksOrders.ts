@@ -13,6 +13,7 @@ export type NooksOrderItem = {
 };
 
 export type NooksOrderPayload = {
+  id?: string;
   merchant_id: string;
   branch_id: string;
   customer_id?: string;

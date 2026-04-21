@@ -333,7 +333,15 @@ export default function OrderDetailModal() {
     return null;
   })();
 
-  const statusLabel = isArabic ? (STATUS_ARABIC[order.status] || order.status) : order.status;
+  // Pickup orders display "Delivered" as "Received" — the customer took
+  // physical possession of the order, which reads more naturally than
+  // "Delivered" for in-store pickup.
+  const statusLabel = (() => {
+    if (order.status === 'Delivered' && order.orderType === 'pickup') {
+      return isArabic ? 'تم الاستلام' : 'Received';
+    }
+    return isArabic ? (STATUS_ARABIC[order.status] || order.status) : order.status;
+  })();
 
   return (
     <View className="flex-1">
