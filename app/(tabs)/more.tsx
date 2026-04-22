@@ -5,6 +5,7 @@ import {
   Bell,
   ChevronRight,
   CreditCard,
+  Download,
   FileText,
   Globe,
   Heart,
@@ -12,6 +13,7 @@ import {
   LogOut,
   Mail,
   MapPin,
+  Megaphone,
   RotateCcw,
   Shield,
   Star,
@@ -25,7 +27,12 @@ import { unregisterPushToken } from '../../src/api/push';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import { useProfile } from '../../src/context/ProfileContext';
-import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Switch, Text, TouchableOpacity, View } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { API_URL } from '../../src/api/config';
+import { supabase } from '../../src/api/supabase';
 
 export default function MoreScreen() {
   const { i18n } = useTranslation();
@@ -35,6 +42,159 @@ export default function MoreScreen() {
   const { signOut, user } = useAuth();
   const { merchantId } = useMerchant();
   const isArabic = i18n.language === 'ar';
+
+  // Marketing push consent toggle. Mirrors push_subscriptions.marketing_opt_in
+  // on the server; we load it on mount and PATCH it back through the
+  // push/register endpoint (which accepts the flag).
+  const [marketingOptIn, setMarketingOptIn] = useState(false);
+  const [marketingBusy, setMarketingBusy] = useState(false);
+  const [dataDownloading, setDataDownloading] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  useEffect(() => {
+    if (!user?.id || !merchantId || !supabase) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from('push_subscriptions')
+          .select('marketing_opt_in')
+          .eq('user_id', user.id)
+          .eq('merchant_id', merchantId)
+          .limit(1)
+          .maybeSingle();
+        if (!cancelled) setMarketingOptIn(Boolean(data?.marketing_opt_in));
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id, merchantId]);
+
+  const toggleMarketingConsent = async (next: boolean) => {
+    if (!user?.id || !merchantId || !supabase) return;
+    setMarketingBusy(true);
+    setMarketingOptIn(next);
+    try {
+      const session = (await supabase.auth.getSession()).data.session;
+      if (!session?.access_token) {
+        setMarketingOptIn(!next);
+        return;
+      }
+      // Grab the push token just to echo it back — required by the
+      // upsert key — but the flag is what we're actually updating.
+      const nonInteractive = await supabase
+        .from('push_subscriptions')
+        .select('expo_push_token, platform, app_language')
+        .eq('user_id', user.id)
+        .eq('merchant_id', merchantId)
+        .limit(1)
+        .maybeSingle();
+      const existing = nonInteractive.data;
+      if (!existing?.expo_push_token) {
+        // No registered token yet — flip will take effect next registration.
+        setMarketingBusy(false);
+        return;
+      }
+      const base = (process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || '').replace(/\/$/, '');
+      if (!base) {
+        setMarketingBusy(false);
+        return;
+      }
+      await fetch(`${base}/api/public/merchants/${encodeURIComponent(merchantId)}/push/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          customerId: user.id,
+          token: existing.expo_push_token,
+          platform: existing.platform ?? Platform.OS,
+          appLanguage: existing.app_language ?? (isArabic ? 'ar' : 'en'),
+          marketingOptIn: next,
+        }),
+      });
+    } catch (e) {
+      setMarketingOptIn(!next);
+      Alert.alert(isArabic ? 'خطأ' : 'Error', isArabic ? 'ما قدرنا نحفظ التفضيل.' : "Couldn't save preference.");
+    } finally {
+      setMarketingBusy(false);
+    }
+  };
+
+  const downloadMyData = async () => {
+    if (dataDownloading) return;
+    setDataDownloading(true);
+    try {
+      const session = (await supabase?.auth.getSession())?.data?.session;
+      if (!session?.access_token) {
+        Alert.alert(isArabic ? 'خطأ' : 'Error', isArabic ? 'سجّل دخول من جديد.' : 'Please sign in again.');
+        return;
+      }
+      const res = await fetch(`${API_URL}/api/account/export`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (!res.ok) throw new Error('Export failed');
+      const text = await res.text();
+      const dir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+      if (!dir) throw new Error('No writable cache directory');
+      const path = `${dir}nooks-my-data-${Date.now()}.json`;
+      await FileSystem.writeAsStringAsync(path, text);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(path, {
+          mimeType: 'application/json',
+          dialogTitle: isArabic ? 'بياناتي' : 'My data',
+        });
+      } else {
+        Alert.alert(
+          isArabic ? 'تم التصدير' : 'Export ready',
+          isArabic ? `تم حفظ الملف في: ${path}` : `Saved to: ${path}`,
+        );
+      }
+    } catch (e) {
+      Alert.alert(
+        isArabic ? 'فشل التصدير' : 'Export failed',
+        isArabic ? 'حاول بعد شوي.' : 'Please try again in a moment.',
+      );
+    } finally {
+      setDataDownloading(false);
+    }
+  };
+
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      isArabic ? 'حذف الحساب نهائياً؟' : 'Delete account permanently?',
+      isArabic
+        ? 'بنمسح ملفك الشخصي، عناوينك، ونقاط الولاء. الطلبات السابقة بتنجهّل. ما في رجوع بعد التأكيد.'
+        : "We'll erase your profile, saved addresses, and loyalty balances. Past orders will be anonymised. This can't be undone.",
+      [
+        { text: isArabic ? 'لا' : 'Cancel', style: 'cancel' },
+        {
+          text: isArabic ? 'احذف' : 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingAccount(true);
+            try {
+              const session = (await supabase?.auth.getSession())?.data?.session;
+              if (!session?.access_token) throw new Error('No session');
+              const res = await fetch(`${API_URL}/api/account`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${session.access_token}` },
+              });
+              if (!res.ok) throw new Error('Delete failed');
+              await signOut();
+              router.replace('/(auth)/login');
+            } catch {
+              Alert.alert(
+                isArabic ? 'فشل الحذف' : 'Delete failed',
+                isArabic ? 'حاول مرة ثانية.' : 'Please try again.',
+              );
+            } finally {
+              setDeletingAccount(false);
+            }
+          },
+        },
+      ],
+    );
+  };
   const copy = isArabic
     ? {
         error: 'خطأ',
@@ -247,6 +407,25 @@ export default function MoreScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Marketing push opt-in — split from transactional so order
+            updates always go through regardless of this toggle. */}
+        <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
+          <View className="items-center p-4" style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+            <View className="w-10 h-10 rounded-full justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
+              <Megaphone size={20} color={primaryColor} />
+            </View>
+            <View className="flex-1" style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}>
+              <Text className="text-base font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>
+                {isArabic ? 'إشعارات العروض' : 'Promotional push'}
+              </Text>
+              <Text className="text-xs" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>
+                {isArabic ? 'عروض ومكافآت. إشعارات الطلبات تبقى شغّالة حتى لو قفلته.' : "Offers & rewards. Order pushes stay on regardless."}
+              </Text>
+            </View>
+            <Switch value={marketingOptIn} onValueChange={toggleMarketingConsent} disabled={marketingBusy} />
+          </View>
+        </View>
+
         <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.supportLegal}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={Mail} title={copy.contactUs} subtitle={copy.reachOut} onPress={() => router.push('/contact-modal')} />
@@ -254,10 +433,23 @@ export default function MoreScreen() {
           <MenuItem icon={Shield} title={copy.privacyPolicy} onPress={() => router.push('/privacy-modal')} />
           <MenuItem icon={FileText} title={copy.terms} onPress={() => router.push('/terms-modal')} />
           <MenuItem icon={RotateCcw} title={copy.refund} onPress={() => router.push('/refund-modal')} />
+          <MenuItem
+            icon={Download}
+            title={isArabic ? 'حمّل بياناتي' : 'Download my data'}
+            subtitle={isArabic ? 'كل اللي نحفظه عنك بصيغة JSON' : 'Everything we store about you as JSON'}
+            onPress={downloadMyData}
+          />
         </View>
 
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={LogOut} title={copy.logOut} isDestructive onPress={handleLogout} />
+          <MenuItem
+            icon={LogOut}
+            title={isArabic ? 'احذف حسابي' : 'Delete my account'}
+            subtitle={isArabic ? 'نهائي وما يرجع' : "Permanent — can't be undone"}
+            isDestructive
+            onPress={confirmDeleteAccount}
+          />
         </View>
 
         <Text className="text-center text-xs mb-8" style={{ color: textColor }}>{copy.version}</Text>
