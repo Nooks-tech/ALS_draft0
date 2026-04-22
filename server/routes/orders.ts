@@ -675,7 +675,8 @@ ordersRouter.get('/:id/commission', async (req, res) => {
 
     const deliveryFee = order.delivery_fee || 0;
     const orderSubtotal = order.total_sar - deliveryFee;
-    const commissionAmount = order.commission_amount ?? +(orderSubtotal * NOOKS_COMMISSION_RATE).toFixed(2);
+    // Flat 0.5 SAR per order — same as the Delivered write upstream.
+    const commissionAmount = order.commission_amount ?? 0.5;
 
     res.json({
       orderId,
@@ -795,18 +796,16 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
     }
 
     const now = new Date().toISOString();
-    const COMMISSION_PERCENT = 10;
-    const commissionAmount =
-      typeof order.total_sar === 'number' && order.total_sar > 0
-        ? Math.round((order.total_sar * COMMISSION_PERCENT) / 100 * 100) / 100
-        : null;
+    // Flat platform fee — 0.5 SAR per delivered order, invoiced to
+    // the merchant at the next monthly renewal. Keep in sync with
+    // the Foodics webhook's Delivered transition in nooksweb.
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
       .update({
         status: 'Delivered',
         delivered_at: now,
         commission_status: 'earned',
-        ...(commissionAmount !== null ? { commission_amount: commissionAmount } : {}),
+        commission_amount: 0.5,
         updated_at: now,
       })
       .eq('id', orderId)
