@@ -13,11 +13,15 @@ const REQUIRED_VARS = [
   'NOOKS_API_BASE_URL',
   'NOOKS_INTERNAL_SECRET',
   'EXPO_ACCESS_TOKEN',
-  'MOYASAR_SECRET_KEY',
 ] as const;
 
 // Optional vars surface a warning but do not abort. Listed so prod deploys
 // notice missing-but-recommended config before customers complain.
+//
+// MOYASAR_SECRET_KEY is the platform-level Nooks account key used only as a
+// sandbox-verification fallback in the payment webhook (routes/payment.ts).
+// Real customer payments go through per-merchant BYOG keys stored encrypted
+// in merchant_payment_settings, so the server runs fine without it.
 const RECOMMENDED_VARS = [
   'ALLOWED_ORIGINS',
   'FOODICS_CLIENT_ID',
@@ -25,6 +29,7 @@ const RECOMMENDED_VARS = [
   'GITHUB_TOKEN',
   'GITHUB_REPO',
   'RESEND_API_KEY',
+  'MOYASAR_SECRET_KEY',
 ] as const;
 
 export function validateEnv(): void {

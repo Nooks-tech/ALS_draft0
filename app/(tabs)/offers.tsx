@@ -319,15 +319,28 @@ export default function OffersScreen() {
   }, [merchantId]);
 
   const loadLoyalty = useCallback(async () => {
-    if (!user?.id || !merchantId) return;
+    if (!user?.id || !merchantId) {
+      console.warn('[loyalty] skip load — user.id:', !!user?.id, 'merchantId:', !!merchantId);
+      return;
+    }
     setLoyaltyLoading(true);
     try {
       const [bal, hist, rw] = await Promise.all([
-        loyaltyApi.getBalance(user.id, merchantId).catch(() => null),
-        loyaltyApi.getHistory(user.id, merchantId).catch(() => ({ transactions: [] as LoyaltyTransaction[] })),
-        loyaltyApi.getRewards(merchantId).catch(() => ({ rewards: [] as LoyaltyReward[] })),
+        loyaltyApi.getBalance(user.id, merchantId).catch((e) => {
+          console.warn('[loyalty] /balance failed:', e?.message || String(e));
+          return null;
+        }),
+        loyaltyApi.getHistory(user.id, merchantId).catch((e) => {
+          console.warn('[loyalty] /history failed:', e?.message || String(e));
+          return { transactions: [] as LoyaltyTransaction[] };
+        }),
+        loyaltyApi.getRewards(merchantId).catch((e) => {
+          console.warn('[loyalty] /rewards failed:', e?.message || String(e));
+          return { rewards: [] as LoyaltyReward[] };
+        }),
       ]);
       if (bal) setBalance(bal);
+      else console.warn('[loyalty] balance came back null — loyaltyType will render as "not active"');
       if (hist) setTransactions(hist.transactions);
       if (rw) setRewards(rw.rewards);
     } catch { /* best-effort */ }
