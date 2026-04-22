@@ -393,7 +393,8 @@ const WALLET_LOGO_ARTWORK_WIDTH_RATIO = 0.95;
  * - use the merchant-uploaded wallet logo only
  * - trim transparent edges first so the artwork stays crisp
  * - resize directly from the original buffer to avoid double-resize softness
- * - keep the result inside Apple's slot and bias it slightly left to match the older layout
+ * - keep the result inside Apple's slot, flush left, vertically centered so
+ *   the logo's midline sits at the same Y where iOS renders the logoText
  */
 async function buildWalletLogoPngBuffers(
   logoUrl: string,
@@ -439,11 +440,14 @@ async function buildWalletLogoPngBuffers(
       .png({ compressionLevel: 6, effort: 10 })
       .toBuffer();
 
-    // Top-left anchor: the logo sits flush with the upper-left of Apple's
-    // slot, with transparent padding filling the rest. This mirrors where
-    // the in-app header places the logo.
+    // Horizontal: flush left so the logo stays on the leading edge.
+    // Vertical: CENTER within Apple's slot. iOS places the logoText
+    // (brand name) at the slot's vertical midline, not at the top — so a
+    // logo anchored at top=0 sat visually above the title. Centering the
+    // logo aligns its midline with the title's midline for a consistent
+    // header baseline regardless of how much the merchant scaled down.
     const left = 0;
-    const top = 0;
+    const top = Math.max(0, Math.floor((slotH - targetH) / 2));
 
     return sharpMod({
       create: {
