@@ -58,7 +58,11 @@ export type CancelPaymentResult = {
  * Resolve the real Moyasar payment ID from whatever ID we have stored.
  * If the stored ID is an invoice, fetch the invoice to get the payment ID.
  */
-async function resolvePaymentId(storedId: string, authHeader: string): Promise<string> {
+async function resolvePaymentId(
+  storedId: string,
+  authHeader: string,
+  expectedAmountHalals?: number,
+): Promise<string> {
   // First try to fetch as a payment — if it works, it's already correct
   try {
     const res = await fetch(`https://api.moyasar.com/v1/payments/${storedId}`, {
@@ -67,18 +71,43 @@ async function resolvePaymentId(storedId: string, authHeader: string): Promise<s
     if (res.ok) return storedId;
   } catch {}
 
-  // If not a valid payment ID, try as an invoice and extract the payment
+  // If not a valid payment ID, try as an invoice and extract the right
+  // payment. Moyasar invoices can carry multiple payments (one failed,
+  // one succeeded; or retried attempts). Picking "the first paid" risks
+  // refunding against a prior failed attempt.
+  //
+  // Disambiguation order:
+  //   1) among paid/captured payments, match by expectedAmountHalals
+  //   2) if no amount match, pick the most recently created
+  //   3) last resort, fall through to storedId
   try {
     const res = await fetch(`https://api.moyasar.com/v1/invoices/${storedId}`, {
       headers: { Authorization: authHeader },
     });
     if (res.ok) {
       const invoice = await res.json();
-      const payments = invoice?.payments ?? [];
-      const paid = payments.find((p: any) => p.status === 'paid' || p.status === 'captured');
-      if (paid?.id) {
-        console.log('[Payment] Resolved invoice', storedId, '-> payment', paid.id);
-        return paid.id;
+      const payments: any[] = Array.isArray(invoice?.payments) ? invoice.payments : [];
+      const succeeded = payments.filter((p) => p?.status === 'paid' || p?.status === 'captured');
+      if (succeeded.length === 0) {
+        console.warn('[Payment] Invoice', storedId, 'has no paid/captured payments');
+      } else {
+        const amountMatch =
+          typeof expectedAmountHalals === 'number' && Number.isFinite(expectedAmountHalals)
+            ? succeeded.find((p) => Number(p?.amount) === expectedAmountHalals)
+            : null;
+        if (amountMatch?.id) {
+          console.log('[Payment] Resolved invoice', storedId, '-> payment (amount match)', amountMatch.id);
+          return amountMatch.id;
+        }
+        const sorted = [...succeeded].sort((a, b) => {
+          const ta = Date.parse(a?.created_at ?? '') || 0;
+          const tb = Date.parse(b?.created_at ?? '') || 0;
+          return tb - ta;
+        });
+        if (sorted[0]?.id) {
+          console.log('[Payment] Resolved invoice', storedId, '-> payment (most recent)', sorted[0].id);
+          return sorted[0].id;
+        }
       }
     }
   } catch {}
@@ -98,8 +127,9 @@ export async function cancelPayment(
 
   const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
 
-  // Resolve invoice ID -> payment ID if needed
-  const realPaymentId = await resolvePaymentId(paymentId, authHeader);
+  // Resolve invoice ID -> payment ID if needed. Pass the expected amount
+  // so we pick the right payment when an invoice has multiple attempts.
+  const realPaymentId = await resolvePaymentId(paymentId, authHeader, amountHalals);
 
   // 1) Try void (free — works only if not yet settled).
   //    Skip void for partial refunds because void always reverses the FULL amount.

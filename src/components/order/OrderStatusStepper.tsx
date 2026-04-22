@@ -3,12 +3,14 @@ import { useTranslation } from 'react-i18next';
 
 type OrderStatus =
   | 'Placed'
+  | 'Pending'
   | 'Accepted'
   | 'Preparing'
   | 'Ready'
   | 'Out for delivery'
   | 'Delivered'
-  | 'Cancelled';
+  | 'Cancelled'
+  | 'On Hold';
 
 const DEFAULT_ACCENT = '#0D9488';
 
@@ -75,9 +77,10 @@ function subLabelFor(
   }
 }
 
-// Legacy rows written before 2026-04-21 may still carry "Accepted" or
-// "Ready". Fold them into the new canonical states so the stepper math
-// works regardless.
+// Fold legacy + out-of-lifecycle statuses into the canonical stepper
+// states. Anything the DB check-constraint allows but the 3-/4-step
+// steppers don't explicitly render lands somewhere sensible instead of
+// falling through to "unknown — first step".
 function normalizeStatus(
   status: OrderStatus,
   orderType: 'delivery' | 'pickup',
@@ -85,6 +88,8 @@ function normalizeStatus(
   if (status === 'Accepted') return 'Preparing';
   if (status === 'Ready' && orderType === 'pickup') return 'Delivered';
   if (status === 'Ready' && orderType === 'delivery') return 'Preparing';
+  if (status === 'Pending') return 'Placed';
+  if (status === 'On Hold') return 'Placed';
   return status;
 }
 

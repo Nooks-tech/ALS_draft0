@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ArrowRight, Bike, ChevronLeft, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import React from 'react';
-import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
@@ -184,7 +184,22 @@ export default function CartScreen() {
                   </View>
 
                   <TouchableOpacity
-                    onPress={() => removeFromCart(item)}
+                    onPress={() => {
+                      Alert.alert(
+                        isArabic ? 'حذف المنتج' : 'Remove item',
+                        isArabic
+                          ? `تبي تحذف "${item.name}" من السلة؟`
+                          : `Remove "${item.name}" from your cart?`,
+                        [
+                          { text: isArabic ? 'لا' : 'Cancel', style: 'cancel' },
+                          {
+                            text: isArabic ? 'احذفه' : 'Remove',
+                            style: 'destructive',
+                            onPress: () => removeFromCart(item),
+                          },
+                        ],
+                      );
+                    }}
                     className="mt-2 p-2"
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >

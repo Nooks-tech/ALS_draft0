@@ -6,7 +6,6 @@ import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { cancelPayment } from '../services/payment';
-import { otoService } from '../services/oto';
 import { earnPoints } from './loyalty';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -59,12 +58,10 @@ async function sendPushToCustomer(customerId: string, title: string, body: strin
   }
 }
 
-/* ── Cancel OTO if delivery order ── */
-async function cancelOtoIfDelivery(order: Record<string, any>) {
-  if (order.order_type !== 'delivery' || !order.oto_id) return;
-  const result = await otoService.cancelDelivery(order.oto_id, undefined, order.merchant_id);
-  if (result.warning) console.warn('[Orders] OTO cancel warning:', result.warning);
-}
+// OTO dispatch was retired on 2026-04-19 in favour of Foodics DMS. Legacy
+// orders with a non-null oto_id still exist in the DB but the OTO service
+// itself is gone, so cancelling them there is a no-op — we just skip
+// dispatch-side cancellation and let the refund logic below run.
 
 async function relayOrderToNooks(payload: Record<string, unknown>) {
   if (!NOOKS_API_BASE_URL) {
@@ -343,9 +340,6 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
       return res.status(400).json({ error: `Cannot cancel order with status: ${order.status}` });
     }
 
-    // Cancel OTO delivery
-    await cancelOtoIfDelivery(order);
-
     const shouldRefund = refund !== false;
     let refundStatus = 'none';
     let refundId: string | null = null;
@@ -444,9 +438,6 @@ ordersRouter.post('/:id/customer-cancel', async (req, res) => {
       }
     }
 
-    // Cancel OTO delivery
-    await cancelOtoIfDelivery(order);
-
     let refundStatus = 'none';
     let refundId: string | null = null;
     let refundFee = 0;
@@ -526,8 +517,6 @@ ordersRouter.post('/:id/system-cancel', async (req, res) => {
     if (order.status === 'Cancelled' || order.status === 'Delivered') {
       return res.status(400).json({ error: `Cannot cancel order with status: ${order.status}` });
     }
-
-    await cancelOtoIfDelivery(order);
 
     let refundStatus = 'none';
     let refundId: string | null = null;
@@ -785,7 +774,12 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
     const now = new Date().toISOString();
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
-      .update({ status: 'Delivered', delivered_at: now, updated_at: now })
+      .update({
+        status: 'Delivered',
+        delivered_at: now,
+        commission_status: 'earned',
+        updated_at: now,
+      })
       .eq('id', orderId)
       .eq('status', 'Ready');
     if (updateErr) return res.status(500).json({ error: updateErr.message });
@@ -923,4 +917,4 @@ ordersRouter.get('/:id/debug-refund', async (req, res) => {
 });
 
 /* ── Export helpers for use in cron and complaints ── */
-export { sendPushToCustomer, cancelOtoIfDelivery, supabaseAdmin as ordersSupabaseAdmin };
+export { sendPushToCustomer, supabaseAdmin as ordersSupabaseAdmin };

@@ -5,6 +5,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import Constants from 'expo-constants';
 import { useEffect, useRef } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
 
@@ -146,6 +147,8 @@ export default function RootLayout() {
   );
 }
 
+const PUSH_REGISTRATION_FAILURE_KEY = '@nooks_push_registration_failed';
+
 function PushTokenRegistrar() {
   const { user } = useAuth();
   const { merchantId } = useMerchant();
@@ -169,9 +172,15 @@ function PushTokenRegistrar() {
           token,
           appLanguage,
         });
+        // Clear the failure flag so the banner disappears if it was shown.
+        AsyncStorage.removeItem(PUSH_REGISTRATION_FAILURE_KEY).catch(() => {});
       } catch (err: any) {
-        // Non-blocking: push registration failures are logged for diagnostics.
         console.warn('[Push] Registration failed:', err?.message || 'unknown error');
+        // Persist the failure so the customer's next app launch shows a
+        // visible banner asking them to enable notifications. Without this
+        // they get zero signal when push stops working and miss order
+        // status updates entirely.
+        AsyncStorage.setItem(PUSH_REGISTRATION_FAILURE_KEY, '1').catch(() => {});
       }
     };
     run();
@@ -182,3 +191,5 @@ function PushTokenRegistrar() {
 
   return null;
 }
+
+export { PUSH_REGISTRATION_FAILURE_KEY };

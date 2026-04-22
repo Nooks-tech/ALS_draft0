@@ -1,4 +1,7 @@
 import './loadEnv'; // Must be first - loads .env before routes read process.env
+import { validateEnv } from './validateEnv';
+
+validateEnv();
 
 import cors from 'cors';
 import express from 'express';
@@ -8,13 +11,11 @@ import { buildRouter } from './routes/build';
 import { foodicsRouter } from './routes/foodics';
 import { loyaltyRouter } from './routes/loyalty';
 import { ordersRouter } from './routes/orders';
-import { otoRouter } from './routes/oto';
 import { paymentRouter } from './routes/payment';
 import { complaintsRouter } from './routes/complaints';
 import { walletPassRouter } from './routes/walletPass';
 import { googleWalletRouter } from './routes/googleWallet';
 import { supportRouter } from './routes/support';
-import { startStaleOrdersCron } from './cron/staleOrders';
 import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
 import { startComplaintEscalationCron } from './cron/complaintEscalation';
 
@@ -34,7 +35,30 @@ if (!g || !r) {
   console.warn('[Build] GITHUB_TOKEN or GITHUB_REPO not set – POST /build will return 500 until you set them in server env.');
 }
 
-app.use(cors());
+// CORS is locked to an explicit allowlist (plus any Expo dev origin) so
+// a malicious site can't CSRF a signed-in mobile user's browser into
+// firing payment/cancel requests cross-origin. Set ALLOWED_ORIGINS to
+// a comma-separated list in env (e.g. "https://nooks.space,https://
+// app.nooks.space"). Requests with no Origin header (native mobile, curl,
+// server-to-server) pass through — they can't be CSRF targets.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const ALLOW_EXPO_DEV = process.env.NODE_ENV !== 'production';
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      if (ALLOW_EXPO_DEV && /^(https?:\/\/)?(localhost|127\.0\.0\.1|.*\.exp\.direct)(:\d+)?$/.test(origin)) {
+        return cb(null, true);
+      }
+      cb(new Error(`CORS: origin ${origin} not allowed`));
+    },
+    credentials: true,
+  }),
+);
 app.use(express.json());
 
 // Rate limiting for public-facing endpoints
@@ -65,14 +89,12 @@ app.use('/api/loyalty', loyaltyRouter);
 app.use('/api/loyalty', walletPassRouter);
 app.use('/api/loyalty', googleWalletRouter);
 app.use('/api/orders', ordersRouter);
-app.use('/api/oto', otoRouter);
 app.use('/api/payment', paymentRouter);
 app.use('/api/complaints', complaintsRouter);
 app.use('/api/support', supportRouter);
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`ALS API running on port ${PORT}`);
-  startStaleOrdersCron();
   startLoyaltyExpirationCron();
   startComplaintEscalationCron();
 });

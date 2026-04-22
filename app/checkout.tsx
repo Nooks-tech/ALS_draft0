@@ -14,7 +14,6 @@ import {
   Trash2,
   X,
 } from 'lucide-react-native';
-import { DeliveryOptionsPicker } from '../src/components/delivery/DeliveryOptionsPicker';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -44,7 +43,6 @@ import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { paymentApi, type SavedCard } from '../src/api/payment';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
-// otoApi no longer called from checkout — OTO dispatch triggered by Foodics webhook on cashier accept
 import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
 
@@ -414,7 +412,10 @@ export default function CheckoutScreen() {
           if (matched.valid_until) {
             const expiry = new Date(matched.valid_until);
             if (!isNaN(expiry.getTime()) && expiry < new Date()) {
-              Alert.alert('Expired Code', 'This promo code has expired.');
+              Alert.alert(
+                isArabic ? 'انتهى الكود' : 'Expired Code',
+                isArabic ? 'صلاحية هذا الكود انتهت.' : 'This promo code has expired.',
+              );
               setPromoValidating(false);
               return;
             }
@@ -449,10 +450,16 @@ export default function CheckoutScreen() {
         setShowCouponInput(false);
         setCouponInput('');
       } else {
-        Alert.alert('Invalid Code', 'This promo code is not valid or has expired.');
+        Alert.alert(
+          isArabic ? 'كود غير صالح' : 'Invalid Code',
+          isArabic ? 'هذا الكود غير صالح أو منتهي.' : 'This promo code is not valid or has expired.',
+        );
       }
     } catch {
-      Alert.alert('Error', 'Could not validate promo code. Please try again.');
+      Alert.alert(
+        isArabic ? 'خطأ' : 'Error',
+        isArabic ? 'ما قدرنا نتحقق من الكود. حاول مرة ثانية.' : 'Could not validate promo code. Please try again.',
+      );
     } finally {
       setPromoValidating(false);
     }
@@ -478,7 +485,10 @@ export default function CheckoutScreen() {
   const createOrderAfterPayment = useCallback(async (moyasarPaymentId?: string) => {
     if (!selectedBranch?.id) return;
     if (!merchantId) {
-      Alert.alert('Configuration Error', 'Merchant configuration is missing. Please restart the app and try again.');
+      Alert.alert(
+        isArabic ? 'خطأ في الإعدادات' : 'Configuration Error',
+        isArabic ? 'إعدادات المتجر ناقصة. أعد تشغيل التطبيق وحاول مرة ثانية.' : 'Merchant configuration is missing. Please restart the app and try again.',
+      );
       return;
     }
     setSubmitting(true);
@@ -619,7 +629,10 @@ export default function CheckoutScreen() {
       router.dismissAll();
       setTimeout(() => router.replace({ pathname: '/order-confirmed', params: { orderId } }), 0);
     } catch (err: any) {
-      Alert.alert('Order Failed', err?.message || 'Order could not be created. Please contact support.');
+      Alert.alert(
+        isArabic ? 'فشل الطلب' : 'Order Failed',
+        err?.message || (isArabic ? 'ما قدرنا ننشئ طلبك. تواصل مع الدعم لو سمحت.' : 'Order could not be created. Please contact support.'),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -629,15 +642,24 @@ export default function CheckoutScreen() {
     (result: unknown) => {
       setShowPaymentModal(false);
       if (isMoyasarError(result)) {
-        Alert.alert('Payment Failed', result.message || 'Payment could not be completed.');
+        Alert.alert(
+          isArabic ? 'فشل الدفع' : 'Payment Failed',
+          result.message || (isArabic ? 'ما اكتملت عملية الدفع.' : 'Payment could not be completed.'),
+        );
         return;
       }
       if (result instanceof PaymentResponse && result.status === PaymentStatus.paid) {
         createOrderAfterPayment(result.id);
       } else if (result instanceof PaymentResponse && result.status === PaymentStatus.failed) {
-        Alert.alert('Payment Failed', 'Your payment was declined. Please try again.');
+        Alert.alert(
+          isArabic ? 'فشل الدفع' : 'Payment Failed',
+          isArabic ? 'ما قُبلت عملية الدفع. حاول مرة ثانية.' : 'Your payment was declined. Please try again.',
+        );
       } else {
-        Alert.alert('Payment', 'Payment was not completed.');
+        Alert.alert(
+          isArabic ? 'الدفع' : 'Payment',
+          isArabic ? 'ما اكتملت عملية الدفع.' : 'Payment was not completed.',
+        );
       }
     },
     [createOrderAfterPayment]
@@ -792,7 +814,10 @@ export default function CheckoutScreen() {
       return;
     }
     if (orderType === 'delivery' && !deliveryAddress?.address) {
-      Alert.alert('Address Required', 'Delivery address is required. Go back to add one.');
+      Alert.alert(
+        isArabic ? 'العنوان مطلوب' : 'Address Required',
+        isArabic ? 'عنوان التوصيل مطلوب. ارجع وأضف عنوان.' : 'Delivery address is required. Go back to add one.',
+      );
       return;
     }
     if (orderType === 'delivery' && selectedBranch?.id && deliveryAddress?.address) {
@@ -815,11 +840,17 @@ export default function CheckoutScreen() {
       }
     }
     if (!selectedBranch?.id) {
-      Alert.alert('Branch Required', 'Please select a branch.');
+      Alert.alert(
+        isArabic ? 'اختر الفرع' : 'Branch Required',
+        isArabic ? 'اختر فرع لإكمال الطلب.' : 'Please select a branch.',
+      );
       return;
     }
     if (!merchantId) {
-      Alert.alert('Configuration Error', 'Merchant configuration is missing. Please restart the app and try again.');
+      Alert.alert(
+        isArabic ? 'خطأ في الإعدادات' : 'Configuration Error',
+        isArabic ? 'إعدادات المتجر ناقصة. أعد تشغيل التطبيق وحاول مرة ثانية.' : 'Merchant configuration is missing. Please restart the app and try again.',
+      );
       return;
     }
 
@@ -831,19 +862,31 @@ export default function CheckoutScreen() {
       return;
     }
     if (paymentMethod === 'apple_pay' && Platform.OS !== 'ios') {
-      Alert.alert('Apple Pay', 'Apple Pay is only available on iOS.');
+      Alert.alert(
+        'Apple Pay',
+        isArabic ? 'آبل باي متاح على أجهزة iOS فقط.' : 'Apple Pay is only available on iOS.',
+      );
       return;
     }
     if (paymentMethod === 'apple_pay' && !resolvedApplePayEnabled) {
-      Alert.alert('Apple Pay', 'Apple Pay is not ready for this merchant yet. Please use card payment.');
+      Alert.alert(
+        'Apple Pay',
+        isArabic ? 'آبل باي لسه ما جاهز لهذا المتجر. استخدم البطاقة.' : 'Apple Pay is not ready for this merchant yet. Please use card payment.',
+      );
       return;
     }
     if (paymentMethod === 'samsung_pay' && Platform.OS !== 'android') {
-      Alert.alert('Samsung Pay', 'Samsung Pay is only available on Android.');
+      Alert.alert(
+        'Samsung Pay',
+        isArabic ? 'سامسونج باي متاح على أجهزة Android فقط.' : 'Samsung Pay is only available on Android.',
+      );
       return;
     }
     if (paymentMethod === 'samsung_pay' && !SAMSUNG_PAY_ENABLED) {
-      Alert.alert('Samsung Pay', 'Samsung Pay is not configured for this merchant yet. Please use card payment.');
+      Alert.alert(
+        'Samsung Pay',
+        isArabic ? 'سامسونج باي لسه ما معد لهذا المتجر. استخدم البطاقة.' : 'Samsung Pay is not configured for this merchant yet. Please use card payment.',
+      );
       return;
     }
 
@@ -898,7 +941,10 @@ export default function CheckoutScreen() {
         if (session.url) {
           setMoyasarWebUrl(session.url);
         } else {
-          Alert.alert('Payment Error', 'Could not open payment page. Please try again.');
+          Alert.alert(
+            isArabic ? 'خطأ في الدفع' : 'Payment Error',
+            isArabic ? 'ما قدرنا نفتح صفحة الدفع. حاول مرة ثانية.' : 'Could not open payment page. Please try again.',
+          );
         }
       } catch (err: unknown) {
         Alert.alert(isArabic ? 'خطأ في الدفع' : 'Payment Error', err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.'));
@@ -1148,17 +1194,6 @@ export default function CheckoutScreen() {
               <ChevronRight size={20} color="#94a3b8" />
             </TouchableOpacity>
           </View>
-
-          {/* OTO-DISABLED 2026-04-19: picker used to let the customer choose a
-              carrier (Mrsool, Careem, Barq, etc.) surfaced by OTO. We now
-              dispatch through Foodics DMS with a flat delivery fee — no
-              picker needed. Re-enable if we reintroduce multi-carrier.
-          {orderType === 'delivery' && deliveryAddress && (
-            <View className="mt-4">
-              <DeliveryOptionsPicker accentColor={primaryColor} />
-            </View>
-          )}
-          */}
 
           {/* Curbside / Drive-thru Car Details */}
           {orderType === 'drivethru' && (

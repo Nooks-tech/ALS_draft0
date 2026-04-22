@@ -43,7 +43,7 @@ export default function MenuScreen() {
   const { i18n } = useTranslation();
   const { totalItems, totalPrice, orderType, selectedBranch, deliveryAddress } = useCart();
   const { merchantId } = useMerchant();
-  const { products, categories, loading } = useMenuContext();
+  const { products, categories, loading, error } = useMenuContext();
   const { primaryColor, logoUrl, inAppLogoScale, backgroundColor, menuCardColor, textColor, tabTextColor } = useMerchantBranding();
   const router = useRouter();
   const headerBg = primaryColor;
@@ -426,7 +426,16 @@ export default function MenuScreen() {
           browsing customers. */}
 
       {/* MAIN LIST */}
-      {loading && sections.length === 0 ? (
+      {error && sections.length === 0 ? (
+        <View className="px-5 py-8 flex-1 items-center" style={{ backgroundColor }}>
+          <Text className="text-base text-center mb-3" style={{ color: textColor }}>
+            {isArabic ? 'ما قدرنا نحمّل المنيو الحين.' : "We couldn't load the menu right now."}
+          </Text>
+          <Text className="text-xs text-center mb-4 opacity-60" style={{ color: textColor }}>
+            {isArabic ? 'اسحب لتحديث، أو جرّب بعد ثواني.' : 'Pull to refresh, or try again in a moment.'}
+          </Text>
+        </View>
+      ) : loading && sections.length === 0 ? (
         <View className="px-5 py-4 flex-1" style={{ backgroundColor }}><Text style={{ color: textColor }}>{isArabic ? 'جار تحميل المنيو...' : 'Loading menu...'}</Text></View>
       ) : (
       <ScrollView

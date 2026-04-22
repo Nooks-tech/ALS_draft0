@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { MapPin, Pencil, Plus, Trash2, X } from 'lucide-react-native';
-import { Dimensions, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Dimensions, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
@@ -70,6 +70,20 @@ export default function AddressModal() {
                     )}
                     <TouchableOpacity
                       onPress={() => {
+                        // Checkout needs lat/lng for zone + delivery quote.
+                        // A saved address with missing coords (legacy row,
+                        // or a rare geocoder miss) would cause the quote
+                        // request to throw — block the selection up front
+                        // and tell the user how to fix it.
+                        if (addr.lat == null || addr.lng == null) {
+                          Alert.alert(
+                            isArabic ? 'العنوان ناقص' : 'Address missing a pin',
+                            isArabic
+                              ? 'ما قدرنا نحدد الموقع على الخريطة. افتح العنوان وعدّل الموقع قبل الاستخدام.'
+                              : "We couldn't pin this address on the map. Edit it and drop a location before using it for delivery.",
+                          );
+                          return;
+                        }
                         setDeliveryAddress({ address: addr.address, lat: addr.lat, lng: addr.lng, city: addr.city });
                         router.back();
                       }}

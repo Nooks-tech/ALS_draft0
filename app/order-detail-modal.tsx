@@ -9,7 +9,6 @@ import { useCart } from '../src/context/CartContext';
 import { useAuth } from '../src/context/AuthContext';
 import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
-import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
 import { submitComplaint, getOrderComplaint, customerMarkReceived, type ComplaintRow } from '../src/api/orders';
 import { fetchDriverLocation } from '../src/api/driverLocation';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
@@ -69,7 +68,6 @@ export default function OrderDetailModal() {
   const { user } = useAuth();
   const order = orders.find((o) => o.id === orderId);
   const { primaryColor } = useMerchantBranding();
-  const [otoStatus, setOtoStatus] = useState<OTOOrderStatusResponse | null>(null);
   const driverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Complaint state
@@ -161,7 +159,6 @@ export default function OrderDetailModal() {
       }
     };
   }, [orderId, order?.merchantId, order?.status, order?.orderType]);
-  void otoStatus; void setOtoStatus; void otoApi;
 
   const handleReorder = useCallback(() => {
     if (!order) return;
@@ -581,8 +578,6 @@ export default function OrderDetailModal() {
                 branchLon={branchLon}
                 deliveryLat={order.deliveryLat}
                 deliveryLng={order.deliveryLng}
-                driverLat={otoStatus?.driverLat}
-                driverLon={otoStatus?.driverLon}
                 branchName={order.branchName}
                 accentColor={primaryColor}
               />
