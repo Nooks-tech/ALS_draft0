@@ -11,6 +11,7 @@ import { OrderStatusStepper } from '../src/components/order/OrderStatusStepper';
 import { OrderTrackingMap } from '../src/components/order/OrderTrackingMap';
 import { otoApi, type OTOOrderStatusResponse } from '../src/api/oto';
 import { submitComplaint, getOrderComplaint, customerMarkReceived, type ComplaintRow } from '../src/api/orders';
+import { fetchDriverLocation } from '../src/api/driverLocation';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { supabase } from '../src/api/supabase';
@@ -128,31 +129,39 @@ export default function OrderDetailModal() {
     }
   };
 
-  // OTO-DISABLED 2026-04-19: we used to poll OTO every 10 s while the order
-  // was Out for delivery to get driver lat/lon. Delivery now runs through
-  // Foodics DMS which doesn't expose GPS — the driver pin / ETA map is
-  // hidden and no polling is required. Re-enable if we bring a
-  // third-party carrier back.
-  /*
+  // Driver live location — poll nooksweb every 15s while the order is
+  // Out for delivery. nooksweb hits Foodics /orders/{id} on our behalf,
+  // extracts driver.latitude/longitude, and caches per order so many
+  // devices polling the same order don't hammer Foodics. First null
+  // response just means "driver hasn't started posting GPS yet" — the
+  // map still shows the destination pin until coords come through.
+  const [driverLat, setDriverLat] = useState<number | null>(null);
+  const [driverLng, setDriverLng] = useState<number | null>(null);
   useEffect(() => {
-    if (!order?.otoId) return;
-    let cancelled = false;
-    const poll = () => {
-      otoApi.getOrderStatus(order.otoId!).then((data) => {
-        if (!cancelled) setOtoStatus(data);
-      }).catch(() => {});
-    };
-    poll();
-    if (order.status === 'Out for delivery') {
-      driverPollRef.current = setInterval(poll, 10000);
+    if (!orderId || !order?.merchantId) return;
+    if (order.status !== 'Out for delivery' || order.orderType !== 'delivery') {
+      setDriverLat(null);
+      setDriverLng(null);
+      return;
     }
+    let cancelled = false;
+    const poll = async () => {
+      const snap = await fetchDriverLocation(String(order.merchantId), String(orderId));
+      if (cancelled) return;
+      setDriverLat(snap?.driver_lat ?? null);
+      setDriverLng(snap?.driver_lng ?? null);
+    };
+    void poll();
+    driverPollRef.current = setInterval(poll, 15000);
     return () => {
       cancelled = true;
-      if (driverPollRef.current) clearInterval(driverPollRef.current);
+      if (driverPollRef.current) {
+        clearInterval(driverPollRef.current);
+        driverPollRef.current = null;
+      }
     };
-  }, [order?.otoId, order?.status]);
-  */
-  void otoStatus; void setOtoStatus; void driverPollRef; void otoApi;
+  }, [orderId, order?.merchantId, order?.status, order?.orderType]);
+  void otoStatus; void setOtoStatus; void otoApi;
 
   const handleReorder = useCallback(() => {
     if (!order) return;
@@ -286,14 +295,20 @@ export default function OrderDetailModal() {
   const branchLat = order.branchLat;
   const branchLon = order.branchLon;
   const isOutForDelivery = order.status === 'Out for delivery';
-  // OTO-DISABLED 2026-04-19: Foodics DMS has no GPS feed. Hide the driver
-  // map and ETA card — customer sees the stepper + "your order is on the
-  // way" text instead of a live pin. Flip to the commented expression to
-  // re-enable when we bring a carrier adapter that exposes lat/lon back.
-  const showDriverMap = false;
-  const canShowMap = false;
-  // const showDriverMap = isOutForDelivery && order.orderType === 'delivery' && branchLat != null && branchLon != null;
-  // const canShowMap = branchLat != null && branchLon != null;
+  // Live driver tracking map. OrderTrackingMap needs both anchor pins
+  // (branch origin + customer destination) to compute its viewport, so
+  // we only show the map when we have both. The driver pin from Foodics
+  // DMS is layered on top — absent at first, appears once the driver
+  // app starts posting GPS.
+  const hasMapAnchors =
+    branchLat != null &&
+    branchLon != null &&
+    order.deliveryLat != null &&
+    order.deliveryLng != null;
+  const showDriverMap =
+    isOutForDelivery && order.orderType === 'delivery' && hasMapAnchors;
+  const canShowMap =
+    order.orderType === 'delivery' && hasMapAnchors && !isOutForDelivery;
 
   const isDelivered = order.status === 'Delivered';
   const deliveredAt = order.createdAt ? new Date(order.createdAt).getTime() : 0;
@@ -354,12 +369,16 @@ export default function OrderDetailModal() {
           </TouchableOpacity>
         </View>
         <ScrollView className="flex-1 px-6 py-4" showsVerticalScrollIndicator={false}>
-          {/* Status + refund badges */}
+          {/* Status + refund badges — skip the "Placed" pill since the
+              stepper below already renders Placed as the current step and a
+              second "Placed" label in the header is redundant. */}
           <View className="mb-4">
             <View className="flex-row flex-wrap gap-2">
-              <View className={`self-start px-3 py-1 rounded-full ${badge.bg}`}>
-                <Text className={`text-xs font-bold ${badge.text}`}>{statusLabel}</Text>
-              </View>
+              {order.status !== 'Placed' && (
+                <View className={`self-start px-3 py-1 rounded-full ${badge.bg}`}>
+                  <Text className={`text-xs font-bold ${badge.text}`}>{statusLabel}</Text>
+                </View>
+              )}
               {refundBadge && (
                 <View className={`self-start px-3 py-1 rounded-full ${refundBadge.bg}`}>
                   <Text className={`text-xs font-bold ${refundBadge.text}`}>{refundBadge.label}</Text>
@@ -501,11 +520,11 @@ export default function OrderDetailModal() {
                 branchLon={branchLon}
                 deliveryLat={order.deliveryLat}
                 deliveryLng={order.deliveryLng}
-                driverLat={otoStatus?.driverLat}
-                driverLon={otoStatus?.driverLon}
+                driverLat={driverLat ?? undefined}
+                driverLon={driverLng ?? undefined}
                 branchName={order.branchName}
                 accentColor={primaryColor}
-                etaLabel={otoStatus?.estimatedDeliveryTime ?? null}
+                etaLabel={null}
               />
               <View className="flex-row flex-wrap gap-2 mt-2">
                 <View className="flex-row items-center gap-1.5">
@@ -518,7 +537,7 @@ export default function OrderDetailModal() {
                     <Text className="text-slate-500 text-xs">{isArabic ? 'موقعك' : 'Your location'}</Text>
                   </View>
                 )}
-                {otoStatus?.driverLat != null && (
+                {driverLat != null && driverLng != null && (
                   <View className="flex-row items-center gap-1.5">
                     <View className="w-2 h-2 rounded-full bg-indigo-500" />
                     <Text className="text-slate-500 text-xs">{isArabic ? 'السائق' : 'Driver'}</Text>
