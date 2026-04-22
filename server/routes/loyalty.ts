@@ -623,6 +623,35 @@ loyaltyRouter.post('/earn', async (req, res) => {
     }
 
     if (loyaltyType === 'stamps') {
+      // Idempotency: if we've already stamped this order, short-circuit.
+      // Without this, any webhook replay that squeaks past the regression
+      // guard in the Foodics handler would double-stamp the customer.
+      // Cashback has the same check (see earnCashback).
+      const { data: alreadyStamped } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .select('id')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId || '')
+        .eq('order_id', orderId)
+        .eq('type', 'earn')
+        .eq('loyalty_type', 'stamps')
+        .limit(1)
+        .maybeSingle();
+      if (alreadyStamped) {
+        const { data: stampRow } = await supabaseAdmin
+          .from('loyalty_stamps')
+          .select('stamps, completed_cards')
+          .eq('customer_id', customerId)
+          .eq('merchant_id', merchantId || '')
+          .maybeSingle();
+        return res.json({
+          success: true,
+          alreadyEarned: true,
+          stamps: stampRow?.stamps ?? 0,
+          milestoneReached: false,
+        });
+      }
+
       // Increment stamp count
       const { data: stampRow } = await supabaseAdmin.from('loyalty_stamps')
         .select('stamps, completed_cards')
