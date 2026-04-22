@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { cancelPayment } from '../services/payment';
+import { sendOrderReceipt } from '../services/receipt';
 import { earnPoints } from './loyalty';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -305,6 +306,28 @@ ordersRouter.post('/commit', async (req, res) => {
           .then(() => console.log(`[Orders] Stored foodics_order_id for ${id}`))
           .catch((e: any) => console.warn('[Orders] Failed to store foodics_order_id:', e?.message));
       }
+    }
+
+    // Fire the customer receipt — ZATCA-style, 15% VAT breakdown. Fire-
+    // and-forget so a Resend outage can't block the order response.
+    if (customerEmail && typeof customerEmail === 'string' && customerEmail.trim()) {
+      void sendOrderReceipt({
+        orderId: id,
+        merchantId,
+        customerEmail: customerEmail.trim(),
+        customerName: typeof customerName === 'string' ? customerName.trim() : null,
+        totalSar,
+        deliveryFeeSar: normalizedDeliveryFee,
+        items: items.map((item: any) => ({
+          name: String(item.name ?? 'Item'),
+          quantity: Number(item.quantity ?? 1),
+          price_sar: Number(item.price ?? item.price_sar ?? 0),
+        })),
+        orderType,
+        branchName: typeof branchName === 'string' ? branchName.trim() : null,
+        paymentMethod: typeof paymentMethod === 'string' ? paymentMethod.trim() : null,
+        paymentId: typeof paymentId === 'string' ? paymentId.trim() : null,
+      });
     }
 
     res.json({ success: true, order: savedOrder, relayResult });
@@ -772,12 +795,18 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
     }
 
     const now = new Date().toISOString();
+    const COMMISSION_PERCENT = 10;
+    const commissionAmount =
+      typeof order.total_sar === 'number' && order.total_sar > 0
+        ? Math.round((order.total_sar * COMMISSION_PERCENT) / 100 * 100) / 100
+        : null;
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
       .update({
         status: 'Delivered',
         delivered_at: now,
         commission_status: 'earned',
+        ...(commissionAmount !== null ? { commission_amount: commissionAmount } : {}),
         updated_at: now,
       })
       .eq('id', orderId)

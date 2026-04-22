@@ -19,7 +19,11 @@ import {
 } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../src/context/AuthContext';
+import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
+import { unregisterPushToken } from '../../src/api/push';
+import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 import { useProfile } from '../../src/context/ProfileContext';
 import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 
@@ -28,7 +32,8 @@ export default function MoreScreen() {
   const router = useRouter();
   const { primaryColor, backgroundColor, menuCardColor, textColor, appName, cafeName } = useMerchantBranding();
   const { profile } = useProfile();
-  const { signOut } = useAuth();
+  const { signOut, user } = useAuth();
+  const { merchantId } = useMerchant();
   const isArabic = i18n.language === 'ar';
   const copy = isArabic
     ? {
@@ -131,6 +136,21 @@ export default function MoreScreen() {
         text: copy.logOut,
         style: 'destructive',
         onPress: async () => {
+          // Unregister this device's Expo push token BEFORE signOut so
+          // the next customer to log in on the same phone doesn't
+          // inherit the outgoing user's order notifications. Best-effort
+          // — failure here must not block sign-out.
+          try {
+            if (merchantId && user?.id) {
+              const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas?.projectId;
+              const tokenRes = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined).catch(() => null);
+              await unregisterPushToken({
+                merchantId,
+                customerId: user.id,
+                token: tokenRes?.data,
+              });
+            }
+          } catch {}
           await signOut();
           router.replace('/(auth)/login');
         },

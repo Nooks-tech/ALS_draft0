@@ -44,3 +44,32 @@ export async function registerPushToken(params: {
     throw new Error(text || 'Failed to register push token');
   }
 }
+
+export async function unregisterPushToken(params: {
+  merchantId: string;
+  customerId: string;
+  token?: string;
+}): Promise<void> {
+  if (!BASE_URL.trim() || !params.merchantId.trim() || !params.customerId.trim()) {
+    return;
+  }
+  const session = (await supabase?.auth.getSession())?.data?.session ?? null;
+  if (!session?.access_token) return;
+
+  const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(params.merchantId)}/push/unregister`;
+  try {
+    await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        customerId: params.customerId,
+        ...(params.token ? { token: params.token } : {}),
+      }),
+    });
+  } catch {
+    // Non-fatal — sign-out continues regardless.
+  }
+}

@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Button } from '../../src/components/common/Button';
 import { Container } from '../../src/components/common/Container';
 import { authApi } from '../../src/api/auth';
@@ -176,6 +176,28 @@ export default function LoginScreen() {
 
           <View className="flex-row justify-center mt-6">
             <Text className="text-gray-600 text-center" style={{ textAlign: isArabic ? 'right' : 'center' }}>{copy.smsNotice}</Text>
+          </View>
+
+          {/* Pre-signup legal links — Apple App Store requires T&S and
+              Privacy Policy to be reachable before an account is created.
+              Tapping either opens a modal that's also linked from More. */}
+          <View className="flex-row justify-center items-center mt-4 flex-wrap">
+            <Text className="text-xs text-gray-500">
+              {isArabic ? 'بالمتابعة فأنت توافق على ' : 'By continuing you agree to our '}
+            </Text>
+            <TouchableOpacity onPress={() => router.push('/terms-modal')}>
+              <Text className="text-xs font-semibold" style={{ color: primaryColor }}>
+                {isArabic ? 'الشروط' : 'Terms'}
+              </Text>
+            </TouchableOpacity>
+            <Text className="text-xs text-gray-500">
+              {isArabic ? ' و ' : ' and '}
+            </Text>
+            <TouchableOpacity onPress={() => router.push('/privacy-modal')}>
+              <Text className="text-xs font-semibold" style={{ color: primaryColor }}>
+                {isArabic ? 'سياسة الخصوصية' : 'Privacy Policy'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

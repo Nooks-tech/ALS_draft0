@@ -1,6 +1,7 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { Text, TouchableOpacity, View } from 'react-native';
 import i18n from '../../i18n';
+import { reportCrash } from '../../api/errorReport';
 
 type Props = { children: ReactNode; fallback?: ReactNode };
 type State = { hasError: boolean; error?: Error };
@@ -14,6 +15,9 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('[ErrorBoundary]', error, errorInfo.componentStack);
+    // Fire-and-forget — network failures inside reportCrash are swallowed
+    // so we don't double-error while already rendering the fallback.
+    reportCrash({ error, screen: 'ErrorBoundary' });
   }
 
   retry = () => this.setState({ hasError: false, error: undefined });

@@ -6,6 +6,7 @@ validateEnv();
 import cors from 'cors';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import { accountRouter } from './routes/account';
 import { authRouter } from './routes/auth';
 import { buildRouter } from './routes/build';
 import { foodicsRouter } from './routes/foodics';
@@ -83,6 +84,7 @@ app.get('/', (_, res) => res.json({ status: 'ok' }));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
 
 app.use('/build', buildRouter);
+app.use('/api/account', accountRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/foodics', foodicsRouter);
 app.use('/api/loyalty', loyaltyRouter);
