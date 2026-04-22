@@ -623,12 +623,20 @@ export default function OffersScreen() {
                       />
                     ) : null}
                   </View>
-                  {/* Title aligns with the TOP of the logo slot (not vertically
-                      centered), matching the dashboard preview. Small pt keeps
-                      the baseline visually level with the logo's top edge. */}
+                  {/* Title sits flush with the logo's top edge. lineHeight=18
+                      kills the default leading so the first visible pixel of
+                      the glyph lines up with the top of the 40×40 logo slot;
+                      anything higher and the text drops below the logo top. */}
                   <Text
                     numberOfLines={1}
-                    style={{ flex: 1, color: cardTextColor, fontSize: 18, fontWeight: '600', textAlign: 'right', paddingTop: 2 }}
+                    style={{
+                      flex: 1,
+                      color: cardTextColor,
+                      fontSize: 18,
+                      lineHeight: 18,
+                      fontWeight: '600',
+                      textAlign: 'right',
+                    }}
                   >
                     {cardTitle}
                   </Text>
