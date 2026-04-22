@@ -21,27 +21,27 @@ export type Copy = { en: LocalizedCopy; ar: LocalizedCopy };
 export const ORDER_PUSH_COPY = {
   acceptedDelivery: {
     en: { title: 'Your order is in the kitchen', body: "Cooking now — we'll get a driver on the way as soon as it's ready." },
-    ar: { title: 'طلبك في المطبخ', body: 'يتم تحضيره الآن — بنرسلك سائق بمجرد ما يكون جاهز.' },
+    ar: { title: 'طلبك دخل المطبخ', body: 'قاعدين نحضّره — بنبعت السواق لك بمجرد ما يجهز.' },
   },
   acceptedPickup: {
     en: { title: 'Your order is in the kitchen', body: "Cooking now — we'll ping you the moment it's ready to pick up." },
-    ar: { title: 'طلبك في المطبخ', body: 'يتم تحضيره الآن — بنخبرك بمجرد ما يكون جاهز للاستلام.' },
+    ar: { title: 'طلبك دخل المطبخ', body: 'قاعدين نحضّره — بنخبرك بمجرد ما يجهز عشان تجي تاخذه.' },
   },
   outForDelivery: {
     en: { title: 'Your driver is rolling out', body: 'Food is with them and heading your way.' },
-    ar: { title: 'السائق انطلق إليك', body: 'طلبك معه وجاي في طريقه.' },
+    ar: { title: 'السواق طلع لك', body: 'طلبك معاه وهو في الطريق.' },
   },
   driverCloseBy: {
     en: { title: 'Almost at your door', body: 'Your driver is less than a minute away.' },
-    ar: { title: 'اقترب السائق من عندك', body: 'باقي أقل من دقيقة ويصلك.' },
+    ar: { title: 'السواق قرّب', body: 'باقي أقل من دقيقة ويوصلك.' },
   },
   delivered: {
     en: { title: 'Delivered — enjoy!', body: "Your order just landed. Dig in while it's hot." },
-    ar: { title: 'وصل طلبك — بالهنا والشفا!', body: 'طلبك وصل توك. استمتع فيه وهو ساخن.' },
+    ar: { title: 'وصل طلبك — بالهنا والعافية!', body: 'طلبك وصلك توّه. استمتع فيه وهو سخن.' },
   },
   received: {
     en: { title: 'Thanks for picking up!', body: "Hope it's every bit as good as it smells." },
-    ar: { title: 'شكراً لاستلامك', body: 'إن شاء الله يكون بقدر ريحته الحلوة.' },
+    ar: { title: 'تسلم على الاستلام!', body: 'إن شاء الله يعجبك بقدر ريحته.' },
   },
   cancelledByStore: {
     en: {
@@ -49,8 +49,8 @@ export const ORDER_PUSH_COPY = {
       body: 'The store had to cancel your order. No charge on your card — promise.',
     },
     ar: {
-      title: 'ما قدرنا ننفذ الطلب',
-      body: 'اضطر المتجر لإلغاء طلبك. ما خصمنا شي من بطاقتك، وعد.',
+      title: 'للأسف ما قدرنا ننفذ طلبك',
+      body: 'اضطر المتجر يلغيه. ما خصمنا شي من بطاقتك، والله.',
     },
   },
 } as const;

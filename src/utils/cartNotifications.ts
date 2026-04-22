@@ -38,9 +38,9 @@ export async function scheduleAbandonedCartReminder({
     await cancelAbandonedCartReminder(reminderKey);
 
     const safeBrand = brandName.trim() || (isArabic ? 'متجرك' : 'your cart');
-    const title = isArabic ? 'سلتك تناديك' : `Still hungry?`;
+    const title = isArabic ? 'سلتك تستناك' : `Still hungry?`;
     const body = isArabic
-      ? `${itemCount} ${itemCount === 1 ? 'منتج' : 'منتجات'} من ${safeBrand} لسّا في سلتك. أكمل الطلب قبل لا تختفي السلة بعد 12 ساعة.`
+      ? `عندك ${itemCount} ${itemCount === 1 ? 'منتج' : 'منتجات'} من ${safeBrand} لسّا في السلة. كمّل الطلب قبل ما تروح عليك بعد 12 ساعة.`
       : `${itemCount} item${itemCount === 1 ? '' : 's'} from ${safeBrand} ${itemCount === 1 ? "is" : "are"} still in your cart. Check out before it poofs in 12 hours.`;
 
     const trigger = {
