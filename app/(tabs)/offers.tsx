@@ -606,13 +606,15 @@ export default function OffersScreen() {
 
               // Merchant-controlled logo scale. Clamped so the card's top
               // padding and the title's vertical alignment can't break: the
-              // 40×40 slot stays fixed, only the inner image resizes.
-              const logoFrac = Math.max(0.6, Math.min(1.4, (balance?.walletCardLogoScale ?? 100) / 100));
+              // 40×40 slot stays fixed, only the inner image resizes. Max is
+              // 100% to match the Apple Pass slot cap — higher values are a
+              // no-op in the pass renderer, so the slider would lie.
+              const logoFrac = Math.max(0.4, Math.min(1.0, (balance?.walletCardLogoScale ?? 100) / 100));
               const logoInnerSize = Math.round(40 * logoFrac);
 
               const headerRow = (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                  <View style={{ width: 40, height: 40, alignItems: 'flex-start', justifyContent: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
+                  <View style={{ width: 40, height: 40, alignItems: 'flex-start', justifyContent: 'flex-start' }}>
                     {cardLogoUrl ? (
                       <Image
                         source={{ uri: cardLogoUrl }}
@@ -621,9 +623,12 @@ export default function OffersScreen() {
                       />
                     ) : null}
                   </View>
+                  {/* Title aligns with the TOP of the logo slot (not vertically
+                      centered), matching the dashboard preview. Small pt keeps
+                      the baseline visually level with the logo's top edge. */}
                   <Text
                     numberOfLines={1}
-                    style={{ flex: 1, color: cardTextColor, fontSize: 18, fontWeight: '600', textAlign: 'right' }}
+                    style={{ flex: 1, color: cardTextColor, fontSize: 18, fontWeight: '600', textAlign: 'right', paddingTop: 2 }}
                   >
                     {cardTitle}
                   </Text>
