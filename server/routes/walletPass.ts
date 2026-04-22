@@ -234,6 +234,11 @@ async function buildStampGridStripPng(opts: {
   stampIconColor: string;
   stampIconUrl?: string | null;
   businessType: 'cafe' | 'restaurant';
+  /**
+   * Percent scale applied on top of the default icon-to-box ratio (100 = default).
+   * Clamped to [20, 200] — anything beyond starts to overflow the stamp box.
+   */
+  iconScalePercent?: number | null;
 }): Promise<Buffer | null> {
   let sharpMod: typeof import('sharp');
   try {
@@ -320,8 +325,16 @@ async function buildStampGridStripPng(opts: {
 
     // Icon size is keyed off the SHORTER box dimension so the logo stays
     // comfortably inside rectangular cells. Merchants with an uploaded
-    // stamp logo now fill 72% of that dimension; built-in glyphs 66%.
-    const iconSize = Math.round(Math.min(boxW, boxH) * (customDataUrl ? 0.72 : 0.66));
+    // stamp logo start at 72% of that dimension; built-in glyphs at 66%.
+    // Merchant slider (iconScalePercent) multiplies on top, clamped so the
+    // icon can't overflow the box or shrink to nothing.
+    const rawScale = typeof opts.iconScalePercent === 'number' ? opts.iconScalePercent : 100;
+    const scale = Math.max(20, Math.min(200, rawScale)) / 100;
+    const baseRatio = customDataUrl ? 0.72 : 0.66;
+    // Cap effective ratio at 0.92 so even at 200% the icon keeps a small
+    // bezel inside the box instead of touching the edge.
+    const effectiveRatio = Math.min(0.92, baseRatio * scale);
+    const iconSize = Math.round(Math.min(boxW, boxH) * effectiveRatio);
     const iconX = x + Math.round((boxW - iconSize) / 2);
     const iconY = y + Math.round((boxH - iconSize) / 2);
     const iconOpacity = isFilled ? 1 : 0.35;
@@ -331,9 +344,9 @@ async function buildStampGridStripPng(opts: {
         `<image href="${customDataUrl}" xlink:href="${customDataUrl}" x="${iconX}" y="${iconY}" width="${iconSize}" height="${iconSize}" opacity="${iconOpacity}" preserveAspectRatio="xMidYMid meet"/>`,
       );
     } else {
-      const scale = iconSize / 24;
+      const viewBoxScale = iconSize / 24;
       parts.push(
-        `<g transform="translate(${iconX} ${iconY}) scale(${scale})" opacity="${iconOpacity}"><path d="${iconPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
+        `<g transform="translate(${iconX} ${iconY}) scale(${viewBoxScale})" opacity="${iconOpacity}"><path d="${iconPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
       );
     }
   }
@@ -463,14 +476,19 @@ function resolveWalletLogoUrl(
 }
 
 /**
- * Wallet pass logo scale: fixed 100% in-slot fit (merchant uploads artwork at intended size).
- * Per-product: wallet logo resize / “same as in-app” UI was removed from the dashboard.
+ * Wallet pass logo scale (percent). Sourced from `loyalty_config.wallet_card_logo_scale`
+ * — merchant-controlled via the Loyalty page slider. Falls back to 100% when unset.
+ * Clamped to [20, 200] by buildWalletLogoPngBuffers so a malformed config can't
+ * produce an oversized artwork that overflows Apple's 160×50pt slot.
  */
 function resolveWalletLogoScale(
-  _loyalty: { wallet_card_logo_scale?: unknown } | null | undefined,
+  loyalty: { wallet_card_logo_scale?: unknown } | null | undefined,
   _appInAppScale: number,
 ): number {
-  return 100;
+  const raw = loyalty?.wallet_card_logo_scale;
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+  if (!Number.isFinite(n) || n <= 0) return 100;
+  return n;
 }
 
 /** Slightly dimmer than body text for field labels (Apple Wallet readability). */
@@ -1064,6 +1082,10 @@ walletPassRouter.get(
           stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
           stampIconUrl: config?.wallet_stamp_icon_url ?? null,
           businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
+          iconScalePercent:
+            config?.wallet_stamp_icon_scale != null
+              ? Number(config.wallet_stamp_icon_scale)
+              : null,
         });
         if (stampGrid) {
           files['strip.png'] = stampGrid;
@@ -1574,6 +1596,10 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
         stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
         stampIconUrl: config?.wallet_stamp_icon_url ?? null,
         businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
+        iconScalePercent:
+          config?.wallet_stamp_icon_scale != null
+            ? Number(config.wallet_stamp_icon_scale)
+            : null,
       });
       if (stampGrid) {
         files['strip.png'] = stampGrid;

@@ -43,6 +43,7 @@ export interface LoyaltyBalance {
   walletStampBoxColor: string | null;
   walletStampIconColor: string | null;
   walletStampIconUrl: string | null;
+  walletStampIconScale: number | null;
   businessType: string;
 }
 

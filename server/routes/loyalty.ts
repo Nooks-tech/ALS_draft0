@@ -28,6 +28,7 @@ const DEFAULT_CONFIG = {
   stamp_target: 8,
   stamp_reward_description: 'Free item',
   wallet_card_logo_scale: null as number | null,
+  wallet_stamp_icon_scale: null as number | null,
   config_version: 1,
 };
 
@@ -428,7 +429,7 @@ loyaltyRouter.put('/config', async (req, res) => {
       'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
       'wallet_card_label', 'wallet_card_secondary_label', 'wallet_card_logo_scale',
       'wallet_card_banner_url', 'wallet_stamp_box_color', 'wallet_stamp_icon_color',
-      'wallet_stamp_icon_url', 'business_type', 'pass_template_type',
+      'wallet_stamp_icon_url', 'wallet_stamp_icon_scale', 'business_type', 'pass_template_type',
     ];
 
     // Config versioning: if loyalty_type or key rates changed, bump version
@@ -458,6 +459,21 @@ loyaltyRouter.put('/config', async (req, res) => {
       const retryPayload = { ...payload };
       delete retryPayload.wallet_card_logo_scale;
       console.warn('[loyalty] wallet_card_logo_scale missing in DB; retrying save without it');
+      const retry = await supabaseAdmin
+        .from('loyalty_config')
+        .upsert(retryPayload, { onConflict: 'merchant_id' })
+        .select();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    // Same fallback for wallet_stamp_icon_scale — if the new column hasn't
+    // been applied yet (migration not run on this environment), drop it and
+    // retry so the merchant's save doesn't fail outright.
+    if (error && /wallet_stamp_icon_scale/i.test(error.message || '')) {
+      const retryPayload = { ...payload };
+      delete retryPayload.wallet_stamp_icon_scale;
+      console.warn('[loyalty] wallet_stamp_icon_scale missing in DB; retrying save without it');
       const retry = await supabaseAdmin
         .from('loyalty_config')
         .upsert(retryPayload, { onConflict: 'merchant_id' })
@@ -591,6 +607,8 @@ loyaltyRouter.get('/balance', async (req, res) => {
       businessType: config.business_type || 'cafe',
       walletCardLogoScale:
         config.wallet_card_logo_scale != null ? Number(config.wallet_card_logo_scale) : null,
+      walletStampIconScale:
+        config.wallet_stamp_icon_scale != null ? Number(config.wallet_stamp_icon_scale) : null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get loyalty balance' });

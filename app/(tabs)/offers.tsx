@@ -76,18 +76,25 @@ function hexWithAlpha(hex: string, alpha: number): string {
  * stamps lay out as two rows. Filled boxes use the merchant's stamp_box_color
  * at full opacity; empty boxes sit at 22% of that same color.
  */
-function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl }: {
+function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScalePercent }: {
   stampTarget: number;
   stamps: number;
   boxColor: string;
   iconColor: string;
   iconUrl: string | null;
+  iconScalePercent: number | null;
 }) {
   const total = Math.max(1, Math.min(20, Math.round(stampTarget)));
   const filled = Math.max(0, Math.min(total, Math.round(stamps)));
   const cols = total <= 5 ? total : Math.ceil(total / 2);
   const emptyBg = hexWithAlpha(boxColor, 0.22);
   const cellWidthPct = `${100 / cols}%` as const;
+  // Merchant slider scales the inner icon only; box stays 1:1 so the grid
+  // never reflows. Clamped to [0.6, 1.4] so a bad value can't blow out the
+  // stamp box or shrink the icon to an invisible dot.
+  const iconFrac = Math.max(0.6, Math.min(1.4, (iconScalePercent ?? 100) / 100));
+  const uploadedIconSize = `${Math.round(55 * iconFrac)}%` as const;
+  const defaultIconSize = Math.max(10, Math.min(40, Math.floor(200 / cols) * iconFrac));
 
   return (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
@@ -105,12 +112,12 @@ function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl }: {
               {iconUrl ? (
                 <Image
                   source={{ uri: iconUrl }}
-                  style={{ width: '55%', height: '55%', opacity: isFilled ? 1 : 0.35 }}
+                  style={{ width: uploadedIconSize, height: uploadedIconSize, opacity: isFilled ? 1 : 0.35 }}
                   resizeMode="contain"
                 />
               ) : (
                 <Star
-                  size={Math.min(26, Math.floor(200 / cols))}
+                  size={defaultIconSize}
                   color={iconColor}
                   fill={iconColor}
                   style={{ opacity: isFilled ? 1 : 0.35 }}
@@ -597,17 +604,23 @@ export default function OffersScreen() {
                 elevation: 10,
               };
 
+              // Merchant-controlled logo scale. Clamped so the card's top
+              // padding and the title's vertical alignment can't break: the
+              // 40×40 slot stays fixed, only the inner image resizes.
+              const logoFrac = Math.max(0.6, Math.min(1.4, (balance?.walletCardLogoScale ?? 100) / 100));
+              const logoInnerSize = Math.round(40 * logoFrac);
+
               const headerRow = (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                  {cardLogoUrl ? (
-                    <Image
-                      source={{ uri: cardLogoUrl }}
-                      style={{ width: 40, height: 40 }}
-                      resizeMode="contain"
-                    />
-                  ) : (
-                    <View style={{ width: 40, height: 40 }} />
-                  )}
+                  <View style={{ width: 40, height: 40, alignItems: 'flex-start', justifyContent: 'center' }}>
+                    {cardLogoUrl ? (
+                      <Image
+                        source={{ uri: cardLogoUrl }}
+                        style={{ width: logoInnerSize, height: logoInnerSize }}
+                        resizeMode="contain"
+                      />
+                    ) : null}
+                  </View>
                   <Text
                     numberOfLines={1}
                     style={{ flex: 1, color: cardTextColor, fontSize: 18, fontWeight: '600', textAlign: 'right' }}
@@ -640,6 +653,7 @@ export default function OffersScreen() {
                       boxColor={boxColor}
                       iconColor={iconColor}
                       iconUrl={iconUrl}
+                      iconScalePercent={balance?.walletStampIconScale ?? null}
                     />
                     {filledMilestones.length > 0 && (
                       <View style={{ marginTop: 16, flexDirection: 'row', flexWrap: 'wrap' }}>
