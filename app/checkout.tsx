@@ -304,14 +304,15 @@ export default function CheckoutScreen() {
   }, [orderType, merchantId, selectedBranch?.id, deliveryAddress?.lat, deliveryAddress?.lng]);
 
   // Delivery fee resolution order:
-  //   1. Foodics quote (zone-aware, from the merchant's own config)
-  //   2. Legacy cart fee left over from a stale delivery-options picker
-  //   3. 15 SAR flat fallback — only hit if Foodics has no zones set up
-  //      AND there's no legacy fee, which should never happen in prod
-  //      but keeps checkout rendering sanely during dev.
+  //   1. Nooksweb delivery-quote response (merchant's per-branch override
+  //      set in Live Operations, falling back to Foodics zone pricing).
+  //   2. Legacy cart fee (kept for any stale carts mid-migration).
+  //   3. Zero — merchants who haven't configured a fee get free delivery
+  //      until they pick one in Live Operations. No silent "15 SAR"
+  //      charge the customer never agreed to.
   const deliveryFee =
     orderType === 'delivery'
-      ? (deliveryQuoteFee != null ? deliveryQuoteFee : cartDeliveryFee > 0 ? cartDeliveryFee : 15)
+      ? (deliveryQuoteFee != null ? deliveryQuoteFee : cartDeliveryFee > 0 ? cartDeliveryFee : 0)
       : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
   const discount = promoApplied ? promoDiscount : 0;
@@ -529,11 +530,16 @@ export default function CheckoutScreen() {
         });
       }
 
-      // OTO bullet delivery is dispatched AFTER the cashier accepts the order in Foodics POS.
-      // The Foodics webhook (status 2 = Active/Accepted) triggers OTO dispatch via nooksweb.
-      // We do NOT dispatch here — just save delivery info with the order.
+      // Server-side commit creates the Foodics order synchronously via
+      // the relay, which takes 2-5 seconds talking to Foodics. Firing
+      // it in the BACKGROUND so the customer sees the order-confirmed
+      // screen the moment their payment clears instead of staring at a
+      // spinner. If commit fails, the optimistic local order already
+      // rendered keeps the UX sane; we surface the error via Alert so
+      // the user can contact support and we can reconcile against the
+      // Moyasar payment id.
       if (user?.id) {
-        await commitOrder({
+        void commitOrder({
           id: orderId,
           merchantId,
           branchId: selectedBranch.id,
@@ -564,6 +570,14 @@ export default function CheckoutScreen() {
           promoCode: promoApplied ? promoCode : null,
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true,
+        }).catch((err) => {
+          console.warn('[Checkout] Background commit failed:', err?.message);
+          Alert.alert(
+            isArabic ? 'خطأ في المزامنة' : 'Sync issue',
+            isArabic
+              ? `طلبك ${orderId.slice(-8)} مدفوع لكن ما قدرنا نرسله للمطعم. تواصل مع الدعم.`
+              : `Your order ${orderId.slice(-8)} is paid but couldn't reach the store. Please contact support.`,
+          );
         });
       }
       addOrder(
@@ -594,30 +608,31 @@ export default function CheckoutScreen() {
         // flashed the wrong badge until the Realtime UPDATE arrived.
         'Placed'
       );
+      // Promo + loyalty redemption run in the background too — the
+      // user doesn't need to wait for these before seeing their order
+      // confirmed. Idempotency is enforced server-side so retries are
+      // safe. Failures only log; the order is already placed.
       if (promoApplied && promoCode) {
-        await consumeNooksPromo(merchantId, promoCode);
+        void consumeNooksPromo(merchantId, promoCode).catch((e) =>
+          console.warn('[Checkout] Promo consume failed:', e?.message),
+        );
       }
       if (usePoints && user?.id && merchantId) {
-        try {
-          if (loyaltyType === 'cashback' && pointsDiscount > 0) {
-            await loyaltyApi.redeemCashback(user.id, pointsDiscount, orderId, merchantId);
-          } else if (pointsToRedeem > 0) {
-            await loyaltyApi.redeem(user.id, pointsToRedeem, orderId, merchantId);
-          }
-        } catch (err) {
-          console.warn('[Checkout] Loyalty redemption failed:', err);
+        if (loyaltyType === 'cashback' && pointsDiscount > 0) {
+          void loyaltyApi
+            .redeemCashback(user.id, pointsDiscount, orderId, merchantId)
+            .catch((e) => console.warn('[Checkout] Cashback redeem failed:', e?.message));
+        } else if (pointsToRedeem > 0) {
+          void loyaltyApi
+            .redeem(user.id, pointsToRedeem, orderId, merchantId)
+            .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
         }
       }
-      // Redeem any selected stamp milestones — deducts stamps and marks the
-      // redemption row as used. Runs after the order is placed so we never
-      // deduct stamps for an order that failed at checkout.
       if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
         for (const milestoneId of selectedMilestoneIds) {
-          try {
-            await loyaltyApi.redeemStampMilestone(user.id, merchantId, milestoneId);
-          } catch (err) {
-            console.warn('[Checkout] Stamp milestone redemption failed:', milestoneId, err);
-          }
+          void loyaltyApi
+            .redeemStampMilestone(user.id, merchantId, milestoneId)
+            .catch((e) => console.warn('[Checkout] Stamp milestone redeem failed:', milestoneId, e?.message));
         }
         setSelectedMilestoneIds(new Set());
       }
@@ -627,7 +642,9 @@ export default function CheckoutScreen() {
       setShowPaymentPicker(false);
       orderIdRef.current = `order-${Date.now()}`;
       router.dismissAll();
-      setTimeout(() => router.replace({ pathname: '/order-confirmed', params: { orderId } }), 0);
+      // Immediate navigation — no setTimeout. Commit/loyalty/promo are
+      // all firing in the background now, so there's nothing to wait for.
+      router.replace({ pathname: '/order-confirmed', params: { orderId } });
     } catch (err: any) {
       Alert.alert(
         isArabic ? 'فشل الطلب' : 'Order Failed',

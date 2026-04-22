@@ -27,8 +27,9 @@ export default function CartScreen() {
     router.push({ pathname: '/product', params: { id: item.id, uniqueId: item.uniqueId } });
   };
 
-  const deliveryFee = orderType === 'delivery' ? 15 : 0;
-  const finalTotal = totalPrice + deliveryFee;
+  // Delivery fee is computed at checkout (per-branch, possibly zone-based).
+  // Cart shows the items subtotal only — no fake flat fee to mislead the customer.
+  const finalTotal = totalPrice;
   const BackIcon = isArabic ? ArrowRight : ArrowLeft;
   const ForwardIcon = isArabic ? ChevronLeft : ChevronRight;
 
@@ -216,14 +217,12 @@ export default function CartScreen() {
                 <Text className="text-slate-500 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'المجموع الفرعي' : 'Subtotal'}</Text>
                 <PriceWithSymbol amount={totalPrice} iconSize={15} iconColor="#1e293b" textStyle={{ color: '#1e293b', fontWeight: '700' }} />
               </View>
-              <View className="justify-between mb-3" style={{ flexDirection: rowDirection }}>
-                <Text className="text-slate-500 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'رسوم الخدمة' : 'Service Fee'}</Text>
-                {deliveryFee > 0 ? (
-                  <PriceWithSymbol amount={deliveryFee} iconSize={15} iconColor="#1e293b" textStyle={{ color: '#1e293b', fontWeight: '700' }} />
-                ) : (
-                  <Text className="text-slate-800 font-bold">{isArabic ? 'مجاني' : 'Free'}</Text>
-                )}
-              </View>
+              {orderType === 'delivery' && (
+                <View className="justify-between mb-3" style={{ flexDirection: rowDirection }}>
+                  <Text className="text-slate-500 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'رسوم التوصيل' : 'Delivery'}</Text>
+                  <Text className="text-slate-400 text-sm">{isArabic ? 'تُحسب عند الدفع' : 'Calculated at checkout'}</Text>
+                </View>
+              )}
 
               <View className="h-[1px] bg-slate-200 my-4" />
 
