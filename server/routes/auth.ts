@@ -9,8 +9,38 @@
 import { Router, type Request } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { createHmac, randomUUID } from 'crypto';
-import { sendSms, normalizePhone } from '../services/sms';
+import { sendSms, normalizePhone, otpMessage } from '../services/sms';
 import { creditMerchantSmsWallet, debitMerchantSmsWallet } from '../lib/smsWallet';
+
+/**
+ * Mask a Saudi number for logs/audit: keep prefix + last 3, redact the middle.
+ * Raw phones in audit rows would fail Saudi PDPL if we ever export the log.
+ */
+function maskPhone(p: string): string {
+  if (!p || p.length < 6) return p ?? '';
+  return p.slice(0, 3) + '*'.repeat(Math.max(0, p.length - 6)) + p.slice(-3);
+}
+
+/**
+ * Fire-and-forget audit log write. Uses the admin (service-role) client so
+ * RLS doesn't block the insert from the OTP path. Errors are swallowed —
+ * we don't want audit failures to fail the OTP request.
+ */
+async function writeAudit(
+  client: { from: (tbl: string) => { insert: (row: Record<string, unknown>) => Promise<unknown> } } | null,
+  row: { merchant_id?: string | null; action: string; payload: Record<string, unknown> },
+) {
+  if (!client) return;
+  try {
+    await client.from('audit_log').insert({
+      merchant_id: row.merchant_id || null,
+      action: row.action,
+      payload: row.payload,
+    });
+  } catch (err) {
+    console.warn('[Auth] audit write failed (non-fatal):', err);
+  }
+}
 
 const router = Router();
 
@@ -187,14 +217,28 @@ router.post('/send-otp', async (req, res) => {
             },
           });
         } catch (walletError) {
+          // Reversal failed AFTER a successful debit — merchant was charged
+          // for an OTP that never got stored. Write to audit_log so we have
+          // a queryable trail to reconcile and refund later.
           console.warn('[Auth] OTP save reversal failed:', walletError);
+          writeAudit(adminClient, {
+            merchant_id: walletReservation.merchantId,
+            action: 'sms.reversal_failed',
+            payload: {
+              stage: 'otp_insert',
+              reference_id: walletReservation.referenceId,
+              amount_halalas: walletReservation.amountHalalas,
+              phone_masked: maskPhone(normalised),
+              error: walletError instanceof Error ? walletError.message : String(walletError),
+            },
+          });
         }
       }
       console.error('[Auth] DB insert error:', insertErr);
       return res.status(500).json({ error: 'Failed to save OTP. Check Supabase config.' });
     }
 
-    const smsResult = await sendSms(normalised, `Your verification code is: ${code}`);
+    const smsResult = await sendSms(normalised, otpMessage(code));
 
     if (!smsResult.ok) {
       if (walletReservation) {
@@ -211,11 +255,42 @@ router.post('/send-otp', async (req, res) => {
           });
         } catch (walletError) {
           console.warn('[Auth] SMS wallet reversal failed:', walletError);
+          writeAudit(adminClient, {
+            merchant_id: walletReservation.merchantId,
+            action: 'sms.reversal_failed',
+            payload: {
+              stage: 'sms_send',
+              reference_id: walletReservation.referenceId,
+              amount_halalas: walletReservation.amountHalalas,
+              phone_masked: maskPhone(normalised),
+              error: walletError instanceof Error ? walletError.message : String(walletError),
+            },
+          });
         }
       }
+      // Always record the Madar failure in audit_log — this is the single
+      // source of truth when diagnosing "why are OTPs not arriving for
+      // merchant X". Includes the Madar error code so we can tell sender
+      // revocation (ErrorCode tied to sender) from quota/network issues.
+      writeAudit(adminClient, {
+        merchant_id: merchantId,
+        action: 'sms.send_failed',
+        payload: {
+          phone_masked: maskPhone(normalised),
+          sender: process.env.MADAR_SMS_SENDER || 'Nooks',
+          madar_status: smsResult.status ?? null,
+          madar_error_code: smsResult.errorCode ?? null,
+          madar_error: smsResult.error ?? null,
+          fallback_enabled: ALLOW_OTP_FALLBACK,
+        },
+      });
       console.warn('[Auth] SMS send failed:', smsResult.error);
+      // Keep the fallback log line — this is how the OTP gets read off
+      // Railway logs while the sender is pending re-approval.
       console.log('[Auth] OTP for testing:', normalised, '→', code);
       if (ALLOW_OTP_FALLBACK) {
+        trackOtpAttempt(phoneBucketKey, now);
+        trackOtpAttempt(ipBucketKey, now);
         return res.json({ ok: true });
       }
       if (insertedOtp?.id) {
