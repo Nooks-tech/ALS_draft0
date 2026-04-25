@@ -335,6 +335,39 @@ jobs:
             eas build --platform android --non-interactive --no-wait
           fi
 
+      - name: Verify Apple credential secrets are set
+        # Diagnostic: confirms the GH repo secrets needed for non-interactive
+        # iOS builds are populated. Doesn't print values — just yes/no per
+        # secret. If anything is "missing", set it under repo Settings →
+        # Secrets and variables → Actions before retriggering.
+        if: github.event.inputs.use_test_builds != 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+        run: |
+          status() { if [ -n "$2" ]; then echo "  ✓ $1 (length=${#2})"; else echo "  ✗ $1 — MISSING"; missing=1; fi }
+          missing=0
+          echo "Apple credential secrets:"
+          status "APPLE_ID" "$APPLE_ID"
+          status "EXPO_APPLE_APP_SPECIFIC_PASSWORD" "$EXPO_APPLE_APP_SPECIFIC_PASSWORD"
+          status "ASC_API_KEY_ID" "$ASC_API_KEY_ID"
+          status "ASC_API_ISSUER_ID" "$ASC_API_ISSUER_ID"
+          status "ASC_API_KEY_P8_BASE64" "$ASC_API_KEY_P8_BASE64"
+          if [ "$missing" -eq 1 ]; then
+            echo "::error::One or more Apple credential secrets are missing. Set them in: Repo → Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          # Sanity-check the app-specific password format. Apple issues them
+          # as 4 dash-separated 4-char groups: xxxx-xxxx-xxxx-xxxx (19 chars).
+          # Anything else means a paste-with-extra-whitespace or wrong value.
+          PWLEN=${#EXPO_APPLE_APP_SPECIFIC_PASSWORD}
+          if [ "$PWLEN" -lt 19 ] || [ "$PWLEN" -gt 21 ]; then
+            echo "::warning::EXPO_APPLE_APP_SPECIFIC_PASSWORD length is $PWLEN; expected 19 (xxxx-xxxx-xxxx-xxxx). Likely corrupted (extra whitespace? wrong value?)."
+          fi
+
       - name: Prepare iOS App Store Connect API key
         # Decode the .p8 once for any production build. Both the Build
         # step (which uses it as Apple Developer Portal auth so EAS can
