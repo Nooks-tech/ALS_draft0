@@ -72,6 +72,11 @@ on:
         required: false
         type: boolean
         default: true
+      app_store_apple_id:
+        description: "App Store Connect numeric Apple ID (10 digits). Empty = skip auto-submit; build only."
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -332,8 +337,72 @@ jobs:
 
       - name: Build iOS
         run: |
+          # Test builds: fire-and-forget (preview profile, no Apple cert
+          # needed). Production builds: wait for completion so the next
+          # step can submit the artifact to TestFlight in the same run.
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform ios --profile preview --non-interactive --no-wait
           else
-            eas build --platform ios --non-interactive --no-wait
+            eas build --platform ios --non-interactive
           fi
+
+      - name: Submit iOS to TestFlight
+        # Skip when:
+        #   - we did a test build (preview profile — internal distribution
+        #     archive, not signed for App Store);
+        #   - the merchant doesn't have an App Store Connect Apple ID set
+        #     yet (operator hasn't created the App Store record);
+        #   - any of the ASC API key secrets are missing on this repo.
+        if: |
+          github.event.inputs.use_test_builds != 'true' &&
+          github.event.inputs.app_store_apple_id != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          ASC_APP_ID: ${{ github.event.inputs.app_store_apple_id }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+        run: |
+          # Defensive: confirm the secrets are populated. Failing fast
+          # here is better than burning a failed eas-submit attempt.
+          : "${APPLE_ID:?APPLE_ID secret missing on the repo}"
+          : "${ASC_API_KEY_ID:?ASC_API_KEY_ID secret missing}"
+          : "${ASC_API_ISSUER_ID:?ASC_API_ISSUER_ID secret missing}"
+          : "${ASC_API_KEY_P8_BASE64:?ASC_API_KEY_P8_BASE64 secret missing}"
+
+          # Decode the .p8 from the base64 secret onto the runner's local
+          # disk. Goes under .easignore-aware path so it can't accidentally
+          # be uploaded to the EAS build server.
+          mkdir -p .nooks-build
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 -d > ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
+          chmod 600 ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
+
+          # Patch eas.json with the per-merchant submit profile. Done at
+          # workflow time (not committed) because:
+          #  - ascAppId is per-merchant
+          #  - the .p8 path only exists on this runner
+          # Restored after submit so the working copy stays clean.
+          node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            cfg.submit = cfg.submit || {};
+            cfg.submit.production = cfg.submit.production || {};
+            cfg.submit.production.ios = {
+              appleId: process.env.APPLE_ID,
+              ascAppId: process.env.ASC_APP_ID,
+              ascApiKeyPath: './.nooks-build/AuthKey_' + process.env.ASC_API_KEY_ID + '.p8',
+              ascApiKeyId: process.env.ASC_API_KEY_ID,
+              ascApiKeyIssuerId: process.env.ASC_API_ISSUER_ID,
+            };
+            fs.writeFileSync('eas.json', JSON.stringify(cfg, null, 2));
+          "
+
+          eas submit --platform ios --latest --profile production --non-interactive
+
+      - name: Cleanup ASC API key
+        if: always()
+        run: |
+          # Always wipe the .p8 even if submit failed — the file is a
+          # signing key for the Nooks Apple Developer account and should
+          # never persist beyond this single workflow run.
+          rm -rf .nooks-build || true
