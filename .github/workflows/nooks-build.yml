@@ -335,16 +335,44 @@ jobs:
             eas build --platform android --non-interactive --no-wait
           fi
 
+      - name: Prepare iOS App Store Connect API key
+        # Decode the .p8 once for any production build. Both the Build
+        # step (which uses it as Apple Developer Portal auth so EAS can
+        # auto-create cert/profile for a new merchant's bundle) and the
+        # Submit step (which uploads the .ipa) need the same file. Skipped
+        # on test builds since the preview profile never talks to Apple.
+        if: github.event.inputs.use_test_builds != 'true'
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+        run: |
+          : "${ASC_API_KEY_ID:?ASC_API_KEY_ID secret missing on the repo}"
+          : "${ASC_API_KEY_P8_BASE64:?ASC_API_KEY_P8_BASE64 secret missing}"
+          mkdir -p .nooks-build
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 -d > ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
+          chmod 600 ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
+          ls -la .nooks-build/
+
       - name: Build iOS
-        # Apple credentials are passed via env so EAS can auto-generate the
-        # Distribution Certificate + Provisioning Profile for any new
-        # merchant bundle ID non-interactively. App-specific password is
-        # generated from appleid.apple.com and bypasses 2FA — without it,
-        # first-time builds for a new bundle fall back to interactive mode
-        # and fail in a CI environment.
+        # Three layers of Apple-Developer authentication, evaluated by EAS
+        # in order of preference:
+        #
+        #   1. App Store Connect API key (EXPO_ASC_API_KEY_PATH + KEY_ID +
+        #      ISSUER_ID) — Admin-role API key talking directly to Apple's
+        #      API. Used to auto-create Distribution Cert + Provisioning
+        #      Profile for any new merchant bundle, non-interactively.
+        #      THIS IS THE PRIMARY PATH for multi-merchant automation.
+        #   2. App-specific password (EXPO_APPLE_ID +
+        #      EXPO_APPLE_APP_SPECIFIC_PASSWORD) — fallback for older EAS
+        #      paths that go through fastlane Spaceship. Bypasses 2FA.
+        #   3. (none) — would fall to interactive Apple ID login, which
+        #      fails in CI. Already eliminated by the env vars above.
         env:
           EXPO_APPLE_ID: ${{ secrets.APPLE_ID }}
           EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
+          EXPO_ASC_API_KEY_PATH: ./.nooks-build/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8
+          EXPO_ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          EXPO_ASC_API_KEY_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
         run: |
           # Test builds: fire-and-forget (preview profile, no Apple cert
           # needed). Production builds: wait for completion so the next
@@ -370,27 +398,25 @@ jobs:
           ASC_APP_ID: ${{ github.event.inputs.app_store_apple_id }}
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
-          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
         run: |
-          # Defensive: confirm the secrets are populated. Failing fast
-          # here is better than burning a failed eas-submit attempt.
+          # The .p8 was already decoded by the "Prepare iOS App Store
+          # Connect API key" step at the top of the iOS path. Both Build
+          # and Submit reuse the same file — Cleanup at the bottom wipes
+          # it regardless of success/failure.
           : "${APPLE_ID:?APPLE_ID secret missing on the repo}"
           : "${ASC_API_KEY_ID:?ASC_API_KEY_ID secret missing}"
           : "${ASC_API_ISSUER_ID:?ASC_API_ISSUER_ID secret missing}"
-          : "${ASC_API_KEY_P8_BASE64:?ASC_API_KEY_P8_BASE64 secret missing}"
 
-          # Decode the .p8 from the base64 secret onto the runner's local
-          # disk. Goes under .easignore-aware path so it can't accidentally
-          # be uploaded to the EAS build server.
-          mkdir -p .nooks-build
-          printf '%s' "$ASC_API_KEY_P8_BASE64" | base64 -d > ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
-          chmod 600 ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
+          KEY_FILE=".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
+          if [ ! -f "$KEY_FILE" ]; then
+            echo "::error::Expected .p8 at $KEY_FILE — Prepare step didn't run or was skipped."
+            exit 1
+          fi
 
           # Patch eas.json with the per-merchant submit profile. Done at
           # workflow time (not committed) because:
           #  - ascAppId is per-merchant
           #  - the .p8 path only exists on this runner
-          # Restored after submit so the working copy stays clean.
           node -e "
             const fs = require('fs');
             const cfg = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
