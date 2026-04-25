@@ -68,10 +68,10 @@ on:
         type: string
         default: "70"
       use_test_builds:
-        description: "Use preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed"
+        description: "Use preview (Android APK) + ios-simulator so no Apple/Google dev accounts needed. Default false (production) — the operator-driven trigger from /ops always sends this explicitly, but a manual workflow-dispatch from GitHub UI will now produce a real production build unless you flip this on."
         required: false
         type: boolean
-        default: true
+        default: false
       app_store_apple_id:
         description: "App Store Connect numeric Apple ID (10 digits). Empty = skip auto-submit; build only."
         required: false
