@@ -336,6 +336,15 @@ jobs:
           fi
 
       - name: Build iOS
+        # Apple credentials are passed via env so EAS can auto-generate the
+        # Distribution Certificate + Provisioning Profile for any new
+        # merchant bundle ID non-interactively. App-specific password is
+        # generated from appleid.apple.com and bypasses 2FA — without it,
+        # first-time builds for a new bundle fall back to interactive mode
+        # and fail in a CI environment.
+        env:
+          EXPO_APPLE_ID: ${{ secrets.APPLE_ID }}
+          EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           # Test builds: fire-and-forget (preview profile, no Apple cert
           # needed). Production builds: wait for completion so the next
