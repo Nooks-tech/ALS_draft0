@@ -82,6 +82,26 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Echo workflow inputs
+        # Diagnostic so we can see exactly what nooks.space's trigger
+        # forwarded. Skips the moyasar / apple-pay-id / ASC numeric id
+        # values themselves to keep the log clean — we only need the
+        # presence flags. Empty merchant-side fields are fine for test
+        # builds; for production they tell us nooksweb didn't forward.
+        run: |
+          echo "=== Workflow inputs ==="
+          echo "merchant_id        : ${{ github.event.inputs.merchant_id }}"
+          echo "app_name           : ${{ github.event.inputs.app_name }}"
+          echo "ios_bundle_id      : ${{ github.event.inputs.ios_bundle_id }}"
+          echo "android_package_id : ${{ github.event.inputs.android_package_id }}"
+          echo "use_test_builds    : ${{ github.event.inputs.use_test_builds }}"
+          echo "app_store_apple_id : '${{ github.event.inputs.app_store_apple_id }}' (length=${#APP_STORE_APPLE_ID_VAL})"
+          echo "apple_pay_merchant_id_set    : $([ -n '${{ github.event.inputs.apple_pay_merchant_id }}' ] && echo yes || echo no)"
+          echo "moyasar_publishable_key_set  : $([ -n '${{ github.event.inputs.moyasar_publishable_key }}' ] && echo yes || echo no)"
+          echo "app_icon_url_set             : $([ -n '${{ github.event.inputs.app_icon_url }}' ] && echo yes || echo no)"
+        env:
+          APP_STORE_APPLE_ID_VAL: ${{ github.event.inputs.app_store_apple_id }}
+
       - name: Require EXPO_TOKEN
         run: |
           if [ -z "${{ secrets.EXPO_TOKEN }}" ]; then
