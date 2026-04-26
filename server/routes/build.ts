@@ -122,6 +122,7 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     apple_pay_merchant_id,
     moyasar_publishable_key,
     use_test_builds,
+    app_store_apple_id,
   } = req.body || {};
   if (!merchant_id || typeof merchant_id !== 'string') {
     return res.status(400).json({ error: 'Missing merchant_id' });
@@ -154,6 +155,7 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     android_package_id: android_package_id != null ? String(android_package_id) : '',
     apple_pay_merchant_id: apple_pay_merchant_id != null ? String(apple_pay_merchant_id) : '',
     moyasar_publishable_key: moyasar_publishable_key != null ? String(moyasar_publishable_key) : '',
+    app_store_apple_id: app_store_apple_id != null ? String(app_store_apple_id) : '',
   };
   const useTestBuilds = !(use_test_builds === false || use_test_builds === 'false');
   if (useTestBuilds) {
