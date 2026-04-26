@@ -192,17 +192,43 @@ export default function CheckoutScreen() {
   const { products: menuProducts } = useMenu();
 
   /**
+   * Filtered list of redemptions the customer can ACTUALLY use in this
+   * order. The server pre-creates a redemption row whenever stamps cross
+   * a milestone, but doesn't delete the row when stamps drop back below
+   * (e.g. after redeeming a higher-tier milestone first). Without this
+   * filter the UI shows "stamp 2 reward available" to a customer who
+   * only has 1 stamp left and lets them try to redeem — server then
+   * rejects but the order goes through with the free item. We close
+   * that path by hiding any redemption whose milestone the customer
+   * can't currently afford.
+   */
+  const eligibleRedemptions = useMemo(() => {
+    if (!loyaltyBalance) return [];
+    return loyaltyBalance.availableRedemptions.filter((r) => {
+      const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === r.milestone_id);
+      return milestone != null && loyaltyBalance.stamps >= milestone.stamp_number;
+    });
+  }, [loyaltyBalance]);
+
+  /**
    * Free line items to attach to the order for each selected stamp milestone.
-   * We look up each milestone's `foodics_product_ids` against the menu and add
-   * them at price 0. If a reward product is missing from the synced menu we
-   * silently skip it — the redemption itself still runs server-side.
+   * Skips milestones the customer can no longer afford — defense in depth
+   * against a stale UI letting them select something the eligibleRedemptions
+   * filter would have hidden.
    */
   const rewardItemsForOrder = useMemo(() => {
     if (!loyaltyBalance || selectedMilestoneIds.size === 0) return [];
     const out: Array<{ id: string; name: string; price: number; quantity: number; image: string; customizations: null; uniqueId: string }> = [];
+    // Aggregate stamps required across every selected milestone so a
+    // customer with 5 stamps can't claim milestone-2 + milestone-4
+    // simultaneously (sum = 6, exceeds balance) — server-side atomic
+    // deduction would catch the second one but we'd rather refuse here.
+    let stampsBudget = loyaltyBalance.stamps;
     for (const milestoneId of selectedMilestoneIds) {
       const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === milestoneId);
       if (!milestone) continue;
+      if (stampsBudget < milestone.stamp_number) continue;
+      stampsBudget -= milestone.stamp_number;
       for (const foodicsId of milestone.foodics_product_ids ?? []) {
         const product = menuProducts.find((p) => p.foodicsProductId === foodicsId);
         if (!product) continue;
@@ -501,6 +527,47 @@ export default function CheckoutScreen() {
     const orderId = orderIdRef.current;
     try {
       const resolvedPaymentId = moyasarPaymentId || orderId;
+
+      // Lock in stamp-milestone redemptions BEFORE the order ships, so
+      // the customer can't get free reward items for a milestone they
+      // haven't actually paid the stamps for. Server-side atomic
+      // deduction will reject (409 / 400) if the balance moved
+      // underneath us — we drop the corresponding reward items from
+      // the order body when that happens. The customer still pays for
+      // their cart but doesn't get the un-redeemable freebie.
+      //
+      // This used to be a fire-and-forget call AFTER the order shipped
+      // (`void loyaltyApi.redeemStampMilestone(...).catch(...)`) — that
+      // pattern let the order ship with the freebie even when the
+      // server rejected the redeem, and the unredeemed redemption row
+      // stayed available so the customer could repeat the trick on
+      // the next order indefinitely.
+      const redeemedRewardItems: typeof rewardItemsForOrder = [];
+      const failedRedemptionIds: string[] = [];
+      if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
+        for (const milestoneId of selectedMilestoneIds) {
+          try {
+            await loyaltyApi.redeemStampMilestone(user.id, merchantId, milestoneId);
+            for (const item of rewardItemsForOrder) {
+              if (item.uniqueId.startsWith(`reward-${milestoneId}-`)) {
+                redeemedRewardItems.push(item);
+              }
+            }
+          } catch (err: any) {
+            console.warn('[Checkout] Stamp milestone redeem failed:', milestoneId, err?.message);
+            failedRedemptionIds.push(milestoneId);
+          }
+        }
+      }
+      if (failedRedemptionIds.length > 0) {
+        Alert.alert(
+          isArabic ? 'بعض المكافآت غير متاحة' : 'Some rewards unavailable',
+          isArabic
+            ? 'تعذّر استبدال بعض المكافآت — تم إرسال طلبك بدون المكافآت غير المتاحة.'
+            : "Couldn't redeem one or more rewards — your order was placed without the unavailable freebies.",
+        );
+      }
+
       if (user?.id) {
         await commitOrder({
           id: orderId,
@@ -509,7 +576,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
+          items: [...cartItems, ...redeemedRewardItems].map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -551,7 +618,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
+          items: [...cartItems, ...redeemedRewardItems].map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -633,14 +700,11 @@ export default function CheckoutScreen() {
             .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
         }
       }
-      if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
-        for (const milestoneId of selectedMilestoneIds) {
-          void loyaltyApi
-            .redeemStampMilestone(user.id, merchantId, milestoneId)
-            .catch((e) => console.warn('[Checkout] Stamp milestone redeem failed:', milestoneId, e?.message));
-        }
-        setSelectedMilestoneIds(new Set());
-      }
+      // Stamp-milestone redemptions were already locked server-side in
+      // commitOrderWithRedemptions before the Foodics order shipped —
+      // see the redeem-then-commit block above this callback. Nothing
+      // more to do here; just clear the selection from the UI.
+      setSelectedMilestoneIds(new Set());
       clearCart();
       setShowPaymentModal(false);
       setMoyasarWebUrl(null);
@@ -1368,7 +1432,7 @@ export default function CheckoutScreen() {
           ))}
 
           {/* Stamp Rewards Redemption — customer has hit one or more milestones and can add the reward items free to this order */}
-          {user?.id && loyaltyBalance && loyaltyType === 'stamps' && (loyaltyBalance.availableRedemptions ?? []).length > 0 && (
+          {user?.id && loyaltyBalance && loyaltyType === 'stamps' && eligibleRedemptions.length > 0 && (
             <View className="mt-5 rounded-[28px] p-4" style={{ borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc' }}>
               <View className="flex-row items-center mb-2">
                 <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
@@ -1383,7 +1447,7 @@ export default function CheckoutScreen() {
                   </Text>
                 </View>
               </View>
-              {loyaltyBalance.availableRedemptions.map((redemption) => {
+              {eligibleRedemptions.map((redemption) => {
                 const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === redemption.milestone_id);
                 if (!milestone) return null;
                 const selected = selectedMilestoneIds.has(milestone.id);

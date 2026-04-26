@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { customerCancelOrder, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
@@ -71,6 +72,7 @@ export type OrdersContextType = {
   cancelOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
   holdOrderForEdit: (orderId: string) => Promise<{ success: boolean; error?: string }>;
   resumeHeldOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
+  refresh: () => Promise<void>;
 };
 
 const OrdersContext = createContext<OrdersContextType | undefined>(undefined);
@@ -164,6 +166,27 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     prevCustomerRef.current = customerId ?? 'guest';
   }, [customerId]);
 
+  // Pull fresh orders from Supabase. Exposed via context so callers can
+  // force a refresh — used by AppState ('active' transition) to recover
+  // from missed realtime updates and by screens that want a manual
+  // pull-to-refresh.
+  const refresh = useCallback(async () => {
+    if (!customerId) return;
+    try {
+      const rows = await fetchOrdersForCustomer(customerId);
+      const mapped = rows.map(rowToOrder);
+      if (mapped.length > 0) {
+        setOrders((prev) => {
+          const merged = mergeOrderHistory(mapped, prev);
+          persistOrdersCache(merged);
+          return merged;
+        });
+      }
+    } catch {
+      // best effort — realtime + AppState retry will catch up later
+    }
+  }, [customerId, persistOrdersCache]);
+
   useEffect(() => {
     if (!initialized || authLoading) return;
     let cancelled = false;
@@ -201,6 +224,19 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
       cancelled = true;
     };
   }, [customerId, initialized, authLoading, cacheKey, persistOrdersCache]);
+
+  // Foreground refresh — Supabase realtime occasionally drops updates if
+  // the app was backgrounded, sleeping, or on a flaky network. Without
+  // this fallback an order that flipped Placed → Delivered while the
+  // device was off the channel would stay stuck at Placed in the UI
+  // until the user pulled to refresh (or the app was force-killed and
+  // reopened, triggering the initial-load effect above).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refresh();
+    });
+    return () => sub.remove();
+  }, [refresh]);
 
   useEffect(() => {
     persistOrdersCache(orders);
@@ -406,7 +442,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   return (
-    <OrdersContext.Provider value={{ orders, loading, addOrder, cancelOrder, holdOrderForEdit, resumeHeldOrder }}>
+    <OrdersContext.Provider value={{ orders, loading, addOrder, cancelOrder, holdOrderForEdit, resumeHeldOrder, refresh }}>
       {children}
     </OrdersContext.Provider>
   );

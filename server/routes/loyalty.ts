@@ -1457,19 +1457,36 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
       .select('*').eq('id', milestoneId).eq('merchant_id', merchantId).single();
     if (!milestone) return res.status(404).json({ error: 'Milestone not found' });
 
-    // Check stamps
+    // Atomic stamp deduction with optimistic concurrency. The previous
+    // implementation was read-then-update, which let a fast double-tap
+    // (or a checkout with multiple selected milestones) deduct from the
+    // same balance twice. The .eq('stamps', currentStamps) clause makes
+    // the UPDATE a no-op if anything else moved the balance between our
+    // read and write — we surface that as 409 so the caller refetches
+    // and retries. .select() returns the row(s) actually updated.
     const { data: stampData } = await supabaseAdmin.from('loyalty_stamps')
       .select('stamps').eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();
     const currentStamps = stampData?.stamps ?? 0;
     if (currentStamps < milestone.stamp_number) {
       return res.status(400).json({ error: `Need ${milestone.stamp_number} stamps. Current: ${currentStamps}` });
     }
-
-    // Deduct milestone stamps (not reset to 0)
-    const newStampCount = Math.max(0, currentStamps - milestone.stamp_number);
-    await supabaseAdmin.from('loyalty_stamps')
+    const newStampCount = currentStamps - milestone.stamp_number;
+    const { data: updatedRows, error: updateError } = await supabaseAdmin.from('loyalty_stamps')
       .update({ stamps: newStampCount, updated_at: new Date().toISOString() })
-      .eq('customer_id', customerId).eq('merchant_id', merchantId);
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .eq('stamps', currentStamps) // optimistic-concurrency guard
+      .select('stamps');
+    if (updateError) {
+      return res.status(500).json({ error: updateError.message });
+    }
+    if (!updatedRows || updatedRows.length === 0) {
+      // Either the row didn't exist or another write moved the balance
+      // between our read and write — refuse so the client refetches.
+      return res.status(409).json({
+        error: 'Stamp balance changed during redemption. Refresh and try again.',
+      });
+    }
 
     // Mark existing unredeemed record as redeemed, or create new one
     const { data: existingRedemption } = await supabaseAdmin.from('loyalty_stamp_redemptions')
