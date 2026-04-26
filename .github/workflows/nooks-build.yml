@@ -347,6 +347,31 @@ jobs:
           wc -l .env
           grep "PRIMARY_COLOR" .env
 
+      - name: Bump iOS buildNumber + Android versionCode
+        # Apple TestFlight rejects (version, buildNumber) collisions —
+        # every submission needs a unique pair. Static "1" in app.json
+        # means the first TestFlight upload sticks and every subsequent
+        # one fails with "Something went wrong when submitting your app
+        # to Apple App Store Connect." We use the Unix timestamp as the
+        # buildNumber: monotonically increasing, unique forever, no
+        # state to maintain. Android versionCode (must be int <= 2.1B)
+        # gets the last 9 digits — still uniquely increasing for
+        # several decades.
+        if: github.event.inputs.use_test_builds != 'true'
+        run: |
+          NEW_BUILD=$(date +%s)
+          node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            cfg.expo.ios = cfg.expo.ios || {};
+            cfg.expo.ios.buildNumber = '$NEW_BUILD';
+            cfg.expo.android = cfg.expo.android || {};
+            cfg.expo.android.versionCode = parseInt('$NEW_BUILD'.slice(-9), 10);
+            fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
+            console.log('[bump] ios.buildNumber =', cfg.expo.ios.buildNumber);
+            console.log('[bump] android.versionCode =', cfg.expo.android.versionCode);
+          "
+
       - name: Patch eas.json with per-merchant update channel
         # Recent eas-cli removed the `--channel` flag from `eas build`;
         # channel is now read from eas.json profile.channel. We inject
