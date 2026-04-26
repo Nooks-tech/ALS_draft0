@@ -347,15 +347,33 @@ jobs:
           wc -l .env
           grep "PRIMARY_COLOR" .env
 
+      - name: Patch eas.json with per-merchant update channel
+        # Recent eas-cli removed the `--channel` flag from `eas build`;
+        # channel is now read from eas.json profile.channel. We inject
+        # the merchant_id at workflow time so each merchant's native
+        # build is bound to its own EAS Update channel without
+        # committing a per-merchant eas.json.
+        if: github.event.inputs.use_test_builds != 'true'
+        env:
+          MERCHANT_ID: ${{ github.event.inputs.merchant_id }}
+        run: |
+          : "${MERCHANT_ID:?merchant_id input required for production builds}"
+          node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            cfg.build = cfg.build || {};
+            cfg.build.production = cfg.build.production || {};
+            cfg.build.production.channel = process.env.MERCHANT_ID;
+            fs.writeFileSync('eas.json', JSON.stringify(cfg, null, 2));
+            console.log('[channel] production.channel =', process.env.MERCHANT_ID);
+          "
+
       - name: Build Android
-        # --channel binds production builds to the per-merchant EAS Update
-        # channel (= merchant_id). See iOS Build step below for full
-        # context — same OTA mechanism, just per platform.
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform android --profile preview --non-interactive --no-wait
           else
-            eas build --platform android --non-interactive --no-wait --channel "${{ github.event.inputs.merchant_id }}"
+            eas build --platform android --non-interactive --no-wait
           fi
 
       - name: Verify iOS credential secrets are set
@@ -488,16 +506,14 @@ jobs:
         # Apple Developer Portal validation, so no Apple auth env vars
         # needed for non-interactive CI.
         #
-        # --channel binds the build to a per-merchant EAS Update channel
-        # (= merchant_id) so future JS-only fixes can ship via
-        # `eas update --channel <merchant_id>` without rebuilding the
-        # IPA. The channel is created lazily by EAS the first time an
-        # update is published, so no setup step needed.
+        # Per-merchant EAS Update channel is set on eas.json
+        # build.production.channel by the "Patch eas.json with
+        # per-merchant update channel" step earlier in the job.
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform ios --profile preview --non-interactive --no-wait
           else
-            eas build --platform ios --non-interactive --channel "${{ github.event.inputs.merchant_id }}"
+            eas build --platform ios --non-interactive
           fi
 
       - name: Submit iOS to TestFlight
