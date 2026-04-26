@@ -3,7 +3,6 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { customerCancelOrder, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
 import { submitOrderToNooks } from '../api/nooksOrders';
-import { notifyOrderStatusUpdate } from '../utils/orderNotifications';
 import type { CartItem } from './CartContext';
 import { useAuth } from './AuthContext';
 
@@ -212,10 +211,13 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     channelRef.current = subscribeToOrders(
       customerId,
       (row) => setOrders((prev) => [rowToOrder(row), ...prev.filter((o) => o.id !== row.id)]),
-      (row) => {
-        setOrders((prev) => prev.map((o) => (o.id === row.id ? rowToOrder(row) : o)));
-        notifyOrderStatusUpdate(row.id, row.status);
-      }
+      // Update list only — do NOT fire a local notification here. The
+      // server (Foodics webhook → sendLocalizedPushToCustomer) already
+      // sends a properly-localized push for every status transition.
+      // The previous local-notification call was bypassing the language
+      // pick and pushing a hardcoded English "Order update — Your order
+      // is being prepared" duplicate on top of the Arabic server push.
+      (row) => setOrders((prev) => prev.map((o) => (o.id === row.id ? rowToOrder(row) : o)))
     );
     return () => {
       channelRef.current?.unsubscribe();

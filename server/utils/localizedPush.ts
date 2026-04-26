@@ -40,17 +40,17 @@ export const ORDER_PUSH_COPY = {
     ar: { title: 'وصل طلبك — بالهنا والعافية!', body: 'طلبك وصلك توّه. استمتع فيه وهو سخن.' },
   },
   received: {
-    en: { title: 'Thanks for picking up!', body: "Hope it's every bit as good as it smells." },
-    ar: { title: 'تسلم على الاستلام!', body: 'إن شاء الله يعجبك بقدر ريحته.' },
+    en: { title: 'Thanks for picking up!', body: 'Enjoy your meal — see you next time.' },
+    ar: { title: 'تسلم على الاستلام!', body: 'بالعافية وصحتين! نتمنى لك تجربة لذيذة.' },
   },
   cancelledByStore: {
     en: {
       title: "Couldn't make it work this time",
-      body: 'The store had to cancel your order. No charge on your card — promise.',
+      body: 'The store had to cancel your order. No charge on your card.',
     },
     ar: {
       title: 'للأسف ما قدرنا ننفذ طلبك',
-      body: 'اضطر المتجر يلغيه. ما خصمنا شي من بطاقتك، والله.',
+      body: 'اضطر المتجر يلغيه. ما خصمنا شي من بطاقتك.',
     },
   },
 } as const;

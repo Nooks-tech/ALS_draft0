@@ -754,23 +754,33 @@ loyaltyRouter.post('/earn', async (req, res) => {
           milestone_id: hit.id, stamp_number: hit.stamp_number,
         });
 
-        // Push notification to customer
+        // Push notification to customer — localized per device using
+        // push_subscriptions.app_language. Same per-device language
+        // pick the order-status localized push uses; without it Arabic
+        // users would still see "Milestone Reward Unlocked!" in English.
         try {
           const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
           const { data: subs } = await supabaseAdmin.from('push_subscriptions')
-            .select('expo_push_token').eq('user_id', customerId);
-          const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
-          if (tokens.length > 0) {
+            .select('expo_push_token, app_language').eq('user_id', customerId);
+          const validSubs = (subs ?? []).filter((s: any) => s?.expo_push_token);
+          if (validSubs.length > 0) {
             const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
             if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
+            const messages = validSubs.map((s: any) => {
+              const isAr = s.app_language === 'ar';
+              return {
+                to: s.expo_push_token,
+                sound: 'default',
+                title: isAr ? 'فزت بمكافأة!' : 'Milestone Reward Unlocked!',
+                body: isAr
+                  ? `جمعت ${hit.stamp_number} ختمة! المكافأة: ${hit.reward_name}. اعرض بطاقة المحفظة في الفرع أو استبدلها من التطبيق.`
+                  : `You earned ${hit.stamp_number} stamps! Your reward: ${hit.reward_name}. Show your wallet card at the branch or redeem in the app.`,
+                channelId: 'loyalty',
+              };
+            });
             await fetch('https://exp.host/--/api/v2/push/send', {
               method: 'POST', headers,
-              body: JSON.stringify(tokens.map((t: string) => ({
-                to: t, sound: 'default',
-                title: 'Milestone Reward Unlocked!',
-                body: `You earned ${hit.stamp_number} stamps! Your reward: ${hit.reward_name}. Show your wallet card at the branch or redeem in the app.`,
-                channelId: 'loyalty',
-              }))),
+              body: JSON.stringify(messages),
             });
           }
         } catch { /* best-effort push */ }
