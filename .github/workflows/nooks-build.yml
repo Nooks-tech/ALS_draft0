@@ -409,8 +409,34 @@ jobs:
         run: |
           : "${BUNDLE_ID:?ios_bundle_id input is empty — every merchant needs a registered Apple bundle id}"
           mkdir -p .nooks-build/ios
-          printf '%s' "$IOS_DIST_CERT_P12_BASE64" | base64 -d > .nooks-build/ios/dist-cert.p12
+
+          # Decode the .p12 secret. -i (ignore-garbage) tolerates stray
+          # whitespace, line-wraps, or other non-base64 chars that can sneak
+          # in when the secret is pasted into GitHub's textarea. Without it,
+          # GNU base64 fails the whole step with "invalid input".
+          P12_LEN=${#IOS_DIST_CERT_P12_BASE64}
+          echo "IOS_DIST_CERT_P12_BASE64 length: $P12_LEN chars"
+          if ! printf '%s' "$IOS_DIST_CERT_P12_BASE64" | base64 -di > .nooks-build/ios/dist-cert.p12 2>/tmp/b64.err; then
+            echo "::error::base64 decode failed:"
+            cat /tmp/b64.err
+            echo "::error::Re-paste the IOS_DIST_CERT_P12_BASE64 secret as one continuous string (no line breaks)."
+            exit 1
+          fi
+          P12_BYTES=$(wc -c < .nooks-build/ios/dist-cert.p12)
+          echo ".p12 file: $P12_BYTES bytes"
           chmod 600 .nooks-build/ios/dist-cert.p12
+
+          # Verify .p12 opens with the password. Catches paste corruption AND
+          # password mismatch BEFORE we burn 25 minutes of EAS Build time.
+          if ! openssl pkcs12 -in .nooks-build/ios/dist-cert.p12 -passin pass:"$P12_PASSWORD" -nokeys -clcerts -out /tmp/cert-check.pem 2>/tmp/p12.err; then
+            echo "::error::.p12 could not be opened with IOS_DIST_CERT_P12_PASSWORD:"
+            cat /tmp/p12.err
+            echo "::error::Either the .p12 base64 was corrupted on paste, or the password secret is wrong. Re-run scripts/setup-ios-distribution-cert.mjs locally and set both secrets again."
+            exit 1
+          fi
+          rm -f /tmp/cert-check.pem
+          echo "✓ .p12 opens with password — credentials look good"
+
           node scripts/provision-ios-build.mjs
           echo "--- iOS credentials prepared ---"
           ls -la .nooks-build/ios/
