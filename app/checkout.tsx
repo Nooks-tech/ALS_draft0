@@ -172,7 +172,12 @@ export default function CheckoutScreen() {
   // anyway would produce an order the kitchen can't fulfil.
   const [deliveryQuoteLoading, setDeliveryQuoteLoading] = useState(false);
   const [deliveryQuoteFee, setDeliveryQuoteFee] = useState<number | null>(null);
-  const [deliveryQuoteWithin, setDeliveryQuoteWithin] = useState<boolean>(true);
+  // Start as `false` so the Pay button is disabled until either (a) the
+  // /delivery-quote API confirms the address is in zone for delivery
+  // orders, or (b) the order-type effect flips it to true for pickup.
+  // Previous default of `true` was racy — a fast tap before the quote
+  // resolved sailed past the Pay-disabled check.
+  const [deliveryQuoteWithin, setDeliveryQuoteWithin] = useState<boolean>(false);
   const [deliveryQuoteReason, setDeliveryQuoteReason] = useState<'out_of_zone' | 'error' | null>(null);
   const toggleMilestone = useCallback((milestoneId: string) => {
     setSelectedMilestoneIds((prev) => {

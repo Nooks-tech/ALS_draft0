@@ -1,16 +1,19 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ArrowRight, Bike, ChevronLeft, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
-import React from 'react';
+import React, { useState } from 'react';
 import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { useMerchant } from '../src/context/MerchantContext';
+import { getDeliveryQuote } from '../src/api/deliveryQuote';
 export default function CartScreen() {
   const router = useRouter();
   const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
+  const { merchantId } = useMerchant();
   const isArabic = i18n.language === 'ar';
   const rowDirection = isArabic ? 'row-reverse' : 'row';
   const {
@@ -22,6 +25,7 @@ export default function CartScreen() {
     selectedBranch,
     deliveryAddress,
   } = useCart();
+  const [zoneChecking, setZoneChecking] = useState(false);
 
   const handleEditItem = (item: (typeof cartItems)[0]) => {
     router.push({ pathname: '/product', params: { id: item.id, uniqueId: item.uniqueId } });
@@ -33,7 +37,7 @@ export default function CartScreen() {
   const BackIcon = isArabic ? ArrowRight : ArrowLeft;
   const ForwardIcon = isArabic ? ChevronLeft : ChevronRight;
 
-  const handleCheckout = () => {
+  const handleCheckout = async () => {
     // Branch open/busy status is now evaluated at checkout against the
     // customer's chosen (pickup) or nearest (delivery) branch. Don't block
     // here — let the customer proceed and see a branch-specific message
@@ -46,6 +50,59 @@ export default function CartScreen() {
       router.push('/order-type');
       return;
     }
+
+    // Hard delivery-zone check BEFORE entering checkout. Previously the
+    // zone validation lived only on the checkout screen as a soft banner
+    // + a Pay-button disable that started enabled and flipped racy after
+    // the quote API resolved. Customers were tapping Pay before the
+    // disable kicked in, which charged the card and then 409'd at the
+    // server-side gate. Now we run the same /delivery-quote up front
+    // and refuse the navigation entirely if the address is out of zone.
+    if (
+      orderType === 'delivery' &&
+      merchantId &&
+      selectedBranch?.id &&
+      typeof deliveryAddress?.lat === 'number' &&
+      typeof deliveryAddress?.lng === 'number'
+    ) {
+      setZoneChecking(true);
+      try {
+        const quote = await getDeliveryQuote({
+          merchantId,
+          branchId: selectedBranch.id,
+          items: cartItems.map((i) => ({
+            product_id: (i as any).foodicsProductId || i.id,
+            quantity: i.quantity,
+            price_sar: i.price,
+          })),
+          lat: deliveryAddress.lat,
+          lng: deliveryAddress.lng,
+          address: deliveryAddress.address || undefined,
+        });
+        if (!quote.withinServiceArea) {
+          Alert.alert(
+            isArabic ? 'العنوان خارج منطقة التوصيل' : 'Address outside delivery zone',
+            isArabic
+              ? 'عنوانك الحالي يقع خارج منطقة توصيل المتجر. اختر عنواناً آخر، أو غيّر نوع الطلب إلى الاستلام للمتابعة.'
+              : "Your current address is outside this store's delivery area. Pick a different address, or switch the order type to pickup to continue.",
+            [
+              {
+                text: isArabic ? 'تغيير العنوان' : 'Change address',
+                onPress: () => router.push('/order-type'),
+              },
+              { text: isArabic ? 'إلغاء' : 'Cancel', style: 'cancel' },
+            ],
+          );
+          return;
+        }
+      } catch {
+        // Network / server error — soft fall-through. Server-side gate
+        // in /api/public/orders is the safety net.
+      } finally {
+        setZoneChecking(false);
+      }
+    }
+
     router.push('/checkout');
   };
 
@@ -240,15 +297,20 @@ export default function CartScreen() {
       {!!cartItems.length && (
         <View className="p-6 pt-4 pb-8 bg-white border-t border-slate-100">
           <TouchableOpacity
-            style={{ backgroundColor: primaryColor, flexDirection: rowDirection }}
+            style={{ backgroundColor: primaryColor, flexDirection: rowDirection, opacity: zoneChecking ? 0.6 : 1 }}
             className="p-5 rounded-[28px] items-center shadow-xl"
             activeOpacity={0.9}
             onPress={handleCheckout}
+            disabled={zoneChecking}
           >
             <View className="bg-white/20 px-3 py-1.5 rounded-xl" style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}>
               <Text className="text-white font-bold">{cartItems.length}</Text>
             </View>
-            <Text className="text-white font-bold text-xl">{isArabic ? 'المتابعة للدفع' : 'Proceed to Checkout'}</Text>
+            <Text className="text-white font-bold text-xl">
+              {zoneChecking
+                ? (isArabic ? 'جارٍ التحقق…' : 'Checking…')
+                : (isArabic ? 'المتابعة للدفع' : 'Proceed to Checkout')}
+            </Text>
             <View style={{ marginLeft: isArabic ? 12 : 16, marginRight: isArabic ? 16 : 12 }}>
               <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
             </View>
