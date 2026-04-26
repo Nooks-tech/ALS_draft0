@@ -32,7 +32,8 @@
       "ios": {
         "resourceClass": "m-medium",
         "credentialsSource": "local"
-      }
+      },
+      "channel": "production"
     }
   },
   "submit": {

@@ -348,11 +348,14 @@ jobs:
           grep "PRIMARY_COLOR" .env
 
       - name: Build Android
+        # --channel binds production builds to the per-merchant EAS Update
+        # channel (= merchant_id). See iOS Build step below for full
+        # context — same OTA mechanism, just per platform.
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform android --profile preview --non-interactive --no-wait
           else
-            eas build --platform android --non-interactive --no-wait
+            eas build --platform android --non-interactive --no-wait --channel "${{ github.event.inputs.merchant_id }}"
           fi
 
       - name: Verify iOS credential secrets are set
@@ -484,11 +487,17 @@ jobs:
         # the .p12 + .mobileprovision written by the Setup step above. No
         # Apple Developer Portal validation, so no Apple auth env vars
         # needed for non-interactive CI.
+        #
+        # --channel binds the build to a per-merchant EAS Update channel
+        # (= merchant_id) so future JS-only fixes can ship via
+        # `eas update --channel <merchant_id>` without rebuilding the
+        # IPA. The channel is created lazily by EAS the first time an
+        # update is published, so no setup step needed.
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform ios --profile preview --non-interactive --no-wait
           else
-            eas build --platform ios --non-interactive
+            eas build --platform ios --non-interactive --channel "${{ github.event.inputs.merchant_id }}"
           fi
 
       - name: Submit iOS to TestFlight

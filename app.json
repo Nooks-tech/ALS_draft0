@@ -68,6 +68,13 @@
       "typedRoutes": true,
       "reactCompiler": true
     },
+    "updates": {
+      "url": "https://u.expo.dev/23466554-dacc-421e-8642-efa95bbbcd7c",
+      "fallbackToCacheTimeout": 0
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "extra": {
       "eas": {
         "projectId": "23466554-dacc-421e-8642-efa95bbbcd7c"

@@ -1,0 +1,156 @@
+# Triggered by Nooks /ops to publish an OTA JS update for one merchant
+# without rebuilding the native binary. Reuses the same env-write logic
+# as nooks-build.yml so the JS bundle gets the merchant's branding +
+# bundle id baked in, then runs `eas update --channel <merchant_id>`
+# which uploads the bundle to Expo's CDN under that merchant's channel.
+#
+# Updates are picked up by every device with a build of THIS merchant
+# automatically on next launch (or on the next forced check). Native
+# code or new dependencies still require a full rebuild via
+# nooks-build.yml.
+name: Nooks-triggered OTA update
+on:
+  workflow_dispatch:
+    inputs:
+      merchant_id:
+        required: true
+        type: string
+      app_name:
+        required: false
+        type: string
+        default: "Nooks App"
+      app_icon_url:
+        required: false
+        type: string
+        default: ""
+      app_icon_bg_color:
+        required: false
+        type: string
+        default: ""
+      logo_url:
+        required: false
+        type: string
+        default: ""
+      primary_color:
+        required: false
+        type: string
+        default: "#0D9488"
+      accent_color:
+        required: false
+        type: string
+        default: "#0D9488"
+      background_color:
+        required: false
+        type: string
+        default: "#f5f5f4"
+      menu_card_color:
+        required: false
+        type: string
+        default: "#f5f5f4"
+      text_color:
+        required: false
+        type: string
+        default: "#1f2937"
+      tab_text_color:
+        required: false
+        type: string
+        default: "#ffffff"
+      ios_bundle_id:
+        required: false
+        type: string
+        default: ""
+      android_package_id:
+        required: false
+        type: string
+        default: ""
+      apple_pay_merchant_id:
+        required: false
+        type: string
+        default: ""
+      moyasar_publishable_key:
+        required: false
+        type: string
+        default: ""
+      launcher_icon_scale:
+        required: false
+        type: string
+        default: "70"
+      message:
+        description: "Update message shown in EAS dashboard (e.g. 'Fix delivery zone block')"
+        required: false
+        type: string
+        default: "Operator-triggered OTA update"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require EXPO_TOKEN
+        run: |
+          if [ -z "${{ secrets.EXPO_TOKEN }}" ]; then
+            echo "::error::EXPO_TOKEN not set on repo. See nooks-build.yml for setup steps."
+            exit 1
+          fi
+
+      - name: Require build env secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          API_URL: ${{ secrets.API_URL }}
+          NOOKS_API_BASE_URL: ${{ secrets.NOOKS_API_BASE_URL }}
+        run: |
+          missing=0
+          [ -z "$SUPABASE_URL" ] && echo "::error::SUPABASE_URL is not set." && missing=1
+          [ -z "$SUPABASE_ANON_KEY" ] && echo "::error::SUPABASE_ANON_KEY is not set." && missing=1
+          [ -z "$API_URL" ] && echo "::error::API_URL is not set." && missing=1
+          [ -z "$NOOKS_API_BASE_URL" ] && echo "::error::NOOKS_API_BASE_URL is not set." && missing=1
+          [ "$missing" -eq 1 ] && exit 1 || true
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write .env for the JS bundle
+        # Same merchant-specific env vars as the full build, minus the
+        # native-only branding (icon assets, splash). OTA updates only
+        # ship JS — the native artifacts are already on the device.
+        run: |
+          echo "EXPO_PUBLIC_MERCHANT_ID=${{ github.event.inputs.merchant_id }}" > .env
+          echo "EXPO_PUBLIC_APP_NAME=${{ github.event.inputs.app_name }}" >> .env
+          echo "EXPO_PUBLIC_LOGO_URL=${{ github.event.inputs.logo_url }}" >> .env
+          echo "EXPO_PUBLIC_PRIMARY_COLOR=${{ github.event.inputs.primary_color }}" >> .env
+          echo "EXPO_PUBLIC_ACCENT_COLOR=${{ github.event.inputs.accent_color }}" >> .env
+          echo "EXPO_PUBLIC_BACKGROUND_COLOR=${{ github.event.inputs.background_color }}" >> .env
+          echo "EXPO_PUBLIC_MENU_CARD_COLOR=${{ github.event.inputs.menu_card_color }}" >> .env
+          echo "EXPO_PUBLIC_TEXT_COLOR=${{ github.event.inputs.text_color }}" >> .env
+          echo "EXPO_PUBLIC_TAB_TEXT_COLOR=${{ github.event.inputs.tab_text_color }}" >> .env
+          echo "EXPO_PUBLIC_APP_ICON_BG_COLOR=${{ github.event.inputs.app_icon_bg_color }}" >> .env
+          echo "EXPO_PUBLIC_LAUNCHER_ICON_SCALE=${{ github.event.inputs.launcher_icon_scale }}" >> .env
+          echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
+          echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
+          echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env
+          echo "EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}" >> .env
+          echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=${{ github.event.inputs.moyasar_publishable_key }}" >> .env
+          echo "EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID=${{ github.event.inputs.apple_pay_merchant_id }}" >> .env
+          echo "EXPO_PUBLIC_IOS_BUNDLE_IDENTIFIER=${{ github.event.inputs.ios_bundle_id }}" >> .env
+          echo "EXPO_PUBLIC_ANDROID_PACKAGE=${{ github.event.inputs.android_package_id }}" >> .env
+
+      - name: Publish OTA update
+        run: |
+          eas update \
+            --branch master \
+            --channel "${{ github.event.inputs.merchant_id }}" \
+            --message "${{ github.event.inputs.message }}" \
+            --non-interactive
