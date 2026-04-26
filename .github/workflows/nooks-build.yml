@@ -426,9 +426,13 @@ jobs:
           echo ".p12 file: $P12_BYTES bytes"
           chmod 600 .nooks-build/ios/dist-cert.p12
 
-          # Verify .p12 opens with the password. Catches paste corruption AND
-          # password mismatch BEFORE we burn 25 minutes of EAS Build time.
-          if ! openssl pkcs12 -in .nooks-build/ios/dist-cert.p12 -passin pass:"$P12_PASSWORD" -nokeys -clcerts -out /tmp/cert-check.pem 2>/tmp/p12.err; then
+          # Verify .p12 opens with the password. -legacy enables the
+          # legacy provider so openssl 3.0+ on the runner can read .p12s
+          # encrypted with RC2-40-CBC (the openssl 1.x default that git
+          # bash on Windows ships). Macs / xcodebuild on the EAS Build
+          # runner have no problem with RC2 .p12s — only the Ubuntu
+          # runner's openssl 3.x verify step needs the flag.
+          if ! openssl pkcs12 -legacy -in .nooks-build/ios/dist-cert.p12 -passin pass:"$P12_PASSWORD" -nokeys -clcerts -out /tmp/cert-check.pem 2>/tmp/p12.err; then
             echo "::error::.p12 could not be opened with IOS_DIST_CERT_P12_PASSWORD:"
             cat /tmp/p12.err
             echo "::error::Either the .p12 base64 was corrupted on paste, or the password secret is wrong. Re-run scripts/setup-ios-distribution-cert.mjs locally and set both secrets again."

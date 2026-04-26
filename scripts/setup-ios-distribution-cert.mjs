@@ -112,8 +112,12 @@ try {
   // Random password — kept only as a GitHub Secret, never reused.
   const password = randomBytes(16).toString("base64url");
   console.log("[setup] Bundling key + cert into .p12...");
+  // Use modern ciphers (AES-256 + SHA-256 MAC) so openssl 3.0+ on the GH
+  // Actions Ubuntu runner can read the file without -legacy. openssl 1.x
+  // on git bash defaults to RC2-40-CBC for cert encryption, which 3.0+
+  // refuses without enabling the legacy provider.
   execSync(
-    `openssl pkcs12 -export -out "${tmp}/cert.p12" -inkey "${tmp}/key.pem" -in "${tmp}/cert.pem" -password pass:${password}`,
+    `openssl pkcs12 -export -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg SHA256 -iter 100000 -out "${tmp}/cert.p12" -inkey "${tmp}/key.pem" -in "${tmp}/cert.pem" -password pass:${password}`,
     { stdio: "inherit" }
   );
 
