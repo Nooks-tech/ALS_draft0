@@ -123,6 +123,8 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     moyasar_publishable_key,
     use_test_builds,
     app_store_apple_id,
+    workflow_file,
+    message,
   } = req.body || {};
   if (!merchant_id || typeof merchant_id !== 'string') {
     return res.status(400).json({ error: 'Missing merchant_id' });
@@ -157,13 +159,39 @@ buildRouter.post('/', async (req: Request, res: Response) => {
     moyasar_publishable_key: moyasar_publishable_key != null ? String(moyasar_publishable_key) : '',
     app_store_apple_id: app_store_apple_id != null ? String(app_store_apple_id) : '',
   };
-  const useTestBuilds = !(use_test_builds === false || use_test_builds === 'false');
-  if (useTestBuilds) {
-    inputs.use_test_builds = 'true';
+
+  // Allow the caller to target either the full-build workflow or the
+  // OTA-update workflow. Defaults to nooks-build.yml for backward
+  // compatibility with older callers that don't set workflow_file.
+  // Whitelist the values so a hostile caller can't dispatch arbitrary
+  // workflows on the repo.
+  const allowedWorkflows = new Set(['nooks-build.yml', 'nooks-update.yml']);
+  const targetWorkflow =
+    typeof workflow_file === 'string' && allowedWorkflows.has(workflow_file)
+      ? workflow_file
+      : 'nooks-build.yml';
+
+  // Apply build-only fields when targeting nooks-build.yml. The OTA
+  // workflow doesn't have a use_test_builds input, so passing it would
+  // make GitHub return 422 "unexpected input".
+  if (targetWorkflow === 'nooks-build.yml') {
+    // Default to PRODUCTION builds. Previous logic treated missing
+    // use_test_builds as "true" (test build), which caused every OTA
+    // dispatch that fell through to Railway to flip into preview mode
+    // and fail at remote-credential lookup. False is the safer default —
+    // operator must explicitly opt in to preview.
+    const useTestBuilds = use_test_builds === true || use_test_builds === 'true';
+    inputs.use_test_builds = useTestBuilds ? 'true' : 'false';
+  } else if (targetWorkflow === 'nooks-update.yml') {
+    // The OTA workflow accepts a `message` input (shown in EAS dashboard).
+    inputs.message = typeof message === 'string' && message.trim() ? message.trim() : 'Operator-triggered OTA update';
+    // Strip the iOS-submission-only fields the OTA workflow doesn't
+    // declare to avoid GitHub's "unexpected input" rejection.
+    delete (inputs as any).app_store_apple_id;
   }
 
   try {
-    const url = `https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/nooks-build.yml/dispatches`;
+    const url = `https://api.github.com/repos/${GITHUB_REPO}/actions/workflows/${targetWorkflow}/dispatches`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -188,8 +216,8 @@ buildRouter.post('/', async (req: Request, res: Response) => {
       });
     }
 
-    console.log('[Build] Triggered workflow for merchant:', inputs.merchant_id);
-    return res.json({ success: true, merchant_id: inputs.merchant_id, github_status: response.status });
+    console.log(`[Build] Triggered ${targetWorkflow} for merchant:`, inputs.merchant_id);
+    return res.json({ success: true, merchant_id: inputs.merchant_id, workflow: targetWorkflow, github_status: response.status });
   } catch (err: any) {
     console.error('[Build] Error triggering workflow:', err.message);
     return res.status(500).json({
