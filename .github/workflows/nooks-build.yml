@@ -410,6 +410,18 @@ jobs:
           chmod 600 ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
           ls -la .nooks-build/
 
+      - name: Link Expo push key for this bundle
+        # Per-bundle setup that Expo Push Service needs so it knows which
+        # APNs auth key to use when sending pushes to this merchant's
+        # device tokens. Without this linkage the dashboard's Push
+        # Notifications panel sends to Expo, Expo tries APNs, and Apple
+        # returns InvalidCredentials. Idempotent — no-op if already linked.
+        if: github.event.inputs.use_test_builds != 'true'
+        env:
+          BUNDLE_ID: ${{ github.event.inputs.ios_bundle_id }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: node scripts/link-expo-push-key.mjs
+
       - name: Setup iOS local credentials
         # Local-credential path for multi-merchant production builds. Decodes
         # the team-wide Distribution Certificate (.p12 from secret) and calls
