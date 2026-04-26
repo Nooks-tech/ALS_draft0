@@ -29,7 +29,10 @@
       }
     },
     "production": {
-      "ios": { "resourceClass": "m-medium" }
+      "ios": {
+        "resourceClass": "m-medium",
+        "credentialsSource": "local"
+      }
     }
   },
   "submit": {

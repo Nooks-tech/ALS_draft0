@@ -335,37 +335,41 @@ jobs:
             eas build --platform android --non-interactive --no-wait
           fi
 
-      - name: Verify Apple credential secrets are set
-        # Diagnostic: confirms the GH repo secrets needed for non-interactive
-        # iOS builds are populated. Doesn't print values — just yes/no per
-        # secret. If anything is "missing", set it under repo Settings →
-        # Secrets and variables → Actions before retriggering.
+      - name: Verify iOS credential secrets are set
+        # Diagnostic for the local-credential build path. Production iOS
+        # builds need:
+        #   - ASC_API_KEY_ID / ISSUER_ID / P8_BASE64 — Admin-role API key
+        #     that mints a fresh provisioning profile per merchant via
+        #     Apple's API and uploads the IPA to TestFlight at the end.
+        #   - IOS_DIST_CERT_P12_BASE64 / _PASSWORD — the team's Distribution
+        #     Certificate as a .p12. Shared across every merchant; only the
+        #     provisioning profile is per-merchant.
         if: github.event.inputs.use_test_builds != 'true'
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_P12_PASSWORD: ${{ secrets.IOS_DIST_CERT_P12_PASSWORD }}
         run: |
-          status() { if [ -n "$2" ]; then echo "  ✓ $1 (length=${#2})"; else echo "  ✗ $1 — MISSING"; missing=1; fi }
+          status() {
+            if [ -n "$2" ]; then
+              echo "  ✓ $1 (length=${#2})"
+            else
+              echo "  ✗ $1 — MISSING"
+              missing=1
+            fi
+          }
           missing=0
-          echo "Apple credential secrets:"
-          status "APPLE_ID" "$APPLE_ID"
-          status "EXPO_APPLE_APP_SPECIFIC_PASSWORD" "$EXPO_APPLE_APP_SPECIFIC_PASSWORD"
+          echo "iOS credential secrets:"
           status "ASC_API_KEY_ID" "$ASC_API_KEY_ID"
           status "ASC_API_ISSUER_ID" "$ASC_API_ISSUER_ID"
           status "ASC_API_KEY_P8_BASE64" "$ASC_API_KEY_P8_BASE64"
+          status "IOS_DIST_CERT_P12_BASE64" "$IOS_DIST_CERT_P12_BASE64"
+          status "IOS_DIST_CERT_P12_PASSWORD" "$IOS_DIST_CERT_P12_PASSWORD"
           if [ "$missing" -eq 1 ]; then
-            echo "::error::One or more Apple credential secrets are missing. Set them in: Repo → Settings → Secrets and variables → Actions"
+            echo "::error::iOS credential secrets missing. Set them under: Repo → Settings → Secrets and variables → Actions"
             exit 1
-          fi
-          # Sanity-check the app-specific password format. Apple issues them
-          # as 4 dash-separated 4-char groups: xxxx-xxxx-xxxx-xxxx (19 chars).
-          # Anything else means a paste-with-extra-whitespace or wrong value.
-          PWLEN=${#EXPO_APPLE_APP_SPECIFIC_PASSWORD}
-          if [ "$PWLEN" -lt 19 ] || [ "$PWLEN" -gt 21 ]; then
-            echo "::warning::EXPO_APPLE_APP_SPECIFIC_PASSWORD length is $PWLEN; expected 19 (xxxx-xxxx-xxxx-xxxx). Likely corrupted (extra whitespace? wrong value?)."
           fi
 
       - name: Prepare iOS App Store Connect API key
@@ -386,30 +390,39 @@ jobs:
           chmod 600 ".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
           ls -la .nooks-build/
 
-      - name: Build iOS
-        # Three layers of Apple-Developer authentication, evaluated by EAS
-        # in order of preference:
-        #
-        #   1. App Store Connect API key (EXPO_ASC_API_KEY_PATH + KEY_ID +
-        #      ISSUER_ID) — Admin-role API key talking directly to Apple's
-        #      API. Used to auto-create Distribution Cert + Provisioning
-        #      Profile for any new merchant bundle, non-interactively.
-        #      THIS IS THE PRIMARY PATH for multi-merchant automation.
-        #   2. App-specific password (EXPO_APPLE_ID +
-        #      EXPO_APPLE_APP_SPECIFIC_PASSWORD) — fallback for older EAS
-        #      paths that go through fastlane Spaceship. Bypasses 2FA.
-        #   3. (none) — would fall to interactive Apple ID login, which
-        #      fails in CI. Already eliminated by the env vars above.
+      - name: Setup iOS local credentials
+        # Local-credential path for multi-merchant production builds. Decodes
+        # the team-wide Distribution Certificate (.p12 from secret) and calls
+        # Apple's App Store Connect API to mint a fresh provisioning profile
+        # for THIS merchant's bundle id. Writes credentials.json so EAS Build
+        # signs the IPA with these files instead of fetching from EAS Servers
+        # and re-validating against Apple — that validation is the step that
+        # fails non-interactively in CI.
+        if: github.event.inputs.use_test_builds != 'true'
         env:
-          EXPO_APPLE_ID: ${{ secrets.APPLE_ID }}
-          EXPO_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.EXPO_APPLE_APP_SPECIFIC_PASSWORD }}
-          EXPO_ASC_API_KEY_PATH: ./.nooks-build/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8
-          EXPO_ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          EXPO_ASC_API_KEY_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          BUNDLE_ID: ${{ github.event.inputs.ios_bundle_id }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_CERT_P12_PASSWORD }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_PATH: ./.nooks-build/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
         run: |
-          # Test builds: fire-and-forget (preview profile, no Apple cert
-          # needed). Production builds: wait for completion so the next
-          # step can submit the artifact to TestFlight in the same run.
+          : "${BUNDLE_ID:?ios_bundle_id input is empty — every merchant needs a registered Apple bundle id}"
+          mkdir -p .nooks-build/ios
+          printf '%s' "$IOS_DIST_CERT_P12_BASE64" | base64 -d > .nooks-build/ios/dist-cert.p12
+          chmod 600 .nooks-build/ios/dist-cert.p12
+          node scripts/provision-ios-build.mjs
+          echo "--- iOS credentials prepared ---"
+          ls -la .nooks-build/ios/
+          ls -la credentials.json
+
+      - name: Build iOS
+        # With credentialsSource: "local" in eas.json's production iOS
+        # profile, EAS Build reads ./credentials.json and signs locally with
+        # the .p12 + .mobileprovision written by the Setup step above. No
+        # Apple Developer Portal validation, so no Apple auth env vars
+        # needed for non-interactive CI.
+        run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform ios --profile preview --non-interactive --no-wait
           else
@@ -467,10 +480,12 @@ jobs:
 
           eas submit --platform ios --latest --profile production --non-interactive
 
-      - name: Cleanup ASC API key
+      - name: Cleanup iOS credentials
         if: always()
         run: |
-          # Always wipe the .p8 even if submit failed — the file is a
-          # signing key for the Nooks Apple Developer account and should
-          # never persist beyond this single workflow run.
+          # Always wipe credential files even if a step failed — the .p12,
+          # provisioning profile, .p8 ASC key, and credentials.json all
+          # contain Apple-team-wide signing material that should never
+          # persist beyond this single workflow run.
           rm -rf .nooks-build || true
+          rm -f credentials.json || true

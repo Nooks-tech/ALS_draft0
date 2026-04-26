@@ -47,3 +47,8 @@ app-example
 # CI workflow scratch dir — holds the decoded App Store Connect API key (.p8)
 # during a workflow run, wiped on cleanup. Should never land in git.
 /.nooks-build/
+
+# EAS local-credential bundle — generated at workflow time from secrets and
+# referenced by credentials.json. Could land here if a setup script is ever
+# run locally; the Distribution Cert password is in plaintext, do not commit.
+credentials.json

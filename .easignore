@@ -1,4 +1,8 @@
-# EAS build ignore - same as .gitignore but includes .env so build-time vars reach EAS
+# EAS Build uses .easignore (when present) instead of .gitignore to decide
+# what to upload to the cloud builder. We mirror most of .gitignore here, but
+# omit the credential-file globs (*.p12, *.mobileprovision, *.p8, *.key) and
+# the /.nooks-build/ scratch dir — those have to ship to the EAS cloud
+# runner so the production iOS build can sign locally with credentials.json.
 
 # dependencies
 node_modules/
@@ -13,10 +17,6 @@ expo-env.d.ts
 .kotlin/
 *.orig.*
 *.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
 
 # Metro
 .metro-health-check*
