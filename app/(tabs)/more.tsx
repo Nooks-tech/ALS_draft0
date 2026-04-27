@@ -18,6 +18,7 @@ import {
   Shield,
   Star,
   User,
+  Wallet,
 } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../src/context/AuthContext';
@@ -377,6 +378,13 @@ export default function MoreScreen() {
 
         <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.preferences}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
+          <MenuItem
+            icon={Wallet}
+            title={isArabic ? 'محفظتي' : 'My Wallet'}
+            subtitle={isArabic ? 'الرصيد والمعاملات والاسترداد' : 'Balance, history, and refunds'}
+            onPress={() => router.push('/wallet-modal')}
+            accentColor={primaryColor}
+          />
           <MenuItem icon={CreditCard} title={copy.paymentMethod} subtitle={copy.cardsOptions} onPress={() => router.push('/payment-modal')} accentColor={primaryColor} />
         </View>
 

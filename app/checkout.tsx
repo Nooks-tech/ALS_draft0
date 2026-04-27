@@ -12,6 +12,7 @@ import {
   Smartphone,
   Star,
   Trash2,
+  Wallet,
   X,
 } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -42,6 +43,7 @@ import {
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { paymentApi, type SavedCard } from '../src/api/payment';
+import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
 import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
@@ -68,7 +70,7 @@ import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 import { commitOrder } from '../src/api/orders';
 import { useMenu } from '../src/hooks/useMenu';
 
-export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card' | 'stcpay' | 'saved_card';
+export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card' | 'stcpay' | 'saved_card' | 'wallet';
 
 const VAT_RATE = 0.15; // 15% Saudi VAT
 
@@ -258,6 +260,22 @@ export default function CheckoutScreen() {
       .then((bal) => setLoyaltyBalance(bal))
       .catch(() => {})
       .finally(() => setPointsLoading(false));
+  }, [user?.id, merchantId]);
+
+  // Wallet balance — gates the "Pay with wallet" option in the picker.
+  // Re-fetched on focus so a top-up done from the wallet screen reflects
+  // immediately when the customer pops back here.
+  const [walletBalanceSar, setWalletBalanceSar] = useState<number | null>(null);
+  useEffect(() => {
+    if (!user?.id || !merchantId) {
+      setWalletBalanceSar(null);
+      return;
+    }
+    let cancelled = false;
+    walletApi.getBalance(merchantId)
+      .then((b) => { if (!cancelled) setWalletBalanceSar(b.balance_sar); })
+      .catch(() => { if (!cancelled) setWalletBalanceSar(null); });
+    return () => { cancelled = true; };
   }, [user?.id, merchantId]);
 
   // Pre-fill STC Pay mobile from profile
@@ -1073,6 +1091,133 @@ export default function CheckoutScreen() {
       return;
     }
 
+    // Wallet payment — atomic server-side debit during commit. No
+    // Moyasar webview, no card form. The order POST returns 400 with
+    // INSUFFICIENT_WALLET_BALANCE if the balance moved between the
+    // checkout-screen check and the commit (e.g. a parallel order on
+    // another device chewed the balance), in which case we surface a
+    // friendly alert and let the customer pick a different method.
+    if (paymentMethod === 'wallet') {
+      if (!user?.id) {
+        Alert.alert(
+          isArabic ? 'سجّل الدخول' : 'Sign in',
+          isArabic ? 'سجّل الدخول لاستخدام المحفظة.' : 'Please sign in to pay with the wallet.',
+        );
+        return;
+      }
+      setSubmitting(true);
+      const walletOrderId = orderIdRef.current;
+      try {
+        const redeemedRewardItems: typeof rewardItemsForOrder = [];
+        const failedRedemptionIds: string[] = [];
+        if (selectedMilestoneIds.size > 0 && merchantId) {
+          for (const milestoneId of selectedMilestoneIds) {
+            try {
+              await loyaltyApi.redeemStampMilestone(user.id, merchantId, milestoneId);
+              for (const item of rewardItemsForOrder) {
+                if (item.uniqueId.startsWith(`reward-${milestoneId}-`)) redeemedRewardItems.push(item);
+              }
+            } catch {
+              failedRedemptionIds.push(milestoneId);
+            }
+          }
+        }
+        if (failedRedemptionIds.length > 0) {
+          Alert.alert(
+            isArabic ? 'بعض المكافآت غير متاحة' : 'Some rewards unavailable',
+            isArabic
+              ? 'تعذّر استبدال بعض المكافآت — تم إرسال طلبك بدون المكافآت غير المتاحة.'
+              : "Couldn't redeem one or more rewards — your order was placed without the unavailable freebies.",
+          );
+        }
+
+        await commitOrder({
+          id: walletOrderId,
+          merchantId,
+          branchId: selectedBranch.id,
+          branchName: selectedBranch.name ?? null,
+          totalSar: Number(finalTotal.toFixed(2)),
+          status: 'Placed',
+          items: [...cartItems, ...redeemedRewardItems].map((item) => ({
+            id: item.id,
+            name: item.name,
+            price: item.price, basePrice: item.basePrice ?? item.price,
+            quantity: item.quantity,
+            image: item.image,
+            customizations: item.customizations ?? null,
+            uniqueId: item.uniqueId,
+          })),
+          orderType,
+          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
+          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
+          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
+          deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
+          deliveryFee,
+          paymentMethod: 'wallet',
+          customerName: profile.fullName || null,
+          customerPhone: profile.phone || null,
+          customerEmail: profile.email || null,
+          promoCode: promoApplied ? promoCode : null,
+          promoDiscountSar: promoApplied ? promoDiscount : null,
+          promoScope: promoApplied ? promoScope : null,
+          customerNote: orderNote.trim() || null,
+          relayToNooks: true,
+        });
+
+        addOrder(
+          {
+            total: finalTotal,
+            items: [...cartItems],
+            orderType,
+            merchantId,
+            branchName: selectedBranch?.name,
+            branchId: selectedBranch?.id,
+            deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address : undefined,
+            deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat : undefined,
+            deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng : undefined,
+            otoId: undefined,
+            otoDispatchStatus: undefined,
+            otoDispatchError: undefined,
+            deliveryFee,
+            paymentId: walletOrderId,
+            paymentMethod: 'wallet',
+            promoCode: promoApplied ? promoCode : undefined,
+            promoDiscountSar: promoApplied ? promoDiscount : undefined,
+            promoScope: promoApplied ? promoScope : undefined,
+            customerNote: orderNote.trim() || undefined,
+            customerName: profile.fullName || undefined,
+            customerPhone: profile.phone || undefined,
+            customerEmail: profile.email || undefined,
+            serverPersisted: true,
+          },
+          walletOrderId,
+        );
+
+        setSelectedMilestoneIds(new Set());
+        clearCart();
+        orderIdRef.current = `order-${Date.now()}`;
+        router.replace({ pathname: '/order-confirmed', params: { orderId: walletOrderId } });
+      } catch (err: any) {
+        const msg = err?.message ?? '';
+        if (msg.includes('INSUFFICIENT_WALLET_BALANCE')) {
+          Alert.alert(
+            isArabic ? 'الرصيد غير كاف' : 'Insufficient balance',
+            isArabic
+              ? 'رصيد محفظتك أقل من إجمالي الطلب. اختر طريقة دفع أخرى.'
+              : 'Your wallet balance is below the order total. Pick another payment method.',
+          );
+        } else {
+          Alert.alert(
+            isArabic ? 'فشل الطلب' : 'Order Failed',
+            msg || (isArabic ? 'ما قدرنا ننشئ طلبك.' : 'Order could not be created.'),
+          );
+        }
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     // Saved card (token) payment
     if (paymentMethod === 'saved_card' && selectedSavedCardId) {
       setTokenPayLoading(true);
@@ -1148,9 +1293,11 @@ export default function CheckoutScreen() {
         ? 'Samsung Pay'
         : paymentMethod === 'stcpay'
           ? 'STC Pay'
-          : paymentMethod === 'saved_card' && selectedSavedCard
-            ? `${(selectedSavedCard.brand || 'Card').toUpperCase()} •••• ${selectedSavedCard.last_four || '****'}`
-            : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
+          : paymentMethod === 'wallet'
+            ? (isArabic ? 'محفظتي' : 'My Wallet')
+            : paymentMethod === 'saved_card' && selectedSavedCard
+              ? `${(selectedSavedCard.brand || 'Card').toUpperCase()} •••• ${selectedSavedCard.last_four || '****'}`
+              : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
 
   if (cartItems.length === 0) {
     return (
@@ -1782,6 +1929,38 @@ export default function CheckoutScreen() {
                   <Text className="text-white font-bold text-xs">S Pay</Text>
                 </View>
                 <Text className="ml-3 font-bold text-slate-900">Samsung Pay</Text>
+              </TouchableOpacity>
+            )}
+            {walletBalanceSar !== null && walletBalanceSar > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  if (walletBalanceSar < finalTotal) {
+                    Alert.alert(
+                      isArabic ? 'الرصيد غير كاف' : 'Insufficient balance',
+                      isArabic
+                        ? `رصيد محفظتك ${walletBalanceSar.toFixed(2)} ر.س — أقل من إجمالي الطلب ${finalTotal.toFixed(2)} ر.س.`
+                        : `Wallet has ${walletBalanceSar.toFixed(2)} SAR — order total is ${finalTotal.toFixed(2)} SAR.`,
+                    );
+                    return;
+                  }
+                  setPaymentMethod('wallet');
+                  setShowPaymentPicker(false);
+                }}
+                className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"
+                style={{ opacity: walletBalanceSar < finalTotal ? 0.55 : 1 }}
+              >
+                <View className="w-12 h-10 rounded-xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
+                  <Wallet size={20} color={primaryColor} />
+                </View>
+                <View className="ml-3 flex-1">
+                  <Text className="font-bold text-slate-900">{isArabic ? 'محفظتي' : 'My Wallet'}</Text>
+                  <Text className="text-slate-400 text-sm">
+                    {isArabic
+                      ? `الرصيد ${walletBalanceSar.toFixed(2)} ر.س`
+                      : `Balance ${walletBalanceSar.toFixed(2)} SAR`}
+                  </Text>
+                </View>
+                <ChevronRight size={18} color="#94a3b8" />
               </TouchableOpacity>
             )}
             <TouchableOpacity

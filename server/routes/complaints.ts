@@ -5,6 +5,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { cancelPayment } from '../services/payment';
+import { creditWalletForRefund } from './wallet';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 
@@ -263,17 +264,41 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
     let refundMethod: string | null = null;
     let complaintStatus = 'approved';
 
-    if (order?.payment_id) {
-      const amountHalals = Math.round(refundSAR * 100);
-      const result = await cancelPayment(order.payment_id, amountHalals, order.merchant_id);
-      if (result.method === 'failed') {
-        complaintStatus = 'approved'; // approved but refund failed — logged
-        console.error('[Complaints] Refund failed for complaint', complaintId, result.error);
-      } else {
+    // Refund policy moved from Moyasar card refund to instant wallet
+    // credit. The customer can use the credit on their next order; the
+    // merchant skips Moyasar's 1-SAR-per-refund fee and the 5-10
+    // business-day card-refund delay. Old behaviour (cancelPayment
+    // call) is kept reachable as a fallback when wallet credit fails
+    // (e.g. database hiccup) so a refund still goes through.
+    if (order?.customer_id && order.merchant_id) {
+      try {
+        const credit = await creditWalletForRefund({
+          customerId: order.customer_id,
+          merchantId: order.merchant_id,
+          amountSar: refundSAR,
+          orderId: complaint.order_id,
+          complaintId,
+          note: merchant_notes ? String(merchant_notes).slice(0, 200) : undefined,
+        });
         complaintStatus = 'refunded';
-        refundId = result.moyasarId ?? null;
-        refundFee = result.fee;
-        refundMethod = result.method;
+        refundId = credit.transactionId;
+        refundFee = 0;
+        refundMethod = 'wallet';
+      } catch (walletErr: any) {
+        console.error('[Complaints] Wallet refund failed, falling back to card:', walletErr?.message);
+        if (order?.payment_id) {
+          const amountHalals = Math.round(refundSAR * 100);
+          const result = await cancelPayment(order.payment_id, amountHalals, order.merchant_id);
+          if (result.method === 'failed') {
+            complaintStatus = 'approved';
+            console.error('[Complaints] Card-refund fallback also failed for complaint', complaintId, result.error);
+          } else {
+            complaintStatus = 'refunded';
+            refundId = result.moyasarId ?? null;
+            refundFee = result.fee;
+            refundMethod = result.method;
+          }
+        }
       }
     }
 

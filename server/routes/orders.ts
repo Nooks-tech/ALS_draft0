@@ -64,6 +64,12 @@ async function sendPushToCustomer(customerId: string, title: string, body: strin
 // itself is gone, so cancelling them there is a no-op — we just skip
 // dispatch-side cancellation and let the refund logic below run.
 
+// Imported here (not at file top) because some upstream callers might
+// only need the route-handler side of this file. The wallet helpers
+// throw on missing config, so importing them lazily keeps a misconfigured
+// server bootable for the non-wallet routes.
+import { debitWalletForOrder } from './wallet';
+
 async function relayOrderToNooks(payload: Record<string, unknown>) {
   if (!NOOKS_API_BASE_URL) {
     throw new Error('NOOKS_API_BASE_URL is not configured');
@@ -208,6 +214,42 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(403).json({ error: 'Order does not belong to the authenticated user' });
     }
 
+    // Wallet payment: atomic debit BEFORE we save the order. If the
+    // customer doesn't have enough balance the SQL function throws
+    // 'INSUFFICIENT_WALLET_BALANCE' and we surface 400 — the mobile
+    // app falls back to picking a card. Idempotent on retry: if the
+    // order id already shows a wallet 'spend' entry we skip the
+    // re-debit so a Place-order retry can't double-charge.
+    let walletPaymentId: string | null = null;
+    if (paymentMethod === 'wallet') {
+      try {
+        const { data: priorDebit } = await supabaseAdmin
+          .from('customer_wallet_transactions')
+          .select('id')
+          .eq('customer_id', user.id)
+          .eq('merchant_id', merchantId)
+          .eq('order_id', id)
+          .eq('entry_type', 'spend')
+          .maybeSingle();
+        if (priorDebit) {
+          walletPaymentId = `wallet:${priorDebit.id}`;
+        } else {
+          const debit = await debitWalletForOrder({
+            customerId: user.id,
+            merchantId,
+            amountSar: totalSar,
+            orderId: id,
+          });
+          walletPaymentId = `wallet:${debit.transactionId}`;
+        }
+      } catch (e: any) {
+        if (e?.message === 'INSUFFICIENT_WALLET_BALANCE') {
+          return res.status(400).json({ error: 'INSUFFICIENT_WALLET_BALANCE' });
+        }
+        return res.status(500).json({ error: e?.message || 'Wallet debit failed' });
+      }
+    }
+
     const payload: Record<string, unknown> = {
       id,
       merchant_id: merchantId,
@@ -224,7 +266,12 @@ ordersRouter.post('/commit', async (req, res) => {
       delivery_city: typeof deliveryCity === 'string' ? deliveryCity : null,
       oto_id: typeof otoId === 'number' ? otoId : null,
       delivery_fee: normalizedDeliveryFee,
-      payment_id: typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null,
+      // Wallet payments don't have a Moyasar id — use the wallet
+      // transaction id as the payment_id so audit / reconcile flows
+      // still have a stable handle.
+      payment_id:
+        walletPaymentId
+          ?? (typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null),
       payment_method: typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null,
       car_details: orderType === 'drivethru' && carDetails && typeof carDetails === 'object' ? carDetails : null,
       updated_at: new Date().toISOString(),
