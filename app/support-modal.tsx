@@ -42,9 +42,16 @@ export default function SupportModal() {
     <View className="flex-1">
       <TouchableOpacity className="absolute inset-0 bg-black/60" activeOpacity={1} onPress={() => router.back()} />
       <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[40px] flex-1 max-h-[85%] overflow-hidden">
-        <View className="flex-row items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100">
+        <View
+          className="items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100"
+          style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}
+        >
           <Text className="text-xl font-bold text-slate-800">{isArabic ? 'الدعم' : 'Support'}</Text>
-          <TouchableOpacity onPress={() => router.back()} className="p-2 -mr-2">
+          <TouchableOpacity
+            onPress={() => router.back()}
+            className="p-2"
+            style={{ marginRight: isArabic ? 0 : -8, marginLeft: isArabic ? -8 : 0 }}
+          >
             <X size={24} color="#64748b" />
           </TouchableOpacity>
         </View>

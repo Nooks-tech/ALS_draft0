@@ -463,16 +463,22 @@ export default function MenuScreen() {
                 key={product.id}
                 onPress={() => openProduct(product)}
                 activeOpacity={0.8}
-                className="mx-5 mb-4 rounded-[24px] shadow-sm p-3.5 flex-row"
-                style={{ backgroundColor: menuCardColor }}
+                className="mx-5 mb-4 rounded-[24px] shadow-sm p-3.5"
+                style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
               >
                 <Image source={{ uri: product.image }} className="w-[127px] h-[127px] rounded-[20px] bg-slate-200" />
-                <View className="flex-1 ml-4 justify-between py-1">
+                <View
+                  className="flex-1 justify-between py-1"
+                  style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}
+                >
                   <View>
-                    <Text className="text-lg font-bold" style={{ color: textColor }}>{product.name}</Text>
-                    <Text className="text-xs mt-1" style={{ color: textColor }} numberOfLines={1}>{product.description}</Text>
+                    <Text className="text-lg font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{product.name}</Text>
+                    <Text className="text-xs mt-1" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1}>{product.description}</Text>
                   </View>
-                  <View className="flex-row justify-between items-center mt-2">
+                  <View
+                    className="justify-between items-center mt-2"
+                    style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}
+                  >
                     <PriceWithSymbol amount={product.price} iconSize={18} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700', fontSize: 18 }} />
                     <View className="p-1.5 rounded-lg" style={{ backgroundColor: accent }}><Plus size={18} color="white" /></View>
                   </View>
@@ -575,15 +581,32 @@ export default function MenuScreen() {
         >
           <TouchableOpacity
             onPress={() => router.push('/cart')}
-            className="p-5 rounded-[28px] flex-row items-center shadow-2xl"
-            style={{ backgroundColor: accent }}
+            className="p-5 rounded-[28px] items-center shadow-2xl"
+            style={{ backgroundColor: accent, flexDirection: isArabic ? 'row-reverse' : 'row' }}
             activeOpacity={0.8}
           >
-            <View className="flex-row items-center flex-1">
-              <View className="bg-white/20 px-3 py-1.5 rounded-xl mr-3"><Text className="text-white font-bold">{totalItems}</Text></View>
+            <View
+              className="items-center flex-1"
+              style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}
+            >
+              <View
+                className="bg-white/20 px-3 py-1.5 rounded-xl"
+                style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}
+              >
+                <Text className="text-white font-bold">{totalItems}</Text>
+              </View>
               <Text className="text-white font-bold text-lg">{isArabic ? 'عرض السلة' : 'View Cart'}</Text>
-              <View className="ml-auto mr-3"><PriceWithSymbol amount={totalPrice} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} /></View>
-              <ChevronRight size={24} color="white" />
+              <View
+                style={{
+                  marginLeft: isArabic ? 0 : 'auto',
+                  marginRight: isArabic ? 'auto' : 0,
+                  paddingLeft: isArabic ? 12 : 0,
+                  paddingRight: isArabic ? 0 : 12,
+                }}
+              >
+                <PriceWithSymbol amount={totalPrice} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
+              </View>
+              <ChevronRight size={24} color="white" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
             </View>
           </TouchableOpacity>
         </View>

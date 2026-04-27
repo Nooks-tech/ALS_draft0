@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { ArrowLeft, Package } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Package } from 'lucide-react-native';
 import { ActivityIndicator, FlatList, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { OrderCard } from '../../src/components/order/OrderCard';
@@ -7,10 +7,12 @@ import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useOrders } from '../../src/context/OrdersContext';
 
 export default function OrdersScreen() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const router = useRouter();
   const { orders, loading } = useOrders();
   const { primaryColor, backgroundColor, textColor } = useMerchantBranding();
+  const isArabic = i18n.language === 'ar';
+  const BackIcon = isArabic ? ArrowRight : ArrowLeft;
 
   const orderItemsSummary = (order: (typeof orders)[0]) =>
     order.items.map((i) => `${i.name}${i.quantity > 1 ? ` x${i.quantity}` : ''}`).join(', ');
@@ -19,11 +21,15 @@ export default function OrdersScreen() {
     <View className="flex-1" style={{ backgroundColor }}>
       <StatusBar barStyle="dark-content" />
       <View
-        className="pt-14 pb-4 px-5 flex-row items-center"
-        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}
+        className="pt-14 pb-4 px-5 items-center"
+        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0', flexDirection: isArabic ? 'row-reverse' : 'row' }}
       >
-        <TouchableOpacity onPress={() => router.replace('/(tabs)/menu')} className="mr-4 p-2 -ml-2">
-          <ArrowLeft size={24} color={textColor} />
+        <TouchableOpacity
+          onPress={() => router.replace('/(tabs)/menu')}
+          className="p-2"
+          style={{ marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }}
+        >
+          <BackIcon size={24} color={textColor} />
         </TouchableOpacity>
         <Text className="text-xl font-bold" style={{ color: textColor }}>{t('orders')}</Text>
       </View>

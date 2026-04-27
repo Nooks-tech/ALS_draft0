@@ -1,6 +1,6 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useRouter } from 'expo-router';
-import { ArrowLeft, Calendar, Mail, Phone, Trash2, User } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Calendar, Mail, Phone, Trash2, User } from 'lucide-react-native';
 import { useEffect, useState } from 'react';
 import {
   Alert,
@@ -40,6 +40,9 @@ export default function ProfileModal() {
   const { primaryColor } = useMerchantBranding();
   const { profile, updateProfile, saveProfile, clearProfile } = useProfile();
   const isArabic = i18n.language === 'ar';
+  const rowDirection: 'row' | 'row-reverse' = isArabic ? 'row-reverse' : 'row';
+  const textAlign: 'left' | 'right' = isArabic ? 'right' : 'left';
+  const BackIcon = isArabic ? ArrowRight : ArrowLeft;
   const [fullName, setFullName] = useState(profile.fullName);
   const [digits, setDigits] = useState(() => stripPrefix(profile.phone));
   const [dateOfBirth, setDateOfBirth] = useState(profile.dateOfBirth);
@@ -100,9 +103,16 @@ export default function ProfileModal() {
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
       >
         {/* Header */}
-        <View className="flex-row items-center px-5 py-4 border-b border-slate-100">
-          <TouchableOpacity onPress={() => router.back()} className="p-2 -ml-2">
-            <ArrowLeft size={24} color="#334155" />
+        <View
+          className="items-center px-5 py-4 border-b border-slate-100"
+          style={{ flexDirection: rowDirection }}
+        >
+          <TouchableOpacity
+            onPress={() => router.back()}
+            className="p-2"
+            style={{ marginLeft: isArabic ? 0 : -8, marginRight: isArabic ? -8 : 0 }}
+          >
+            <BackIcon size={24} color="#334155" />
           </TouchableOpacity>
           <Text className="flex-1 text-center text-xl font-bold text-slate-800">{isArabic ? 'الملف الشخصي' : 'Profile Info'}</Text>
           <View className="w-10" />
@@ -120,23 +130,24 @@ export default function ProfileModal() {
             </View>
           </View>
           <View className="mb-4">
-            <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'الاسم الكامل' : 'Full Name'}</Text>
-            <View className="flex-row items-center bg-slate-50 rounded-2xl px-4">
+            <Text className="text-slate-500 text-sm font-bold mb-2" style={{ textAlign }}>{isArabic ? 'الاسم الكامل' : 'Full Name'}</Text>
+            <View className="items-center bg-slate-50 rounded-2xl px-4" style={{ flexDirection: rowDirection }}>
               <User size={20} color="#94a3b8" />
               <TextInput
                 placeholder={isArabic ? 'أدخل اسمك الكامل' : 'Enter your full name'}
                 placeholderTextColor="#64748b"
                 value={fullName}
                 onChangeText={setFullName}
-                className="flex-1 py-3 ml-3 text-slate-800 font-medium"
+                className="flex-1 py-3 text-slate-800 font-medium"
+                style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0, textAlign, writingDirection: isArabic ? 'rtl' : 'ltr' }}
               />
             </View>
           </View>
           <View className="mb-4">
-            <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'رقم الجوال' : 'Phone Number'}</Text>
-            <View className="flex-row items-center bg-slate-50 rounded-2xl px-4" style={{ minHeight: 52 }}>
+            <Text className="text-slate-500 text-sm font-bold mb-2" style={{ textAlign }}>{isArabic ? 'رقم الجوال' : 'Phone Number'}</Text>
+            <View className="items-center bg-slate-50 rounded-2xl px-4" style={{ minHeight: 52, flexDirection: rowDirection }}>
               <Phone size={20} color="#94a3b8" />
-              <View className="flex-row flex-1 ml-3" style={{ height: 52, alignItems: 'center' }}>
+              <View className="flex-1" style={{ height: 52, alignItems: 'center', flexDirection: rowDirection, marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0 }}>
                 <View style={{ justifyContent: 'center', paddingTop: 2 }}>
                   <Text className="text-slate-600 font-medium text-base" style={{ lineHeight: 20, fontSize: 16 }}>{PHONE_PREFIX} </Text>
                 </View>
@@ -152,6 +163,8 @@ export default function ProfileModal() {
                     height: 52,
                     fontSize: 16,
                     lineHeight: 20,
+                    textAlign: 'left',
+                    writingDirection: 'ltr',
                     ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }),
                   }}
                   keyboardType="phone-pad"
@@ -162,27 +175,31 @@ export default function ProfileModal() {
           </View>
           {user?.email && !user.email.endsWith('@phone.nooks.app') && (
             <View className="mb-4">
-              <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'البريد الإلكتروني' : 'Email'}</Text>
-              <View className="flex-row items-center bg-slate-50 rounded-2xl px-4 py-3">
+              <Text className="text-slate-500 text-sm font-bold mb-2" style={{ textAlign }}>{isArabic ? 'البريد الإلكتروني' : 'Email'}</Text>
+              <View className="items-center bg-slate-50 rounded-2xl px-4 py-3" style={{ flexDirection: rowDirection }}>
                 <Mail size={20} color="#94a3b8" />
-                <Text className="flex-1 ml-3 text-slate-600 font-medium">
+                <Text className="flex-1 text-slate-600 font-medium" style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0, textAlign }}>
                   {user.email}
                 </Text>
               </View>
-              <Text className="text-slate-400 text-xs mt-1">{isArabic ? 'البريد الإلكتروني مرتبط بحسابك ولا يمكن تغييره من هنا' : 'Email is from your account and cannot be changed here'}</Text>
+              <Text className="text-slate-400 text-xs mt-1" style={{ textAlign }}>{isArabic ? 'البريد الإلكتروني مرتبط بحسابك ولا يمكن تغييره من هنا' : 'Email is from your account and cannot be changed here'}</Text>
             </View>
           )}
           <View className="mb-6">
-            <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'تاريخ الميلاد' : 'Date of Birth'}</Text>
+            <Text className="text-slate-500 text-sm font-bold mb-2" style={{ textAlign }}>{isArabic ? 'تاريخ الميلاد' : 'Date of Birth'}</Text>
             <TouchableOpacity
               onPress={() => {
                 Keyboard.dismiss();
                 setShowDatePicker(true);
               }}
-              className="flex-row items-center bg-slate-50 rounded-2xl px-4 py-3"
+              className="items-center bg-slate-50 rounded-2xl px-4 py-3"
+              style={{ flexDirection: rowDirection }}
             >
               <Calendar size={20} color="#94a3b8" />
-              <Text className={`flex-1 ml-3 ${dateOfBirth ? 'text-slate-800 font-medium' : 'text-slate-500'}`}>
+              <Text
+                className={`flex-1 ${dateOfBirth ? 'text-slate-800 font-medium' : 'text-slate-500'}`}
+                style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0, textAlign }}
+              >
                 {dateOfBirth || (isArabic ? 'اضغط لاختيار التاريخ' : 'Tap to select date')}
               </Text>
             </TouchableOpacity>
@@ -199,10 +216,11 @@ export default function ProfileModal() {
           {/* Delete Account */}
           <TouchableOpacity
             onPress={handleDeleteAccount}
-            className="flex-row items-center justify-center py-4 border-t border-slate-200"
+            className="items-center justify-center py-4 border-t border-slate-200"
+            style={{ flexDirection: rowDirection }}
           >
             <Trash2 size={20} color="#ef4444" />
-            <Text className="text-red-500 font-bold ml-2">{isArabic ? 'حذف الحساب' : 'Delete Account'}</Text>
+            <Text className="text-red-500 font-bold" style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}>{isArabic ? 'حذف الحساب' : 'Delete Account'}</Text>
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -212,7 +230,7 @@ export default function ProfileModal() {
         <View className="absolute inset-0 bg-black/60" style={{ zIndex: 999, elevation: 999 }}>
           <TouchableOpacity className="flex-1" activeOpacity={1} onPress={() => setShowDatePicker(false)} />
           <View className="bg-white rounded-t-[24px] p-6 pb-10">
-            <View className="flex-row justify-between items-center mb-4">
+            <View className="justify-between items-center mb-4" style={{ flexDirection: rowDirection }}>
               <Text className="text-lg font-bold text-slate-800">{isArabic ? 'اختر التاريخ' : 'Select date'}</Text>
               <TouchableOpacity onPress={() => setShowDatePicker(false)}>
                 <Text className="font-bold text-lg" style={{ color: primaryColor }}>{isArabic ? 'تم' : 'Done'}</Text>

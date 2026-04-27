@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import * as Updates from 'expo-updates';
 import {
   Bell,
   ChevronRight,
@@ -29,7 +28,7 @@ import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import { useProfile } from '../../src/context/ProfileContext';
 import { useEffect, useState } from 'react';
-import { Alert, I18nManager, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { API_URL } from '../../src/api/config';
@@ -275,16 +274,11 @@ export default function MoreScreen() {
       const nextLang = i18n.language === 'en' ? 'ar' : 'en';
       await AsyncStorage.setItem('language', nextLang);
       await i18n.changeLanguage(nextLang);
-      const isRTL = nextLang === 'ar';
-      if (I18nManager.isRTL !== isRTL) {
-        I18nManager.allowRTL(isRTL);
-        I18nManager.forceRTL(isRTL);
-        try {
-          await Updates.reloadAsync();
-        } catch {
-          // Language change already applied; reload can fail in some environments.
-        }
-      }
+      // We DO NOT call I18nManager.forceRTL — RTL is handled at the
+      // component level via `isArabic` checks (see src/i18n/index.ts).
+      // The i18n.changeLanguage broadcast triggers a re-render of every
+      // useTranslation() consumer, which is enough to re-flow the layout.
+      // No app reload required.
     } catch {
       Alert.alert(copy.error, copy.changeLanguageFailed);
     }

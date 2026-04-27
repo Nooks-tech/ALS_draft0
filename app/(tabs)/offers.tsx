@@ -18,7 +18,7 @@ try {
   // Native module not available in Expo Go — only works in device builds
 }
 import { useRouter } from 'expo-router';
-import { ArrowLeft, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, ChevronDown, Gift, Star, TrendingUp } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -521,13 +521,20 @@ export default function OffersScreen() {
       <StatusBar barStyle="dark-content" />
       {/* Header */}
       <View
-        className="pt-14 pb-3 px-5 flex-row items-center"
-        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0' }}
+        className="pt-14 pb-3 px-5 items-center"
+        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0', flexDirection: isArabic ? 'row-reverse' : 'row' }}
       >
-        <TouchableOpacity onPress={() => router.replace('/(tabs)/menu')} className="mr-4 p-2 -ml-2">
-          <ArrowLeft size={24} color={textColor} />
+        <TouchableOpacity
+          onPress={() => router.replace('/(tabs)/menu')}
+          className="p-2"
+          style={{
+            marginLeft: isArabic ? 8 : -8,
+            marginRight: isArabic ? -8 : 8,
+          }}
+        >
+          {isArabic ? <ArrowRight size={24} color={textColor} /> : <ArrowLeft size={24} color={textColor} />}
         </TouchableOpacity>
-        <Text className="text-xl font-bold flex-1" style={{ color: textColor }}>
+        <Text className="text-xl font-bold flex-1" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>
           {tab === 'offers' ? (isArabic ? 'العروض' : 'Offers') : loyaltyTabLabel}
         </Text>
       </View>

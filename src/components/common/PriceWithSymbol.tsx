@@ -1,4 +1,5 @@
-import { I18nManager, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { SaudiRiyalIcon } from './SaudiRiyalIcon';
 
 type Props = {
@@ -12,7 +13,8 @@ type Props = {
 };
 
 export function PriceWithSymbol({ amount, iconSize = 16, iconColor, textStyle, className, prefix = '', symbolOnly = false }: Props) {
-  const isRTL = I18nManager.isRTL;
+  const { i18n } = useTranslation();
+  const isRTL = i18n.language === 'ar';
   const displayAmount = amount != null
     ? (typeof amount === 'number' ? amount.toFixed(amount % 1 === 0 ? 0 : 2) : amount)
     : '';

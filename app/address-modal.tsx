@@ -14,6 +14,8 @@ export default function AddressModal() {
   const { addresses, removeAddress, setDefault } = useSavedAddresses();
   const { setDeliveryAddress } = useCart();
   const isArabic = i18n.language === 'ar';
+  const rowDirection: 'row' | 'row-reverse' = isArabic ? 'row-reverse' : 'row';
+  const textAlign: 'left' | 'right' = isArabic ? 'right' : 'left';
 
   const getDisplayLabel = (addr: (typeof addresses)[0]) =>
     addr.label === 'Other' && addr.customLabel ? addr.customLabel : addr.label;
@@ -28,9 +30,16 @@ export default function AddressModal() {
         height={modalHeight}
         style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'white', borderTopLeftRadius: 40, borderTopRightRadius: 40, overflow: 'hidden', maxHeight: '85%' }}
       >
-        <View className="flex-row items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100">
+        <View
+          className="items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100"
+          style={{ flexDirection: rowDirection }}
+        >
           <Text className="text-xl font-bold text-slate-800">{isArabic ? 'عناويني' : 'My Addresses'}</Text>
-          <TouchableOpacity onPress={() => router.back()} className="p-2 -mr-2">
+          <TouchableOpacity
+            onPress={() => router.back()}
+            className="p-2"
+            style={{ marginRight: isArabic ? 0 : -8, marginLeft: isArabic ? -8 : 0 }}
+          >
             <X size={24} color="#64748b" />
           </TouchableOpacity>
         </View>
@@ -47,22 +56,26 @@ export default function AddressModal() {
             addresses.map((addr) => (
               <View
                 key={addr.id}
-                className="flex-row items-start p-4 mb-3 bg-slate-50 rounded-2xl border border-slate-100"
+                className="items-start p-4 mb-3 bg-slate-50 rounded-2xl border border-slate-100"
+                style={{ flexDirection: rowDirection }}
               >
-                <View className="p-2 rounded-xl mr-4" style={{ backgroundColor: `${primaryColor}20` }}>
+                <View
+                  className="p-2 rounded-xl"
+                  style={{ backgroundColor: `${primaryColor}20`, marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }}
+                >
                   <MapPin size={20} color={primaryColor} />
                 </View>
                 <View className="flex-1">
-                  <View className="flex-row items-center flex-wrap gap-2">
-                    <Text className="font-bold text-slate-800">{getDisplayLabel(addr)}</Text>
+                  <View className="items-center flex-wrap gap-2" style={{ flexDirection: rowDirection }}>
+                    <Text className="font-bold text-slate-800" style={{ textAlign }}>{getDisplayLabel(addr)}</Text>
                     {addr.isDefault && (
                       <View className="px-2 py-0.5 rounded" style={{ backgroundColor: primaryColor }}>
                         <Text className="text-white text-xs font-bold">{isArabic ? 'افتراضي' : 'Default'}</Text>
                       </View>
                     )}
                   </View>
-                  <Text className="text-slate-500 text-sm mt-1">{addr.address}</Text>
-                  <View className="flex-row mt-2 gap-3 items-center flex-wrap">
+                  <Text className="text-slate-500 text-sm mt-1" style={{ textAlign }}>{addr.address}</Text>
+                  <View className="mt-2 gap-3 items-center flex-wrap" style={{ flexDirection: rowDirection }}>
                     {!addr.isDefault && (
                       <TouchableOpacity onPress={() => setDefault(addr.id)}>
                         <Text className="font-bold text-sm" style={{ color: primaryColor }}>{isArabic ? 'تعيين كافتراضي' : 'Set as default'}</Text>
@@ -103,10 +116,11 @@ export default function AddressModal() {
           )}
           <TouchableOpacity
             onPress={() => router.push('/add-address-modal')}
-            className="flex-row items-center justify-center p-4 mt-2 border-2 border-dashed border-slate-200 rounded-2xl"
+            className="items-center justify-center p-4 mt-2 border-2 border-dashed border-slate-200 rounded-2xl"
+            style={{ flexDirection: rowDirection }}
           >
             <Plus size={20} color={primaryColor} />
-            <Text className="font-bold ml-2" style={{ color: primaryColor }}>{isArabic ? 'إضافة عنوان جديد' : 'Add New Address'}</Text>
+            <Text className="font-bold" style={{ color: primaryColor, marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}>{isArabic ? 'إضافة عنوان جديد' : 'Add New Address'}</Text>
           </TouchableOpacity>
         </ScrollView>
       </SwipeableBottomSheet>
