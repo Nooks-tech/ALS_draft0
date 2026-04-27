@@ -1999,7 +1999,12 @@ export default function CheckoutScreen() {
                 paymentConfig={paymentConfig}
                 onPaymentResult={handlePaymentResult}
                 style={{
-                  textInputs: { color: '#0f172a' },
+                  // The SDK pins the card-brand logo (Visa/mada/Mastercard/Amex)
+                  // absolutely-positioned at end:10 with a ~45 px footprint.
+                  // Without explicit paddingEnd on the TextInput the typed
+                  // card-number runs under the logo. paddingEnd:60 leaves
+                  // a comfortable margin in both LTR and RTL.
+                  textInputs: { color: '#0f172a', paddingEnd: 60 },
                   textInputsPlaceholderColor: '#94a3b8',
                 }}
               />

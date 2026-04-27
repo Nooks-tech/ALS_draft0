@@ -1,87 +1,85 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
-import { CreditCard, Plus, Trash2, X } from 'lucide-react-native';
+import { CreditCard, ShieldCheck, Trash2, X } from 'lucide-react-native';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Dimensions, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
+import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { paymentApi, type SavedCard } from '../src/api/payment';
 import { SwipeableBottomSheet } from '../src/components/common/SwipeableBottomSheet';
 
-const STORAGE_KEY = '@als_saved_cards';
-
-type SavedCard = {
-  id: string;
-  last4: string;
-  brand: string;
-  expiry: string;
-  isDefault: boolean;
-};
-
-function detectBrand(num: string): string {
-  if (num.startsWith('4')) return 'Visa';
-  if (num.startsWith('5')) return 'Mastercard';
-  if (num.startsWith('62') || num.startsWith('81')) return 'Mada';
-  return 'Card';
-}
-
+/**
+ * Payment-methods modal. Saved cards live on the server (Moyasar
+ * tokens stored in customer_saved_cards by the payment webhook). The
+ * customer adds a new card by paying for an order with "Save this
+ * card" ticked — there's no manual add-card form here, since holding
+ * raw card numbers in the app would put us outside PCI scope.
+ */
 export default function PaymentModal() {
   const router = useRouter();
   const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
-  const [cards, setCards] = useState<SavedCard[]>([]);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [cardNumber, setCardNumber] = useState('');
-  const [cardExpiry, setCardExpiry] = useState('');
-  const modalHeight = Dimensions.get('window').height * 0.85;
+  const { merchantId } = useMerchant();
   const isArabic = i18n.language === 'ar';
+  const rowDirection: 'row' | 'row-reverse' = isArabic ? 'row-reverse' : 'row';
+  const textAlign: 'left' | 'right' = isArabic ? 'right' : 'left';
+  const [cards, setCards] = useState<SavedCard[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const modalHeight = Dimensions.get('window').height * 0.85;
 
-  useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
-      if (raw) {
-        try { setCards(JSON.parse(raw)); } catch {}
-      }
-    });
-  }, []);
-
-  const persist = useCallback((next: SavedCard[]) => {
-    setCards(next);
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  }, []);
-
-  const removeCard = (id: string) => {
-    const next = cards.filter((c) => c.id !== id);
-    if (next.length > 0 && !next.some((c) => c.isDefault)) {
-      next[0] = { ...next[0], isDefault: true };
-    }
-    persist(next);
-  };
-
-  const setDefaultCard = (id: string) => {
-    persist(cards.map((c) => ({ ...c, isDefault: c.id === id })));
-  };
-
-  const handleAddCard = () => {
-    const digits = cardNumber.replace(/\s/g, '');
-    if (digits.length < 12 || !cardExpiry.includes('/')) {
-      Alert.alert(
-        isArabic ? 'بيانات غير صالحة' : 'Invalid',
-        isArabic ? 'يرجى إدخال رقم بطاقة صحيح وتاريخ انتهاء بصيغة MM/YY.' : 'Please enter a valid card number and expiry (MM/YY).',
-      );
+  const loadCards = useCallback(async () => {
+    if (!merchantId) {
+      setLoading(false);
       return;
     }
-    const last4 = digits.slice(-4);
-    const brand = detectBrand(digits);
-    const newCard: SavedCard = {
-      id: `card-${Date.now()}`,
-      last4,
-      brand,
-      expiry: cardExpiry.trim(),
-      isDefault: cards.length === 0,
-    };
-    persist([...cards, newCard]);
-    setShowAddForm(false);
-    setCardNumber('');
-    setCardExpiry('');
+    try {
+      setLoading(true);
+      const list = await paymentApi.getSavedCards(merchantId);
+      setCards(list);
+    } catch (e) {
+      // Silent — empty list is the right fallback when the user has
+      // never tokenised a card and the server returns []. Only an
+      // unexpected error path would land here, and surfacing a noisy
+      // alert would confuse first-time users.
+      setCards([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [merchantId]);
+
+  useEffect(() => {
+    loadCards();
+  }, [loadCards]);
+
+  const removeCard = (card: SavedCard) => {
+    Alert.alert(
+      isArabic ? 'حذف البطاقة' : 'Remove Card',
+      isArabic
+        ? `هل تريد حذف ${(card.brand || 'بطاقة').toUpperCase()} •••• ${card.last_four || '****'}؟`
+        : `Remove ${(card.brand || 'Card').toUpperCase()} •••• ${card.last_four || '****'}?`,
+      [
+        { text: isArabic ? 'إلغاء' : 'Cancel', style: 'cancel' },
+        {
+          text: isArabic ? 'حذف' : 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingId(card.id);
+            try {
+              await paymentApi.deleteSavedCard(card.id);
+              setCards((prev) => prev.filter((c) => c.id !== card.id));
+            } catch {
+              Alert.alert(
+                isArabic ? 'فشل الحذف' : 'Delete failed',
+                isArabic ? 'تعذر حذف البطاقة. حاول مرة أخرى.' : 'Could not remove the card. Please try again.',
+              );
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -92,75 +90,91 @@ export default function PaymentModal() {
         height={modalHeight}
         style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'white', borderTopLeftRadius: 40, borderTopRightRadius: 40, overflow: 'hidden', maxHeight: '85%' }}
       >
-        <View className="flex-row items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100">
+        <View
+          className="items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100"
+          style={{ flexDirection: rowDirection }}
+        >
           <Text className="text-xl font-bold text-slate-800">{isArabic ? 'طرق الدفع' : 'Payment Methods'}</Text>
-          <TouchableOpacity onPress={() => router.back()} className="p-2 -mr-2">
+          <TouchableOpacity
+            onPress={() => router.back()}
+            className="p-2"
+            style={{ marginRight: isArabic ? 0 : -8, marginLeft: isArabic ? -8 : 0 }}
+          >
             <X size={24} color="#64748b" />
           </TouchableOpacity>
         </View>
         <ScrollView className="flex-1 px-6 py-6" showsVerticalScrollIndicator={false}>
-          {cards.length === 0 && !showAddForm && (
+          {loading ? (
+            <View className="items-center py-12">
+              <ActivityIndicator color={primaryColor} />
+            </View>
+          ) : cards.length === 0 ? (
             <View className="items-center py-8">
               <CreditCard size={48} color="#cbd5e1" />
-              <Text className="text-slate-400 mt-3">{isArabic ? 'لا توجد طرق دفع محفوظة' : 'No saved payment methods'}</Text>
-            </View>
-          )}
-          {cards.map((card) => (
-            <View key={card.id} className="flex-row items-center p-4 mb-3 bg-slate-50 rounded-2xl border border-slate-100">
-              <View className="bg-slate-200 p-3 rounded-xl mr-4"><CreditCard size={24} color="#64748b" /></View>
-              <View className="flex-1">
-                <View className="flex-row items-center flex-wrap gap-2">
-                  <Text className="font-bold text-slate-800">{card.brand} •••• {card.last4}</Text>
-                  {card.isDefault && <View className="px-2 py-0.5 rounded" style={{ backgroundColor: primaryColor }}><Text className="text-white text-xs font-bold">{isArabic ? 'افتراضي' : 'Default'}</Text></View>}
-                </View>
-                <Text className="text-slate-500 text-sm">{isArabic ? 'ينتهي في' : 'Expires'} {card.expiry}</Text>
-                {!card.isDefault && (
-                  <TouchableOpacity onPress={() => setDefaultCard(card.id)} className="mt-1">
-                    <Text className="font-bold text-sm" style={{ color: primaryColor }}>{isArabic ? 'تعيين كافتراضي' : 'Set as default'}</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-              <TouchableOpacity onPress={() => removeCard(card.id)} className="p-2 -mr-2">
-                <Trash2 size={18} color="#ef4444" />
-              </TouchableOpacity>
-            </View>
-          ))}
-
-          {showAddForm ? (
-            <View className="p-4 bg-slate-50 rounded-2xl border border-slate-100 mt-2">
-              <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'رقم البطاقة' : 'Card Number'}</Text>
-              <TextInput
-                placeholder="1234 5678 9012 3456"
-                className="bg-white px-4 py-3 rounded-xl text-slate-800 font-medium mb-3 border border-slate-200"
-                keyboardType="number-pad"
-                maxLength={19}
-                value={cardNumber}
-                onChangeText={setCardNumber}
-              />
-              <Text className="text-slate-500 text-sm font-bold mb-2">{isArabic ? 'تاريخ الانتهاء' : 'Expiry'}</Text>
-              <TextInput
-                placeholder="MM/YY"
-                className="bg-white px-4 py-3 rounded-xl text-slate-800 font-medium mb-4 border border-slate-200"
-                maxLength={5}
-                value={cardExpiry}
-                onChangeText={setCardExpiry}
-              />
-              <View className="flex-row">
-                <TouchableOpacity onPress={() => setShowAddForm(false)} className="flex-1 py-3 rounded-xl items-center border border-slate-200 mr-2">
-                  <Text className="font-bold text-slate-600">{isArabic ? 'إلغاء' : 'Cancel'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleAddCard} className="flex-1 py-3 rounded-xl items-center" style={{ backgroundColor: primaryColor }}>
-                  <Text className="text-white font-bold">{isArabic ? 'حفظ البطاقة' : 'Save Card'}</Text>
-                </TouchableOpacity>
-              </View>
+              <Text className="text-slate-500 font-medium mt-3 text-center" style={{ textAlign: 'center' }}>
+                {isArabic ? 'لا توجد بطاقات محفوظة بعد' : 'No saved cards yet'}
+              </Text>
+              <Text className="text-slate-400 text-sm text-center mt-2 px-4" style={{ textAlign: 'center' }}>
+                {isArabic
+                  ? 'فعّل "حفظ هذه البطاقة" أثناء إتمام الطلب لحفظها للدفعات القادمة.'
+                  : 'Tick "Save this card" during checkout to keep it for faster payments next time.'}
+              </Text>
             </View>
           ) : (
-            <TouchableOpacity onPress={() => setShowAddForm(true)} className="flex-row items-center justify-center p-4 mt-2 border-2 border-dashed border-slate-200 rounded-2xl">
-              <Plus size={20} color={primaryColor} />
-              <Text className="font-bold ml-2" style={{ color: primaryColor }}>{isArabic ? 'إضافة بطاقة جديدة' : 'Add New Card'}</Text>
-            </TouchableOpacity>
+            cards.map((card) => (
+              <View
+                key={card.id}
+                className="items-center p-4 mb-3 bg-slate-50 rounded-2xl border border-slate-100"
+                style={{ flexDirection: rowDirection }}
+              >
+                <View
+                  className="bg-white p-3 rounded-xl"
+                  style={{ marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }}
+                >
+                  <CreditCard size={24} color={primaryColor} />
+                </View>
+                <View className="flex-1">
+                  <Text className="font-bold text-slate-800" style={{ textAlign }}>
+                    {(card.brand || 'Card').toUpperCase()} •••• {card.last_four || '****'}
+                  </Text>
+                  {card.name ? (
+                    <Text className="text-slate-500 text-sm" style={{ textAlign }}>{card.name}</Text>
+                  ) : null}
+                  {card.expires_month && card.expires_year ? (
+                    <Text className="text-slate-400 text-xs mt-0.5" style={{ textAlign }}>
+                      {isArabic ? 'تنتهي في' : 'Expires'} {String(card.expires_month).padStart(2, '0')}/{String(card.expires_year).slice(-2)}
+                    </Text>
+                  ) : null}
+                </View>
+                <TouchableOpacity
+                  onPress={() => removeCard(card)}
+                  className="p-2"
+                  disabled={deletingId === card.id}
+                >
+                  {deletingId === card.id ? (
+                    <ActivityIndicator size="small" color="#ef4444" />
+                  ) : (
+                    <Trash2 size={18} color="#ef4444" />
+                  )}
+                </TouchableOpacity>
+              </View>
+            ))
           )}
-          <Text className="text-slate-400 text-xs text-center mt-6">{isArabic ? 'جميع المدفوعات مؤمنة بتشفير SSL' : 'All payments are secured with SSL encryption'}</Text>
+
+          <View
+            className="items-center mt-6 px-4 py-3 bg-emerald-50 rounded-2xl"
+            style={{ flexDirection: rowDirection }}
+          >
+            <ShieldCheck size={18} color="#10b981" />
+            <Text
+              className="text-emerald-700 text-xs flex-1"
+              style={{ marginLeft: isArabic ? 0 : 10, marginRight: isArabic ? 10 : 0, textAlign }}
+            >
+              {isArabic
+                ? 'بياناتك محمية بمعيار PCI DSS من Moyasar — لا نقوم بحفظ أرقام البطاقات في تطبيقنا.'
+                : 'Card data is held by Moyasar under PCI DSS — we never store raw card numbers on our servers.'}
+            </Text>
+          </View>
         </ScrollView>
       </SwipeableBottomSheet>
     </View>
