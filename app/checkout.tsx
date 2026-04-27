@@ -1785,19 +1785,6 @@ export default function CheckoutScreen() {
               </TouchableOpacity>
             )}
             <TouchableOpacity
-              onPress={() => { setPaymentMethod('stcpay'); setShowPaymentPicker(false); }}
-              className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"
-            >
-              <View className="w-12 h-8 rounded items-center justify-center" style={{ backgroundColor: '#4F3B8E' }}>
-                <Smartphone size={16} color="#fff" />
-              </View>
-              <View className="ml-3 flex-1">
-                <Text className="font-bold text-slate-900">STC Pay</Text>
-                <Text className="text-slate-400 text-sm">{isArabic ? 'ادفع عبر محفظة STC Pay' : 'Pay with your STC Pay wallet'}</Text>
-              </View>
-              <ChevronRight size={18} color="#94a3b8" />
-            </TouchableOpacity>
-            <TouchableOpacity
               onPress={() => {
                 setPaymentMethod('credit_card');
                 setShowPaymentPicker(false);
@@ -1805,12 +1792,12 @@ export default function CheckoutScreen() {
               }}
               className="flex-row items-center py-4 px-4 rounded-[24px] bg-slate-50 border border-slate-100"
             >
-              <View className="w-12 h-10 bg-white rounded-xl items-center justify-center border border-slate-200">
-                <Text className="text-slate-600 font-bold text-xs">••••</Text>
+              <View className="w-12 h-10 rounded-xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
+                <CreditCard size={20} color={primaryColor} />
               </View>
               <View className="ml-3 flex-1">
                 <Text className="font-bold text-slate-900">{isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card'}</Text>
-                <Text className="text-slate-400 text-sm">{isArabic ? 'أدخل البطاقة أو استخدم المحفوظ' : 'Enter card or use saved'}</Text>
+                <Text className="text-slate-400 text-sm">{isArabic ? 'فيزا، ماستركارد، مدى، أمريكان إكسبريس' : 'Visa, Mastercard, mada, Amex'}</Text>
               </View>
               <ChevronRight size={18} color="#94a3b8" />
             </TouchableOpacity>
