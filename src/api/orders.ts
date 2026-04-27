@@ -106,6 +106,8 @@ export type CommitOrderPayload = {
   customerPhone?: string | null;
   customerEmail?: string | null;
   promoCode?: string | null;
+  promoDiscountSar?: number | null;
+  promoScope?: 'total' | 'delivery' | null;
   customerNote?: string | null;
   relayToNooks?: boolean;
 };

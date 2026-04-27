@@ -113,6 +113,11 @@ export default function CheckoutScreen() {
   const [promoCode, setPromoCode] = useState('');
   const [promoApplied, setPromoApplied] = useState(false);
   const [promoDiscount, setPromoDiscount] = useState(0);
+  // Where the discount applies — drives both the UI ("delivery free!"
+  // vs "10 off your subtotal") and the Foodics order body (delivery
+  // promos shrink charges[].amount, subtotal promos scale the line
+  // unit_prices).
+  const [promoScope, setPromoScope] = useState<'total' | 'delivery'>('total');
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
@@ -468,6 +473,7 @@ export default function CheckoutScreen() {
             setPromoDiscount(discountAmount);
             setPromoApplied(true);
             setPromoCode(matched.code);
+            setPromoScope(matched.scope === 'delivery' ? 'delivery' : 'total');
             setShowCouponInput(false);
             setCouponInput('');
             return;
@@ -479,6 +485,9 @@ export default function CheckoutScreen() {
         setPromoDiscount(result.discountAmount);
         setPromoApplied(true);
         setPromoCode(result.code);
+        // Server-validated promos default to subtotal scope — the
+        // /api/promo/validate response doesn't expose scope today.
+        setPromoScope('total');
         setShowCouponInput(false);
         setCouponInput('');
       } else {
@@ -501,6 +510,7 @@ export default function CheckoutScreen() {
     setPromoApplied(false);
     setPromoDiscount(0);
     setPromoCode('');
+    setPromoScope('total');
     setCouponInput('');
   };
 
@@ -597,6 +607,8 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          promoDiscountSar: promoApplied ? promoDiscount : null,
+          promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
           carDetails: orderType === 'drivethru' ? { make: carMake, color: carColor, plate: carPlate } : null,
           relayToNooks: false,
@@ -641,6 +653,8 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          promoDiscountSar: promoApplied ? promoDiscount : null,
+          promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true,
@@ -672,6 +686,8 @@ export default function CheckoutScreen() {
           paymentId: resolvedPaymentId,
           paymentMethod: paymentMethod,
           promoCode: promoApplied ? promoCode : undefined,
+          promoDiscountSar: promoApplied ? promoDiscount : undefined,
+          promoScope: promoApplied ? promoScope : undefined,
           customerNote: orderNote.trim() || undefined,
           customerName: profile.fullName || undefined,
           customerPhone: profile.phone || undefined,
@@ -795,6 +811,8 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          promoDiscountSar: promoApplied ? promoDiscount : null,
+          promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
           relayToNooks: false,
         });
@@ -1017,6 +1035,8 @@ export default function CheckoutScreen() {
             customerPhone: profile.phone || null,
             customerEmail: profile.email || null,
             promoCode: promoApplied ? promoCode : null,
+            promoDiscountSar: promoApplied ? promoDiscount : null,
+            promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
             relayToNooks: false,
           });
@@ -1493,25 +1513,39 @@ export default function CheckoutScreen() {
             </View>
           )}
 
-          {/* Order Summary */}
+          {/* Order Summary — VAT-inclusive prices, discount called out
+              under the line it applies to. The previous layout split
+              subtotal-excl-VAT / delivery-excl-VAT / VAT into three
+              rows which read like a tax-receipt and confused customers
+              who just wanted to know what they paid. */}
           <View className="mt-6 rounded-[28px] bg-slate-50 border border-slate-100 p-5">
             <Text className="text-slate-900 text-lg font-bold mb-4">{isArabic ? 'ملخص الدفع' : 'Payment Summary'}</Text>
-            <View className="flex-row justify-between">
-              <Text className="text-slate-900 font-medium">{isArabic ? 'المبلغ بدون الضريبة' : 'Amount excl. VAT'}</Text>
-              <PriceWithSymbol amount={itemsExclVAT} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
+            <View className="flex-row justify-between items-baseline">
+              <Text className="text-slate-900 font-medium">{isArabic ? 'المجموع الفرعي' : 'Subtotal'}</Text>
+              {promoApplied && promoScope === 'total' && discount > 0 ? (
+                <View className="items-end">
+                  <PriceWithSymbol amount={Math.max(0, totalPrice - discount)} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
+                  <Text className="text-emerald-600 text-[10px] mt-0.5">
+                    {isArabic ? `وفّرت ${discount.toFixed(2)} ر.س بالكود` : `Saved ${discount.toFixed(2)} SAR`}
+                  </Text>
+                </View>
+              ) : (
+                <PriceWithSymbol amount={totalPrice} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
+              )}
             </View>
-            <View className="flex-row justify-between mt-1">
-              <Text className="text-slate-900 font-medium">{isArabic ? 'رسوم التوصيل بدون الضريبة' : 'Delivery fee excl. VAT'}</Text>
-              <PriceWithSymbol amount={deliveryExclVAT} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
-            </View>
-            <View className="flex-row justify-between mt-1">
-              <Text className="text-slate-900 font-medium">VAT</Text>
-              <PriceWithSymbol amount={vatAmount} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
-            </View>
-            {promoApplied && discount > 0 && (
-              <View className="flex-row justify-between mt-1">
-                <Text className="text-slate-900 font-medium">{isArabic ? 'خصم العرض' : 'Promo discount'}</Text>
-                <PriceWithSymbol amount={discount} prefix="- " iconSize={16} iconColor="#059669" textStyle={{ color: '#059669', fontWeight: '700' }} />
+            {orderType === 'delivery' && (
+              <View className="flex-row justify-between items-baseline mt-2">
+                <Text className="text-slate-900 font-medium">{isArabic ? 'رسوم التوصيل' : 'Delivery'}</Text>
+                {promoApplied && promoScope === 'delivery' && discount > 0 ? (
+                  <View className="items-end">
+                    <PriceWithSymbol amount={Math.max(0, deliveryFee - discount)} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
+                    <Text className="text-emerald-600 text-[10px] mt-0.5">
+                      {isArabic ? `وفّرت ${discount.toFixed(2)} ر.س على التوصيل` : `Saved ${discount.toFixed(2)} SAR off delivery`}
+                    </Text>
+                  </View>
+                ) : (
+                  <PriceWithSymbol amount={deliveryFee} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
+                )}
               </View>
             )}
             {usePoints && pointsDiscount > 0 && (

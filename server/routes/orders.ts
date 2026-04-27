@@ -150,6 +150,8 @@ ordersRouter.post('/commit', async (req, res) => {
       customerPhone,
       customerEmail,
       promoCode,
+      promoDiscountSar,
+      promoScope,
       customerNote,
       carDetails,
       relayToNooks,
@@ -256,6 +258,11 @@ ordersRouter.post('/commit', async (req, res) => {
         customer_phone: typeof customerPhone === 'string' ? customerPhone.trim() || null : null,
         customer_email: typeof customerEmail === 'string' ? customerEmail.trim() || null : null,
         promo_code: typeof promoCode === 'string' ? promoCode.trim() || null : null,
+        promo_discount_sar:
+          typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
+            ? promoDiscountSar
+            : null,
+        promo_scope: promoScope === 'delivery' || promoScope === 'total' ? promoScope : null,
         customer_note: typeof customerNote === 'string' ? customerNote.trim() || null : null,
         loyalty_discount_sar: typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0 ? loyaltyDiscountSar : null,
         delivery_address: payload.delivery_address,
