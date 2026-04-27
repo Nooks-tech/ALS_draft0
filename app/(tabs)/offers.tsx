@@ -36,6 +36,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../../src/api/config';
 import { getAuthToken } from '../../src/api/client';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
@@ -269,6 +270,28 @@ export default function OffersScreen() {
   const [appleWalletAvailable, setAppleWalletAvailable] = useState(false);
   const [googleWalletAvailable, setGoogleWalletAvailable] = useState(false);
   const [walletLoading, setWalletLoading] = useState(false);
+  // Track whether the user has already added the loyalty pass to their
+  // device's Wallet. iOS PassKit deduplicates by passTypeId+serialNumber
+  // — re-adding the same pass just opens the existing one — but the
+  // "Add to Apple Wallet" button still showed every time, which made
+  // customers think they could (or needed to) add it again. Once the
+  // first add succeeds we persist a per-(merchant, customer) flag in
+  // AsyncStorage and swap the button for an "Already in your Wallet"
+  // confirmation.
+  const [appleWalletAddedKey, setAppleWalletAddedKey] = useState<string | null>(null);
+  const [appleWalletAdded, setAppleWalletAdded] = useState(false);
+  useEffect(() => {
+    if (!merchantId || !user?.id) {
+      setAppleWalletAddedKey(null);
+      setAppleWalletAdded(false);
+      return;
+    }
+    const key = `apple_pass_added::${merchantId}::${user.id}`;
+    setAppleWalletAddedKey(key);
+    AsyncStorage.getItem(key)
+      .then((val) => setAppleWalletAdded(val === '1'))
+      .catch(() => setAppleWalletAdded(false));
+  }, [merchantId, user?.id]);
   const isArabic = i18n.language === 'ar';
 
   const offersPulse = useRef(new Animated.Value(0.4)).current;
@@ -402,6 +425,12 @@ export default function OffersScreen() {
       }
       console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
       await addPassToAppleWallet(base64);
+      // Mark the pass as added so the button flips to the
+      // "already in your wallet" state and prevents repeat attempts.
+      if (appleWalletAddedKey) {
+        await AsyncStorage.setItem(appleWalletAddedKey, '1').catch(() => {});
+        setAppleWalletAdded(true);
+      }
     } catch (err: unknown) {
       const e = err as { message?: string; code?: string };
       const msg = e?.message || String(err);
@@ -759,8 +788,13 @@ export default function OffersScreen() {
               );
             })()}
 
-            {/* Add to Apple Wallet — native PKAddPassButton (Apple HIG) */}
-            {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && (
+            {/* Add to Apple Wallet — native PKAddPassButton (Apple HIG).
+                Hidden once the customer has added the pass once; iOS
+                deduplicates by passTypeId+serialNumber so the button
+                tapping it again would just re-open the existing pass,
+                but customers were getting confused into thinking they
+                needed to add it multiple times. */}
+            {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && !appleWalletAdded && (
               <View style={{ marginTop: 20, alignItems: 'center', minHeight: 48, justifyContent: 'center' }}>
                 {walletLoading ? (
                   <ActivityIndicator size="small" color={primaryColor} />
@@ -772,6 +806,13 @@ export default function OffersScreen() {
                     }}
                   />
                 )}
+              </View>
+            )}
+            {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && appleWalletAdded && (
+              <View style={{ marginTop: 20, alignItems: 'center' }}>
+                <Text style={{ color: textColor, opacity: 0.6, fontSize: 12 }}>
+                  {isArabic ? 'بطاقة الولاء موجودة في Apple Wallet' : 'Loyalty card already in Apple Wallet'}
+                </Text>
               </View>
             )}
 

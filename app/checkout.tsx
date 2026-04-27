@@ -597,6 +597,7 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          customerNote: orderNote.trim() || null,
           carDetails: orderType === 'drivethru' ? { make: carMake, color: carColor, plate: carPlate } : null,
           relayToNooks: false,
         });
@@ -640,6 +641,7 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          customerNote: orderNote.trim() || null,
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true,
         }).catch((err) => {
@@ -670,6 +672,7 @@ export default function CheckoutScreen() {
           paymentId: resolvedPaymentId,
           paymentMethod: paymentMethod,
           promoCode: promoApplied ? promoCode : undefined,
+          customerNote: orderNote.trim() || undefined,
           customerName: profile.fullName || undefined,
           customerPhone: profile.phone || undefined,
           customerEmail: profile.email || undefined,
@@ -792,6 +795,7 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
+          customerNote: orderNote.trim() || null,
           relayToNooks: false,
         });
       }
@@ -1013,6 +1017,7 @@ export default function CheckoutScreen() {
             customerPhone: profile.phone || null,
             customerEmail: profile.email || null,
             promoCode: promoApplied ? promoCode : null,
+            customerNote: orderNote.trim() || null,
             relayToNooks: false,
           });
         }

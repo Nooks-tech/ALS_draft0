@@ -378,7 +378,6 @@ export default function MoreScreen() {
         <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.preferences}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={CreditCard} title={copy.paymentMethod} subtitle={copy.cardsOptions} onPress={() => router.push('/payment-modal')} accentColor={primaryColor} />
-          <MenuItem icon={Star} title={copy.loyaltyPoints} subtitle={copy.rewards} onPress={() => router.push('/loyalty-modal')} accentColor={primaryColor} />
         </View>
 
         <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.appSettings}</Text>
@@ -407,25 +406,6 @@ export default function MoreScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Marketing push opt-in — split from transactional so order
-            updates always go through regardless of this toggle. */}
-        <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
-          <View className="items-center p-4" style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}>
-            <View className="w-10 h-10 rounded-full justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
-              <Megaphone size={20} color={primaryColor} />
-            </View>
-            <View className="flex-1" style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}>
-              <Text className="text-base font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>
-                {isArabic ? 'إشعارات العروض' : 'Promotional push'}
-              </Text>
-              <Text className="text-xs" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>
-                {isArabic ? 'عروض ومكافآت. إشعارات الطلبات تبقى شغّالة حتى لو قفلته.' : "Offers & rewards. Order pushes stay on regardless."}
-              </Text>
-            </View>
-            <Switch value={marketingOptIn} onValueChange={toggleMarketingConsent} disabled={marketingBusy} />
-          </View>
-        </View>
-
         <Text className="px-4 mb-2 font-bold text-xs uppercase" style={{ color: textColor }}>{copy.supportLegal}</Text>
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={Mail} title={copy.contactUs} subtitle={copy.reachOut} onPress={() => router.push('/contact-modal')} />
@@ -433,12 +413,6 @@ export default function MoreScreen() {
           <MenuItem icon={Shield} title={copy.privacyPolicy} onPress={() => router.push('/privacy-modal')} />
           <MenuItem icon={FileText} title={copy.terms} onPress={() => router.push('/terms-modal')} />
           <MenuItem icon={RotateCcw} title={copy.refund} onPress={() => router.push('/refund-modal')} />
-          <MenuItem
-            icon={Download}
-            title={isArabic ? 'حمّل بياناتي' : 'Download my data'}
-            subtitle={isArabic ? 'كل اللي نحفظه عنك بصيغة JSON' : 'Everything we store about you as JSON'}
-            onPress={downloadMyData}
-          />
         </View>
 
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
