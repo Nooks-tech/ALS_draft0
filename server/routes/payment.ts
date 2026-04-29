@@ -550,6 +550,98 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
 
 /* ─── Saved Cards (Tokenization) ─── */
 
+/**
+ * POST /api/payment/saved-cards/attach
+ * body: { merchantId, token }
+ *
+ * Attach a Moyasar token (created client-side via /v1/tokens with
+ * save_only=true and the merchant's publishable key) to the
+ * authenticated customer. Re-fetches the token from Moyasar with the
+ * SECRET key so we can:
+ *   1) confirm the token actually exists and is owned by this merchant,
+ *   2) read brand/last_four/name/expiry from the canonical source
+ *      rather than trusting the client.
+ *
+ * Idempotent on (customer_id, merchant_id, token) — re-attaching the
+ * same token returns the existing card row instead of duplicating.
+ */
+paymentRouter.post('/saved-cards/attach', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    const merchantId = typeof req.body?.merchantId === 'string' ? req.body.merchantId.trim() : '';
+    const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+    if (!token) return res.status(400).json({ error: 'token required' });
+
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
+    const secretKey = runtimeConfig.secretKey;
+    if (!secretKey) {
+      return res.status(503).json({ error: 'Moyasar secret key is not configured for this merchant' });
+    }
+
+    // Verify the token actually exists in Moyasar before we trust the
+    // brand/last_four claims the client sent.
+    const tokenRes = await fetch(`https://api.moyasar.com/v1/tokens/${encodeURIComponent(token)}`, {
+      headers: { Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}` },
+    });
+    if (!tokenRes.ok) {
+      const text = await tokenRes.text().catch(() => '');
+      return res.status(502).json({ error: `Moyasar token lookup failed (${tokenRes.status}): ${text.slice(0, 200)}` });
+    }
+    const tokenData: any = await tokenRes.json();
+    if (tokenData?.status && tokenData.status !== 'active' && tokenData.status !== 'verified') {
+      return res.status(400).json({
+        error: `Token status is ${tokenData.status} — only active/verified tokens can be saved.`,
+      });
+    }
+
+    const { data: existing } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .select('id, brand, last_four, name, expires_month, expires_year')
+      .eq('customer_id', user.id)
+      .eq('merchant_id', merchantId)
+      .eq('token', token)
+      .maybeSingle();
+    if (existing) {
+      return res.json({ ...existing, already_saved: true });
+    }
+
+    const brand = (tokenData.brand ?? '').toString().toLowerCase() || null;
+    const last_four = tokenData.last_four ?? null;
+    const name = tokenData.name ?? null;
+    const expires_month = tokenData.month ? Number(tokenData.month) : null;
+    const expires_year = tokenData.year ? Number(tokenData.year) : null;
+
+    const { data: inserted, error: insertError } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .insert({
+        customer_id: user.id,
+        merchant_id: merchantId,
+        token,
+        brand,
+        last_four,
+        name,
+        expires_month,
+        expires_year,
+      })
+      .select('id, brand, last_four, name, expires_month, expires_year')
+      .single();
+    if (insertError) {
+      return res.status(500).json({ error: insertError.message });
+    }
+
+    res.json({ ...inserted, already_saved: false });
+  } catch (err: any) {
+    console.error('[SavedCards] Attach error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to save card' });
+  }
+});
+
 /** GET /api/payment/saved-cards?merchantId=X – List user's saved cards */
 paymentRouter.get('/saved-cards', async (req, res) => {
   try {

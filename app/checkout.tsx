@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ArrowLeft,
   Car,
@@ -149,19 +149,39 @@ export default function CheckoutScreen() {
   const [saveCardChecked, setSaveCardChecked] = useState(false);
   const [tokenPayLoading, setTokenPayLoading] = useState(false);
 
-  // Fetch saved cards on mount
-  useEffect(() => {
+  // Fetch saved cards on mount AND whenever this screen regains focus
+  // (the user returns from /add-card-modal after saving a new card).
+  // We always promote the most-recently-saved card to selected so the
+  // Pay button's "current" payment method matches what the user just
+  // added.
+  const loadSavedCards = useCallback(async () => {
     if (!user?.id || !merchantId) return;
-    paymentApi.getSavedCards(merchantId)
-      .then((cards) => {
-        setSavedCards(cards);
-        if (cards.length > 0) {
-          setSelectedSavedCardId(cards[0].id);
-          setPaymentMethod('saved_card');
-        }
-      })
-      .catch(() => {});
+    try {
+      const cards = await paymentApi.getSavedCards(merchantId);
+      setSavedCards(cards);
+      if (cards.length > 0) {
+        setSelectedSavedCardId((prev) => {
+          // Keep the prior selection if it's still in the list,
+          // otherwise jump to the most recent card.
+          if (prev && cards.some((c) => c.id === prev)) return prev;
+          return cards[0].id;
+        });
+        setPaymentMethod((prev) => (prev === 'wallet' || prev === 'apple_pay' || prev === 'samsung_pay' ? prev : 'saved_card'));
+      }
+    } catch {
+      /* network blip — keep prior list */
+    }
   }, [user?.id, merchantId]);
+
+  useEffect(() => {
+    loadSavedCards();
+  }, [loadSavedCards]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadSavedCards();
+    }, [loadSavedCards]),
+  );
 
   // Loyalty redemption (points, cashback, or stamps)
   const [usePoints, setUsePoints] = useState(false);
@@ -1281,7 +1301,11 @@ export default function CheckoutScreen() {
       return;
     }
 
-    setShowPaymentModal(true);
+    // No card on file (or somehow paymentMethod === 'credit_card'
+    // without a selected saved card). Open the custom add-card form
+    // — once the user saves a card and returns, this same Pay button
+    // will route to the saved-card branch above.
+    router.push('/add-card-modal');
   };
 
   const selectedSavedCard = savedCards.find((c) => c.id === selectedSavedCardId) ?? null;
@@ -1894,10 +1918,12 @@ export default function CheckoutScreen() {
                 ))}
                 <TouchableOpacity
                   onPress={() => {
-                    setPaymentMethod('credit_card');
-                    setSelectedSavedCardId(null);
+                    // Save-card-first flow: open our custom card form,
+                    // tokenize via Moyasar /v1/tokens save_only, persist
+                    // it, then return here. The picker re-loads on focus
+                    // and auto-selects the new card.
                     setShowPaymentPicker(false);
-                    setShowPaymentModal(true);
+                    router.push('/add-card-modal');
                   }}
                   className="flex-row items-center justify-center p-3 mb-4 border-2 border-dashed border-slate-200 rounded-2xl"
                 >
@@ -1963,74 +1989,31 @@ export default function CheckoutScreen() {
                 <ChevronRight size={18} color="#94a3b8" />
               </TouchableOpacity>
             )}
-            <TouchableOpacity
-              onPress={() => {
-                setPaymentMethod('credit_card');
-                setShowPaymentPicker(false);
-                setShowPaymentModal(true);
-              }}
-              className="flex-row items-center py-4 px-4 rounded-[24px] bg-slate-50 border border-slate-100"
-            >
-              <View className="w-12 h-10 rounded-xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
-                <CreditCard size={20} color={primaryColor} />
-              </View>
-              <View className="ml-3 flex-1">
-                <Text className="font-bold text-slate-900">{isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card'}</Text>
-                <Text className="text-slate-400 text-sm">{isArabic ? 'فيزا، ماستركارد، مدى، أمريكان إكسبريس' : 'Visa, Mastercard, mada, Amex'}</Text>
-              </View>
-              <ChevronRight size={18} color="#94a3b8" />
-            </TouchableOpacity>
+            {/* No saved card yet → tap to open our custom add-card
+                form. After save, the user lands back on checkout with
+                the new card auto-selected and just taps Pay. */}
+            {savedCards.length === 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  setShowPaymentPicker(false);
+                  router.push('/add-card-modal');
+                }}
+                className="flex-row items-center py-4 px-4 rounded-[24px] bg-slate-50 border border-slate-100"
+              >
+                <View className="w-12 h-10 rounded-xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
+                  <CreditCard size={20} color={primaryColor} />
+                </View>
+                <View className="ml-3 flex-1">
+                  <Text className="font-bold text-slate-900">{isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card'}</Text>
+                  <Text className="text-slate-400 text-sm">
+                    {isArabic ? 'أضف بطاقتك واحفظها للاستخدام السريع' : 'Add and save your card for quick checkout'}
+                  </Text>
+                </View>
+                <ChevronRight size={18} color="#94a3b8" />
+              </TouchableOpacity>
+            )}
           </TouchableOpacity>
         </TouchableOpacity>
-      </Modal>
-
-      {/* Payment Modal - Moyasar (Credit Card only; Apple Pay uses web) */}
-      <Modal visible={showPaymentModal} animationType="slide" presentationStyle="pageSheet">
-        <SafeAreaView className="flex-1 bg-white">
-          <View className="flex-row items-center justify-between px-5 py-4 border-b border-slate-100">
-            <Text className="text-lg font-bold text-slate-800">{paymentLabel}</Text>
-            <TouchableOpacity onPress={() => setShowPaymentModal(false)} className="p-2">
-              <X size={24} color="#64748b" />
-            </TouchableOpacity>
-          </View>
-          <ScrollView className="flex-1 px-5 py-6" contentContainerStyle={{ paddingBottom: 40 }}>
-            {paymentConfig && paymentMethod === 'credit_card' && (
-              <CreditCardPayment
-                paymentConfig={paymentConfig}
-                onPaymentResult={handlePaymentResult}
-                style={{
-                  // The SDK pins the card-brand logo (Visa/mada/Mastercard/Amex)
-                  // absolutely-positioned at end:10 with a ~45 px footprint.
-                  // Without explicit paddingEnd on the TextInput the typed
-                  // card-number runs under the logo. paddingEnd:60 leaves
-                  // a comfortable margin in both LTR and RTL.
-                  textInputs: { color: '#0f172a', paddingEnd: 60 },
-                  textInputsPlaceholderColor: '#94a3b8',
-                }}
-              />
-            )}
-            {/* Save card checkbox */}
-            <TouchableOpacity
-              onPress={() => setSaveCardChecked(!saveCardChecked)}
-              className="flex-row items-center mt-5 px-1"
-              activeOpacity={0.7}
-            >
-              <View
-                className="w-5 h-5 rounded-md items-center justify-center mr-3"
-                style={{
-                  borderWidth: 1.5,
-                  borderColor: saveCardChecked ? primaryColor : '#cbd5e1',
-                  backgroundColor: saveCardChecked ? primaryColor : 'transparent',
-                }}
-              >
-                {saveCardChecked && <Text className="text-white text-xs font-bold">✓</Text>}
-              </View>
-              <Text className="text-slate-700 font-medium text-sm">
-                {isArabic ? 'حفظ هذه البطاقة للدفع بشكل أسرع' : 'Save this card for faster checkout'}
-              </Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </SafeAreaView>
       </Modal>
 
       {/* Moyasar Web Page - Samsung Pay (opens hosted checkout) */}

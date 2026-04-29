@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import { CreditCard, ShieldCheck, Trash2, X } from 'lucide-react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { CreditCard, Plus, ShieldCheck, Trash2, X } from 'lucide-react-native';
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Dimensions, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
@@ -51,6 +51,15 @@ export default function PaymentModal() {
   useEffect(() => {
     loadCards();
   }, [loadCards]);
+
+  // Re-load when the user returns from /add-card-modal so the newly
+  // saved card shows up without forcing them to close + reopen this
+  // modal.
+  useFocusEffect(
+    useCallback(() => {
+      loadCards();
+    }, [loadCards]),
+  );
 
   const removeCard = (card: SavedCard) => {
     Alert.alert(
@@ -160,6 +169,28 @@ export default function PaymentModal() {
               </View>
             ))
           )}
+
+          {/* Add-a-card CTA — always visible so the empty state has a
+              path forward AND existing-cards users can stack a second
+              card without going through checkout. */}
+          <TouchableOpacity
+            onPress={() => router.push('/add-card-modal')}
+            className="items-center justify-center mt-3 py-4 px-4 rounded-2xl border-2 border-dashed border-slate-200"
+            style={{ flexDirection: rowDirection }}
+            activeOpacity={0.8}
+          >
+            <Plus size={20} color={primaryColor} />
+            <Text
+              className="font-bold"
+              style={{
+                color: primaryColor,
+                marginLeft: isArabic ? 0 : 8,
+                marginRight: isArabic ? 8 : 0,
+              }}
+            >
+              {isArabic ? 'إضافة بطاقة جديدة' : 'Add New Card'}
+            </Text>
+          </TouchableOpacity>
 
           <View
             className="items-center mt-6 px-4 py-3 bg-emerald-50 rounded-2xl"

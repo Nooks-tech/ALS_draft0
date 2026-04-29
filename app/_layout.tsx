@@ -123,6 +123,7 @@ export default function RootLayout() {
             <Stack.Screen name="support-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="contact-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="payment-modal" options={{ presentation: 'transparentModal' }} />
+            <Stack.Screen name="add-card-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="favorites-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="order-detail-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="about-modal" options={{ presentation: 'transparentModal' }} />
