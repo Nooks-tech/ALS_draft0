@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import {
   Bell,
   ChevronRight,
@@ -27,7 +27,8 @@ import { unregisterPushToken } from '../../src/api/push';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import { useProfile } from '../../src/context/ProfileContext';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { walletApi } from '../../src/api/wallet';
 import { Alert, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -50,6 +51,27 @@ export default function MoreScreen() {
   const [marketingBusy, setMarketingBusy] = useState(false);
   const [dataDownloading, setDataDownloading] = useState(false);
   const [deletingAccount, setDeletingAccount] = useState(false);
+
+  // Wallet balance shown inline on the "My Wallet" row so the
+  // customer doesn't have to drill in to know how much credit they
+  // have. Refreshed on focus so a top-up done in /wallet-modal lands
+  // here as soon as the user pops back to More.
+  const [walletBalanceSar, setWalletBalanceSar] = useState<number | null>(null);
+  const loadWalletBalance = useCallback(async () => {
+    if (!user?.id || !merchantId) {
+      setWalletBalanceSar(null);
+      return;
+    }
+    try {
+      const balance = await walletApi.getBalance(merchantId);
+      setWalletBalanceSar(balance.balance_sar);
+    } catch {
+      // Best-effort — keep the prior value rather than flipping the
+      // visible balance to null on a transient network error.
+    }
+  }, [user?.id, merchantId]);
+  useEffect(() => { void loadWalletBalance(); }, [loadWalletBalance]);
+  useFocusEffect(useCallback(() => { void loadWalletBalance(); }, [loadWalletBalance]));
   useEffect(() => {
     if (!user?.id || !merchantId || !supabase) return;
     let cancelled = false;
@@ -375,7 +397,13 @@ export default function MoreScreen() {
           <MenuItem
             icon={Wallet}
             title={isArabic ? 'محفظتي' : 'My Wallet'}
-            subtitle={isArabic ? 'الرصيد والمعاملات والاسترداد' : 'Balance, history, and refunds'}
+            subtitle={
+              walletBalanceSar == null
+                ? (isArabic ? 'الرصيد والمعاملات' : 'Balance and history')
+                : isArabic
+                  ? `الرصيد ${walletBalanceSar.toFixed(2)} ر.س`
+                  : `Balance: ${walletBalanceSar.toFixed(2)} SAR`
+            }
             onPress={() => router.push('/wallet-modal')}
             accentColor={primaryColor}
           />

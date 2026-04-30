@@ -444,12 +444,22 @@ export const paymentService = {
     const minAmount = 100;
     const amount = Math.max(amountHalals, minAmount);
 
+    // For token charges we ALWAYS use Moyasar's own return page as
+    // the 3DS callback. Reasons:
+    //   1) It's the URL Moyasar's official SDK uses, so it's
+    //      guaranteed to be allowlisted on every issuer's side —
+    //      sending a custom alsdraft0:// scheme made some banks
+    //      reject 3DS with "invalid redirect".
+    //   2) Our wallet/checkout code already watches for the
+    //      sdk.moyasar.com hostname inside the WebView to detect
+    //      verification completion. Anything else needs us to
+    //      teach every WebView about a different host.
+    // The req.successUrl override is left for callers that already
+    // have a Moyasar-acceptable HTTPS endpoint configured.
     const successUrl =
       req.successUrl?.startsWith('https://')
         ? req.successUrl
-        : PAYMENT_REDIRECT_BASE
-          ? `${PAYMENT_REDIRECT_BASE}/api/payment/redirect?to=${encodeURIComponent('alsdraft0://payment/success')}`
-          : undefined;
+        : 'https://sdk.moyasar.com/return';
 
     const body: Record<string, unknown> = {
       amount: Math.floor(amount),
@@ -460,7 +470,7 @@ export const paymentService = {
         token: req.token,
       },
       ...(req.orderId ? { given_id: orderIdToUuid(req.orderId) } : {}),
-      ...(successUrl ? { callback_url: successUrl } : {}),
+      callback_url: successUrl,
     };
 
     if (req.orderId || req.metadata) {

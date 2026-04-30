@@ -746,6 +746,17 @@ function TopupSheet({
                 <ApplePayButton
                   paymentConfig={applePayConfig}
                   onPaymentResult={(r: any) => { void onApplePayResult(r); }}
+                  // SDK defaults to white-on-light-mode and white-on-
+                  // dark-mode (which made the button invisible against
+                  // our dark background). Pin the iOS-spec black style
+                  // explicitly so it reads on any background.
+                  style={{
+                    buttonType: 'plain',
+                    buttonStyle: 'black',
+                    height: 50,
+                    width: '100%',
+                    cornerRadius: 28,
+                  }}
                 />
               ) : (
                 <TouchableOpacity
