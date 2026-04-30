@@ -70,7 +70,10 @@ import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 import { commitOrder } from '../src/api/orders';
 import { useMenu } from '../src/hooks/useMenu';
 
-export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card' | 'stcpay' | 'saved_card' | 'wallet';
+// Wallet is no longer one of these — it's a redeemable credit
+// applied via the useWallet toggle (see the cashback-style row in
+// render). Card / Apple Pay handles the post-wallet remainder.
+export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card' | 'stcpay' | 'saved_card';
 
 const VAT_RATE = 0.15; // 15% Saudi VAT
 
@@ -166,7 +169,7 @@ export default function CheckoutScreen() {
           if (prev && cards.some((c) => c.id === prev)) return prev;
           return cards[0].id;
         });
-        setPaymentMethod((prev) => (prev === 'wallet' || prev === 'apple_pay' || prev === 'samsung_pay' ? prev : 'saved_card'));
+        setPaymentMethod((prev) => (prev === 'apple_pay' || prev === 'samsung_pay' ? prev : 'saved_card'));
       }
     } catch {
       /* network blip — keep prior list */
@@ -282,10 +285,13 @@ export default function CheckoutScreen() {
       .finally(() => setPointsLoading(false));
   }, [user?.id, merchantId]);
 
-  // Wallet balance — gates the "Pay with wallet" option in the picker.
-  // Re-fetched on focus so a top-up done from the wallet screen reflects
-  // immediately when the customer pops back here.
+  // Wallet balance — drives the "Use wallet credit" toggle (mirrors
+  // the cashback redemption pattern). The wallet is no longer a
+  // payment method on its own; instead, toggling it on applies the
+  // smaller of (balance, final total) as a discount, and the chosen
+  // card / Apple Pay covers the remainder.
   const [walletBalanceSar, setWalletBalanceSar] = useState<number | null>(null);
+  const [useWallet, setUseWallet] = useState(false);
   useEffect(() => {
     if (!user?.id || !merchantId) {
       setWalletBalanceSar(null);
@@ -440,7 +446,17 @@ export default function CheckoutScreen() {
   // Rounding: Foodics uses configurable rounding (default: 0.01 SAR, average/half-up)
   // We round to nearest halala (0.01 SAR) using standard rounding
   const finalTotal = +subtotalAfterDiscount.toFixed(2);
-  const amountHalals = Math.round(finalTotal * 100);
+
+  // Wallet credit applied AFTER everything else (it's a payment-side
+  // credit, not a price discount, so it doesn't change subtotal/VAT).
+  // Capped to the chosen total so the customer can't accidentally
+  // create a negative charge.
+  const walletApplied = useWallet
+    ? Math.min(Number((walletBalanceSar ?? 0).toFixed(2)), finalTotal)
+    : 0;
+  const chargeAmount = Math.max(0, +(finalTotal - walletApplied).toFixed(2));
+  const walletCoversAll = useWallet && walletApplied > 0 && chargeAmount === 0;
+  const amountHalals = Math.round(chargeAmount * 100);
 
   const paymentConfig = useMemo(() => {
     if (!resolvedPublishableKey || !customerPaymentsEnabled) return null;
@@ -649,6 +665,10 @@ export default function CheckoutScreen() {
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
           carDetails: orderType === 'drivethru' ? { make: carMake, color: carColor, plate: carPlate } : null,
+          // Apple Pay / Samsung Pay charged the post-wallet
+          // chargeAmount via paymentConfig.amount; this debits the
+          // wallet so the ledger matches the customer's outlay.
+          walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
           relayToNooks: false,
         });
       }
@@ -695,6 +715,7 @@ export default function CheckoutScreen() {
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
+          walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
           relayToNooks: true,
         }).catch((err) => {
           console.warn('[Checkout] Background commit failed:', err?.message);
@@ -779,7 +800,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, rewardItemsForOrder, selectedMilestoneIds, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, pointsDiscount, loyaltyType, router, user?.id]);
+  }, [cartItems, rewardItemsForOrder, selectedMilestoneIds, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, pointsDiscount, loyaltyType, router, user?.id, walletApplied]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {
@@ -1111,13 +1132,13 @@ export default function CheckoutScreen() {
       return;
     }
 
-    // Wallet payment — atomic server-side debit during commit. No
-    // Moyasar webview, no card form. The order POST returns 400 with
-    // INSUFFICIENT_WALLET_BALANCE if the balance moved between the
-    // checkout-screen check and the commit (e.g. a parallel order on
-    // another device chewed the balance), in which case we surface a
-    // friendly alert and let the customer pick a different method.
-    if (paymentMethod === 'wallet') {
+    // Wallet covers the FULL order total — short-circuit to the
+    // wallet-only path regardless of whatever method the customer
+    // had selected before flipping the toggle, since there's nothing
+    // left to charge a card for. The legacy 'wallet' paymentMethod
+    // case (from the old picker shape) also routes here so old code
+    // paths still resolve cleanly.
+    if (walletCoversAll || (paymentMethod as any) === 'wallet') {
       if (!user?.id) {
         Alert.alert(
           isArabic ? 'سجّل الدخول' : 'Sign in',
@@ -1181,6 +1202,11 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
+          // Server reads paymentMethod === 'wallet' and debits the
+          // full totalSar via the wallet legacy path. We send the
+          // explicit walletAmountSar too so the new code path is
+          // also satisfied — defence in depth.
+          walletAmountSar: Number(finalTotal.toFixed(2)),
           relayToNooks: true,
         });
 
@@ -1272,6 +1298,14 @@ export default function CheckoutScreen() {
             customerPhone: profile.phone || null,
             customerEmail: profile.email || null,
             promoCode: promoApplied ? promoCode : null,
+            promoDiscountSar: promoApplied ? promoDiscount : null,
+            promoScope: promoApplied ? promoScope : null,
+            customerNote: orderNote.trim() || null,
+            // Wallet credit applied as a partial payment. Server
+            // debits this from the wallet during commit, then
+            // /token-pay below subtracts the same amount from
+            // total_sar so the card only charges the remainder.
+            walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
             relayToNooks: false,
           });
         }
@@ -1317,11 +1351,9 @@ export default function CheckoutScreen() {
         ? 'Samsung Pay'
         : paymentMethod === 'stcpay'
           ? 'STC Pay'
-          : paymentMethod === 'wallet'
-            ? (isArabic ? 'محفظتي' : 'My Wallet')
-            : paymentMethod === 'saved_card' && selectedSavedCard
-              ? `${(selectedSavedCard.brand || 'Card').toUpperCase()} •••• ${selectedSavedCard.last_four || '****'}`
-              : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
+          : paymentMethod === 'saved_card' && selectedSavedCard
+            ? `${(selectedSavedCard.brand || 'Card').toUpperCase()} •••• ${selectedSavedCard.last_four || '****'}`
+            : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
 
   if (cartItems.length === 0) {
     return (
@@ -1627,6 +1659,71 @@ export default function CheckoutScreen() {
             </TouchableOpacity>
           ))}
 
+          {/* Wallet credit toggle — mirrors the cashback redemption row.
+              Wallet is NOT a payment method on its own; toggling this
+              applies min(balance, total) as a credit and the chosen
+              card / Apple Pay covers what's left. */}
+          {user?.id && walletBalanceSar !== null && walletBalanceSar > 0 && (
+            <TouchableOpacity
+              onPress={() => setUseWallet(!useWallet)}
+              className="mt-5 rounded-[28px] p-4 flex-row items-center justify-between"
+              style={{
+                borderWidth: 1,
+                borderColor: useWallet ? primaryColor : '#e2e8f0',
+                backgroundColor: useWallet ? `${primaryColor}08` : '#f8fafc',
+              }}
+              activeOpacity={0.7}
+            >
+              <View className="flex-row items-center flex-1">
+                <View
+                  style={{
+                    width: 36, height: 36, borderRadius: 18,
+                    backgroundColor: useWallet ? primaryColor : '#f1f5f9',
+                    alignItems: 'center', justifyContent: 'center',
+                  }}
+                >
+                  <Wallet size={18} color={useWallet ? '#fff' : '#94a3b8'} />
+                </View>
+                <View className="ml-3 flex-1">
+                  <Text className="font-bold text-slate-900" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+                    {isArabic
+                      ? `استخدم ${walletBalanceSar.toFixed(2)} ر.س من المحفظة`
+                      : `Use ${walletBalanceSar.toFixed(2)} SAR from wallet`}
+                  </Text>
+                  <View className="flex-row items-center flex-wrap mt-0.5">
+                    <Text className="text-slate-500 text-xs">
+                      {isArabic ? 'وفّر حتى ' : 'Save up to '}
+                    </Text>
+                    <PriceWithSymbol
+                      amount={Math.min(walletBalanceSar, finalTotal)}
+                      iconSize={12}
+                      iconColor="#64748b"
+                      textStyle={{ color: '#64748b', fontSize: 12 }}
+                    />
+                  </View>
+                </View>
+              </View>
+              <View
+                style={{
+                  width: 44, height: 26, borderRadius: 13,
+                  backgroundColor: useWallet ? primaryColor : '#cbd5e1',
+                  justifyContent: 'center',
+                  paddingHorizontal: 2,
+                }}
+              >
+                <View
+                  style={{
+                    width: 22, height: 22, borderRadius: 11,
+                    backgroundColor: '#fff',
+                    alignSelf: useWallet ? 'flex-end' : 'flex-start',
+                    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
+                    shadowOpacity: 0.15, shadowRadius: 2, elevation: 2,
+                  }}
+                />
+              </View>
+            </TouchableOpacity>
+          )}
+
           {/* Stamp Rewards Redemption — customer has hit one or more milestones and can add the reward items free to this order */}
           {user?.id && loyaltyBalance && loyaltyType === 'stamps' && eligibleRedemptions.length > 0 && (
             <View className="mt-5 rounded-[28px] p-4" style={{ borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc' }}>
@@ -1729,6 +1826,37 @@ export default function CheckoutScreen() {
               <Text className="text-slate-900 font-bold">{isArabic ? 'الإجمالي شامل الضريبة' : 'Total VAT included'}</Text>
               <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 18 }} />
             </View>
+            {/* Wallet credit applied — shown as a separate line under
+                the total (mirrors how a deposit/credit shows on a
+                receipt: it doesn't change the order amount, just what
+                the customer pays now). */}
+            {useWallet && walletApplied > 0 && (
+              <>
+                <View className="flex-row justify-between mt-2">
+                  <Text className="text-slate-900 font-medium">
+                    {isArabic ? 'رصيد المحفظة' : 'Wallet credit'}
+                  </Text>
+                  <PriceWithSymbol
+                    amount={walletApplied}
+                    prefix="- "
+                    iconSize={16}
+                    iconColor="#059669"
+                    textStyle={{ color: '#059669', fontWeight: '700' }}
+                  />
+                </View>
+                <View className="flex-row justify-between mt-2 pt-2 border-t border-dashed border-slate-200">
+                  <Text className="text-slate-900 font-bold">
+                    {isArabic ? 'المتبقي على البطاقة' : 'Charged to card'}
+                  </Text>
+                  <PriceWithSymbol
+                    amount={chargeAmount}
+                    iconSize={16}
+                    iconColor={primaryColor}
+                    textStyle={{ color: primaryColor, fontWeight: '700' }}
+                  />
+                </View>
+              </>
+            )}
           </View>
 
           {/* Payment Method */}
@@ -1957,38 +2085,9 @@ export default function CheckoutScreen() {
                 <Text className="ml-3 font-bold text-slate-900">Samsung Pay</Text>
               </TouchableOpacity>
             )}
-            {walletBalanceSar !== null && walletBalanceSar > 0 && (
-              <TouchableOpacity
-                onPress={() => {
-                  if (walletBalanceSar < finalTotal) {
-                    Alert.alert(
-                      isArabic ? 'الرصيد غير كاف' : 'Insufficient balance',
-                      isArabic
-                        ? `رصيد محفظتك ${walletBalanceSar.toFixed(2)} ر.س — أقل من إجمالي الطلب ${finalTotal.toFixed(2)} ر.س.`
-                        : `Wallet has ${walletBalanceSar.toFixed(2)} SAR — order total is ${finalTotal.toFixed(2)} SAR.`,
-                    );
-                    return;
-                  }
-                  setPaymentMethod('wallet');
-                  setShowPaymentPicker(false);
-                }}
-                className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"
-                style={{ opacity: walletBalanceSar < finalTotal ? 0.55 : 1 }}
-              >
-                <View className="w-12 h-10 rounded-xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
-                  <Wallet size={20} color={primaryColor} />
-                </View>
-                <View className="ml-3 flex-1">
-                  <Text className="font-bold text-slate-900">{isArabic ? 'محفظتي' : 'My Wallet'}</Text>
-                  <Text className="text-slate-400 text-sm">
-                    {isArabic
-                      ? `الرصيد ${walletBalanceSar.toFixed(2)} ر.س`
-                      : `Balance ${walletBalanceSar.toFixed(2)} SAR`}
-                  </Text>
-                </View>
-                <ChevronRight size={18} color="#94a3b8" />
-              </TouchableOpacity>
-            )}
+            {/* Wallet is no longer a payment method — it's a redeemable
+                credit applied via a toggle outside this picker (same UX
+                as the cashback loyalty redemption row). */}
             {/* No saved card yet → tap to open our custom add-card
                 form. After save, the user lands back on checkout with
                 the new card auto-selected and just taps Pay. */}

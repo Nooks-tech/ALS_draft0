@@ -162,6 +162,7 @@ ordersRouter.post('/commit', async (req, res) => {
       carDetails,
       relayToNooks,
       loyaltyDiscountSar,
+      walletAmountSar,
     } = req.body ?? {};
 
     if (!id || typeof id !== 'string') {
@@ -214,14 +215,37 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(403).json({ error: 'Order does not belong to the authenticated user' });
     }
 
-    // Wallet payment: atomic debit BEFORE we save the order. If the
-    // customer doesn't have enough balance the SQL function throws
-    // 'INSUFFICIENT_WALLET_BALANCE' and we surface 400 — the mobile
-    // app falls back to picking a card. Idempotent on retry: if the
-    // order id already shows a wallet 'spend' entry we skip the
-    // re-debit so a Place-order retry can't double-charge.
+    // Wallet credit: applied to the order BEFORE saving it. Two
+    // shapes the client can send:
+    //   - paymentMethod === 'wallet'        → wallet covers the full
+    //                                         total (legacy shape from
+    //                                         when the wallet was a
+    //                                         payment-method choice).
+    //   - walletAmountSar > 0 (any method)  → wallet covers a portion
+    //                                         and the chosen card /
+    //                                         Apple Pay covers the
+    //                                         remainder. The wallet
+    //                                         debit lives in the
+    //                                         ledger keyed by order_id;
+    //                                         /token-pay reads it back
+    //                                         to subtract from the
+    //                                         card charge.
+    // Either way the SQL function throws 'INSUFFICIENT_WALLET_BALANCE'
+    // if the balance can't cover the requested amount, and the debit
+    // is idempotent on (order_id, customer, merchant) — a retry of
+    // this commit returns the same wallet transaction instead of
+    // double-debiting.
     let walletPaymentId: string | null = null;
+    let walletAppliedSar = 0;
     if (paymentMethod === 'wallet') {
+      walletAppliedSar = Number(totalSar);
+    } else if (typeof walletAmountSar === 'number' && walletAmountSar > 0) {
+      // Cap to totalSar so a tampered client can't pull more wallet
+      // credit than the order is worth.
+      walletAppliedSar = Math.min(Number(walletAmountSar), Number(totalSar));
+    }
+
+    if (walletAppliedSar > 0) {
       try {
         const { data: priorDebit } = await supabaseAdmin
           .from('customer_wallet_transactions')
@@ -237,7 +261,7 @@ ordersRouter.post('/commit', async (req, res) => {
           const debit = await debitWalletForOrder({
             customerId: user.id,
             merchantId,
-            amountSar: totalSar,
+            amountSar: walletAppliedSar,
             orderId: id,
           });
           walletPaymentId = `wallet:${debit.transactionId}`;
@@ -266,12 +290,17 @@ ordersRouter.post('/commit', async (req, res) => {
       delivery_city: typeof deliveryCity === 'string' ? deliveryCity : null,
       oto_id: typeof otoId === 'number' ? otoId : null,
       delivery_fee: normalizedDeliveryFee,
-      // Wallet payments don't have a Moyasar id — use the wallet
+      // Wallet-only payments don't have a Moyasar id — use the wallet
       // transaction id as the payment_id so audit / reconcile flows
-      // still have a stable handle.
+      // still have a stable handle. For partial-wallet (= the wallet
+      // covered some of the total but a card pays the rest), the
+      // payment_id stays whatever the client sent or null until
+      // /token-pay or the webhook lands the card id; the wallet debit
+      // is still recorded in customer_wallet_transactions.order_id.
       payment_id:
-        walletPaymentId
-          ?? (typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null),
+        paymentMethod === 'wallet'
+          ? walletPaymentId
+          : (typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null),
       payment_method: typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null,
       car_details: orderType === 'drivethru' && carDetails && typeof carDetails === 'object' ? carDetails : null,
       updated_at: new Date().toISOString(),

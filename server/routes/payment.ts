@@ -797,9 +797,49 @@ paymentRouter.post('/token-pay', async (req, res) => {
       return res.status(400).json({ error: `Cannot pay for order status: ${order.status}` });
     }
 
-    const amount = Number(order.total_sar ?? 0);
+    // Wallet credit applied at commit time lives in the wallet
+    // ledger keyed by order_id. If any was applied, subtract from the
+    // amount we charge the card so the customer pays only the
+    // remainder. If the wallet covered the full total there's nothing
+    // left to charge — mark the order paid (off the wallet payment_id
+    // already on the row) and return without calling Moyasar.
+    const fullAmountSar = Number(order.total_sar ?? 0);
+    const { data: walletDebitRow } = await supabaseAdmin
+      .from('customer_wallet_transactions')
+      .select('amount_halalas, id')
+      .eq('customer_id', user.id)
+      .eq('merchant_id', scopedMerchantId)
+      .eq('order_id', orderId)
+      .eq('entry_type', 'spend')
+      .maybeSingle();
+    const walletDebitSar = walletDebitRow
+      ? Math.abs(Number(walletDebitRow.amount_halalas)) / 100
+      : 0;
+    const chargeAmount = Math.max(0, +(fullAmountSar - walletDebitSar).toFixed(2));
+
+    if (chargeAmount === 0) {
+      // Wallet covered the whole order — set payment_id to the wallet
+      // transaction reference if it isn't already there and return a
+      // synthetic 'paid' session so the client's existing success
+      // path runs.
+      const walletPaymentId = walletDebitRow ? `wallet:${walletDebitRow.id}` : null;
+      if (walletPaymentId) {
+        await supabaseAdmin
+          .from('customer_orders')
+          .update({ payment_id: walletPaymentId, payment_method: 'wallet' })
+          .eq('id', orderId)
+          .eq('merchant_id', scopedMerchantId)
+          .eq('customer_id', user.id);
+      }
+      return res.json({
+        id: walletPaymentId ?? `wallet-${orderId}`,
+        status: 'paid',
+        url: undefined,
+      });
+    }
+
     const session = await paymentService.initiateMoyasarTokenPayment({
-      amount,
+      amount: chargeAmount,
       currency: 'SAR',
       orderId,
       token: card.token,
@@ -807,8 +847,10 @@ paymentRouter.post('/token-pay', async (req, res) => {
       metadata: { merchant_id: scopedMerchantId },
     });
 
-    // Record commission
-    const commission = calculateCommission(amount, Number(order.delivery_fee ?? 0));
+    // Record commission against the actual charged amount, not the
+    // pre-wallet total — the merchant only gets paid for what was
+    // actually moved through Moyasar.
+    const commission = calculateCommission(chargeAmount, Number(order.delivery_fee ?? 0));
     const { error: commissionError } = await supabaseAdmin
       .from('customer_orders')
       .update({

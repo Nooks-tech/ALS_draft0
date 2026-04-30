@@ -109,6 +109,15 @@ export type CommitOrderPayload = {
   promoDiscountSar?: number | null;
   promoScope?: 'total' | 'delivery' | null;
   customerNote?: string | null;
+  /**
+   * Wallet credit applied to the order (in SAR). Server debits the
+   * wallet for this amount during commit; the chosen payment method
+   * (card / Apple Pay) covers the remainder. 0 / undefined = no
+   * wallet credit. The order's total_sar is the FULL pre-wallet
+   * total — wallet usage is read off the wallet ledger by joining
+   * on order_id.
+   */
+  walletAmountSar?: number | null;
   relayToNooks?: boolean;
 };
 
