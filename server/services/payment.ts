@@ -2,9 +2,31 @@
  * Payment Service - Tap / Moyasar
  * Initiates payment sessions. Configure TAP_SECRET_KEY or MOYASAR_SECRET_KEY in .env
  */
+import crypto from 'crypto';
 import path from 'path';
 import dotenv from 'dotenv';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
+
+/**
+ * Moyasar's `given_id` field must be a valid UUID — it rejects our
+ * `order-<timestamp>` ids with `given_id: must be a valid UUID`. Hash
+ * the orderId into a deterministic v4-shaped UUID so retries with the
+ * same orderId produce the same UUID (Moyasar treats matching given_ids
+ * as idempotent and returns the original payment) but distinct orders
+ * map to distinct UUIDs.
+ */
+function orderIdToUuid(orderId: string): string {
+  const hex = crypto.createHash('sha256').update(String(orderId)).digest('hex');
+  // Lay out as 8-4-4-4-12 with the version (4) and variant (8) nibbles
+  // pinned so the result parses as a proper UUID v4.
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    '4' + hex.slice(13, 16),
+    '8' + hex.slice(17, 20),
+    hex.slice(20, 32),
+  ].join('-');
+}
 
 // Load .env from server/ (payment.ts is in server/services/, so ../.env = server/.env)
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
@@ -288,7 +310,7 @@ export const paymentService = {
         type: 'stcpay',
         mobile: req.mobile,
       },
-      ...(req.orderId ? { given_id: req.orderId } : {}),
+      ...(req.orderId ? { given_id: orderIdToUuid(req.orderId) } : {}),
     };
 
     if (req.orderId || req.metadata) {
@@ -348,7 +370,7 @@ export const paymentService = {
       currency: req.currency || 'SAR',
       description: req.orderId ? `Order ${req.orderId}` : 'ALS Order',
       // Idempotency: derive given_id from orderId so retries don't create duplicate invoices
-      ...(req.orderId ? { given_id: req.orderId } : {}),
+      ...(req.orderId ? { given_id: orderIdToUuid(req.orderId) } : {}),
     };
     if (req.orderId || req.metadata) {
       body.metadata = {
@@ -437,7 +459,7 @@ export const paymentService = {
         type: 'token',
         token: req.token,
       },
-      ...(req.orderId ? { given_id: req.orderId } : {}),
+      ...(req.orderId ? { given_id: orderIdToUuid(req.orderId) } : {}),
       ...(successUrl ? { callback_url: successUrl } : {}),
     };
 
