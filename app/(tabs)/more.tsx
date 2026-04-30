@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useRouter } from 'expo-router';
+import * as Updates from 'expo-updates';
 import {
   Bell,
   ChevronRight,
@@ -29,7 +30,7 @@ import Constants from 'expo-constants';
 import { useProfile } from '../../src/context/ProfileContext';
 import { useCallback, useEffect, useState } from 'react';
 import { walletApi } from '../../src/api/wallet';
-import { Alert, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Modal, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { API_URL } from '../../src/api/config';
@@ -38,7 +39,7 @@ import { supabase } from '../../src/api/supabase';
 export default function MoreScreen() {
   const { i18n } = useTranslation();
   const router = useRouter();
-  const { primaryColor, backgroundColor, menuCardColor, textColor, appName, cafeName } = useMerchantBranding();
+  const { primaryColor, backgroundColor, menuCardColor, textColor, appName, cafeName, logoUrl, appIconUrl } = useMerchantBranding();
   const { profile } = useProfile();
   const { signOut, user } = useAuth();
   const { merchantId } = useMerchant();
@@ -291,17 +292,32 @@ export default function MoreScreen() {
         version: 'Version 1.0.0',
       };
 
+  const [languageSwitching, setLanguageSwitching] = useState(false);
   const toggleLanguage = async () => {
     try {
       const nextLang = i18n.language === 'en' ? 'ar' : 'en';
       await AsyncStorage.setItem('language', nextLang);
       await i18n.changeLanguage(nextLang);
-      // We DO NOT call I18nManager.forceRTL — RTL is handled at the
-      // component level via `isArabic` checks (see src/i18n/index.ts).
-      // The i18n.changeLanguage broadcast triggers a re-render of every
-      // useTranslation() consumer, which is enough to re-flow the layout.
-      // No app reload required.
+      // Tabs, picker buttons, and many native sub-views capture their
+      // dimensions / labels once on mount. Just calling
+      // i18n.changeLanguage re-renders our React tree but leaves
+      // navigation stale: the bottom-tab layout, screen titles, and
+      // any cached arrows remain in the previous language. Reload the
+      // JS bundle so every screen rebuilds from scratch in the new
+      // language. Show a splash overlay during the (sub-second) gap
+      // so the user sees a deliberate transition rather than a
+      // half-flipped UI.
+      setLanguageSwitching(true);
+      try {
+        await Updates.reloadAsync();
+      } catch {
+        // Updates.reloadAsync is unavailable in dev / Expo Go; in
+        // those environments the in-place re-render is the best we
+        // can do. Drop the splash so the user isn't stuck.
+        setLanguageSwitching(false);
+      }
     } catch {
+      setLanguageSwitching(false);
       Alert.alert(copy.error, copy.changeLanguageFailed);
     }
   };
@@ -458,6 +474,34 @@ export default function MoreScreen() {
 
         <Text className="text-center text-xs mb-8" style={{ color: textColor }}>{copy.version}</Text>
       </ScrollView>
+
+      {/* Language-switch splash. Renders the merchant's icon on the
+          merchant's background color so the gap between toggling the
+          language and the JS bundle finishing its reload looks
+          intentional, not like a freeze. */}
+      <Modal visible={languageSwitching} animationType="fade" transparent={false} statusBarTranslucent>
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: backgroundColor || '#0d9488',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {(appIconUrl || logoUrl) ? (
+            <Image
+              source={{ uri: appIconUrl || (logoUrl as string) }}
+              style={{ width: 96, height: 96, borderRadius: 22 }}
+              resizeMode="contain"
+            />
+          ) : null}
+          <ActivityIndicator
+            color={primaryColor || '#ffffff'}
+            size="small"
+            style={{ marginTop: 28 }}
+          />
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

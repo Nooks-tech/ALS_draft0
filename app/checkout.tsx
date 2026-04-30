@@ -292,17 +292,22 @@ export default function CheckoutScreen() {
   // card / Apple Pay covers the remainder.
   const [walletBalanceSar, setWalletBalanceSar] = useState<number | null>(null);
   const [useWallet, setUseWallet] = useState(false);
-  useEffect(() => {
+  const reloadWalletBalance = useCallback(async () => {
     if (!user?.id || !merchantId) {
       setWalletBalanceSar(null);
       return;
     }
-    let cancelled = false;
-    walletApi.getBalance(merchantId)
-      .then((b) => { if (!cancelled) setWalletBalanceSar(b.balance_sar); })
-      .catch(() => { if (!cancelled) setWalletBalanceSar(null); });
-    return () => { cancelled = true; };
+    try {
+      const b = await walletApi.getBalance(merchantId);
+      setWalletBalanceSar(b.balance_sar);
+    } catch {
+      // Best-effort — keep prior value on transient errors.
+    }
   }, [user?.id, merchantId]);
+  useEffect(() => { void reloadWalletBalance(); }, [reloadWalletBalance]);
+  // Refresh on focus so a top-up done in /wallet-modal lands here as
+  // soon as the customer comes back to checkout.
+  useFocusEffect(useCallback(() => { void reloadWalletBalance(); }, [reloadWalletBalance]));
 
   // Pre-fill STC Pay mobile from profile
   useEffect(() => {
@@ -1947,10 +1952,35 @@ export default function CheckoutScreen() {
                   <Smartphone size={18} color="white" />
                   <Text className="text-white font-bold text-base ml-2">{isArabic ? 'الدفع عبر STC Pay' : 'Pay with STC Pay'}</Text>
                 </View>
-              ) : (
+              ) : walletCoversAll ? (
                 <View className="flex-row items-center">
-                  <Text className="text-white font-bold text-base mr-2">{isArabic ? 'إتمام الطلب' : 'Complete Order'}</Text>
-                  <ChevronRight size={18} color="white" />
+                  <Wallet size={18} color="white" />
+                  <Text className="text-white font-bold text-base ml-2">
+                    {isArabic ? 'إتمام الطلب من المحفظة' : 'Complete with wallet'}
+                  </Text>
+                </View>
+              ) : (
+                <View className="flex-row items-center" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+                  <Text className="text-white font-bold text-base">
+                    {isArabic ? 'ادفع' : 'Pay'}
+                  </Text>
+                  <View style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}>
+                    <PriceWithSymbol
+                      amount={chargeAmount}
+                      iconSize={16}
+                      iconColor="#ffffff"
+                      textStyle={{ color: '#ffffff', fontWeight: '700', fontSize: 16 }}
+                    />
+                  </View>
+                  <ChevronRight
+                    size={18}
+                    color="white"
+                    style={{
+                      marginLeft: isArabic ? 0 : 8,
+                      marginRight: isArabic ? 8 : 0,
+                      transform: [{ scaleX: isArabic ? -1 : 1 }],
+                    }}
+                  />
                 </View>
               )}
             </TouchableOpacity>

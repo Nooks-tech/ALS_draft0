@@ -228,82 +228,35 @@ jobs:
               })().catch(e => { console.error(e); process.exit(1); });
             "
           fi
-          echo "Generating branded splash artwork..."
-          APP_ICON_SCALE="$RAW_SCALE" RAW_ICON_FILE_PATH="$RAW_ICON_FILE" SPLASH_IMAGE_PATH="$SPLASH_IMAGE_FILE" SPLASH_TILE_BG="$SPLASH_TILE_BG" node <<'EOF'
+          echo "Generating splash icon (matches home-screen icon, transparent canvas)..."
+          # Splash now mirrors the home-screen icon directly: same
+          # composited icon (with merchant icon-bg already baked in by
+          # the step above), centered on a transparent canvas. The
+          # native splash-screen layer fills the surrounding pixels
+          # with `expo.plugins.expo-splash-screen.backgroundColor`,
+          # which we patch in a later step to the merchant's chosen
+          # background color. No more fixed dark-green frame, no more
+          # decorative tile + dots that pretended to be a loader.
+          APP_ICON_FILE_PATH="$APP_ICON_FILE" SPLASH_IMAGE_PATH="$SPLASH_IMAGE_FILE" node <<'EOF'
           const sharp = require('sharp');
-
-          const rawIconPath = process.env.RAW_ICON_FILE_PATH;
+          const iconPath = process.env.APP_ICON_FILE_PATH;
           const outPath = process.env.SPLASH_IMAGE_PATH;
-          const tileBg = process.env.SPLASH_TILE_BG || '#0D9488';
-          const rawScale = Number(process.env.APP_ICON_SCALE || '70');
-          const scalePct = Math.min(150, Math.max(20, Number.isFinite(rawScale) ? rawScale : 70));
-
-          const canvasW = 360;
-          const canvasH = 560;
-          const tileSize = 220;
-          const tileRadius = 56;
-          const tileLeft = Math.round((canvasW - tileSize) / 2);
-          const tileTop = 132;
-          const tileBottom = tileTop + tileSize;
-          const centerX = Math.round(canvasW / 2);
-          const dotY = tileBottom + 92;
-          const dotRadius = 6;
-          const dotGap = 16;
-          const logoSize = Math.round(tileSize * Math.min(0.72, Math.max(0.42, scalePct / 100)));
-
-          const shadowSvg = Buffer.from(`
-            <svg width="${canvasW}" height="${canvasH}" viewBox="0 0 ${canvasW} ${canvasH}" xmlns="http://www.w3.org/2000/svg">
-              <defs>
-                <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-                  <feGaussianBlur in="SourceGraphic" stdDeviation="22" />
-                </filter>
-              </defs>
-              <circle cx="${centerX}" cy="${tileTop + Math.round(tileSize / 2)}" r="${Math.round(tileSize * 0.62)}" fill="${tileBg}" fill-opacity="0.10" filter="url(#shadow)" />
-              <rect x="${tileLeft}" y="${tileTop + 18}" width="${tileSize}" height="${tileSize}" rx="${tileRadius}" fill="#000000" fill-opacity="0.16" filter="url(#shadow)" />
-              <circle cx="${centerX - dotGap}" cy="${dotY}" r="${dotRadius}" fill="${tileBg}" fill-opacity="0.32" />
-              <circle cx="${centerX}" cy="${dotY}" r="${dotRadius}" fill="${tileBg}" fill-opacity="0.52" />
-              <circle cx="${centerX + dotGap}" cy="${dotY}" r="${dotRadius}" fill="${tileBg}" fill-opacity="0.96" />
-            </svg>
-          `);
-
-          const tileSvg = Buffer.from(`
-            <svg width="${tileSize}" height="${tileSize}" viewBox="0 0 ${tileSize} ${tileSize}" xmlns="http://www.w3.org/2000/svg">
-              <rect width="${tileSize}" height="${tileSize}" rx="${tileRadius}" fill="${tileBg}" />
-            </svg>
-          `);
-
+          // 1024 keeps the splash sharp on every device class — the
+          // expo-splash-screen plugin downsizes via `imageWidth` (we
+          // set 200px below) but does so at the native level after
+          // we hand it a high-res source.
+          const ICON_SIZE = 1024;
           (async () => {
-            const logoBuf = await sharp(rawIconPath, { pages: 1 })
+            await sharp(iconPath, { pages: 1 })
               .ensureAlpha()
-              .resize(logoSize, logoSize, {
+              .resize(ICON_SIZE, ICON_SIZE, {
                 fit: 'contain',
                 background: { r: 0, g: 0, b: 0, alpha: 0 },
                 kernel: 'lanczos3',
               })
               .png({ compressionLevel: 6, effort: 10 })
-              .toBuffer();
-
-            const tileBuf = await sharp(tileSvg)
-              .composite([{ input: logoBuf, gravity: 'center' }])
-              .png({ compressionLevel: 6, effort: 10 })
-              .toBuffer();
-
-            await sharp({
-              create: {
-                width: canvasW,
-                height: canvasH,
-                channels: 4,
-                background: { r: 0, g: 0, b: 0, alpha: 0 },
-              },
-            })
-              .composite([
-                { input: shadowSvg, left: 0, top: 0 },
-                { input: tileBuf, left: tileLeft, top: tileTop },
-              ])
-              .png({ compressionLevel: 6, effort: 10 })
               .toFile(outPath);
-
-            console.log('Splash card generated:', outPath, 'tileBg:', tileBg, 'logoScale:', scalePct + '%');
+            console.log('Splash icon written:', outPath, 'from:', iconPath);
           })().catch((e) => {
             console.error(e);
             process.exit(1);
@@ -346,6 +299,36 @@ jobs:
           echo "--- .env written ---"
           wc -l .env
           grep "PRIMARY_COLOR" .env
+
+      - name: Patch splash backgroundColor + name with merchant inputs
+        # Splash screen background is hardcoded to dark green in the
+        # repo's app.json. Patch it to the merchant's background_color
+        # so the splash matches what the user sees once the app paints.
+        # Same pass updates `expo.name` so the iOS / Android system
+        # title screen reads the merchant's app name instead of the
+        # generic ALS placeholder.
+        env:
+          BACKGROUND_COLOR: ${{ github.event.inputs.background_color }}
+          APP_NAME: ${{ github.event.inputs.app_name }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const cfg = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            const bg = (process.env.BACKGROUND_COLOR || '').trim();
+            const appName = (process.env.APP_NAME || '').trim();
+            if (Array.isArray(cfg.expo.plugins)) {
+              cfg.expo.plugins = cfg.expo.plugins.map((p) => {
+                if (Array.isArray(p) && p[0] === 'expo-splash-screen' && p[1] && bg) {
+                  p[1].backgroundColor = bg;
+                  if (p[1].dark) p[1].dark.backgroundColor = bg;
+                }
+                return p;
+              });
+            }
+            if (appName) cfg.expo.name = appName;
+            fs.writeFileSync('app.json', JSON.stringify(cfg, null, 2));
+            console.log('[splash] backgroundColor =', bg || '(unchanged)', '| name =', appName || '(unchanged)');
+          "
 
       - name: Bump iOS buildNumber + Android versionCode
         # Apple TestFlight rejects (version, buildNumber) collisions —

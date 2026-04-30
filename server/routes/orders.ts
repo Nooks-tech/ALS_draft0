@@ -341,6 +341,12 @@ ordersRouter.post('/commit', async (req, res) => {
         promo_scope: promoScope === 'delivery' || promoScope === 'total' ? promoScope : null,
         customer_note: typeof customerNote === 'string' ? customerNote.trim() || null : null,
         loyalty_discount_sar: typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0 ? loyaltyDiscountSar : null,
+        // Wallet credit applied to this order (already debited from
+        // the customer's wallet during commit). nooksweb shrinks
+        // Foodics unit_prices proportionally so the POS total matches
+        // what the customer actually paid (card portion + wallet).
+        wallet_amount_sar:
+          walletAppliedSar > 0 ? walletAppliedSar : null,
         delivery_address: payload.delivery_address,
         delivery_lat: payload.delivery_lat,
         delivery_lng: payload.delivery_lng,
