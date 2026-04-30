@@ -148,6 +148,12 @@ export default function AddCardModal() {
 
   const brand = useMemo(() => detectBrand(cardNumberRaw), [cardNumberRaw]);
   const cvcLen = brand === 'amex' ? 4 : 3;
+  // Visa/Mastercard/mada: 16 digits. Amex: 15. Unknown brand: allow
+  // up to 19 (covers UnionPay etc.) so we never block a valid card
+  // before brand detection kicks in. Without this cap, the typing
+  // field happily accepted 19 digits for "4111 1111 1111 1111" which
+  // failed Luhn for an obviously-valid Visa test card.
+  const maxDigits = brand === 'amex' ? 15 : brand ? 16 : 19;
 
   const cardNumberFormatted = useMemo(() => formatCardNumber(cardNumberRaw), [cardNumberRaw]);
 
@@ -421,7 +427,7 @@ export default function AddCardModal() {
               </Text>
               <TextInput
                 value={cardNumberFormatted}
-                onChangeText={(v) => setCardNumberRaw(v.replace(/\D/g, '').slice(0, 19))}
+                onChangeText={(v) => setCardNumberRaw(v.replace(/\D/g, '').slice(0, maxDigits))}
                 placeholder="1234 5678 9012 3456"
                 placeholderTextColor="#94a3b8"
                 keyboardType="number-pad"
@@ -431,7 +437,10 @@ export default function AddCardModal() {
                   writingDirection: 'ltr',
                   fontVariant: ['tabular-nums'],
                 }}
-                maxLength={19 + 4} // 16-19 digits + up to 4 spaces
+                // maxDigits + spaces (one space every 4 digits, with a
+                // 4-4-4-3 split for Amex). Recomputed lazily — for the
+                // common 16-digit case this is 16 + 3 = 19.
+                maxLength={maxDigits + Math.max(0, Math.ceil(maxDigits / 4) - 1)}
                 editable={!submitting}
               />
               {errors.number ? (
