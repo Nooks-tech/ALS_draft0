@@ -460,9 +460,21 @@ export const paymentService = {
     const data = await res.json();
 
     if (!res.ok) {
-      const errDetail = data?.errors ? JSON.stringify(data.errors) : data?.message;
-      console.error('[Moyasar Token] Payment failed:', res.status, data);
-      throw new Error(data?.message || (data?.errors ? `Validation: ${errDetail}` : 'Token payment failed'));
+      // Moyasar nests the actionable detail in `errors` (a per-field
+      // dict). Surface those so the customer sees "card declined"
+      // rather than the useless top-level "Data validation failed".
+      console.error('[Moyasar Token] Payment failed:', res.status, JSON.stringify(data));
+      const fieldErrors =
+        data?.errors && typeof data.errors === 'object'
+          ? Object.entries(data.errors)
+              .map(([k, v]) => `${k}: ${Array.isArray(v) ? (v as string[]).join(', ') : v}`)
+              .join('; ')
+          : '';
+      const message =
+        fieldErrors ||
+        data?.message ||
+        `Token payment failed (HTTP ${res.status})`;
+      throw new Error(message);
     }
 
     console.log('[Moyasar Token] Payment created:', data.id, 'status:', data.status);
