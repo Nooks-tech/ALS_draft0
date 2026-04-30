@@ -594,9 +594,21 @@ paymentRouter.post('/saved-cards/attach', async (req, res) => {
       return res.status(502).json({ error: `Moyasar token lookup failed (${tokenRes.status}): ${text.slice(0, 200)}` });
     }
     const tokenData: any = await tokenRes.json();
-    if (tokenData?.status && tokenData.status !== 'active' && tokenData.status !== 'verified') {
+    // Acceptable statuses for a token we're about to attach:
+    //   - "save_only"        → token created with save_only:true (our flow)
+    //   - "active"           → fully verified after 3DS
+    //   - "verified"         → alias some Moyasar versions emit
+    //   - "initiated"        → just created, may still need 3DS — we'll
+    //                          let the customer try anyway; /token-pay
+    //                          will surface a clearer error if the bank
+    //                          rejects it later.
+    // Reject only the unambiguous failure states so a real declined
+    // card doesn't end up persisted.
+    const status = String(tokenData?.status || '').toLowerCase();
+    const FAIL_STATES = new Set(['failed', 'inactive', 'declined', 'expired']);
+    if (status && FAIL_STATES.has(status)) {
       return res.status(400).json({
-        error: `Token status is ${tokenData.status} — only active/verified tokens can be saved.`,
+        error: `Card was declined by the issuer (token status: ${status}).`,
       });
     }
 
