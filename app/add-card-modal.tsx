@@ -19,6 +19,7 @@ import { WebView } from 'react-native-webview';
 import { SwipeableBottomSheet } from '../src/components/common/SwipeableBottomSheet';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { MOYASAR_PUBLISHABLE_KEY } from '../src/api/config';
 import { paymentApi } from '../src/api/payment';
 import {
   createMoyasarToken,
@@ -126,6 +127,11 @@ export default function AddCardModal() {
   const { i18n } = useTranslation();
   const { primaryColor, moyasarPublishableKey } = useMerchantBranding();
   const { merchantId } = useMerchant();
+  // Same fallback chain as checkout: prefer per-merchant key from
+  // branding, fall back to the legacy env-var key if branding hasn't
+  // been configured for this merchant yet. Either path lets the
+  // customer save a card.
+  const resolvedPublishableKey = (moyasarPublishableKey || MOYASAR_PUBLISHABLE_KEY || '').trim();
   const isArabic = i18n.language === 'ar';
   const rowDirection: 'row' | 'row-reverse' = isArabic ? 'row-reverse' : 'row';
   const textAlign: 'left' | 'right' = isArabic ? 'right' : 'left';
@@ -181,7 +187,7 @@ export default function AddCardModal() {
     if (submitting) return;
     if (!validate()) return;
 
-    if (!moyasarPublishableKey) {
+    if (!resolvedPublishableKey) {
       Alert.alert(
         isArabic ? 'لم يُهيَّأ الدفع' : 'Payment not configured',
         isArabic
@@ -203,7 +209,7 @@ export default function AddCardModal() {
     setSubmitting(true);
     try {
       const token: CreateTokenResponse = await createMoyasarToken({
-        publishableKey: moyasarPublishableKey,
+        publishableKey: resolvedPublishableKey,
         name: name.trim(),
         number: cardNumberRaw,
         cvc,
