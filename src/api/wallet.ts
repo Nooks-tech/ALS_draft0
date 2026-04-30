@@ -66,4 +66,26 @@ export const walletApi = {
     balance_sar: number;
   }> =>
     api.post('/api/wallet/topup-finalize', params),
+
+  /**
+   * One-shot top-up with a saved card. Server charges the saved
+   * Moyasar token and credits the wallet atomically. Returns either
+   * a verification_url (3DS required — client opens it in a WebView,
+   * then calls topupFinalize) or a synchronous success.
+   */
+  topupWithSavedCard: (params: {
+    merchantId: string;
+    savedCardId: string;
+    amount_sar: number;
+  }): Promise<{
+    success?: boolean;
+    already_credited?: boolean;
+    payment_id?: string;
+    credited_sar?: number;
+    balance_sar?: number;
+    /** Set when 3DS is required. */
+    verification_url?: string;
+    status?: string;
+  }> =>
+    api.post('/api/wallet/topup-with-saved-card', params),
 };

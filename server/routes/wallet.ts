@@ -25,6 +25,7 @@ import { Router, Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { paymentService } from '../services/payment';
+import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -213,12 +214,15 @@ walletRouter.post('/topup-finalize', async (req: Request, res: Response) => {
 
     // Verify the Moyasar payment server-side. Never trust the mobile
     // app's claim that "this payment is paid" — they could send any id.
-    const secretKey = process.env.MOYASAR_SECRET_KEY;
+    // Resolve the secret key from the per-merchant config first (the
+    // standard place every other Moyasar call reads from); only fall
+    // back to the env var for legacy single-merchant deployments.
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantIdStr);
+    const secretKey = runtimeConfig.secretKey || process.env.MOYASAR_SECRET_KEY;
     if (!secretKey) {
-      // Some merchants run their own secret key; the per-merchant config
-      // resolution lives in services/payment.ts. For wallet topups we
-      // accept either: env-level or a future per-merchant lookup.
-      return res.status(503).json({ error: 'MOYASAR_SECRET_KEY not configured for wallet finalize' });
+      return res.status(503).json({
+        error: 'Moyasar secret key is not configured for this merchant — wallet finalize cannot verify the payment.',
+      });
     }
     const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
     const moyasarRes = await fetch(`https://api.moyasar.com/v1/payments/${encodeURIComponent(paymentIdStr)}`, {
@@ -274,6 +278,144 @@ walletRouter.post('/topup-finalize', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Wallet] topup-finalize error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to finalize top-up' });
+  }
+});
+
+/**
+ * POST /api/wallet/topup-with-saved-card
+ * body: { merchantId, savedCardId, amount_sar }
+ *
+ * Charges a previously-saved Moyasar token for the requested amount
+ * and, if the charge succeeds, credits the wallet in the same
+ * request — no Moyasar webview, no client-side SDK form. The
+ * customer sees a single "Pay" tap and a balance bump.
+ *
+ * If the issuer requires 3DS for this charge, Moyasar returns a
+ * `transaction_url` instead of `paid` immediately; we forward it
+ * to the client which opens the same WebView the add-card flow
+ * uses, then re-calls /topup-finalize once the user lands back on
+ * sdk.moyasar.com/return.
+ */
+walletRouter.post('/topup-with-saved-card', async (req: Request, res: Response) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const merchantId = String(req.body?.merchantId ?? '').trim();
+    const savedCardId = String(req.body?.savedCardId ?? '').trim();
+    const amountSar = Number(req.body?.amount_sar);
+
+    if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+    if (!savedCardId) return res.status(400).json({ error: 'savedCardId required' });
+    if (!Number.isFinite(amountSar) || amountSar < TOPUP_MIN_SAR || amountSar > TOPUP_MAX_SAR) {
+      return res.status(400).json({
+        error: `Top-up amount must be between ${TOPUP_MIN_SAR} and ${TOPUP_MAX_SAR} SAR`,
+      });
+    }
+
+    // Look up the saved card and confirm it belongs to this customer
+    // + merchant. The merchant scope is what stops one customer's
+    // token being charged through another merchant's app.
+    const { data: card, error: cardError } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .select('token')
+      .eq('id', savedCardId)
+      .eq('customer_id', user.id)
+      .eq('merchant_id', merchantId)
+      .maybeSingle();
+    if (cardError) return res.status(500).json({ error: cardError.message });
+    if (!card) return res.status(404).json({ error: 'Saved card not found' });
+
+    // Synthetic order id keeps Moyasar's given_id slot unique per
+    // top-up attempt (services/payment.ts hashes it into a UUID for
+    // Moyasar). 'wallet-' prefix makes the row obvious in the dash.
+    const topupOrderId = `wallet-${user.id}-${Date.now()}`;
+
+    const session = await paymentService.initiateMoyasarTokenPayment({
+      amount: amountSar,
+      currency: 'SAR',
+      orderId: topupOrderId,
+      token: card.token,
+      merchantId,
+      // The metadata.type === 'wallet_topup' marker is what
+      // /topup-finalize uses to tell wallet payments apart from
+      // regular orders, AND what defends against another customer
+      // replaying this payment id to credit their own wallet.
+      metadata: {
+        type: 'wallet_topup',
+        merchant_id: merchantId,
+        customer_id: user.id,
+      },
+    });
+
+    // Issuer required 3DS — return the verification URL and let the
+    // client load it in a WebView, then call /topup-finalize.
+    if (session.url && session.status !== 'paid' && session.status !== 'captured') {
+      return res.json({
+        status: session.status,
+        payment_id: session.id,
+        verification_url: session.url,
+      });
+    }
+
+    if (session.status !== 'paid' && session.status !== 'captured') {
+      return res.status(400).json({
+        error: `Payment status is ${session.status} — could not credit the wallet.`,
+        payment_id: session.id,
+      });
+    }
+
+    // Synchronous success — credit the wallet now. Idempotent on the
+    // (customer, merchant, payment_id) triple so a retry of this same
+    // call (e.g. flaky network) won't double-credit.
+    const { data: existing } = await supabaseAdmin
+      .from('customer_wallet_transactions')
+      .select('id, balance_after_halalas')
+      .eq('customer_id', user.id)
+      .eq('merchant_id', merchantId)
+      .eq('payment_id', session.id)
+      .eq('entry_type', 'topup')
+      .maybeSingle();
+    if (existing) {
+      const { data: balance } = await supabaseAdmin
+        .from('customer_wallet_balances')
+        .select('balance_halalas, total_topup_halalas, total_spent_halalas, total_refunded_halalas')
+        .eq('customer_id', user.id)
+        .eq('merchant_id', merchantId)
+        .maybeSingle();
+      return res.json({
+        success: true,
+        already_credited: true,
+        payment_id: session.id,
+        ...shapeBalance(balance),
+      });
+    }
+
+    const amountHalalas = sarToHalalas(amountSar);
+    const { data: rpcRows, error: rpcError } = await supabaseAdmin.rpc('credit_customer_wallet', {
+      p_customer_id: user.id,
+      p_merchant_id: merchantId,
+      p_amount_halalas: amountHalalas,
+      p_entry_type: 'topup',
+      p_payment_id: session.id,
+      p_note: 'Top-up via saved card',
+    });
+    if (rpcError) {
+      return res.status(500).json({ error: `Wallet credit failed: ${rpcError.message}` });
+    }
+
+    const newBalanceHalalas = Number((rpcRows as any)?.[0]?.new_balance_halalas ?? 0);
+    res.json({
+      success: true,
+      already_credited: false,
+      payment_id: session.id,
+      credited_sar: amountSar,
+      balance_sar: halalasToSar(newBalanceHalalas),
+    });
+  } catch (err: any) {
+    console.error('[Wallet] topup-with-saved-card error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to top up with saved card' });
   }
 });
 

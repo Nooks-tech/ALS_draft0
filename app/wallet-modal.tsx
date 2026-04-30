@@ -13,6 +13,8 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import {
   ArrowLeft,
   ArrowRight,
+  ChevronRight,
+  CreditCard,
   Plus,
   RotateCcw,
   ShoppingBag,
@@ -24,6 +26,7 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  Platform,
   ScrollView,
   Text,
   TextInput,
@@ -32,8 +35,10 @@ import {
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { WebView } from 'react-native-webview';
 import {
-  CreditCard as CreditCardPayment,
+  ApplePay as ApplePayButton,
+  ApplePayConfig,
   CreditCardConfig,
   PaymentConfig,
   PaymentResponse,
@@ -41,8 +46,9 @@ import {
   isMoyasarError,
 } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
-import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY } from '../src/api/config';
+import { APPLE_PAY_MERCHANT_ID, MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY } from '../src/api/config';
 import { walletApi, type WalletBalance, type WalletEntry } from '../src/api/wallet';
+import { paymentApi, type SavedCard } from '../src/api/payment';
 import { useAuth } from '../src/context/AuthContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
@@ -275,11 +281,28 @@ export default function WalletModal() {
 /* ============================================================
  * TopupSheet
  *
- * Two stages:
- *   1. amount picker (presets + custom field)
- *   2. Moyasar credit-card form rendered inside the same modal so the
- *      customer never leaves the wallet screen.
+ * Three-stage flow:
+ *   1. Amount picker (presets + custom field)
+ *   2. Payment-method picker — Apple Pay (when supported) and any
+ *      saved cards. Tap a method to select it; tap Pay at the bottom
+ *      to charge. There's also an "Add new card" row that opens
+ *      /add-card-modal so the customer can add one without leaving
+ *      the wallet flow.
+ *   3. 3DS WebView — only opens when Moyasar requires the issuer
+ *      step. Lands back on sdk.moyasar.com/return → we call
+ *      /topup-finalize and refresh.
+ *
+ * No more Moyasar SDK card form: cards are added via the same custom
+ * /add-card-modal screen the checkout uses, then charged via the
+ * server-side /topup-with-saved-card endpoint.
  * ============================================================ */
+
+type WalletPaymentChoice =
+  | { kind: 'saved_card'; cardId: string }
+  | { kind: 'apple_pay' };
+
+const TOKEN_RETURN_HOSTNAME = 'sdk.moyasar.com';
+
 function TopupSheet({
   merchantId,
   customerName,
@@ -295,43 +318,121 @@ function TopupSheet({
   onClose: () => void;
   onSuccess: () => Promise<void>;
 }) {
+  const router = useRouter();
   const { i18n } = useTranslation();
+  const { user } = useAuth();
   const isArabic = i18n.language === 'ar';
-  const { primaryColor } = useMerchantBranding();
+  const rowDirection: 'row' | 'row-reverse' = isArabic ? 'row-reverse' : 'row';
+  const textAlign: 'left' | 'right' = isArabic ? 'right' : 'left';
+  const {
+    primaryColor,
+    applePayEnabled,
+    applePayMerchantId,
+    cafeName,
+    appName,
+  } = useMerchantBranding();
+
+  const resolvedApplePayMerchantId = (applePayMerchantId || APPLE_PAY_MERCHANT_ID || '').trim();
+  const resolvedApplePayEnabled =
+    applePayEnabled && Platform.OS === 'ios' && !!resolvedApplePayMerchantId && !!MOYASAR_PUBLISHABLE_KEY;
+
   const [amountText, setAmountText] = useState('100');
   const [stage, setStage] = useState<'pick' | 'pay'>('pick');
-  const [paymentSessionId, setPaymentSessionId] = useState<string | null>(null);
+  const [savedCards, setSavedCards] = useState<SavedCard[]>([]);
+  const [cardsLoading, setCardsLoading] = useState(false);
+  const [choice, setChoice] = useState<WalletPaymentChoice | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
+  const [pendingPaymentId, setPendingPaymentId] = useState<string | null>(null);
 
   const amountNum = useMemo(() => Number(amountText), [amountText]);
   const amountValid = Number.isFinite(amountNum) && amountNum >= TOPUP_MIN && amountNum <= TOPUP_MAX;
+  const amountHalalas = useMemo(() => Math.round(amountNum * 100), [amountNum]);
 
-  const startPayment = useCallback(async () => {
-    if (!amountValid) return;
-    setSubmitting(true);
+  // Refresh cards on mount AND on focus (we may have come back from
+  // /add-card-modal). Auto-pick the first saved card on first load
+  // so the customer doesn't have to make a redundant choice.
+  const loadCards = useCallback(async () => {
+    if (!merchantId) return;
     try {
-      const session = await walletApi.topupInitiate({
-        amount_sar: amountNum,
-        merchantId,
-        customer: { name: customerName || 'Customer', email: customerEmail, phone: customerPhone },
-      });
-      setPaymentSessionId(session.id);
-      setStage('pay');
-    } catch (e: any) {
-      Alert.alert(
-        isArabic ? 'تعذّر بدء الدفع' : 'Could not start payment',
-        e?.message || 'Try again in a moment.',
-      );
+      setCardsLoading(true);
+      const list = await paymentApi.getSavedCards(merchantId);
+      setSavedCards(list);
+      if (list.length > 0 && !choice) {
+        setChoice({ kind: 'saved_card', cardId: list[0].id });
+      }
+    } catch {
+      /* keep prior list */
     } finally {
-      setSubmitting(false);
+      setCardsLoading(false);
     }
-  }, [amountNum, amountValid, customerName, customerEmail, customerPhone, isArabic, merchantId]);
+  }, [merchantId, choice]);
 
-  const handleResult = useCallback(
-    async (result: PaymentResponse) => {
-      if (!paymentSessionId) return;
-      const status = (result as any)?.status as PaymentStatus | undefined;
-      const id = (result as any)?.id as string | undefined;
+  useEffect(() => {
+    void loadCards();
+  }, [loadCards]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadCards();
+    }, [loadCards]),
+  );
+
+  // Apple Pay paymentConfig — only built when Apple Pay is supported
+  // for this merchant. metadata.type='wallet_topup' is what the
+  // /topup-finalize endpoint requires to credit the wallet.
+  const applePayConfig = useMemo(() => {
+    if (!resolvedApplePayEnabled) return null;
+    if (!user?.id) return null; // server validates this too
+    try {
+      return new PaymentConfig({
+        publishableApiKey: MOYASAR_PUBLISHABLE_KEY,
+        baseUrl: MOYASAR_BASE_URL,
+        amount: Math.max(amountHalalas, 100),
+        currency: 'SAR',
+        merchantCountryCode: 'SA',
+        description: `${cafeName ?? appName ?? 'Wallet'} top-up`,
+        metadata: {
+          type: 'wallet_topup',
+          merchant_id: merchantId,
+          ...(user?.id ? { customer_id: user.id } : {}),
+        },
+        supportedNetworks: ['mada', 'visa', 'mastercard', 'amex'],
+        creditCard: new CreditCardConfig({ saveCard: false, manual: false }),
+        applePay: new ApplePayConfig({
+          merchantId: resolvedApplePayMerchantId,
+          label: appName || cafeName || 'Wallet',
+          manual: false,
+          saveCard: false,
+        }),
+        createSaveOnlyToken: false,
+      });
+    } catch {
+      return null;
+    }
+  // user.id is read above — pull in via closure on render. We don't
+  // strictly need to add it to deps since it doesn't change between
+  // renders for an authed wallet session.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [amountHalalas, appName, cafeName, merchantId, resolvedApplePayEnabled, resolvedApplePayMerchantId]);
+
+  const goToPaymentStage = () => {
+    if (!amountValid) return;
+    setStage('pay');
+  };
+
+  const onApplePayResult = useCallback(
+    async (result: any) => {
+      if (isMoyasarError(result)) {
+        Alert.alert(
+          isArabic ? 'الدفع فشل' : 'Payment failed',
+          (result as any)?.message ?? '',
+        );
+        return;
+      }
+      const r = result as PaymentResponse;
+      const status = (r as any)?.status as PaymentStatus | undefined;
+      const id = (r as any)?.id as string | undefined;
       if (status !== 'paid' || !id) {
         Alert.alert(
           isArabic ? 'الدفع لم يكتمل' : 'Payment not completed',
@@ -345,27 +446,97 @@ function TopupSheet({
       } catch (e: any) {
         Alert.alert(
           isArabic ? 'تأخّر تحديث الرصيد' : 'Balance update delayed',
-          e?.message || 'Pull to refresh in a moment.',
+          e?.message || (isArabic ? 'حاول السحب للتحديث بعد قليل.' : 'Pull to refresh in a moment.'),
         );
       }
     },
-    [merchantId, onSuccess, paymentSessionId, isArabic],
+    [merchantId, onSuccess, isArabic],
+  );
+
+  const paySavedCard = useCallback(async () => {
+    if (!amountValid || !choice || choice.kind !== 'saved_card') return;
+    setSubmitting(true);
+    try {
+      const res = await walletApi.topupWithSavedCard({
+        merchantId,
+        savedCardId: choice.cardId,
+        amount_sar: amountNum,
+      });
+
+      // 3DS required — open verification URL in a WebView; finalize
+      // once the bank lands back on sdk.moyasar.com/return.
+      if (res.verification_url && res.payment_id) {
+        setPendingPaymentId(res.payment_id);
+        setVerifyUrl(res.verification_url);
+        return;
+      }
+
+      if (res.success) {
+        await onSuccess();
+        return;
+      }
+
+      Alert.alert(
+        isArabic ? 'الدفع لم يكتمل' : 'Payment not completed',
+        res.status ? `Status: ${res.status}` : (isArabic ? 'حاول مرة أخرى.' : 'Please try again.'),
+      );
+    } catch (e: any) {
+      Alert.alert(
+        isArabic ? 'فشل الدفع' : 'Payment failed',
+        e?.message || (isArabic ? 'حاول مرة أخرى.' : 'Please try again.'),
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [amountNum, amountValid, choice, isArabic, merchantId, onSuccess]);
+
+  const onVerifyNavigationChange = useCallback(
+    async (url: string) => {
+      if (!url || !pendingPaymentId) return;
+      let host = '';
+      try {
+        host = new URL(url).hostname;
+      } catch {
+        host = url.includes(TOKEN_RETURN_HOSTNAME) ? TOKEN_RETURN_HOSTNAME : '';
+      }
+      if (host !== TOKEN_RETURN_HOSTNAME) return;
+      const id = pendingPaymentId;
+      setPendingPaymentId(null);
+      setVerifyUrl(null);
+      try {
+        await walletApi.topupFinalize({ paymentId: id, merchantId });
+        await onSuccess();
+      } catch (e: any) {
+        Alert.alert(
+          isArabic ? 'فشل التحقق' : 'Verification failed',
+          e?.message || (isArabic ? 'تعذر إكمال تعبئة الرصيد.' : 'Could not finish the top-up.'),
+        );
+      }
+    },
+    [merchantId, onSuccess, pendingPaymentId, isArabic],
   );
 
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView className="flex-1 bg-white">
-        <View className="px-5 py-4 border-b border-slate-100 flex-row items-center justify-between">
+        <View
+          className="px-5 py-4 border-b border-slate-100 items-center justify-between"
+          style={{ flexDirection: rowDirection }}
+        >
           <Text className="text-lg font-bold text-slate-800">
             {stage === 'pick' ? (isArabic ? 'إضافة رصيد' : 'Add money') : (isArabic ? 'الدفع' : 'Payment')}
           </Text>
-          <TouchableOpacity onPress={onClose} className="p-2"><X size={22} color="#64748b" /></TouchableOpacity>
+          <TouchableOpacity onPress={onClose} className="p-2">
+            <X size={22} color="#64748b" />
+          </TouchableOpacity>
         </View>
 
         {stage === 'pick' ? (
-          <ScrollView className="flex-1 px-5 py-6">
-            <Text className="text-sm text-slate-500 mb-3">
-              {isArabic ? `الحد الأدنى ${TOPUP_MIN} ر.س — الأعلى ${TOPUP_MAX}` : `Minimum ${TOPUP_MIN} SAR — Maximum ${TOPUP_MAX}`}
+          <ScrollView className="flex-1 px-5 py-6" keyboardShouldPersistTaps="handled">
+            <Text className="text-sm text-slate-500 mb-3" style={{ textAlign }}>
+              {isArabic
+                ? `الحد الأدنى ${TOPUP_MIN} ر.س — الأعلى ${TOPUP_MAX}`
+                : `Minimum ${TOPUP_MIN} SAR — Maximum ${TOPUP_MAX}`}
             </Text>
             <View className="flex-row flex-wrap gap-2">
               {TOPUP_PRESETS_SAR.map((preset) => {
@@ -387,60 +558,275 @@ function TopupSheet({
                 );
               })}
             </View>
-            <Text className="mt-6 text-xs text-slate-500 uppercase tracking-wider">
+            <Text className="mt-6 text-xs text-slate-500 uppercase tracking-wider" style={{ textAlign }}>
               {isArabic ? 'مبلغ مخصص' : 'Custom amount'}
             </Text>
-            <View className="mt-2 flex-row items-center border border-slate-200 rounded-2xl px-4 py-3">
+            <View
+              className="mt-2 items-center border border-slate-200 rounded-2xl px-4 py-3"
+              style={{ flexDirection: rowDirection }}
+            >
               <TextInput
                 value={amountText}
                 onChangeText={setAmountText}
                 keyboardType="numeric"
                 inputMode="decimal"
                 className="flex-1 text-slate-900 text-lg font-semibold"
+                style={{ textAlign }}
                 placeholder="100"
               />
-              <Text className="ml-2 text-slate-500">{isArabic ? 'ر.س' : 'SAR'}</Text>
+              <Text
+                className="text-slate-500"
+                style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}
+              >
+                {isArabic ? 'ر.س' : 'SAR'}
+              </Text>
             </View>
             <TouchableOpacity
-              onPress={startPayment}
-              disabled={!amountValid || submitting}
+              onPress={goToPaymentStage}
+              disabled={!amountValid}
               className="mt-8 rounded-[28px] py-4 items-center"
               style={{ backgroundColor: amountValid ? primaryColor : '#cbd5e1' }}
             >
-              {submitting ? <ActivityIndicator color="#fff" /> : (
-                <Text className="text-white font-bold text-lg">{isArabic ? 'متابعة' : 'Continue'}</Text>
-              )}
+              <Text className="text-white font-bold text-lg">
+                {isArabic ? 'متابعة' : 'Continue'}
+              </Text>
             </TouchableOpacity>
           </ScrollView>
         ) : (
           <ScrollView className="flex-1 px-5 py-6" keyboardShouldPersistTaps="handled">
-            {paymentSessionId && (
-              <CreditCardPayment
-                amount={Math.round(amountNum * 100)}
-                paymentConfig={
-                  new PaymentConfig({
-                    publishableApiKey: MOYASAR_PUBLISHABLE_KEY,
-                    amount: Math.round(amountNum * 100),
-                    description: `Wallet top-up — ${amountNum} SAR`,
-                    metadata: { type: 'wallet_topup' },
-                    creditCard: new CreditCardConfig({ saveCard: false, manual: false }),
-                  })
-                }
-                baseUrl={MOYASAR_BASE_URL}
-                onPaymentResult={(result) => {
-                  if (isMoyasarError(result)) {
-                    Alert.alert(
-                      isArabic ? 'الدفع فشل' : 'Payment failed',
-                      (result as any)?.message ?? '',
-                    );
-                    return;
-                  }
-                  void handleResult(result as PaymentResponse);
-                }}
+            <Text className="text-sm text-slate-500" style={{ textAlign }}>
+              {isArabic ? 'المبلغ' : 'Amount'}
+            </Text>
+            <View
+              className="mt-1 items-center"
+              style={{ flexDirection: rowDirection }}
+            >
+              <PriceWithSymbol
+                amount={amountNum}
+                iconSize={22}
+                iconColor="#0f172a"
+                textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }}
               />
+              <TouchableOpacity
+                onPress={() => setStage('pick')}
+                className="rounded-full px-3 py-1 bg-slate-100"
+                style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0 }}
+              >
+                <Text className="text-slate-700 text-xs font-semibold">
+                  {isArabic ? 'تعديل' : 'Edit'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text
+              className="mt-6 text-xs text-slate-500 uppercase tracking-wider"
+              style={{ textAlign }}
+            >
+              {isArabic ? 'اختر طريقة الدفع' : 'Choose payment method'}
+            </Text>
+
+            {/* Apple Pay row */}
+            {resolvedApplePayEnabled && (
+              <TouchableOpacity
+                onPress={() => setChoice({ kind: 'apple_pay' })}
+                className="mt-3 items-center rounded-2xl border p-4"
+                style={{
+                  flexDirection: rowDirection,
+                  borderColor: choice?.kind === 'apple_pay' ? primaryColor : '#e2e8f0',
+                  backgroundColor: choice?.kind === 'apple_pay' ? `${primaryColor}08` : '#fff',
+                }}
+              >
+                <View className="w-12 h-8 bg-black rounded items-center justify-center">
+                  <Text className="text-white font-bold text-xs">{'\uF8FF'} Pay</Text>
+                </View>
+                <Text
+                  className="font-bold text-slate-900"
+                  style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0, flex: 1, textAlign }}
+                >
+                  {'\uF8FF'} Apple Pay
+                </Text>
+                {choice?.kind === 'apple_pay' && (
+                  <View
+                    className="w-5 h-5 rounded-full items-center justify-center"
+                    style={{ backgroundColor: primaryColor }}
+                  >
+                    <Text className="text-white text-xs font-bold">✓</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
             )}
+
+            {/* Saved cards */}
+            {cardsLoading ? (
+              <View className="mt-3"><ActivityIndicator color={primaryColor} /></View>
+            ) : savedCards.length === 0 ? (
+              <View
+                className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 items-center"
+                style={{ flexDirection: rowDirection }}
+              >
+                <CreditCard size={20} color="#94a3b8" />
+                <Text
+                  className="text-slate-500 text-sm flex-1"
+                  style={{ marginLeft: isArabic ? 0 : 10, marginRight: isArabic ? 10 : 0, textAlign }}
+                >
+                  {isArabic
+                    ? 'لا توجد بطاقات محفوظة. أضف بطاقة لاستخدامها هنا.'
+                    : 'No saved cards yet. Add one to use it for top-ups.'}
+                </Text>
+              </View>
+            ) : (
+              savedCards.map((card) => {
+                const selected = choice?.kind === 'saved_card' && choice.cardId === card.id;
+                return (
+                  <TouchableOpacity
+                    key={card.id}
+                    onPress={() => setChoice({ kind: 'saved_card', cardId: card.id })}
+                    className="mt-3 items-center rounded-2xl border p-4"
+                    style={{
+                      flexDirection: rowDirection,
+                      borderColor: selected ? primaryColor : '#e2e8f0',
+                      backgroundColor: selected ? `${primaryColor}08` : '#fff',
+                    }}
+                  >
+                    <View
+                      className="bg-slate-100 p-2.5 rounded-xl"
+                      style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}
+                    >
+                      <CreditCard size={18} color={primaryColor} />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="font-bold text-slate-800" style={{ textAlign }}>
+                        {(card.brand || 'Card').toUpperCase()} •••• {card.last_four || '****'}
+                      </Text>
+                      {card.name ? (
+                        <Text className="text-slate-400 text-xs" style={{ textAlign }}>
+                          {card.name}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {selected && (
+                      <View
+                        className="w-5 h-5 rounded-full items-center justify-center"
+                        style={{ backgroundColor: primaryColor }}
+                      >
+                        <Text className="text-white text-xs font-bold">✓</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })
+            )}
+
+            {/* Add new card row — opens our custom add-card modal so the
+                customer never sees the Moyasar SDK form. After save,
+                the focus effect refreshes the list. */}
+            <TouchableOpacity
+              onPress={() => router.push('/add-card-modal')}
+              className="mt-3 items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 p-3"
+              style={{ flexDirection: rowDirection }}
+            >
+              <Plus size={18} color={primaryColor} />
+              <Text
+                className="font-bold"
+                style={{
+                  color: primaryColor,
+                  marginLeft: isArabic ? 0 : 8,
+                  marginRight: isArabic ? 8 : 0,
+                }}
+              >
+                {isArabic ? 'إضافة بطاقة جديدة' : 'Add a new card'}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Pay button — for Apple Pay we render the SDK button
+                inline (it triggers the native sheet). For saved cards
+                we render our own primary CTA that calls the server. */}
+            <View className="mt-8">
+              {choice?.kind === 'apple_pay' && applePayConfig ? (
+                <ApplePayButton
+                  paymentConfig={applePayConfig}
+                  onPaymentResult={(r: any) => { void onApplePayResult(r); }}
+                />
+              ) : (
+                <TouchableOpacity
+                  onPress={paySavedCard}
+                  disabled={
+                    submitting ||
+                    !amountValid ||
+                    !choice ||
+                    choice.kind !== 'saved_card'
+                  }
+                  className="rounded-[28px] py-4 items-center"
+                  style={{
+                    backgroundColor:
+                      submitting || !choice || choice.kind !== 'saved_card'
+                        ? '#cbd5e1'
+                        : primaryColor,
+                  }}
+                  activeOpacity={0.9}
+                >
+                  {submitting ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text className="text-white font-bold text-lg">
+                      {isArabic ? 'ادفع' : 'Pay'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <Text className="mt-4 text-xs text-slate-400 text-center">
+              {isArabic
+                ? 'الدفع يتم عبر Moyasar — بياناتك محمية بمعيار PCI DSS.'
+                : 'Payment goes through Moyasar — your card data is held under PCI DSS.'}
+            </Text>
           </ScrollView>
         )}
+
+        {/* 3DS WebView for saved-card top-ups when the issuer demands it */}
+        <Modal
+          visible={!!verifyUrl}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => {
+            if (!submitting) {
+              setVerifyUrl(null);
+              setPendingPaymentId(null);
+            }
+          }}
+        >
+          <SafeAreaView className="flex-1 bg-white">
+            <View
+              className="items-center justify-between px-5 py-4 border-b border-slate-100"
+              style={{ flexDirection: rowDirection }}
+            >
+              <Text className="text-lg font-bold text-slate-800">
+                {isArabic ? 'تحقق البطاقة' : 'Card Verification'}
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setVerifyUrl(null);
+                  setPendingPaymentId(null);
+                }}
+                className="p-2"
+              >
+                <X size={22} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+            {verifyUrl ? (
+              <WebView
+                source={{ uri: verifyUrl }}
+                style={{ flex: 1 }}
+                onShouldStartLoadWithRequest={(request) => {
+                  onVerifyNavigationChange((request as any).url ?? '');
+                  return true;
+                }}
+                onNavigationStateChange={(state) => onVerifyNavigationChange(state?.url ?? '')}
+              />
+            ) : null}
+          </SafeAreaView>
+        </Modal>
       </SafeAreaView>
     </Modal>
   );
