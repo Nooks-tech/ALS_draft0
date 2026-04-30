@@ -148,9 +148,13 @@ jobs:
           echo "EXPO_PUBLIC_ANDROID_PACKAGE=${{ github.event.inputs.android_package_id }}" >> .env
 
       - name: Publish OTA update
+        # `eas update` rejects --branch and --channel together. Each
+        # merchant's binary is built with `channel: <merchant_id>`
+        # (see nooks-build.yml + eas.json), so passing --channel here
+        # publishes onto the branch already linked to that channel,
+        # which is exactly what we want for a per-merchant OTA push.
         run: |
           eas update \
-            --branch master \
             --channel "${{ github.event.inputs.merchant_id }}" \
             --message "${{ github.event.inputs.message }}" \
             --non-interactive
