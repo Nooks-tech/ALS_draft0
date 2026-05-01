@@ -228,16 +228,18 @@ jobs:
               })().catch(e => { console.error(e); process.exit(1); });
             "
           fi
-          echo "Generating splash icon (matches home-screen icon, transparent canvas)..."
-          # Splash now mirrors the home-screen icon directly: same
-          # composited icon (with merchant icon-bg already baked in by
-          # the step above), centered on a transparent canvas. The
-          # native splash-screen layer fills the surrounding pixels
-          # with `expo.plugins.expo-splash-screen.backgroundColor`,
-          # which we patch in a later step to the merchant's chosen
-          # background color. No more fixed dark-green frame, no more
-          # decorative tile + dots that pretended to be a loader.
-          APP_ICON_FILE_PATH="$APP_ICON_FILE" SPLASH_IMAGE_PATH="$SPLASH_IMAGE_FILE" node <<'EOF'
+          echo "Generating splash icon from RAW merchant icon (no app-icon-bg tile baked in)..."
+          # CRITICAL: source the splash from RAW_ICON_FILE (the
+          # untouched merchant icon with transparent background)
+          # NOT from APP_ICON_FILE (which has the merchant's
+          # app-icon-bg color flattened underneath — that's the
+          # 'green square' the customer keeps screenshotting).
+          # The native splash plugin fills the area around the icon
+          # with expo-splash-screen.backgroundColor, so the icon
+          # MUST come in transparent or the merchant-bg fill is
+          # masked by the icon-bg tile and we get a square inside
+          # the splash regardless of merchant settings.
+          APP_ICON_FILE_PATH="$RAW_ICON_FILE" SPLASH_IMAGE_PATH="$SPLASH_IMAGE_FILE" node <<'EOF'
           const sharp = require('sharp');
           const iconPath = process.env.APP_ICON_FILE_PATH;
           const outPath = process.env.SPLASH_IMAGE_PATH;
