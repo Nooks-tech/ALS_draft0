@@ -29,7 +29,8 @@ import Constants from 'expo-constants';
 import { useProfile } from '../../src/context/ProfileContext';
 import { useCallback, useEffect, useState } from 'react';
 import { walletApi } from '../../src/api/wallet';
-import { ActivityIndicator, Alert, Image, Linking, Modal, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { LanguageTransitionSplash } from '../../src/components/splash/LanguageTransitionSplash';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { API_URL } from '../../src/api/config';
@@ -298,12 +299,12 @@ export default function MoreScreen() {
       // so the user sees a deliberate transition rather than a
       // half-flipped UI.
       setLanguageSwitching(true);
-      // Hold the splash on screen for ~600 ms before triggering the
-      // bundle reload so the customer sees a deliberate transition
-      // instead of a flicker. Without this delay, the modal renders
-      // for one frame and is immediately torn down by reloadAsync,
-      // which the eye reads as a stutter rather than a screen change.
-      await new Promise((r) => setTimeout(r, 600));
+      // Hold the splash on screen for ~1500 ms before triggering the
+      // bundle reload so the customer sees the dot pulse cycle once
+      // and registers it as a deliberate splash transition instead
+      // of a stutter. Less than ~1200ms and the dots barely complete
+      // one frame of the loop before reloadAsync detonates the JS.
+      await new Promise((r) => setTimeout(r, 1500));
       try {
         await Updates.reloadAsync();
       } catch {
@@ -465,32 +466,11 @@ export default function MoreScreen() {
         <Text className="text-center text-xs mb-8" style={{ color: textColor }}>{copy.version}</Text>
       </ScrollView>
 
-      {/* Language-switch splash. Renders the merchant's icon on the
-          merchant's background color so the gap between toggling the
-          language and the JS bundle finishing its reload looks
-          intentional, not like a freeze. */}
-      <Modal visible={languageSwitching} animationType="fade" transparent={false} statusBarTranslucent>
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: backgroundColor || '#0d9488',
-            alignItems: 'center',
-            justifyContent: 'center' }}
-        >
-          {(appIconUrl || logoUrl) ? (
-            <Image
-              source={{ uri: appIconUrl || (logoUrl as string) }}
-              style={{ width: 96, height: 96, borderRadius: 22 }}
-              resizeMode="contain"
-            />
-          ) : null}
-          <ActivityIndicator
-            color={primaryColor || '#ffffff'}
-            size="small"
-            style={{ marginTop: 28 }}
-          />
-        </View>
-      </Modal>
+      {/* Branded splash mid-language-toggle. Same visual identity
+          as the cold-start BrandedSplashOverlay (icon-on-tile +
+          three pulsing dots) so the transition feels like a
+          deliberate splash, not a flicker. */}
+      <LanguageTransitionSplash visible={languageSwitching} />
     </SafeAreaView>
   );
 }
