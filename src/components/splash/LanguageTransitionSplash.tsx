@@ -46,17 +46,16 @@ export function LanguageTransitionSplash({ visible }: Props) {
     <Modal visible={visible} animationType="none" transparent statusBarTranslucent>
       <View style={[StyleSheet.absoluteFillObject, { backgroundColor: splashBg, alignItems: 'center', justifyContent: 'center' }]}>
         {splashLogoUri ? (
-          <View style={styles.logoStage}>
-            <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
-            <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
-              <MerchantLogoImage
-                uri={splashLogoUri}
-                sizeDp={94}
-                scaleFactor={tileLogoScale}
-                accessibilityLabel="Logo"
-              />
-            </View>
-          </View>
+          // No tile / glow — the merchant icon paints directly on
+          // the merchant background. Matches BrandedSplashOverlay
+          // so the cold-start splash and the language-switch splash
+          // are visually identical.
+          <MerchantLogoImage
+            uri={splashLogoUri}
+            sizeDp={140}
+            scaleFactor={tileLogoScale}
+            accessibilityLabel="Logo"
+          />
         ) : (
           <Text style={{ color: fg, fontSize: 26, fontWeight: '700', textAlign: 'center', paddingHorizontal: 32 }}>
             {appName?.trim() || cafeName?.trim() || ''}

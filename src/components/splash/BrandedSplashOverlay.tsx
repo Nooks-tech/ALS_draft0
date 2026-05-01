@@ -119,17 +119,15 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
           alignItems: 'center' }}
       >
         {splashLogoUri ? (
-          <View style={styles.logoStage}>
-            <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
-            <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
-              <MerchantLogoImage
-                uri={splashLogoUri}
-                sizeDp={94}
-                scaleFactor={tileLogoScale}
-                accessibilityLabel="Logo"
-              />
-            </View>
-          </View>
+          // Icon renders directly on the merchant's background — no
+          // tinted tile, no glow ring. The customer asked for the
+          // 'hardcoded green square' to go away; this is that change.
+          <MerchantLogoImage
+            uri={splashLogoUri}
+            sizeDp={140}
+            scaleFactor={tileLogoScale}
+            accessibilityLabel="Logo"
+          />
         ) : (
           <Text style={{ color: fg, fontSize: 26, fontWeight: '700', textAlign: 'center', paddingHorizontal: 32 }}>
             {appName?.trim() || cafeName?.trim() || ''}
