@@ -142,7 +142,7 @@ export function OrderStatusStepper({
                 />
               )}
             </View>
-            <View className="ml-3 flex-1 mb-1">
+            <View className="ms-3 flex-1 mb-1">
               <Text
                 className={`font-bold ${
                   isCurrent ? 'text-slate-900' : isCompleted ? 'text-slate-600' : 'text-slate-400'

@@ -109,7 +109,7 @@ export default function OrderTypeScreen() {
                       className="p-4 mb-2 rounded-2xl border bg-slate-50 border-slate-100"
                     >
                       <View className="flex-row items-center">
-                        <View className="p-2 rounded-xl mr-3 bg-slate-200">
+                        <View className="p-2 rounded-xl me-3 bg-slate-200">
                           <MapPin size={18} color="#64748b" />
                         </View>
                         <View className="flex-1">
@@ -164,7 +164,7 @@ export default function OrderTypeScreen() {
             className="flex-row items-center justify-center p-4 mt-2 border-2 border-dashed border-slate-200 rounded-2xl"
           >
             <Plus size={20} color={primaryColor} />
-            <Text className="font-bold ml-2" style={{ color: primaryColor }}>{isArabic ? 'إضافة موقع جديد' : 'Add new location'}</Text>
+            <Text className="font-bold ms-2" style={{ color: primaryColor }}>{isArabic ? 'إضافة موقع جديد' : 'Add new location'}</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -193,7 +193,7 @@ export default function OrderTypeScreen() {
                 className={`flex-row items-center p-5 rounded-[28px] mb-4 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'bg-slate-100 opacity-60' : 'bg-slate-50'}`}
               >
                 <View className="p-4 rounded-2xl" style={{ backgroundColor: `${primaryColor}20` }}><Bike size={28} color={primaryColor} /></View>
-                <View className="ml-4 flex-1">
+                <View className="ms-4 flex-1">
                   <Text className="text-lg font-bold text-slate-800">{isArabic ? 'التوصيل' : 'Delivery'}</Text>
                   <Text className="text-slate-500 text-xs">{isArabic ? 'حتى باب منزلك' : 'Direct to your doorstep'}</Text>
                 </View>
@@ -205,7 +205,7 @@ export default function OrderTypeScreen() {
               className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
             >
               <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
-              <View className="ml-4 flex-1">
+              <View className="ms-4 flex-1">
                 <Text className="text-lg font-bold text-slate-800">{isArabic ? 'الاستلام من الفرع' : 'In-Store Pickup'}</Text>
                 <Text className="text-slate-500 text-xs">{isArabic ? 'تجاوز الانتظار واستلمه طازجاً' : 'Skip the line & grab it fresh'}</Text>
               </View>

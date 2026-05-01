@@ -17,7 +17,7 @@ export function StoreStatusBanner() {
     return (
       <View className="mx-4 mt-3 mb-1 p-4 rounded-2xl bg-red-50 border border-red-100 flex-row items-center">
         <XCircle size={22} color="#dc2626" />
-        <View className="ml-3 flex-1">
+        <View className="ms-3 flex-1">
           <Text className="font-bold text-red-700">{isArabic ? 'المتجر مغلق حالياً' : 'Store is currently closed'}</Text>
           <Text className="text-red-500 text-xs mt-0.5">{isArabic ? 'الطلب غير متاح حالياً. يرجى المحاولة لاحقاً.' : 'Ordering is unavailable right now. Please check back later.'}</Text>
         </View>
@@ -37,7 +37,7 @@ export function StoreStatusBanner() {
       <View className="mx-4 mt-3 mb-1 p-4 rounded-2xl bg-amber-50 border border-amber-100">
         <View className="flex-row items-center">
         <Clock size={22} color="#d97706" />
-        <View className="ml-3 flex-1">
+        <View className="ms-3 flex-1">
           <Text className="font-bold text-amber-700">{isArabic ? 'المتجر مشغول حالياً' : 'Store is busy'}</Text>
             <Text className="text-amber-900 text-base font-extrabold mt-1">
               {isArabic ? `المتبقي ${busyTimer}` : `${busyTimer} remaining`}

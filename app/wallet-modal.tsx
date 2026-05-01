@@ -168,7 +168,7 @@ export default function WalletModal() {
               className="flex-1 bg-white/15 rounded-2xl py-3 px-4 flex-row items-center justify-center"
             >
               <Plus size={18} color="#fff" />
-              <Text className="text-white font-bold ml-2">{isArabic ? 'إضافة رصيد' : 'Add money'}</Text>
+              <Text className="text-white font-bold ms-2">{isArabic ? 'إضافة رصيد' : 'Add money'}</Text>
             </TouchableOpacity>
           </View>
         </View>

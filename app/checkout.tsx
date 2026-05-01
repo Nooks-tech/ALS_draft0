@@ -1376,7 +1376,7 @@ export default function CheckoutScreen() {
               <View style={{ marginTop: 2 }}>
                 <X size={20} color="#d97706" />
               </View>
-              <View className="ml-3 flex-1">
+              <View className="ms-3 flex-1">
                 <Text style={{ color: '#92400e', fontWeight: '700', fontSize: 14 }}>
                   {isArabic
                     ? `${selectedBranch?.name ?? 'هذا الفرع'} لا يوفر خدمة التوصيل`
@@ -1411,7 +1411,7 @@ export default function CheckoutScreen() {
                   <Clock size={20} color="#d97706" />
                 )}
               </View>
-              <View className="ml-3 flex-1">
+              <View className="ms-3 flex-1">
                 <Text
                   style={{
                     color: isClosed ? '#991b1b' : '#92400e',
@@ -1450,7 +1450,7 @@ export default function CheckoutScreen() {
               <View className="w-11 h-11 rounded-2xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
                 <MapPin size={20} color={primaryColor} />
               </View>
-              <View className="flex-1 ml-3">
+              <View className="flex-1 ms-3">
                 <Text className="text-slate-500 text-xs font-bold uppercase tracking-widest">{orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivery to') : (isArabic ? 'الاستلام من' : 'Pickup from')}</Text>
                 <Text className="text-slate-900 font-bold text-base" numberOfLines={1}>
                   {orderType === 'delivery' ? deliveryAddress?.address || '—' : selectedBranch?.name || '—'}
@@ -1462,7 +1462,7 @@ export default function CheckoutScreen() {
               <View className="w-11 h-11 rounded-2xl items-center justify-center bg-white border border-slate-200">
                 <Clock size={20} color="#64748b" />
               </View>
-              <View className="flex-1 ml-3">
+              <View className="flex-1 ms-3">
                 <Text className="text-slate-500 text-xs font-bold uppercase tracking-widest">{isArabic ? 'الوقت المتوقع' : 'Expected time'}</Text>
                 <Text className="text-slate-900 font-bold text-base">{isArabic ? 'حوالي 30 دقيقة' : '~ 30 minutes'}</Text>
               </View>
@@ -1475,7 +1475,7 @@ export default function CheckoutScreen() {
               <View className="w-11 h-11 rounded-2xl items-center justify-center bg-white border border-slate-200">
                 <Pencil size={20} color="#64748b" />
               </View>
-              <View className="flex-1 ml-3">
+              <View className="flex-1 ms-3">
                 <Text className="text-slate-900 font-bold">{orderNote || (isArabic ? 'اكتب ملاحظة' : 'Write a note')}</Text>
                 <Text className="text-slate-400 text-xs mt-0.5">
                   {isArabic ? 'أضف تعليمات للطلب إن لزم' : 'Add instructions for your order if needed'}
@@ -1490,7 +1490,7 @@ export default function CheckoutScreen() {
             <View className="mt-4 bg-slate-50 rounded-[28px] border border-slate-100 p-4">
               <View className="flex-row items-center mb-3">
                 <Car size={20} color={primaryColor} />
-                <Text className="font-bold text-slate-900 ml-2">{isArabic ? 'تفاصيل السيارة' : 'Car Details'}</Text>
+                <Text className="font-bold text-slate-900 ms-2">{isArabic ? 'تفاصيل السيارة' : 'Car Details'}</Text>
               </View>
               <TextInput
                 className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm mb-2"
@@ -1523,7 +1523,7 @@ export default function CheckoutScreen() {
                   placeholder={isArabic ? 'أدخل كود الخصم' : 'Enter promo code'}
                   value={couponInput}
                   onChangeText={setCouponInput}
-                  className="flex-1 text-slate-900 font-medium ml-3"
+                  className="flex-1 text-slate-900 font-medium ms-3"
                   autoCapitalize="characters"
                 />
                 </View>
@@ -1531,7 +1531,7 @@ export default function CheckoutScreen() {
                   <TouchableOpacity
                     onPress={applyCoupon}
                     disabled={promoValidating}
-                    className="flex-1 items-center py-3 rounded-2xl mr-3 disabled:opacity-60"
+                    className="flex-1 items-center py-3 rounded-2xl me-3 disabled:opacity-60"
                     style={{ backgroundColor: primaryColor }}
                   >
                     {promoValidating ? (
@@ -1555,7 +1555,7 @@ export default function CheckoutScreen() {
                   <View className="w-11 h-11 rounded-2xl items-center justify-center bg-white">
                     <Percent size={20} color={primaryColor} />
                   </View>
-                  <View className="ml-3">
+                  <View className="ms-3">
                     <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? `تم تطبيق ${promoCode}` : `${promoCode} applied`}</Text>
                     <Text className="text-slate-400 text-xs">{isArabic ? 'اضغط لإزالة الكود' : 'Tap to remove code'}</Text>
                   </View>
@@ -1568,7 +1568,7 @@ export default function CheckoutScreen() {
                 className="border-2 border-dashed border-slate-200 rounded-[28px] p-5 flex-row items-center justify-center bg-slate-50"
               >
                 <Percent size={18} color="#94a3b8" />
-                <Text className="text-slate-500 font-medium ml-2">{isArabic ? 'إضافة كود خصم أو كوبون' : 'Add promo code or coupon'}</Text>
+                <Text className="text-slate-500 font-medium ms-2">{isArabic ? 'إضافة كود خصم أو كوبون' : 'Add promo code or coupon'}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -1594,7 +1594,7 @@ export default function CheckoutScreen() {
                 >
                   <Star size={18} color={usePoints ? '#fff' : '#94a3b8'} fill={usePoints ? '#fff' : 'none'} />
                 </View>
-                <View className="ml-3 flex-1">
+                <View className="ms-3 flex-1">
                   <Text className="font-bold text-slate-900">
                     {loyaltyType === 'cashback'
                       ? (isArabic ? `استخدم ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} ر.س كاش باك` : `Use ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} SAR cashback`)
@@ -1654,7 +1654,7 @@ export default function CheckoutScreen() {
                 >
                   <Wallet size={18} color={useWallet ? '#fff' : '#94a3b8'} />
                 </View>
-                <View className="ml-3 flex-1">
+                <View className="ms-3 flex-1">
                   <Text className="font-bold text-slate-900" style={{ }}>
                     {isArabic
                       ? `استخدم ${walletBalanceSar.toFixed(2)} ر.س من المحفظة`
@@ -1699,7 +1699,7 @@ export default function CheckoutScreen() {
                 <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
                   <Star size={18} color="#94a3b8" fill="#94a3b8" />
                 </View>
-                <View className="ml-3 flex-1">
+                <View className="ms-3 flex-1">
                   <Text className="font-bold text-slate-900">
                     {isArabic ? 'مكافآت الختم المتاحة' : 'Available stamp rewards'}
                   </Text>
@@ -1723,7 +1723,7 @@ export default function CheckoutScreen() {
                       backgroundColor: selected ? `${primaryColor}10` : '#fff' }}
                     activeOpacity={0.7}
                   >
-                    <View className="flex-1 pr-3">
+                    <View className="flex-1 pe-3">
                       <Text className="font-semibold text-slate-900">
                         {milestone.reward_name || (isArabic ? 'مكافأة' : 'Reward')}
                       </Text>
@@ -1853,7 +1853,7 @@ export default function CheckoutScreen() {
                   <Text className="text-slate-600 font-bold text-xs">••••</Text>
                 </View>
               )}
-              <Text className="flex-1 ml-3 font-bold text-slate-900">{paymentLabel}</Text>
+              <Text className="flex-1 ms-3 font-bold text-slate-900">{paymentLabel}</Text>
               <ChevronRight size={20} color="#94a3b8" />
             </TouchableOpacity>
           </View>
@@ -1911,12 +1911,12 @@ export default function CheckoutScreen() {
               ) : paymentMethod === 'stcpay' ? (
                 <View className="flex-row items-center">
                   <Smartphone size={18} color="white" />
-                  <Text className="text-white font-bold text-base ml-2">{isArabic ? 'الدفع عبر STC Pay' : 'Pay with STC Pay'}</Text>
+                  <Text className="text-white font-bold text-base ms-2">{isArabic ? 'الدفع عبر STC Pay' : 'Pay with STC Pay'}</Text>
                 </View>
               ) : walletCoversAll ? (
                 <View className="flex-row items-center">
                   <Wallet size={18} color="white" />
-                  <Text className="text-white font-bold text-base ml-2">
+                  <Text className="text-white font-bold text-base ms-2">
                     {isArabic ? 'إتمام الطلب من المحفظة' : 'Complete with wallet'}
                   </Text>
                 </View>
@@ -1974,7 +1974,7 @@ export default function CheckoutScreen() {
             <View className="flex-row mt-4">
               <TouchableOpacity
                 onPress={() => setShowNoteModal(false)}
-                className="flex-1 py-3 rounded-2xl bg-slate-100 items-center mr-3"
+                className="flex-1 py-3 rounded-2xl bg-slate-100 items-center me-3"
               >
                 <Text className="font-bold text-slate-600">{isArabic ? 'إلغاء' : 'Cancel'}</Text>
               </TouchableOpacity>
@@ -2018,7 +2018,7 @@ export default function CheckoutScreen() {
                     <View className="bg-slate-100 p-3 rounded-xl">
                       <CreditCard size={20} color="#64748b" />
                     </View>
-                    <View className="flex-1 ml-3">
+                    <View className="flex-1 ms-3">
                       <Text className="font-bold text-slate-800">
                         {(card.brand || 'Card').toUpperCase()} •••• {card.last_four || '****'}
                       </Text>
@@ -2044,7 +2044,7 @@ export default function CheckoutScreen() {
                   className="flex-row items-center justify-center p-3 mb-4 border-2 border-dashed border-slate-200 rounded-2xl"
                 >
                   <Plus size={18} color={primaryColor} />
-                  <Text className="font-bold ml-2" style={{ color: primaryColor }}>
+                  <Text className="font-bold ms-2" style={{ color: primaryColor }}>
                     {isArabic ? 'إضافة بطاقة جديدة' : 'Add new card'}
                   </Text>
                 </TouchableOpacity>
@@ -2059,7 +2059,7 @@ export default function CheckoutScreen() {
                 <View className="w-12 h-8 bg-black rounded items-center justify-center">
                   <Text className="text-white font-bold text-xs">{'\uF8FF'} Pay</Text>
                 </View>
-                <Text className="ml-3 font-bold text-slate-900">{'\uF8FF'} Apple Pay</Text>
+                <Text className="ms-3 font-bold text-slate-900">{'\uF8FF'} Apple Pay</Text>
               </TouchableOpacity>
             )}
             {Platform.OS === 'android' && SAMSUNG_PAY_ENABLED && (
@@ -2070,7 +2070,7 @@ export default function CheckoutScreen() {
                 <View className="w-12 h-8 bg-blue-900 rounded items-center justify-center">
                   <Text className="text-white font-bold text-xs">S Pay</Text>
                 </View>
-                <Text className="ml-3 font-bold text-slate-900">Samsung Pay</Text>
+                <Text className="ms-3 font-bold text-slate-900">Samsung Pay</Text>
               </TouchableOpacity>
             )}
             {/* Wallet is no longer a payment method — it's a redeemable
@@ -2090,7 +2090,7 @@ export default function CheckoutScreen() {
                 <View className="w-12 h-10 rounded-xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
                   <CreditCard size={20} color={primaryColor} />
                 </View>
-                <View className="ml-3 flex-1">
+                <View className="ms-3 flex-1">
                   <Text className="font-bold text-slate-900">{isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card'}</Text>
                   <Text className="text-slate-400 text-sm">
                     {isArabic ? 'أضف بطاقتك واحفظها للاستخدام السريع' : 'Add and save your card for quick checkout'}
@@ -2193,7 +2193,7 @@ export default function CheckoutScreen() {
                 <View className="w-10 h-10 rounded-2xl items-center justify-center" style={{ backgroundColor: '#4F3B8E' }}>
                   <Smartphone size={20} color="#fff" />
                 </View>
-                <Text className="ml-3 text-lg font-bold text-slate-900">STC Pay</Text>
+                <Text className="ms-3 text-lg font-bold text-slate-900">STC Pay</Text>
               </View>
               <TouchableOpacity
                 onPress={() => {
@@ -2215,7 +2215,7 @@ export default function CheckoutScreen() {
                   {isArabic ? 'أدخل رقم الجوال المسجل في STC Pay' : 'Enter your STC Pay registered mobile number'}
                 </Text>
                 <View className="flex-row items-center bg-slate-50 rounded-2xl border border-slate-200 px-4 py-3 mb-4">
-                  <Text className="text-slate-400 font-bold mr-2">+966</Text>
+                  <Text className="text-slate-400 font-bold me-2">+966</Text>
                   <TextInput
                     value={stcPayMobile}
                     onChangeText={(text) => setStcPayMobile(text.replace(/[^0-9]/g, '').slice(0, 10))}

@@ -42,7 +42,7 @@ export const OfferCard = ({ title, description, code, image, expiry }: OfferProp
       )}
 
       <View className="p-4 flex-row justify-between items-center">
-        <View className="flex-1 pr-4">
+        <View className="flex-1 pe-4">
           <Text className="leading-5" style={{ color: textColor }}>{description}</Text>
         </View>
 
@@ -51,7 +51,7 @@ export const OfferCard = ({ title, description, code, image, expiry }: OfferProp
           className="px-4 py-2 rounded-lg border border-dashed flex-row items-center"
           style={{ backgroundColor: `${primaryColor}10`, borderColor: `${primaryColor}40` }}
         >
-          <Text className="font-bold mr-2 tracking-wider" style={{ color: primaryColor }}>{code}</Text>
+          <Text className="font-bold me-2 tracking-wider" style={{ color: primaryColor }}>{code}</Text>
           <Copy size={16} color={primaryColor} />
         </TouchableOpacity>
       </View>

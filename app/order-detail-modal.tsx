@@ -390,7 +390,7 @@ export default function OrderDetailModal() {
           {order.status === 'Cancelled' && order.cancellationReason && (
             <View className="mb-4 p-4 bg-red-50 rounded-xl flex-row items-start">
               <AlertTriangle size={18} color="#EF4444" style={{ marginTop: 2 }} />
-              <View className="flex-1 ml-3">
+              <View className="flex-1 ms-3">
                 <Text className="font-bold text-red-700 text-sm">
                   {order.cancelledBy === 'merchant' ? (isArabic ? 'تم إلغاء الطلب من المتجر' : 'Cancelled by store') : order.cancelledBy === 'system' ? (isArabic ? 'تم إلغاء الطلب من النظام' : 'Cancelled by system') : (isArabic ? 'لقد قمت بإلغاء هذا الطلب' : 'You cancelled this order')}
                 </Text>
@@ -416,7 +416,7 @@ export default function OrderDetailModal() {
           {order.orderType === 'delivery' && order.otoDispatchStatus === 'failed' && (
             <View className="mb-4 p-4 bg-amber-50 rounded-xl flex-row items-start">
               <AlertTriangle size={18} color="#D97706" style={{ marginTop: 2 }} />
-              <View className="flex-1 ml-3">
+              <View className="flex-1 ms-3">
                 <Text className="font-bold text-amber-700 text-sm">{isArabic ? 'إرسال التوصيل قيد الانتظار' : 'Delivery dispatch pending'}</Text>
                 <Text className="text-amber-700 text-sm mt-1">
                   {isArabic ? 'تعذر إرسال هذا الطلب إلى مزود التوصيل حتى الآن. المتجر لديه طلبك ويمكنه إعادة محاولة الإرسال.' : 'We could not send this order to the delivery provider yet. The store has your order and can retry dispatch.'}
@@ -432,7 +432,7 @@ export default function OrderDetailModal() {
           {existingComplaint && (
             <View className="mb-4 p-4 bg-slate-50 rounded-xl flex-row items-start">
               <Flag size={18} color="#6366F1" style={{ marginTop: 2 }} />
-              <View className="flex-1 ml-3">
+              <View className="flex-1 ms-3">
                 <Text className="font-bold text-slate-700 text-sm">{isArabic ? 'تم تقديم شكوى' : 'Complaint Filed'}</Text>
                 <Text className="text-slate-600 text-sm mt-1 capitalize">{isArabic ? (COMPLAINT_TYPE_ARABIC[existingComplaint.complaint_type as keyof typeof COMPLAINT_TYPE_ARABIC] || existingComplaint.complaint_type) : existingComplaint.complaint_type.replace('_', ' ')}</Text>
                 {existingComplaint.status === 'refunded' && existingComplaint.approved_refund_amount && (
@@ -491,13 +491,13 @@ export default function OrderDetailModal() {
           {order.orderType === 'delivery' && order.deliveryAddress && (
             <View className="flex-row items-start mb-4 p-3 bg-slate-50 rounded-xl">
               <MapPin size={18} color={primaryColor} style={{ marginTop: 2 }} />
-              <Text className="flex-1 ml-2 text-slate-700">{order.deliveryAddress}</Text>
+              <Text className="flex-1 ms-2 text-slate-700">{order.deliveryAddress}</Text>
             </View>
           )}
           {order.orderType === 'pickup' && order.branchName && (
             <View className="flex-row items-start mb-4 p-3 bg-slate-50 rounded-xl">
               <Store size={18} color="#F59E0B" style={{ marginTop: 2 }} />
-              <Text className="flex-1 ml-2 text-slate-700">{order.branchName}</Text>
+              <Text className="flex-1 ms-2 text-slate-700">{order.branchName}</Text>
             </View>
           )}
 
@@ -544,7 +544,7 @@ export default function OrderDetailModal() {
           {order.driver_name && (order.status === 'Out for delivery' || order.status === 'Delivered') && (
             <View className="mx-0 mb-4 rounded-2xl border border-slate-100 bg-white p-4">
               <View className="flex-row items-center">
-                <View className="w-10 h-10 rounded-full bg-slate-100 items-center justify-center mr-3">
+                <View className="w-10 h-10 rounded-full bg-slate-100 items-center justify-center me-3">
                   <User size={20} color="#64748b" />
                 </View>
                 <View className="flex-1">
@@ -553,7 +553,7 @@ export default function OrderDetailModal() {
                     <TouchableOpacity onPress={() => Linking.openURL(`tel:${order.driver_phone}`)}>
                       <View className="flex-row items-center mt-0.5">
                         <Phone size={13} color={primaryColor} />
-                        <Text style={{ color: primaryColor }} className="text-sm ml-1">{order.driver_phone}</Text>
+                        <Text style={{ color: primaryColor }} className="text-sm ms-1">{order.driver_phone}</Text>
                       </View>
                     </TouchableOpacity>
                   ) : null}
@@ -584,7 +584,7 @@ export default function OrderDetailModal() {
           {order.items.map((item) => (
             <View key={item.uniqueId} className="flex-row items-center mb-3 p-3 bg-slate-50 rounded-xl">
               <Image source={{ uri: item.image }} className="w-12 h-12 rounded-lg bg-slate-200" />
-              <View className="flex-1 ml-3">
+              <View className="flex-1 ms-3">
                 <Text className="font-bold text-slate-800">{item.name}</Text>
                 <View className="flex-row flex-wrap items-center">
                   <Text className="text-slate-500 text-sm">{item.quantity} × </Text>

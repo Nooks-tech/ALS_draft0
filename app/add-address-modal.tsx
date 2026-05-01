@@ -347,7 +347,7 @@ export default function AddAddressModal() {
             <TouchableOpacity onPress={closeSearchScreen} className="p-2 rounded-full">
               <ArrowLeft size={22} color="#334155" />
             </TouchableOpacity>
-            <View className="flex-1 ml-2 rounded-2xl border bg-white flex-row items-center px-4 py-3" style={{ borderColor: primaryColor }}>
+            <View className="flex-1 ms-2 rounded-2xl border bg-white flex-row items-center px-4 py-3" style={{ borderColor: primaryColor }}>
               <Search size={20} color="#0f172a" />
               <TextInput
                 ref={searchInputRef}
@@ -356,7 +356,7 @@ export default function AddAddressModal() {
                 value={searchQuery}
                 onChangeText={setSearchQuery}
                 onFocus={() => setSearchFocused(true)}
-                className="flex-1 ml-3 text-slate-800 font-medium text-lg"
+                className="flex-1 ms-3 text-slate-800 font-medium text-lg"
                 returnKeyType="search"
                 onSubmitEditing={() => void performSearch(searchQuery)}
               />

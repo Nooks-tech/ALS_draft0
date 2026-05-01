@@ -52,7 +52,7 @@ export const ProductCard = ({ product, onAdd, index = 0 }: ProductCardProps) => 
           source={{ uri: product.image }} 
           className="w-24 h-24 rounded-2xl bg-gray-200"
         />
-        <View className="flex-1 ml-4 justify-center py-2">
+        <View className="flex-1 ms-4 justify-center py-2">
           <Text className="text-lg font-bold font-[Poppins-Bold]" style={{ color: textColor }}>{product.name}</Text>
           <Text className="text-xs mt-1 font-[Poppins-Regular]" style={{ color: textColor }} numberOfLines={2}>
             {product.description}

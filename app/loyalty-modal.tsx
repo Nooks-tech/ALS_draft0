@@ -146,7 +146,7 @@ export default function LoyaltyModal() {
             <View className="mx-5 mt-5 rounded-2xl p-4" style={{ backgroundColor: '#FEF3C7' }}>
               <View className="flex-row items-start">
                 <AlertTriangle size={20} color="#D97706" style={{ marginTop: 2 }} />
-                <View className="flex-1 ml-3">
+                <View className="flex-1 ms-3">
                   <Text className="font-bold text-amber-800 text-sm">
                     {isArabic ? 'انتقال برنامج الولاء' : 'Loyalty Program Transition'}
                   </Text>
@@ -551,7 +551,7 @@ export default function LoyaltyModal() {
                         <Gift size={18} color="#d97706" />
                       )}
                     </View>
-                    <View className="flex-1 ml-3">
+                    <View className="flex-1 ms-3">
                       <Text className="text-slate-800 font-medium text-sm">{tx.description}</Text>
                       <Text className="text-slate-400 text-xs">
                         {new Date(tx.created_at).toLocaleDateString()}

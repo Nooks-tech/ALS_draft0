@@ -86,7 +86,7 @@ export const OrderCard = ({ id, status, orderType, price, date, items, refundSta
       </View>
 
       <View className="flex-row items-center mb-3">
-        <View className="p-3 rounded-lg mr-3" style={{ backgroundColor: `${primaryColor}10` }}>
+        <View className="p-3 rounded-lg me-3" style={{ backgroundColor: `${primaryColor}10` }}>
           <Clock size={20} color={primaryColor} />
         </View>
         <View className="flex-1">

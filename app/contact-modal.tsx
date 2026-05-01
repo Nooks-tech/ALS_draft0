@@ -43,19 +43,19 @@ export default function ContactModal() {
               <Text className="text-slate-600 mb-6">{isArabic ? 'تواصل معنا عبر أي من القنوات التالية. عادةً نرد خلال بضع ساعات.' : 'Reach out through any of the channels below. We typically respond within a few hours.'}</Text>
               {hasPhone && (
                 <TouchableOpacity onPress={() => Linking.openURL(`tel:${contactPhone}`)} className="flex-row items-center p-4 mb-3 bg-slate-50 rounded-2xl">
-                  <View className="p-3 rounded-xl mr-4" style={{ backgroundColor: `${primaryColor}20` }}><Phone size={24} color={primaryColor} /></View>
+                  <View className="p-3 rounded-xl me-4" style={{ backgroundColor: `${primaryColor}20` }}><Phone size={24} color={primaryColor} /></View>
                   <View><Text className="font-bold text-slate-800">{isArabic ? 'اتصل بنا' : 'Call Us'}</Text><Text className="text-slate-500 text-sm">{contactPhone}</Text></View>
                 </TouchableOpacity>
               )}
               {hasEmail && (
                 <TouchableOpacity onPress={() => Linking.openURL(`mailto:${contactEmail}`)} className="flex-row items-center p-4 mb-3 bg-slate-50 rounded-2xl">
-                  <View className="p-3 rounded-xl mr-4" style={{ backgroundColor: `${primaryColor}20` }}><Mail size={24} color={primaryColor} /></View>
+                  <View className="p-3 rounded-xl me-4" style={{ backgroundColor: `${primaryColor}20` }}><Mail size={24} color={primaryColor} /></View>
                   <View><Text className="font-bold text-slate-800">{isArabic ? 'البريد الإلكتروني' : 'Email'}</Text><Text className="text-slate-500 text-sm">{contactEmail}</Text></View>
                 </TouchableOpacity>
               )}
               {hasWhatsapp && (
                 <TouchableOpacity onPress={() => Linking.openURL(formatWhatsappUrl(contactWhatsapp))} className="flex-row items-center p-4 mb-3 bg-slate-50 rounded-2xl">
-                  <View className="p-3 rounded-xl mr-4" style={{ backgroundColor: `${primaryColor}20` }}><MessageCircle size={24} color={primaryColor} /></View>
+                  <View className="p-3 rounded-xl me-4" style={{ backgroundColor: `${primaryColor}20` }}><MessageCircle size={24} color={primaryColor} /></View>
                   <View><Text className="font-bold text-slate-800">WhatsApp</Text><Text className="text-slate-500 text-sm">{isArabic ? 'تحدث معنا فوراً' : 'Chat with us instantly'}</Text></View>
                 </TouchableOpacity>
               )}

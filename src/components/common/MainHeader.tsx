@@ -24,9 +24,9 @@ export const MainHeader = ({ onSearchPress }: MainHeaderProps) => {
     <View className="pt-14 pb-4 px-4 bg-white border-b border-slate-100 flex-row justify-between items-center">
       <TouchableOpacity
         onPress={() => router.push('/order-type')}
-        className="flex-row items-center flex-1 mr-2"
+        className="flex-row items-center flex-1 me-2"
       >
-        <View className="p-2 rounded-full mr-3" style={{ backgroundColor: `${primaryColor}18` }}>
+        <View className="p-2 rounded-full me-3" style={{ backgroundColor: `${primaryColor}18` }}>
           <MapPin size={20} color={primaryColor} />
         </View>
         <View className="flex-1">
@@ -49,7 +49,7 @@ export const MainHeader = ({ onSearchPress }: MainHeaderProps) => {
         
         <TouchableOpacity
           onPress={() => Linking.openSettings()}
-          className="bg-slate-50 p-2.5 rounded-full border border-slate-100 ml-2"
+          className="bg-slate-50 p-2.5 rounded-full border border-slate-100 ms-2"
         >
           <Bell size={20} color="#334155" />
         </TouchableOpacity>

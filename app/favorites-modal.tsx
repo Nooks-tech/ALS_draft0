@@ -57,14 +57,14 @@ export default function FavoritesModal() {
                   activeOpacity={0.8}
                 >
                   <Image source={{ uri: item.image }} className="w-16 h-16 rounded-xl" />
-                  <View className="flex-1 ml-4">
+                  <View className="flex-1 ms-4">
                     <Text className="font-bold text-slate-800">{item.name}</Text>
                     <PriceWithSymbol amount={item.price} iconSize={16} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700' }} />
                   </View>
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => toggleFavorite(item.id)}
-                  className="p-2 -mr-2"
+                  className="p-2 -me-2"
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
                   <Heart size={22} color={primaryColor} fill={primaryColor} />

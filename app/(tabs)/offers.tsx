@@ -855,9 +855,9 @@ export default function OffersScreen() {
                     style={{ backgroundColor: menuCardColor, borderWidth: 1, borderColor: '#e2e8f0' }}
                   >
                     {r.image_url ? (
-                      <Image source={{ uri: r.image_url }} className="w-14 h-14 rounded-xl mr-3" resizeMode="cover" />
+                      <Image source={{ uri: r.image_url }} className="w-14 h-14 rounded-xl me-3" resizeMode="cover" />
                     ) : (
-                      <View className="w-14 h-14 rounded-xl mr-3 bg-slate-100 items-center justify-center">
+                      <View className="w-14 h-14 rounded-xl me-3 bg-slate-100 items-center justify-center">
                         <Gift size={24} color={primaryColor} />
                       </View>
                     )}
@@ -917,7 +917,7 @@ export default function OffersScreen() {
                           <Gift size={16} color="#d97706" />
                         )}
                       </View>
-                      <View className="flex-1 ml-3">
+                      <View className="flex-1 ms-3">
                         <Text className="text-slate-800 font-medium text-sm">{tx.description}</Text>
                         <Text className="text-slate-400 text-xs">
                           {new Date(tx.created_at).toLocaleDateString()}

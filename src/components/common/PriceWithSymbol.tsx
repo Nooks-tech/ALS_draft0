@@ -25,7 +25,7 @@ export function PriceWithSymbol({ amount, iconSize = 16, iconColor, textStyle, c
     >
       {prefix ? <Text style={textStyle}>{prefix}</Text> : null}
       {!symbolOnly && displayAmount !== '' ? <Text style={textStyle}>{displayAmount}</Text> : null}
-      {!symbolOnly && displayAmount !== '' ? <View style={isRTL ? { marginRight: 4 } : { marginLeft: 4 }} /> : null}
+      {!symbolOnly && displayAmount !== '' ? <View style={{ width: 4 }} /> : null}
       <SaudiRiyalIcon size={iconSize} color={iconColor} />
     </View>
   );

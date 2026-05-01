@@ -337,7 +337,7 @@ export default function MenuScreen() {
                 ? { backgroundColor: headerBg, borderColor: headerBg }
                 : { backgroundColor: menuCardColor, borderColor: menuCardColor }
             }
-            className="mr-3 px-6 py-2.5 rounded-full border"
+            className="me-3 px-6 py-2.5 rounded-full border"
           >
             <Text className="font-bold" style={{ color: textColor }}>{cat}</Text>
           </TouchableOpacity>

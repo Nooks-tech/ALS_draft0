@@ -21,7 +21,7 @@ export const CartRow = ({ item, onIncrease, onDecrease, onRemove }: CartRowProps
         className="w-16 h-16 rounded-lg bg-gray-200"
       />
 
-      <View className="flex-1 ml-3">
+      <View className="flex-1 ms-3">
         <Text className="font-bold text-gray-800 text-base">{item.name}</Text>
         <PriceWithSymbol amount={item.price * item.quantity} iconSize={16} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', marginTop: 4 }} />
       </View>
@@ -38,7 +38,7 @@ export const CartRow = ({ item, onIncrease, onDecrease, onRemove }: CartRowProps
         </TouchableOpacity>
       </View>
 
-      <TouchableOpacity onPress={onRemove} className="ml-3 p-1">
+      <TouchableOpacity onPress={onRemove} className="ms-3 p-1">
         <Trash2 size={18} color="#EF4444" />
       </TouchableOpacity>
     </View>

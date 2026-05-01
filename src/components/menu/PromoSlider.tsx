@@ -60,7 +60,7 @@ export const PromoSlider = ({ banners: externalBanners }: PromoSliderProps) => {
         contentContainerStyle={{ paddingHorizontal: 16 }}
         onMomentumScrollEnd={(e) => { indexRef.current = Math.round(e.nativeEvent.contentOffset.x / SNAP_INTERVAL); }}
         renderItem={({ item }) => (
-          <View style={{ width: ITEM_WIDTH }} className="h-40 mr-4 rounded-2xl overflow-hidden shadow-sm bg-gray-200">
+          <View style={{ width: ITEM_WIDTH }} className="h-40 me-4 rounded-2xl overflow-hidden shadow-sm bg-gray-200">
             <ImageBackground source={{ uri: item.image }} className="w-full h-full justify-end p-4" resizeMode="cover">
               {(item.title || item.subtitle) && (
                 <>
