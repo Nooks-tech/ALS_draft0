@@ -13,6 +13,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
+import { BrandedSplashOverlay } from '../src/components/splash/BrandedSplashOverlay';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -95,6 +96,15 @@ export default function RootLayout() {
         <MerchantProvider>
         <MerchantBrandingWrapper>
         <SplashGate />
+        {/* Branded JS splash sits above every other screen until
+            branding is loaded. Without this overlay, the moments
+            between native splash hide and Stack first paint show
+            the OS-default white view (and after Updates.reloadAsync
+            from a language toggle, the small iOS spinner that the
+            customer was seeing). The overlay starts at the merchant's
+            background color and merchant icon so it visually
+            continues from the native splash. */}
+        <BrandedSplashOverlay />
         <CartProvider>
         <OperationsProvider>
           <MenuProvider>

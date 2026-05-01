@@ -136,9 +136,11 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
           </Text>
         )}
       </Animated.View>
-      <Animated.View style={[styles.dots, { opacity: dotsOpacity }]} accessibilityElementsHidden>
-        <SubtleDots color={surfaceColor || primaryColor || fg} />
-      </Animated.View>
+      {/* Cold-start splash is intentionally calm: merchant icon on
+          tile, no animated dots. Dots only appear during the
+          language-switch splash (LanguageTransitionSplash) where
+          the motion communicates 'something is happening' between
+          two reloads. */}
     </Animated.View>
   );
 }
