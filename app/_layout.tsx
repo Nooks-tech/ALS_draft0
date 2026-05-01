@@ -77,25 +77,11 @@ import '../src/i18n';
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
-// Wraps the routed tree in a `View key={remountKey}` so a language
-// toggle bumps the key and forces React to fully unmount + remount
-// the tree. Yoga re-evaluates flexDirection on the next layout pass
-// with the freshly-set I18nManager.isRTL value, which flips tabs /
-// headers / row layouts the same way a bundle reload would — but
-// without the bridge swap that produced the white-gap.
-function RoutedTreeWithRemount({ children }: { children: React.ReactNode }) {
-  const { remountKey } = useLanguageSwitch();
-  return (
-    <View key={remountKey} style={{ flex: 1 }}>
-      {children}
-    </View>
-  );
-}
-
-// Reads the language-switch state from context and renders AppSplash
-// in overlay mode. Has to live ABOVE the remount wrapper so it
-// stays mounted while the tree below is being rebuilt — otherwise
-// the customer sees a flash of unstyled UI mid-transition.
+// Reads the language-switch state from context and renders
+// AppSplash in overlay mode. Lives at the root so it floats above
+// any screen the customer was on when they hit the language
+// toggle, and stays visible right up until Updates.reloadAsync
+// detonates the JS bundle.
 function LanguageSwitchOverlay() {
   const { switching } = useLanguageSwitch();
   return <AppSplash mode="overlay" visible={switching} />;
@@ -157,12 +143,12 @@ export default function RootLayout() {
             on the merchant background) until branding has loaded
             AND a minimum visible time has elapsed, then fades. */}
         <AppSplash mode="cold-start" />
-        {/* Language-switch overlay sits OUTSIDE the remount tree so
-            it survives the tree rebuild that flips RTL. Without
-            this, the overlay would unmount mid-transition and the
-            customer would see a flash of the half-rebuilt menu. */}
+        {/* Language-switch overlay sits at the root so it floats
+            above whatever screen the customer was on when they
+            tapped the toggle, and stays visible until the bundle
+            reload detonates the bridge — at which point the new
+            bundle's AppSplash cold-start mode takes over. */}
         <LanguageSwitchOverlay />
-        <RoutedTreeWithRemount>
         <CartProvider>
         <OperationsProvider>
           <MenuProvider>
@@ -202,7 +188,6 @@ export default function RootLayout() {
           </MenuProvider>
         </OperationsProvider>
         </CartProvider>
-        </RoutedTreeWithRemount>
         </LanguageSwitchProvider>
         </MerchantBrandingWrapper>
         </MerchantProvider>

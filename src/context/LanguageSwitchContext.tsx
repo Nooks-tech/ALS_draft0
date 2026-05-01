@@ -1,42 +1,39 @@
 /**
- * Owns the language-switch lifecycle: AppSplash visibility, remount
- * key for the routed tree, and the toggle function. Living above
- * MerchantBrandingWrapper but ABOVE the remount key wrapper means
- * the overlay + state survive the remount that flips RTL.
+ * Owns the language-switch lifecycle: AppSplash visibility + the
+ * toggle function.
  *
- * The toggle DOES NOT call Updates.reloadAsync. Bridge reload was
- * what produced the white-screen gap (RN's default white RCTRootView
- * peeks through during the ~300 ms swap). Instead we:
- *   1. Persist the new language to AsyncStorage + i18n.
- *   2. Flip I18nManager.allowRTL/forceRTL synchronously.
- *   3. Bump `remountKey` so the routed tree (Stack + Tabs) fully
- *      unmounts and remounts. Yoga re-evaluates flexDirection on
- *      the new layout pass with the freshly-set isRTL value, which
- *      flips tab bars / headers / row layouts the same way a
- *      bundle reload would.
- *   4. Keep AppSplash visible while the tree rebuilds, then hide.
- * No bridge swap, no white gap, the dotted splash is the only
- * thing the customer sees from start to finish.
+ * I18nManager.forceRTL ONLY takes effect on the next bundle reload
+ * — Yoga reads isRTL at native layer when it initializes, and
+ * cached layout for native components like the bottom tab bar
+ * doesn't refresh from a JS-only remount. Without
+ * Updates.reloadAsync the customer's tabs stay in the previous
+ * direction until they manually kill the app from the switcher.
+ *
+ * So we DO call Updates.reloadAsync, but we hide the bridge-swap
+ * window behind the dotted AppSplash overlay. The native splash
+ * (after a fresh build with merchant patches) AND the JS
+ * AppSplash both render the same merchant-tile + logo, so even
+ * though there's a brief moment the bridge is reloading, the
+ * customer sees the same image throughout. The dotted overlay
+ * fades the moment the new bundle's AppSplash takes over.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18n from 'i18next';
+import * as Updates from 'expo-updates';
 import { createContext, ReactNode, useCallback, useContext, useState } from 'react';
 import { I18nManager } from 'react-native';
 
 type Ctx = {
-  remountKey: number;
   switching: boolean;
   toggleLanguage: () => Promise<void>;
 };
 
 const LanguageSwitchContext = createContext<Ctx>({
-  remountKey: 0,
   switching: false,
   toggleLanguage: async () => {},
 });
 
 export function LanguageSwitchProvider({ children }: { children: ReactNode }) {
-  const [remountKey, setRemountKey] = useState(0);
   const [switching, setSwitching] = useState(false);
 
   const toggleLanguage = useCallback(async () => {
@@ -46,15 +43,12 @@ export function LanguageSwitchProvider({ children }: { children: ReactNode }) {
 
     setSwitching(true);
     try {
-      // Persist + apply the i18n change BEFORE the remount so the
-      // new tree paints with the new language strings on first
-      // render. Synchronous from React's perspective.
+      // Persist BEFORE flipping forceRTL so the next bundle's
+      // i18n init reads the right language and applies the right
+      // direction on cold start.
       await AsyncStorage.setItem('language', nextLang);
       await i18n.changeLanguage(nextLang);
 
-      // forceRTL flips the I18nManager native flag. Yoga reads it
-      // on the NEXT layout pass — which is exactly what happens
-      // when we bump remountKey below.
       try {
         if (I18nManager.isRTL !== nextRtl) {
           I18nManager.allowRTL(nextRtl);
@@ -62,26 +56,27 @@ export function LanguageSwitchProvider({ children }: { children: ReactNode }) {
         }
       } catch {}
 
-      // Hold the splash on screen for the dot-pulse cycle so the
-      // transition reads as deliberate.
+      // Hold the splash on screen for one full dot-pulse cycle
+      // before triggering the bundle reload, so the transition
+      // reads as a deliberate splash instead of a stutter.
       await new Promise((r) => setTimeout(r, 1200));
 
-      // Detonate the routed tree. Stack + Tabs unmount fully and
-      // remount with the new direction. AppSplash sits ABOVE this
-      // wrapper so it's untouched.
-      setRemountKey((k) => k + 1);
-
-      // Give the new tree a beat to lay out before we drop the
-      // overlay. Without this, the overlay vanishes and the
-      // customer sees the menu mid-relayout.
-      await new Promise((r) => setTimeout(r, 350));
-    } finally {
+      try {
+        await Updates.reloadAsync();
+      } catch {
+        // Updates.reloadAsync is unavailable in dev / Expo Go;
+        // drop the overlay so the customer isn't stuck staring
+        // at it. (In dev tabs won't actually flip — they need a
+        // production reload — but at least we don't hang.)
+        setSwitching(false);
+      }
+    } catch {
       setSwitching(false);
     }
   }, [switching]);
 
   return (
-    <LanguageSwitchContext.Provider value={{ remountKey, switching, toggleLanguage }}>
+    <LanguageSwitchContext.Provider value={{ switching, toggleLanguage }}>
       {children}
     </LanguageSwitchContext.Provider>
   );
