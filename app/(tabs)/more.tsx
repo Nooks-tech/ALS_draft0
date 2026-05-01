@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as Updates from 'expo-updates';
+import * as SystemUI from 'expo-system-ui';
 import {
   Bell,
   ChevronRight,
@@ -298,6 +299,18 @@ export default function MoreScreen() {
       // language. Show a splash overlay during the (sub-second) gap
       // so the user sees a deliberate transition rather than a
       // half-flipped UI.
+      // Pin the iOS root view to the merchant's bg BEFORE showing
+      // the modal. This is the layer that's visible underneath
+      // RCTRootView during the bridge-reload window — without this
+      // a flash of the OS-default white view bled through between
+      // the language modal and the new bundle's BrandedSplashOverlay.
+      // We await it to guarantee the native call completes before
+      // the modal mounts (and well before reloadAsync detonates JS).
+      const overlayBg = backgroundColor || '#0d9488';
+      try {
+        await SystemUI.setBackgroundColorAsync(overlayBg);
+      } catch {}
+
       setLanguageSwitching(true);
       // Hold the splash on screen for ~1500 ms before triggering the
       // bundle reload so the customer sees the dot pulse cycle once

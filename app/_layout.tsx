@@ -14,6 +14,21 @@ import { Platform } from 'react-native';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
 import { BrandedSplashOverlay } from '../src/components/splash/BrandedSplashOverlay';
+import * as SystemUI from 'expo-system-ui';
+
+// Pin the iOS / Android root-view backgroundColor to the merchant's
+// build-time color BEFORE any React renders. This is the layer that
+// shows underneath RCTRootView during the brief bridge-reload window
+// (Updates.reloadAsync from the language toggle) — without this, the
+// OS-default off-white view bled through and the customer saw a
+// white flash mid-transition. Setting this at module load means it
+// applies on the very first frame of the new bundle, not later.
+{
+  const initialBg = (process.env.EXPO_PUBLIC_BACKGROUND_COLOR || '').trim();
+  if (initialBg) {
+    SystemUI.setBackgroundColorAsync(initialBg).catch(() => {});
+  }
+}
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({

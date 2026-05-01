@@ -36,13 +36,14 @@ export function LanguageTransitionSplash({ visible }: Props) {
   const tileLogoScale = Math.min(1.12, Math.max(0.64, (launcherIconScale ?? 100) / 100));
 
   return (
-    // animationType="none" — the modal must NOT fade out, because
-    // when the bundle reloads (Updates.reloadAsync) the modal is
-    // torn down mid-fade and the customer sees a flash of the
-    // underlying white root view through the partial-opacity layer.
-    // No animation = the modal vanishes only when the bundle dies,
-    // and the new bundle's BrandedSplashOverlay paints in its place.
-    <Modal visible={visible} animationType="none" transparent={false} statusBarTranslucent>
+    // transparent + animationType="none". With transparent={false},
+    // iOS treats the modal as a separate UIViewController and there
+    // are layout reflows around its frame that briefly reveal the
+    // host view while the bundle is reloading. transparent={true}
+    // mounts the modal as an overlay on the existing view tree —
+    // no separate view controller, no reflow, no flash. The inner
+    // absolute View paints the same merchant bg corner-to-corner.
+    <Modal visible={visible} animationType="none" transparent statusBarTranslucent>
       <View style={[StyleSheet.absoluteFillObject, { backgroundColor: splashBg, alignItems: 'center', justifyContent: 'center' }]}>
         {splashLogoUri ? (
           <View style={styles.logoStage}>

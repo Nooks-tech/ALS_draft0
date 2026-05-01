@@ -149,12 +149,17 @@ export default function LoginScreen() {
                   onChangeText={(tx) => setDigits(tx.replace(/\D/g, '').slice(0, 9))}
                   keyboardType="phone-pad"
                   className="flex-1 text-gray-900 font-medium"
+                  // No fixed height + no lineHeight here. With
+                  // `lineHeight: 20` and `height: 52`, iOS clips the
+                  // baseline when the keyboard slides up and the input
+                  // re-measures — the typed digits become invisible
+                  // until the keyboard closes. Letting the TextInput
+                  // size to its content + relying on the parent's
+                  // height: 52 for the row keeps the text inside the
+                  // visible bounds in both keyboard states.
                   style={{
-                    paddingVertical: 0,
                     paddingHorizontal: 8,
-                    height: 52,
                     fontSize: 16,
-                    lineHeight: 20,
                     writingDirection: isArabic ? 'rtl' : 'ltr',
                     ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }) }}
                 />
