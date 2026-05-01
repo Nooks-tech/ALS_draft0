@@ -31,7 +31,7 @@ import { useProfile } from '../../src/context/ProfileContext';
 import { useCallback, useEffect, useState } from 'react';
 import { walletApi } from '../../src/api/wallet';
 import { Alert, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
-import { LanguageTransitionSplash } from '../../src/components/splash/LanguageTransitionSplash';
+import { AppSplash } from '../../src/components/splash/AppSplash';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { API_URL } from '../../src/api/config';
@@ -483,7 +483,7 @@ export default function MoreScreen() {
           as the cold-start BrandedSplashOverlay (icon-on-tile +
           three pulsing dots) so the transition feels like a
           deliberate splash, not a flicker. */}
-      <LanguageTransitionSplash visible={languageSwitching} />
+      <AppSplash mode="overlay" visible={languageSwitching} />
     </SafeAreaView>
   );
 }

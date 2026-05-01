@@ -13,7 +13,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
-import { BrandedSplashOverlay } from '../src/components/splash/BrandedSplashOverlay';
+import { AppSplash } from '../src/components/splash/AppSplash';
 import * as SystemUI from 'expo-system-ui';
 
 // Pin the iOS / Android root-view backgroundColor to the merchant's
@@ -121,16 +121,12 @@ export default function RootLayout() {
         <AuthProvider>
         <MerchantProvider>
         <MerchantBrandingWrapper>
-        <SplashGate />
-        {/* Branded JS splash sits above every other screen until
-            branding is loaded. Without this overlay, the moments
-            between native splash hide and Stack first paint show
-            the OS-default white view (and after Updates.reloadAsync
-            from a language toggle, the small iOS spinner that the
-            customer was seeing). The overlay starts at the merchant's
-            background color and merchant icon so it visually
-            continues from the native splash. */}
-        <BrandedSplashOverlay />
+        {/* AppSplash in 'cold-start' mode = the only splash. Hides
+            the native iOS / Android splash on its first layout pass
+            and stays visible (with the merchant icon + pulsing dots
+            on the merchant background) until branding has loaded
+            AND a minimum visible time has elapsed, then fades. */}
+        <AppSplash mode="cold-start" />
         <CartProvider>
         <OperationsProvider>
           <MenuProvider>
