@@ -105,7 +105,18 @@ export default function RootLayout() {
 
   return (
     <ErrorBoundary>
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    {/* GestureHandlerRootView's backgroundColor is the layer that
+        paints between the JS bridge starting and BrandedSplashOverlay
+        mounting. Setting it to the merchant's bg via the build-time
+        env var means the very first frame of every bundle reload
+        is already merchant-colored — no white peeking through during
+        Updates.reloadAsync from the language toggle. */}
+    <GestureHandlerRootView
+      style={{
+        flex: 1,
+        backgroundColor: (process.env.EXPO_PUBLIC_BACKGROUND_COLOR || '').trim() || '#0d9488',
+      }}
+    >
       <SafeAreaProvider>
         <AuthProvider>
         <MerchantProvider>

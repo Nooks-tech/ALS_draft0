@@ -133,37 +133,48 @@ export default function LoginScreen() {
           </View>
 
           <View className="w-full mb-4">
-            <Text className="text-gray-700 mb-2 font-medium" style={{ }}>{copy.phoneNumber}</Text>
+            <Text className="text-gray-700 mb-2 font-medium">{copy.phoneNumber}</Text>
+            {/* Single-level row. The fixed-height + lineHeight + nested-
+                wrapper combination from the prior version was clipping
+                typed digits on iOS once the keyboard opened — iOS
+                re-measures TextInputs as the keyboard insets shift, and
+                the inner View's `height: 52` together with the input
+                having no paddingVertical left no slack for the text
+                baseline, so the digits got pushed below the visible
+                bounds. paddingVertical: 14 + writingDirection: 'ltr'
+                forces the digits to render in the visible cell, in LTR
+                regardless of the surrounding RTL frame. */}
             <View
-              className="items-center border rounded-xl border-gray-200 bg-gray-50 px-4"
-              style={{ minHeight: 52, flexDirection: 'row' }}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                minHeight: 52,
+                paddingHorizontal: 16,
+                borderWidth: 1,
+                borderColor: '#e5e7eb',
+                borderRadius: 12,
+                backgroundColor: '#f9fafb',
+              }}
             >
-              <View style={{ height: 52, alignItems: 'center', flex: 1, flexDirection: 'row' }}>
-                <View style={{ justifyContent: 'center', paddingTop: 2 }}>
-                  <Text className="text-gray-700 font-medium text-base" style={{ lineHeight: 20, fontSize: 16 }}>{PHONE_PREFIX} </Text>
-                </View>
-                <TextInput
-                  placeholder="5XX XXX XXXX"
-                  placeholderTextColor="#64748b"
-                  value={digits}
-                  onChangeText={(tx) => setDigits(tx.replace(/\D/g, '').slice(0, 9))}
-                  keyboardType="phone-pad"
-                  className="flex-1 text-gray-900 font-medium"
-                  // No fixed height + no lineHeight here. With
-                  // `lineHeight: 20` and `height: 52`, iOS clips the
-                  // baseline when the keyboard slides up and the input
-                  // re-measures — the typed digits become invisible
-                  // until the keyboard closes. Letting the TextInput
-                  // size to its content + relying on the parent's
-                  // height: 52 for the row keeps the text inside the
-                  // visible bounds in both keyboard states.
-                  style={{
-                    paddingHorizontal: 8,
-                    fontSize: 16,
-                    writingDirection: isArabic ? 'rtl' : 'ltr',
-                    ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }) }}
-                />
-              </View>
+              <Text style={{ fontSize: 16, color: '#374151' }}>{PHONE_PREFIX}</Text>
+              <TextInput
+                placeholder="5XX XXX XXXX"
+                placeholderTextColor="#94a3b8"
+                value={digits}
+                onChangeText={(tx) => setDigits(tx.replace(/\D/g, '').slice(0, 9))}
+                keyboardType="phone-pad"
+                textContentType="telephoneNumber"
+                style={{
+                  flex: 1,
+                  fontSize: 16,
+                  color: '#0f172a',
+                  paddingVertical: 14,
+                  paddingHorizontal: 8,
+                  textAlign: 'left',
+                  writingDirection: 'ltr',
+                  ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }),
+                }}
+              />
             </View>
           </View>
 
