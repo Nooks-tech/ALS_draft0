@@ -1926,7 +1926,7 @@ export default function CheckoutScreen() {
               <Text className="text-slate-400 text-xs font-bold uppercase tracking-widest">
                 {isArabic ? 'الإجمالي' : 'Total'}
               </Text>
-              <PriceWithSymbol amount={finalTotal} iconSize={24} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }} />
+              <PriceWithSymbol amount={chargeAmount} iconSize={24} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }} />
             </View>
           {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig ? (
             <View style={{ width: 180, height: 50 }}>
