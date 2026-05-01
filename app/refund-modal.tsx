@@ -30,7 +30,7 @@ export default function RefundModal() {
             <X size={24} color="#64748b" />
           </TouchableOpacity>
         </View>
-        <ScrollView className="flex-1 px-6 py-6" showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }} showsVerticalScrollIndicator={false}>
           <View className="items-center mb-6">
             <View className="w-16 h-16 rounded-full justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
               <RotateCcw size={32} color={primaryColor} />

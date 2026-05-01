@@ -361,7 +361,7 @@ export default function OrderDetailModal() {
             <X size={24} color="#64748b" />
           </TouchableOpacity>
         </View>
-        <ScrollView className="flex-1 px-6 py-4" showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 16 }} showsVerticalScrollIndicator={false}>
           {/* Status + refund badges — skip the "Placed" pill since the
               stepper below already renders Placed as the current step and a
               second "Placed" label in the header is redundant. */}

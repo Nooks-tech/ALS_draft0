@@ -350,7 +350,7 @@ export default function AddCardModal() {
           </View>
 
           <ScrollView
-            className="flex-1 px-6 py-6"
+            className="flex-1" contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >

@@ -522,7 +522,7 @@ function TopupSheet({
         </View>
 
         {stage === 'pick' ? (
-          <ScrollView className="flex-1 px-5 py-6" keyboardShouldPersistTaps="handled">
+          <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 24 }} keyboardShouldPersistTaps="handled">
             <Text className="text-sm text-slate-500 mb-3" style={{ textAlign }}>
               {isArabic
                 ? `الحد الأدنى ${TOPUP_MIN} ر.س — الأعلى ${TOPUP_MAX}`
@@ -582,7 +582,7 @@ function TopupSheet({
             </TouchableOpacity>
           </ScrollView>
         ) : (
-          <ScrollView className="flex-1 px-5 py-6" keyboardShouldPersistTaps="handled">
+          <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 20, paddingVertical: 24 }} keyboardShouldPersistTaps="handled">
             <Text className="text-sm text-slate-500" style={{ textAlign }}>
               {isArabic ? 'المبلغ' : 'Amount'}
             </Text>

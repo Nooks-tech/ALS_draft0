@@ -37,7 +37,7 @@ export default function ContactModal() {
             <X size={24} color="#64748b" />
           </TouchableOpacity>
         </View>
-        <ScrollView className="flex-1 px-6 py-6" showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }} showsVerticalScrollIndicator={false}>
           {hasAny ? (
             <>
               <Text className="text-slate-600 mb-6">{isArabic ? 'تواصل معنا عبر أي من القنوات التالية. عادةً نرد خلال بضع ساعات.' : 'Reach out through any of the channels below. We typically respond within a few hours.'}</Text>

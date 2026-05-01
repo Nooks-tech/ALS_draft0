@@ -40,7 +40,7 @@ export default function FavoritesModal() {
             <X size={24} color="#64748b" />
           </TouchableOpacity>
         </View>
-        <ScrollView className="flex-1 px-6 py-6" showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1" contentContainerStyle={{ paddingHorizontal: 24, paddingVertical: 24 }} showsVerticalScrollIndicator={false}>
           {favorites.length === 0 ? (
             <View className="items-center py-12">
               <View className="w-20 h-20 rounded-full bg-slate-100 justify-center items-center mb-4">
