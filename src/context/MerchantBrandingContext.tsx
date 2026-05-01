@@ -7,6 +7,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import React, { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import * as SystemUI from 'expo-system-ui';
 import { AppState } from 'react-native';
 import { useMerchant } from './MerchantContext';
 
@@ -218,6 +219,22 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
   const merchantIdRef = useRef(merchantId);
   const cacheLoaded = useRef(false);
   merchantIdRef.current = merchantId;
+
+  // Pin the iOS / Android root view's background to the merchant's
+  // background color. expo-system-ui sets this at the native layer,
+  // so it persists even when the JS bridge is being reloaded
+  // (Updates.reloadAsync from the language toggle, for example).
+  // Without this, the OS-default white root view shows through for
+  // ~150–300 ms during the bridge swap and the customer sees a
+  // 'white flash' between the language splash and the new bundle's
+  // BrandedSplashOverlay.
+  useEffect(() => {
+    if (!branding.backgroundColor) return;
+    SystemUI.setBackgroundColorAsync(branding.backgroundColor).catch(() => {
+      // expo-system-ui is unavailable in some Expo Go versions; safe
+      // to ignore — the visual fallback is just the previous color.
+    });
+  }, [branding.backgroundColor]);
 
   useEffect(() => {
     if (!merchantId) return;
