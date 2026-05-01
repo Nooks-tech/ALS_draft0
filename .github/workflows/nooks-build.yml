@@ -228,37 +228,74 @@ jobs:
               })().catch(e => { console.error(e); process.exit(1); });
             "
           fi
-          echo "Generating splash icon from RAW merchant icon (no app-icon-bg tile baked in)..."
-          # CRITICAL: source the splash from RAW_ICON_FILE (the
-          # untouched merchant icon with transparent background)
-          # NOT from APP_ICON_FILE (which has the merchant's
-          # app-icon-bg color flattened underneath — that's the
-          # 'green square' the customer keeps screenshotting).
-          # The native splash plugin fills the area around the icon
-          # with expo-splash-screen.backgroundColor, so the icon
-          # MUST come in transparent or the merchant-bg fill is
-          # masked by the icon-bg tile and we get a square inside
-          # the splash regardless of merchant settings.
-          APP_ICON_FILE_PATH="$RAW_ICON_FILE" SPLASH_IMAGE_PATH="$SPLASH_IMAGE_FILE" node <<'EOF'
+          echo "Generating splash icon: rounded merchant tile + logo (matches AppSplash JS layer)..."
+          # The native splash MUST visually match the JS AppSplash so
+          # the hand-off (native → JS) is seamless — no jump from a
+          # bare icon to a tiled-icon, no jump from a tiled-icon to a
+          # different shape. The JS layer renders a 176-dp rounded
+          # rectangle (44 dp corner radius) in the merchant's
+          # app-icon-bg color with the logo centered inside.
+          # Reproduce that here at 1024-px scale (88% tile, 244-px
+          # corner radius) on a transparent canvas. The native
+          # splash plugin paints the merchant background_color
+          # around it, the JS overlay then drops the same tile +
+          # logo on top with the dots animation, and the customer
+          # sees a single continuous splash.
+          RAW_ICON_PATH="$RAW_ICON_FILE" SPLASH_IMAGE_PATH="$SPLASH_IMAGE_FILE" SPLASH_TILE_BG="$SPLASH_TILE_BG" SCALE_PCT="$RAW_SCALE" node <<'EOF'
           const sharp = require('sharp');
-          const iconPath = process.env.APP_ICON_FILE_PATH;
+          const iconPath = process.env.RAW_ICON_PATH;
           const outPath = process.env.SPLASH_IMAGE_PATH;
-          // 1024 keeps the splash sharp on every device class — the
-          // expo-splash-screen plugin downsizes via `imageWidth` (we
-          // set 200px below) but does so at the native level after
-          // we hand it a high-res source.
-          const ICON_SIZE = 1024;
+          const tileBg = process.env.SPLASH_TILE_BG || '#0D9488';
+          const scalePct = Math.min(150, Math.max(20, Number(process.env.SCALE_PCT || '70') || 70));
+
+          // Canvas / tile / radius / logo sizes scaled to 1024-px
+          // canvas. Mirrors AppSplash's 224-stage / 176-tile / 44-
+          // radius / 94-logo at 1024/224 ≈ 4.57x.
+          const CANVAS = 1024;
+          const TILE = 800;
+          const RADIUS = 200;
+          // Logo size adapts to merchant's launcher_icon_scale —
+          // same clamp + math the JS layer uses (94 dp base, scale
+          // factor 0.64–1.12). Mapping 94 → ~430 px at 1024/224
+          // canvas math.
+          const tileLogoFactor = Math.min(1.12, Math.max(0.64, scalePct / 100));
+          const LOGO = Math.round(430 * tileLogoFactor);
+
+          const tileSvg = Buffer.from(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="' + TILE + '" height="' + TILE + '">' +
+            '<rect width="' + TILE + '" height="' + TILE + '" rx="' + RADIUS + '" fill="' + tileBg + '"/>' +
+            '</svg>'
+          );
+
           (async () => {
-            await sharp(iconPath, { pages: 1 })
+            const logoBuf = await sharp(iconPath, { pages: 1 })
               .ensureAlpha()
-              .resize(ICON_SIZE, ICON_SIZE, {
+              .resize(LOGO, LOGO, {
                 fit: 'contain',
                 background: { r: 0, g: 0, b: 0, alpha: 0 },
                 kernel: 'lanczos3',
               })
               .png({ compressionLevel: 6, effort: 10 })
+              .toBuffer();
+
+            const tileWithLogo = await sharp(tileSvg)
+              .composite([{ input: logoBuf, gravity: 'center' }])
+              .png({ compressionLevel: 6, effort: 10 })
+              .toBuffer();
+
+            await sharp({
+              create: {
+                width: CANVAS,
+                height: CANVAS,
+                channels: 4,
+                background: { r: 0, g: 0, b: 0, alpha: 0 },
+              },
+            })
+              .composite([{ input: tileWithLogo, gravity: 'center' }])
+              .png({ compressionLevel: 6, effort: 10 })
               .toFile(outPath);
-            console.log('Splash icon written:', outPath, 'from:', iconPath);
+
+            console.log('Splash icon written:', outPath, '(tileBg=' + tileBg + ', logoScale=' + scalePct + '%)');
           })().catch((e) => {
             console.error(e);
             process.exit(1);
