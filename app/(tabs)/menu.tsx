@@ -372,13 +372,21 @@ export default function MenuScreen() {
             <View className="items-center" style={{ flexDirection: 'row' }}>
               <Text
                 className="text-[10px] font-bold uppercase tracking-widest"
-                style={{ color: tabTextColor, marginEnd: 4 }}
+                style={{ color: tabTextColor, marginEnd: 4, writingDirection: isArabic ? 'rtl' : 'ltr' }}
               >
                 {orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
               </Text>
               <ChevronDown size={12} color={tabTextColor} />
             </View>
-            <Text className="font-bold text-lg" style={{ color: tabTextColor }} numberOfLines={1} ellipsizeMode="tail">
+            {/* writingDirection forces the English branch name to
+                align RTL inside the Arabic header so it doesn't ride
+                into the search button on the far end. */}
+            <Text
+              className="font-bold text-lg"
+              style={{ color: tabTextColor, writingDirection: isArabic ? 'rtl' : 'ltr' }}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
               {orderType === 'delivery'
                 ? (deliveryAddress?.address || (isArabic ? 'أضف عنواناً' : 'Add address'))
                 : (selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch'))}
@@ -591,12 +599,11 @@ export default function MenuScreen() {
                 <Text className="text-white font-bold">{totalItems}</Text>
               </View>
               <Text className="text-white font-bold text-lg">{isArabic ? 'عرض السلة' : 'View Cart'}</Text>
-              <View
-                style={{
-                  marginLeft: isArabic ? 0 : 'auto',
-                  marginRight: isArabic ? 'auto' : 0,
-                  paddingEnd: 12 }}
-              >
+              {/* marginStart: 'auto' pushes the price block to the
+                  end of the row in either direction — replaces the
+                  old physical marginLeft:'auto' that didn't flip in
+                  RTL. */}
+              <View style={{ marginStart: 'auto', paddingEnd: 12 }}>
                 <PriceWithSymbol amount={totalPrice} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
               </View>
               <ChevronRight size={24} color="white" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />

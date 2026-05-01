@@ -130,11 +130,22 @@ export default function CartScreen() {
                 <Store size={24} color="#F59E0B" />
               )}
             </View>
-            <View className="flex-1">
-              <Text className="text-[10px] font-bold text-slate-400 uppercase tracking-widest" style={{ }}>
+            <View className="flex-1" style={{ marginEnd: 12 }}>
+              {/* writingDirection makes the English branch name align
+                  to the start of its line in RTL mode (= right side
+                  on screen), so it doesn't run into the Change
+                  button on the far end. */}
+              <Text
+                className="text-[10px] font-bold text-slate-400 uppercase tracking-widest"
+                style={{ writingDirection: isArabic ? 'rtl' : 'ltr' }}
+              >
                 {orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
               </Text>
-              <Text className="text-slate-800 font-bold text-base" style={{ }} numberOfLines={2}>
+              <Text
+                className="text-slate-800 font-bold text-base"
+                style={{ writingDirection: isArabic ? 'rtl' : 'ltr' }}
+                numberOfLines={2}
+              >
                 {orderType === 'delivery'
                   ? deliveryAddress?.address || (isArabic ? 'أضف عنوان التوصيل' : 'Add delivery address')
                   : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch')}
@@ -302,7 +313,11 @@ export default function CartScreen() {
                 ? (isArabic ? 'جارٍ التحقق…' : 'Checking…')
                 : (isArabic ? 'المتابعة للدفع' : 'Proceed to Checkout')}
             </Text>
-            <View style={{ marginLeft: isArabic ? 12 : 16, marginRight: isArabic ? 16 : 12 }}>
+            {/* marginStart: 'auto' pushes the price + chevron to the
+                end side of the row regardless of RTL/LTR — same effect
+                as the old marginLeft:'auto' but flips correctly in
+                Arabic instead of pinning to physical left. */}
+            <View style={{ marginStart: 'auto', marginEnd: 12 }}>
               <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
             </View>
             <ForwardIcon size={24} color="white" />
