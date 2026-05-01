@@ -436,12 +436,39 @@ jobs:
           git status --short
           git commit --no-verify -m "ci: ephemeral merchant patch (build-only, not pushed)" || echo "no patches to commit"
 
+      - name: Decode Google Play service-account JSON
+        # Required for `eas submit --platform android --auto-submit`. Skip
+        # for preview/APK builds (we only auto-submit on the production
+        # path because preview = sideloadable APK, not a Play release).
+        # The base64-encoded service-account JSON lives in the
+        # GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 repo secret. Decode it
+        # to fastlane/google-service-account.json (which eas.json
+        # submit.production.android.serviceAccountKeyPath references).
+        if: github.event.inputs.use_test_builds != 'true'
+        env:
+          KEY_B64: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 }}
+        run: |
+          if [ -z "$KEY_B64" ]; then
+            echo "::warning::GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 is empty — Android submit will fail. Set the repo secret per docs/ANDROID_SUBMIT_SETUP.md before running."
+          else
+            mkdir -p fastlane
+            printf '%s' "$KEY_B64" | base64 -d > fastlane/google-service-account.json
+            wc -c fastlane/google-service-account.json
+            head -c 40 fastlane/google-service-account.json
+            echo ""
+          fi
+
       - name: Build Android
+        # Production build: AAB + auto-submit to Play Internal track.
+        # Preview build: APK, no submit (used for direct sideloading).
+        # `--auto-submit` triggers `eas submit` automatically when the
+        # build succeeds, using the production submit profile from
+        # eas.json (track=internal, releaseStatus=draft).
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
             eas build --platform android --profile preview --non-interactive --no-wait
           else
-            eas build --platform android --non-interactive --no-wait
+            eas build --platform android --non-interactive --auto-submit
           fi
 
       - name: Verify iOS credential secrets are set

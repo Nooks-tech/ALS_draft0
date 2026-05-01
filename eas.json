@@ -33,12 +33,21 @@
         "resourceClass": "m-medium",
         "credentialsSource": "local"
       },
+      "android": {
+        "buildType": "app-bundle",
+        "credentialsSource": "remote"
+      },
       "channel": "production"
     }
   },
   "submit": {
     "production": {
-      "ios": { "appleId": "abdullah.alsaedi.2003@gmail.com" }
+      "ios": { "appleId": "abdullah.alsaedi.2003@gmail.com" },
+      "android": {
+        "serviceAccountKeyPath": "./fastlane/google-service-account.json",
+        "track": "internal",
+        "releaseStatus": "draft"
+      }
     }
   }
 }
