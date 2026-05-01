@@ -23,8 +23,7 @@ export const Button = ({
   const handlePressIn = () => {
     Animated.spring(scaleValue, {
       toValue: 0.95,
-      useNativeDriver: true,
-    }).start();
+      useNativeDriver: true }).start();
   };
 
   const handlePressOut = () => {
@@ -32,8 +31,7 @@ export const Button = ({
       toValue: 1,
       friction: 3,
       tension: 40,
-      useNativeDriver: true,
-    }).start();
+      useNativeDriver: true }).start();
   };
 
   const baseStyle = 'h-14 rounded-2xl flex-row justify-center items-center px-6 shadow-sm';

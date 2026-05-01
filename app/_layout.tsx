@@ -20,22 +20,18 @@ Notifications.setNotificationHandler({
     shouldPlaySound: true,
     shouldSetBadge: true,
     shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+    shouldShowList: true }) });
 
 async function requestNotificationPermissions() {
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('orders', {
       name: 'Order Updates',
       importance: Notifications.AndroidImportance.HIGH,
-      sound: 'default',
-    });
+      sound: 'default' });
     await Notifications.setNotificationChannelAsync('marketing', {
       name: 'Promotions & Updates',
       importance: Notifications.AndroidImportance.HIGH,
-      sound: 'default',
-    });
+      sound: 'default' });
   }
   const { status } = await Notifications.getPermissionsAsync();
   if (status !== 'granted') {
@@ -85,8 +81,7 @@ export default function RootLayout() {
     'Cairo-Regular': Cairo_400Regular,
     'Cairo-Bold': Cairo_700Bold,
     'Poppins-Regular': Poppins_400Regular,
-    'Poppins-Bold': Poppins_700Bold,
-  });
+    'Poppins-Bold': Poppins_700Bold });
 
   if (!loaded && !error) {
     return null;
@@ -171,8 +166,7 @@ function PushTokenRegistrar() {
           merchantId,
           customerId: user.id,
           token,
-          appLanguage,
-        });
+          appLanguage });
         // Clear the failure flag so the banner disappears if it was shown.
         AsyncStorage.removeItem(PUSH_REGISTRATION_FAILURE_KEY).catch(() => {});
       } catch (err: any) {

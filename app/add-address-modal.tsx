@@ -19,8 +19,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-} from 'react-native';
+  View } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -33,8 +32,7 @@ const LABELS: { value: SavedAddress['label']; icon: string }[] = [
 const LABEL_TITLES: Record<SavedAddress['label'], string> = {
   Home: 'المنزل',
   Work: 'العمل',
-  Other: 'أخرى',
-};
+  Other: 'أخرى' };
 
 type Step = 'map' | 'search' | 'labels';
 
@@ -80,8 +78,7 @@ export default function AddAddressModal() {
     latitude: 24.7136,
     longitude: 46.6753,
     latitudeDelta: 0.02,
-    longitudeDelta: 0.02,
-  })[0];
+    longitudeDelta: 0.02 })[0];
   const mapRef = useRef<MapView>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout>>();
   const searchInputRef = useRef<TextInput>(null);
@@ -113,19 +110,16 @@ export default function AddAddressModal() {
             try {
               const [rev] = await Location.reverseGeocodeAsync({
                 latitude: item.latitude,
-                longitude: item.longitude,
-              });
+                longitude: item.longitude });
               return {
                 address: formatReverseGeocodeParts(rev) || query,
                 lat: item.latitude,
-                lng: item.longitude,
-              };
+                lng: item.longitude };
             } catch {
               return {
                 address: query,
                 lat: item.latitude,
-                lng: item.longitude,
-              };
+                lng: item.longitude };
             }
           }),
         );
@@ -178,8 +172,7 @@ export default function AddAddressModal() {
         latitude: pinCoords.lat,
         longitude: pinCoords.lng,
         latitudeDelta: 0.02,
-        longitudeDelta: 0.02,
-      }, 400);
+        longitudeDelta: 0.02 }, 400);
     }, 120);
     return () => clearTimeout(timer);
   }, [pinCoords, step]);
@@ -195,8 +188,7 @@ export default function AddAddressModal() {
           latitude: editingAddr.lat,
           longitude: editingAddr.lng,
           latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
-        }, 400);
+          longitudeDelta: 0.02 }, 400);
       }
       return;
     }
@@ -210,8 +202,7 @@ export default function AddAddressModal() {
           latitude: result.lat,
           longitude: result.lng,
           latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
-        }, 400);
+          longitudeDelta: 0.02 }, 400);
       }
     });
   }, [fetchCurrentLocation, editingAddr?.id, editId]);
@@ -260,8 +251,7 @@ export default function AddAddressModal() {
         latitude: result.lat,
         longitude: result.lng,
         latitudeDelta: 0.02,
-        longitudeDelta: 0.02,
-      }, 400);
+        longitudeDelta: 0.02 }, 400);
     }
   }, [fetchCurrentLocation]);
 
@@ -295,8 +285,7 @@ export default function AddAddressModal() {
       return {
         address: manualAddressText.trim() || `${pinCoords.lat.toFixed(6)}, ${pinCoords.lng.toFixed(6)}`,
         lat: pinCoords.lat,
-        lng: pinCoords.lng,
-      };
+        lng: pinCoords.lng };
     }
     if (manualAddressText.trim()) return { address: manualAddressText.trim(), lat: undefined, lng: undefined };
     return null;
@@ -323,8 +312,7 @@ export default function AddAddressModal() {
         customLabel: label === 'Other' ? customLabel : undefined,
         address: addr.address,
         lat: addr.lat,
-        lng: addr.lng,
-      });
+        lng: addr.lng });
     } else {
       addAddress({
         label,
@@ -332,8 +320,7 @@ export default function AddAddressModal() {
         address: addr.address,
         lat: addr.lat,
         lng: addr.lng,
-        isDefault: false,
-      });
+        isDefault: false });
     }
     setDeliveryAddress({ address: addr.address, lat: addr.lat, lng: addr.lng, city: (addr as any).city });
     setLoading(false);

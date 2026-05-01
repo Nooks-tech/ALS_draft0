@@ -91,8 +91,7 @@ export default function MenuScreen() {
         id: b.id,
         image: b.image_url,
         title: b.title ?? '',
-        subtitle: b.subtitle ?? '',
-      }));
+        subtitle: b.subtitle ?? '' }));
     }
     return [];
   }, [nooksBanners]);
@@ -105,8 +104,7 @@ export default function MenuScreen() {
           id: b.id,
           image: b.image_url,
           title: b.title ?? '',
-          subtitle: b.subtitle ?? '',
-        })),
+          subtitle: b.subtitle ?? '' })),
     [nooksBanners]
   );
 
@@ -162,8 +160,7 @@ export default function MenuScreen() {
   const searchTranslateX = useSharedValue(0);
 
   const searchAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: searchTranslateX.value }],
-  }));
+    transform: [{ translateX: searchTranslateX.value }] }));
 
   const closeSearch = useCallback(() => setIsSearchVisible(false), []);
 
@@ -212,8 +209,7 @@ export default function MenuScreen() {
       const measuredSections = sections
         .map((section) => ({
           title: section.title,
-          y: sectionYRef.current[section.title],
-        }))
+          y: sectionYRef.current[section.title] }))
         .filter((section): section is { title: string; y: number } => typeof section.y === 'number');
 
       if (measuredSections.length === 0) return;
@@ -334,8 +330,7 @@ export default function MenuScreen() {
             onLayout={(e) => {
               categoryLayoutRef.current[cat] = {
                 x: e.nativeEvent.layout.x,
-                width: e.nativeEvent.layout.width,
-              };
+                width: e.nativeEvent.layout.width };
             }}
             style={
               selectedCategory === cat
@@ -358,32 +353,32 @@ export default function MenuScreen() {
       {/* HEADER (L→R): Pickup/branch | Search icon | Merchant logo (right-most) */}
       <View
         className="pt-14 pb-6 px-5 shadow-md justify-between items-center rounded-b-[40px]"
-        style={{ backgroundColor: headerBg, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+        style={{ backgroundColor: headerBg, flexDirection: 'row' }}
       >
         <TouchableOpacity
           onPress={openOrderType}
           className="items-center flex-1 min-w-0"
-          style={{ flexDirection: isArabic ? 'row-reverse' : 'row', marginRight: isArabic ? 0 : 8, marginLeft: isArabic ? 8 : 0 }}
+          style={{ flexDirection: 'row', marginEnd: 8 }}
           accessibilityLabel={orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
           accessibilityRole="button"
         >
           <View
             className="bg-white/20 p-2.5 rounded-2xl border border-white/30 shadow-sm shrink-0"
-            style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}
+            style={{ marginEnd: 12 }}
           >
             {orderType === 'delivery' ? <Bike size={20} color={tabTextColor} /> : <Store size={20} color={tabTextColor} />}
           </View>
           <View className="flex-1 min-w-0">
-            <View className="items-center" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+            <View className="items-center" style={{ flexDirection: 'row' }}>
               <Text
                 className="text-[10px] font-bold uppercase tracking-widest"
-                style={{ color: tabTextColor, marginRight: isArabic ? 0 : 4, marginLeft: isArabic ? 4 : 0, textAlign: isArabic ? 'right' : 'left' }}
+                style={{ color: tabTextColor, marginEnd: 4 }}
               >
                 {orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
               </Text>
               <ChevronDown size={12} color={tabTextColor} />
             </View>
-            <Text className="font-bold text-lg" style={{ color: tabTextColor, textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1} ellipsizeMode="tail">
+            <Text className="font-bold text-lg" style={{ color: tabTextColor }} numberOfLines={1} ellipsizeMode="tail">
               {orderType === 'delivery'
                 ? (deliveryAddress?.address || (isArabic ? 'أضف عنواناً' : 'Add address'))
                 : (selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch'))}
@@ -393,7 +388,7 @@ export default function MenuScreen() {
         <TouchableOpacity
           onPress={() => setIsSearchVisible(true)}
           className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0"
-          style={{ marginRight: isArabic ? 0 : 8, marginLeft: isArabic ? 8 : 0 }}
+          style={{ marginEnd: 8 }}
           accessibilityLabel={isArabic ? 'ابحث في المنيو' : 'Search menu'}
           accessibilityRole="button"
         >
@@ -464,20 +459,20 @@ export default function MenuScreen() {
                 onPress={() => openProduct(product)}
                 activeOpacity={0.8}
                 className="mx-5 mb-4 rounded-[24px] shadow-sm p-3.5"
-                style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+                style={{ backgroundColor: menuCardColor, flexDirection: 'row' }}
               >
                 <Image source={{ uri: product.image }} className="w-[127px] h-[127px] rounded-[20px] bg-slate-200" />
                 <View
                   className="flex-1 justify-between py-1"
-                  style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}
+                  style={{ marginStart: 16 }}
                 >
                   <View>
-                    <Text className="text-lg font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{product.name}</Text>
-                    <Text className="text-xs mt-1" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1}>{product.description}</Text>
+                    <Text className="text-lg font-bold" style={{ color: textColor }}>{product.name}</Text>
+                    <Text className="text-xs mt-1" style={{ color: textColor }} numberOfLines={1}>{product.description}</Text>
                   </View>
                   <View
                     className="justify-between items-center mt-2"
-                    style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}
+                    style={{ flexDirection: 'row' }}
                   >
                     <PriceWithSymbol amount={product.price} iconSize={18} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700', fontSize: 18 }} />
                     <View className="p-1.5 rounded-lg" style={{ backgroundColor: accent }}><Plus size={18} color="white" /></View>
@@ -515,10 +510,10 @@ export default function MenuScreen() {
             style={{ flex: 1 }}
           >
           <View className="p-5 pt-14">
-          <View className="items-center mb-6" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+          <View className="items-center mb-6" style={{ flexDirection: 'row' }}>
             <TouchableOpacity
               onPress={() => setIsSearchVisible(false)}
-              style={{ marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }}
+              style={{ marginEnd: 16 }}
             >
               <ArrowLeft size={24} color={textColor} style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
             </TouchableOpacity>
@@ -527,7 +522,7 @@ export default function MenuScreen() {
               <TextInput
                 placeholder={isArabic ? 'ماذا ترغب اليوم؟' : 'What are you craving?'}
                 className="flex-1 font-medium"
-                style={{ color: textColor, marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0, textAlign: isArabic ? 'right' : 'left' }}
+                style={{ color: textColor, marginStart: 8 }}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
               />
@@ -537,11 +532,11 @@ export default function MenuScreen() {
             {products.filter((p) => p.name.toLowerCase().includes(searchQuery.toLowerCase())).map((item) => (
               <TouchableOpacity key={item.id} onPress={() => openProduct(item)} 
                 className="mb-4 p-3 rounded-2xl items-center"
-                style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+                style={{ backgroundColor: menuCardColor, flexDirection: 'row' }}
               >
                 <Image source={{ uri: item.image }} className="w-16 h-16 rounded-xl bg-slate-200" />
-                <View className="flex-1" style={{ marginLeft: isArabic ? 0 : 16, marginRight: isArabic ? 16 : 0 }}>
-                  <Text className="text-lg font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{item.name}</Text>
+                <View className="flex-1" style={{ marginStart: 16 }}>
+                  <Text className="text-lg font-bold" style={{ color: textColor }}>{item.name}</Text>
                   <PriceWithSymbol amount={item.price} iconSize={16} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700' }} />
                 </View>
                 <Plus size={16} color={textColor} />
@@ -582,16 +577,16 @@ export default function MenuScreen() {
           <TouchableOpacity
             onPress={() => router.push('/cart')}
             className="p-5 rounded-[28px] items-center shadow-2xl"
-            style={{ backgroundColor: accent, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+            style={{ backgroundColor: accent, flexDirection: 'row' }}
             activeOpacity={0.8}
           >
             <View
               className="items-center flex-1"
-              style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}
+              style={{ flexDirection: 'row' }}
             >
               <View
                 className="bg-white/20 px-3 py-1.5 rounded-xl"
-                style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}
+                style={{ marginEnd: 12 }}
               >
                 <Text className="text-white font-bold">{totalItems}</Text>
               </View>
@@ -600,9 +595,7 @@ export default function MenuScreen() {
                 style={{
                   marginLeft: isArabic ? 0 : 'auto',
                   marginRight: isArabic ? 'auto' : 0,
-                  paddingLeft: isArabic ? 12 : 0,
-                  paddingRight: isArabic ? 0 : 12,
-                }}
+                  paddingEnd: 12 }}
               >
                 <PriceWithSymbol amount={totalPrice} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
               </View>

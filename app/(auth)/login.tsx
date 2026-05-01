@@ -30,8 +30,7 @@ export default function LoginScreen() {
     primaryColor,
     backgroundColor,
     textColor,
-    launcherIconScale,
-  } = useMerchantBranding();
+    launcherIconScale } = useMerchantBranding();
   const { merchantId } = useMerchant();
 
   const brandName = useMemo(() => {
@@ -49,8 +48,7 @@ export default function LoginScreen() {
         intro: 'أدخل رقم جوالك للبدء',
         phoneNumber: 'رقم الجوال',
         continue: 'متابعة',
-        smsNotice: 'سنرسل لك رمز تحقق عبر رسالة نصية',
-      }
+        smsNotice: 'سنرسل لك رمز تحقق عبر رسالة نصية' }
     : {
         error: 'Error',
         configMissing: 'This app is missing its merchant configuration. Please restart the app or contact support.',
@@ -59,8 +57,7 @@ export default function LoginScreen() {
         intro: 'Enter your phone number to get started',
         phoneNumber: 'Phone Number',
         continue: 'Continue',
-        smsNotice: "We'll send you a verification code via SMS",
-      };
+        smsNotice: "We'll send you a verification code via SMS" };
 
   const [digits, setDigits] = useState('');
   const [loading, setLoading] = useState(false);
@@ -136,12 +133,12 @@ export default function LoginScreen() {
           </View>
 
           <View className="w-full mb-4">
-            <Text className="text-gray-700 mb-2 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{copy.phoneNumber}</Text>
+            <Text className="text-gray-700 mb-2 font-medium" style={{ }}>{copy.phoneNumber}</Text>
             <View
               className="items-center border rounded-xl border-gray-200 bg-gray-50 px-4"
-              style={{ minHeight: 52, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+              style={{ minHeight: 52, flexDirection: 'row' }}
             >
-              <View style={{ height: 52, alignItems: 'center', flex: 1, flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+              <View style={{ height: 52, alignItems: 'center', flex: 1, flexDirection: 'row' }}>
                 <View style={{ justifyContent: 'center', paddingTop: 2 }}>
                   <Text className="text-gray-700 font-medium text-base" style={{ lineHeight: 20, fontSize: 16 }}>{PHONE_PREFIX} </Text>
                 </View>
@@ -158,10 +155,8 @@ export default function LoginScreen() {
                     height: 52,
                     fontSize: 16,
                     lineHeight: 20,
-                    textAlign: isArabic ? 'right' : 'left',
                     writingDirection: isArabic ? 'rtl' : 'ltr',
-                    ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }),
-                  }}
+                    ...(Platform.OS === 'android' && { textAlignVertical: 'center' as const }) }}
                 />
               </View>
             </View>
@@ -211,15 +206,13 @@ const styles = StyleSheet.create({
     height: 168,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
-  },
+    marginBottom: 16 },
   logoGlow: {
     position: 'absolute',
     width: 156,
     height: 156,
     borderRadius: 44,
-    opacity: 0.12,
-  },
+    opacity: 0.12 },
   logoTile: {
     width: 128,
     height: 128,
@@ -230,6 +223,4 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.16,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 10 },
-    elevation: 10,
-  },
-});
+    elevation: 10 } });

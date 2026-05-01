@@ -19,13 +19,13 @@ export default function PrivacyModal() {
       <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[40px] flex-1 max-h-[85%] overflow-hidden">
         <View
           className="items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100"
-          style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}
+          style={{ flexDirection: 'row' }}
         >
           <Text className="text-xl font-bold text-slate-800">{isArabic ? 'سياسة الخصوصية' : 'Privacy Policy'}</Text>
           <TouchableOpacity
             onPress={() => router.back()}
             className="p-2"
-            style={{ marginRight: isArabic ? 0 : -8, marginLeft: isArabic ? -8 : 0 }}
+            style={{ marginEnd: -8 }}
           >
             <X size={24} color="#64748b" />
           </TouchableOpacity>

@@ -22,8 +22,7 @@ export const Input = ({ label, error, style, ...props }: InputProps) => {
         style={[
           {
             textAlign,
-            writingDirection: isArabic ? 'rtl' : 'ltr',
-          },
+            writingDirection: isArabic ? 'rtl' : 'ltr' },
           style,
         ]}
         {...props}

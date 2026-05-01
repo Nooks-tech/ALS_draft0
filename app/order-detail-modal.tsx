@@ -47,8 +47,7 @@ const COMPLAINT_TYPE_ARABIC: Record<ComplaintTypeValue, string> = {
   damaged_packaging: 'تغليف تالف',
   late_delivery: 'تأخر التوصيل',
   tampered: 'تم العبث / فتح الطلب',
-  other: 'أخرى',
-};
+  other: 'أخرى' };
 
 const STATUS_ARABIC: Record<string, string> = {
   Preparing: 'قيد التحضير',
@@ -56,8 +55,7 @@ const STATUS_ARABIC: Record<string, string> = {
   'Out for delivery': 'خرج للتوصيل',
   Delivered: 'تم التوصيل',
   Cancelled: 'ملغي',
-  'On Hold': 'قيد الانتظار',
-};
+  'On Hold': 'قيد الانتظار' };
 
 export default function OrderDetailModal() {
   const { i18n } = useTranslation();
@@ -169,8 +167,7 @@ export default function OrderDetailModal() {
       branchName: order.branchName,
       deliveryAddress: order.deliveryAddress,
       deliveryLat: order.deliveryLat,
-      deliveryLng: order.deliveryLng,
-    });
+      deliveryLng: order.deliveryLng });
     router.back();
     router.replace('/(tabs)/menu');
   }, [order, setCartFromOrder, router]);
@@ -184,8 +181,7 @@ export default function OrderDetailModal() {
       formData.append('', {
         uri,
         name: fileName.split('/').pop(),
-        type: `image/${ext}`,
-      } as any);
+        type: `image/${ext}` } as any);
       const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
       const session = (await supabase.auth.getSession()).data.session;
       const token = session?.access_token;
@@ -195,10 +191,8 @@ export default function OrderDetailModal() {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
-            'x-upsert': 'true',
-          },
-          body: formData,
-        }
+            'x-upsert': 'true' },
+          body: formData }
       );
       if (uploadRes.ok) {
         const { data: urlData } = supabase.storage.from('complaint-photos').getPublicUrl(fileName);
@@ -226,8 +220,7 @@ export default function OrderDetailModal() {
           if (!result.canceled && result.assets[0]) {
             await uploadPhoto(result.assets[0].uri);
           }
-        },
-      },
+        } },
       {
         text: isArabic ? 'الاختيار من الصور' : 'Choose from Library',
         onPress: async () => {
@@ -235,15 +228,13 @@ export default function OrderDetailModal() {
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
             quality: 0.7,
             allowsMultipleSelection: true,
-            selectionLimit: 3 - complaintPhotos.length,
-          });
+            selectionLimit: 3 - complaintPhotos.length });
           if (result.canceled) return;
           for (const asset of result.assets) {
             if (complaintPhotos.length >= 3) break;
             await uploadPhoto(asset.uri);
           }
-        },
-      },
+        } },
       { text: isArabic ? 'إلغاء' : 'Cancel', style: 'cancel' },
     ]);
   };
@@ -261,8 +252,7 @@ export default function OrderDetailModal() {
         description: complaintDescription || undefined,
         photo_urls: complaintPhotos.length > 0 ? complaintPhotos : undefined,
         items: affectedItems.length > 0 ? affectedItems : undefined,
-        customer_id: user.id,
-      });
+        customer_id: user.id });
       if (result.success) {
         setShowComplaintModal(false);
         setExistingComplaint(result.complaint ?? null);
@@ -317,8 +307,7 @@ export default function OrderDetailModal() {
     'Out for delivery': { bg: 'bg-blue-100', text: 'text-blue-700' },
     Delivered: { bg: 'bg-gray-100', text: 'text-gray-600' },
     Cancelled: { bg: 'bg-red-100', text: 'text-red-600' },
-    'On Hold': { bg: 'bg-orange-100', text: 'text-orange-600' },
-  };
+    'On Hold': { bg: 'bg-orange-100', text: 'text-orange-600' } };
   const badge = statusBadgeColors[order.status] ?? { bg: 'bg-slate-100', text: 'text-slate-600' };
 
   // Refund/complaint status badges
@@ -361,13 +350,13 @@ export default function OrderDetailModal() {
       <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[40px] max-h-[85%] overflow-hidden">
         <View
           className="items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100"
-          style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}
+          style={{ flexDirection: 'row' }}
         >
           <Text className="text-xl font-bold text-slate-800">{isArabic ? 'الطلب' : 'Order'} #{order.id.replace('order-', '')}</Text>
           <TouchableOpacity
             onPress={() => router.back()}
             className="p-2"
-            style={{ marginRight: isArabic ? 0 : -8, marginLeft: isArabic ? -8 : 0 }}
+            style={{ marginEnd: -8 }}
           >
             <X size={24} color="#64748b" />
           </TouchableOpacity>
@@ -472,7 +461,7 @@ export default function OrderDetailModal() {
 
           {showMarkReceived && (
             <View className="mb-6 p-4 rounded-2xl bg-slate-50 border border-slate-100">
-              <Text className="text-slate-700 text-sm mb-3" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+              <Text className="text-slate-700 text-sm mb-3" style={{ }}>
                 {canMarkReceived
                   ? (isArabic
                       ? 'إذا استلمت طلبك ولم يقم الكاشير بتأكيد الاستلام، يمكنك تأكيده بنفسك.'

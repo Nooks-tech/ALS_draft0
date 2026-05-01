@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:developers.foodics.com)",
+      "WebFetch(domain:apidocs.foodics.com)",
+      "Bash(find:*)",
+      "Bash(npx --prefix /c/Users/abdul/ALS_draft0/server tsc --noEmit --project /c/Users/abdul/ALS_draft0/server/tsconfig.json)",
+      "Bash(npx --prefix /c/Users/abdul/nooksweb tsc --noEmit --project /c/Users/abdul/nooksweb/tsconfig.json)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "Bash(git push:*)",
+      "Bash(git -C /c/Users/abdul/nooksweb add app/api/adapter/v1/reward/route.ts app/api/adapter/v1/redeem/route.ts)",
+      "Bash(git -C /c/Users/abdul/nooksweb commit -m ':*)",
+      "Bash(git -C /c/Users/abdul/nooksweb push)",
+      "Bash(openssl rand:*)"
+    ]
+  }
+}

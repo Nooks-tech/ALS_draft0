@@ -34,8 +34,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
-} from 'react-native';
+  View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../../src/api/config';
 import { getAuthToken } from '../../src/api/client';
@@ -45,8 +44,7 @@ import {
   loyaltyApi,
   type LoyaltyBalance,
   type LoyaltyReward,
-  type LoyaltyTransaction,
-} from '../../src/api/loyalty';
+  type LoyaltyTransaction } from '../../src/api/loyalty';
 import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
@@ -108,8 +106,7 @@ function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScal
               borderRadius: 14,
               backgroundColor: isFilled ? boxColor : emptyBg,
               alignItems: 'center',
-              justifyContent: 'center',
-            }}>
+              justifyContent: 'center' }}>
               {iconUrl ? (
                 <Image
                   source={{ uri: iconUrl }}
@@ -189,8 +186,7 @@ function MemberQrCard({ memberCode }: { memberCode: string }) {
       backgroundColor: '#ffffff',
       borderRadius: 14,
       paddingVertical: 14,
-      alignItems: 'center',
-    }}>
+      alignItems: 'center' }}>
       <Svg width={size} height={size}>
         <Rect width={size} height={size} fill="#ffffff" />
         {cells}
@@ -402,8 +398,7 @@ export default function OffersScreen() {
 
       const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
       const res = await fetch(passUrl, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+        headers: { Authorization: `Bearer ${authToken}` } });
       if (!res.ok) {
         let msg = `Server returned ${res.status}`;
         try {
@@ -470,8 +465,7 @@ export default function OffersScreen() {
             Alert.alert('خطأ', 'تعذر استبدال المكافأة.');
           }
           setRedeemingId(null);
-        },
-      },
+        } },
     ]);
   };
 
@@ -484,8 +478,7 @@ export default function OffersScreen() {
         code: p.code,
         expiry: formatExpiry(p.valid_until),
         image: typeof p.image_url === 'string' ? p.image_url.trim()
-          : (typeof p.imageUrl === 'string' ? p.imageUrl.trim() : undefined),
-      }));
+          : (typeof p.imageUrl === 'string' ? p.imageUrl.trim() : undefined) }));
     }
     return [];
   }, [nooksPromos]);
@@ -522,19 +515,18 @@ export default function OffersScreen() {
       {/* Header */}
       <View
         className="pt-14 pb-3 px-5 items-center"
-        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0', flexDirection: isArabic ? 'row-reverse' : 'row' }}
+        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0', flexDirection: 'row' }}
       >
         <TouchableOpacity
           onPress={() => router.replace('/(tabs)/menu')}
           className="p-2"
           style={{
             marginLeft: isArabic ? 8 : -8,
-            marginRight: isArabic ? -8 : 8,
-          }}
+            marginRight: isArabic ? -8 : 8 }}
         >
           {isArabic ? <ArrowRight size={24} color={textColor} /> : <ArrowLeft size={24} color={textColor} />}
         </TouchableOpacity>
-        <Text className="text-xl font-bold flex-1" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>
+        <Text className="text-xl font-bold flex-1" style={{ color: textColor }}>
           {tab === 'offers' ? (isArabic ? 'العروض' : 'Offers') : loyaltyTabLabel}
         </Text>
       </View>
@@ -637,8 +629,7 @@ export default function OffersScreen() {
                 shadowOffset: { width: 0, height: 8 },
                 shadowOpacity: 0.2,
                 shadowRadius: 16,
-                elevation: 10,
-              };
+                elevation: 10 };
 
               // Merchant-controlled logo scale. Clamped so the card's top
               // padding and the title's vertical alignment can't break: the
@@ -671,8 +662,7 @@ export default function OffersScreen() {
                       fontSize: 18,
                       lineHeight: 18,
                       fontWeight: '600',
-                      textAlign: 'right',
-                    }}
+                      textAlign: 'right' }}
                   >
                     {cardTitle}
                   </Text>
@@ -714,8 +704,7 @@ export default function OffersScreen() {
                               style={{
                                 width: '50%',
                                 marginTop: i >= 2 ? 12 : 0,
-                                alignItems: isRightCol ? 'flex-end' : 'flex-start',
-                              }}
+                                alignItems: isRightCol ? 'flex-end' : 'flex-start' }}
                             >
                               <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
                                 {isArabic ? `الختم ${m.stamp_number}` : `STAMP ${m.stamp_number}`}
@@ -757,8 +746,7 @@ export default function OffersScreen() {
                       height: 1,
                       marginTop: 18,
                       marginBottom: 14,
-                      backgroundColor: cardLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.22)',
-                    }} />
+                      backgroundColor: cardLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.22)' }} />
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                       <View>
                         <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
@@ -837,8 +825,7 @@ export default function OffersScreen() {
                     const res = await fetch(
                       `${API_URL}/api/loyalty/google-wallet?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}`,
                       {
-                        headers: { Authorization: `Bearer ${authToken}` },
-                      },
+                        headers: { Authorization: `Bearer ${authToken}` } },
                     );
                     const data = await res.json();
                     if (data.saveUrl) {
@@ -887,8 +874,7 @@ export default function OffersScreen() {
                       className="px-4 py-2 rounded-xl"
                       style={{
                         backgroundColor: (balance?.points ?? 0) >= r.points_cost ? primaryColor : '#e2e8f0',
-                        opacity: redeemingId === r.id ? 0.5 : 1,
-                      }}
+                        opacity: redeemingId === r.id ? 0.5 : 1 }}
                     >
                       <Text
                         className="text-xs font-bold"
@@ -965,11 +951,8 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 24,
-  },
+    paddingHorizontal: 24 },
   offersLoadingHint: {
     marginTop: 14,
     fontSize: 14,
-    fontWeight: '500',
-  },
-});
+    fontWeight: '500' } });

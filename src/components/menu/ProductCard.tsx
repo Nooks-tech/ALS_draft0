@@ -30,15 +30,13 @@ export const ProductCard = ({ product, onAdd, index = 0 }: ProductCardProps) => 
         toValue: 1,
         duration: 500,
         delay: index * 100, 
-        useNativeDriver: true,
-      }),
+        useNativeDriver: true }),
       Animated.spring(slideAnim, {
         toValue: 0,
         friction: 6,
         tension: 40,
         delay: index * 100,
-        useNativeDriver: true,
-      })
+        useNativeDriver: true })
     ]).start();
   }, []);
 

@@ -27,8 +27,7 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
     textColor,
     appName,
     cafeName,
-    launcherIconScale,
-  } = useMerchantBranding();
+    launcherIconScale } = useMerchantBranding();
   const [minTimePassed, setMinTimePassed] = useState(false);
   const [finished, setFinished] = useState(false);
   const [nativeSplashHidden, setNativeSplashHidden] = useState(false);
@@ -63,27 +62,23 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
         toValue: 1,
         duration: 420,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
+        useNativeDriver: true }),
       Animated.spring(logoScale, {
         toValue: 1,
         friction: 8,
         tension: 72,
-        useNativeDriver: true,
-      }),
+        useNativeDriver: true }),
       Animated.timing(logoTranslateY, {
         toValue: 0,
         duration: 460,
         easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
+        useNativeDriver: true }),
       Animated.timing(dotsOpacity, {
         toValue: 1,
         duration: 320,
         delay: 140,
         easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }),
+        useNativeDriver: true }),
     ]).start();
   }, [dotsOpacity, logoOpacity, logoScale, logoTranslateY, nativeSplashHidden]);
 
@@ -99,14 +94,12 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
         toValue: 0,
         duration: 360,
         easing: Easing.in(Easing.cubic),
-        useNativeDriver: true,
-      }),
+        useNativeDriver: true }),
       Animated.timing(dotsOpacity, {
         toValue: 0,
         duration: 220,
         easing: Easing.in(Easing.quad),
-        useNativeDriver: true,
-      }),
+        useNativeDriver: true }),
     ]).start(() => {
       onDismiss?.();
       setFinished(true);
@@ -132,16 +125,14 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
           backgroundColor: splashBg,
           justifyContent: 'center',
           alignItems: 'center',
-          opacity: containerOpacity,
-        },
+          opacity: containerOpacity },
       ]}
     >
       <Animated.View
         style={{
           opacity: logoOpacity,
           transform: [{ translateY: logoTranslateY }, { scale: logoScale }],
-          alignItems: 'center',
-        }}
+          alignItems: 'center' }}
       >
         {splashLogoUri ? (
           <View style={styles.logoStage}>
@@ -213,15 +204,13 @@ const styles = StyleSheet.create({
     width: 224,
     height: 224,
     alignItems: 'center',
-    justifyContent: 'center',
-  },
+    justifyContent: 'center' },
   logoGlow: {
     position: 'absolute',
     width: 210,
     height: 210,
     borderRadius: 60,
-    opacity: 0.12,
-  },
+    opacity: 0.12 },
   logoTile: {
     width: 176,
     height: 176,
@@ -232,23 +221,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.18,
     shadowRadius: 28,
     shadowOffset: { width: 0, height: 14 },
-    elevation: 12,
-  },
+    elevation: 12 },
   dots: {
     position: 'absolute',
     bottom: '19%',
     left: 0,
     right: 0,
-    alignItems: 'center',
-  },
+    alignItems: 'center' },
   dotRow: {
     flexDirection: 'row',
     gap: 8,
-    alignItems: 'center',
-  },
+    alignItems: 'center' },
   dot: {
     width: 6,
     height: 6,
-    borderRadius: 3,
-  },
-});
+    borderRadius: 3 } });

@@ -13,8 +13,7 @@ export const Container = ({ children, className, backgroundColor }: ContainerPro
       style={{ 
         flex: 1, 
         paddingTop: Platform.OS === "android" ? StatusBar.currentHeight : 0,
-        backgroundColor: backgroundColor ?? '#ffffff',
-      }} 
+        backgroundColor: backgroundColor ?? '#ffffff' }} 
       className={`flex-1 ${className ?? ''}`}
     >
       <View className="flex-1 px-4">

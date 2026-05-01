@@ -4,8 +4,7 @@ import {
   Platform,
   ScrollView,
   StyleProp,
-  ViewStyle,
-} from 'react-native';
+  ViewStyle } from 'react-native';
 
 type Props = {
   children: ReactNode;
@@ -22,8 +21,7 @@ export function KeyboardAwareScrollView({
   children,
   className,
   contentContainerStyle,
-  keyboardVerticalOffset = 0,
-}: Props) {
+  keyboardVerticalOffset = 0 }: Props) {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

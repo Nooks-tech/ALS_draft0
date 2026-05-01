@@ -96,8 +96,7 @@ function normalizeStatus(
 export function OrderStatusStepper({
   status,
   orderType,
-  accentColor = DEFAULT_ACCENT,
-}: {
+  accentColor = DEFAULT_ACCENT }: {
   status: OrderStatus;
   orderType: 'delivery' | 'pickup';
   accentColor?: string;

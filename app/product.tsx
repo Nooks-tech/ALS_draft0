@@ -72,7 +72,7 @@ export default function ProductScreen() {
   if (!product) {
     return (
       <View className="flex-1 items-center justify-center">
-        <Text className="text-slate-500" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'المنتج غير موجود' : 'Product not found'}</Text>
+        <Text className="text-slate-500" style={{ }}>{isArabic ? 'المنتج غير موجود' : 'Product not found'}</Text>
         <TouchableOpacity onPress={() => router.back()} className="mt-4">
           <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? 'العودة' : 'Go back'}</Text>
         </TouchableOpacity>
@@ -111,8 +111,7 @@ export default function ProductScreen() {
       ...product,
       basePrice: product.price,
       price: currentPrice,
-      customizations: optsToUse,
-    };
+      customizations: optsToUse };
     if (isEditMode && uniqueId && cartItem) {
       updateQuantity(uniqueId, -cartItem.quantity);
       addToCart(itemPayload, quantity);
@@ -124,7 +123,7 @@ export default function ProductScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-white">
-      <View className="px-5 py-4 items-center justify-between border-b border-slate-100" style={{ flexDirection: rowDirection }}>
+      <View className="px-5 py-4 items-center justify-between border-b border-slate-100" style={{ flexDirection: 'row' }}>
         <TouchableOpacity onPress={() => router.back()} className="bg-slate-100 p-2 rounded-full">
           <ArrowLeft size={22} color="#334155" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
         </TouchableOpacity>
@@ -138,10 +137,10 @@ export default function ProductScreen() {
         <View className="mb-6 rounded-[30px] overflow-hidden h-64 bg-slate-100 shadow-sm">
           <Image source={{ uri: product.image }} className="w-full h-full" resizeMode="cover" />
         </View>
-        <View className="justify-between items-start mb-4" style={{ flexDirection: rowDirection }}>
+        <View className="justify-between items-start mb-4" style={{ flexDirection: 'row' }}>
           <View className="w-[70%]">
-            <Text className="text-2xl font-bold text-slate-900" style={{ textAlign: isArabic ? 'right' : 'left' }}>{product.name}</Text>
-            <Text className="text-slate-400 text-sm mt-1" style={{ textAlign: isArabic ? 'right' : 'left' }}>{product.description}</Text>
+            <Text className="text-2xl font-bold text-slate-900" style={{ }}>{product.name}</Text>
+            <Text className="text-slate-400 text-sm mt-1" style={{ }}>{product.description}</Text>
           </View>
           <PriceWithSymbol amount={currentPrice} iconSize={20} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 20 }} />
         </View>
@@ -150,22 +149,20 @@ export default function ProductScreen() {
             const isOptional = group.minimumOptions === 0;
             return (
             <View key={group.title} className="mb-8">
-              <View className="mb-4" style={{ flexDirection: rowDirection, alignItems: 'center' }}>
-                <Text className="text-lg font-bold text-slate-800" style={{ textAlign: isArabic ? 'right' : 'left' }}>{group.title}</Text>
+              <View className="mb-4" style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text className="text-lg font-bold text-slate-800" style={{ }}>{group.title}</Text>
                 <Text
                   className="text-xs font-semibold uppercase tracking-widest"
                   style={{
-                    marginLeft: isArabic ? 0 : 8,
-                    marginRight: isArabic ? 8 : 0,
-                    color: isOptional ? '#94a3b8' : '#ef4444',
-                  }}
+                    marginStart: 8,
+                    color: isOptional ? '#94a3b8' : '#ef4444' }}
                 >
                   {isOptional
                     ? (isArabic ? 'اختياري' : 'Optional')
                     : (isArabic ? 'مطلوب' : 'Required')}
                 </Text>
               </View>
-              <View className="flex-row flex-wrap" style={{ flexDirection: rowDirection }}>
+              <View className="flex-row flex-wrap" style={{ flexDirection: 'row' }}>
                 {group.options.map((opt: any) => {
                   const selected = selectedOptions[group.title];
                   const isSelected = selected?.name === opt.name;
@@ -175,7 +172,7 @@ export default function ProductScreen() {
                       key={opt.name}
                       onPress={() => toggleOption(group.title, opt)}
                       className={`mb-3 px-5 py-3 rounded-2xl border items-center ${isSelected ? '' : 'bg-slate-50 border-slate-100'}`}
-                      style={[isSelected ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined, { flexDirection: rowDirection, marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }]}
+                      style={[isSelected ? { backgroundColor: primaryColor, borderColor: primaryColor } : undefined, { flexDirection: 'row', marginEnd: 12 }]}
                     >
                       <Text className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-slate-600'}`}>{opt.name}</Text>
                       {hasExtraPrice && (
@@ -192,11 +189,11 @@ export default function ProductScreen() {
         </View>
       </ScrollView>
       <View className="p-6 pt-4 pb-8 bg-white border-t border-slate-100">
-        <View className="p-4 rounded-[28px] items-center shadow-2xl" style={{ backgroundColor: primaryColor, flexDirection: rowDirection }}>
-          <TouchableOpacity onPress={handleSave} className="flex-1" style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }} activeOpacity={0.8}>
+        <View className="p-4 rounded-[28px] items-center shadow-2xl" style={{ backgroundColor: primaryColor, flexDirection: 'row' }}>
+          <TouchableOpacity onPress={handleSave} className="flex-1" style={{ marginEnd: 12 }} activeOpacity={0.8}>
             <Text className="text-white font-bold text-xl" numberOfLines={1}>{isEditMode ? (isArabic ? 'حفظ التغييرات' : 'Save changes') : (isArabic ? 'أضف إلى السلة' : 'Add to Cart')}</Text>
           </TouchableOpacity>
-          <View className="items-center bg-white/20 rounded-lg py-1 px-1" style={{ flexDirection: rowDirection }}>
+          <View className="items-center bg-white/20 rounded-lg py-1 px-1" style={{ flexDirection: 'row' }}>
             <TouchableOpacity
               onPress={() => setQuantity((q) => Math.max(1, q - 1))}
               className="p-1.5"

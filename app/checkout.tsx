@@ -13,8 +13,7 @@ import {
   Star,
   Trash2,
   Wallet,
-  X,
-} from 'lucide-react-native';
+  X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -25,8 +24,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-} from 'react-native';
+  View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -38,8 +36,7 @@ import {
   PaymentConfig,
   PaymentResponse,
   PaymentStatus,
-  isMoyasarError,
-} from 'react-native-moyasar-sdk';
+  isMoyasarError } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
 import { paymentApi, type SavedCard } from '../src/api/payment';
@@ -88,8 +85,7 @@ export default function CheckoutScreen() {
     deliveryAddress,
     deliveryFee: cartDeliveryFee,
     deliveryOptionId,
-    clearCart,
-  } = useCart();
+    clearCart } = useCart();
   const { merchantId } = useMerchant();
   const { addOrder } = useOrders();
   const { profile } = useProfile();
@@ -100,8 +96,7 @@ export default function CheckoutScreen() {
     moyasarPublishableKey,
     customerPaymentsEnabled,
     applePayEnabled,
-    applePayMerchantId: brandingApplePayMerchantId,
-  } = useMerchantBranding();
+    applePayMerchantId: brandingApplePayMerchantId } = useMerchantBranding();
   const { user } = useAuth();
   const isArabic = i18n.language === 'ar';
   const resolvedPublishableKey = (moyasarPublishableKey || MOYASAR_PUBLISHABLE_KEY || '').trim();
@@ -269,8 +264,7 @@ export default function CheckoutScreen() {
           quantity: 1,
           image: product.image ?? '',
           customizations: null,
-          uniqueId: `reward-${milestone.id}-${foodicsId}`,
-        });
+          uniqueId: `reward-${milestone.id}-${foodicsId}` });
       }
     }
     return out;
@@ -364,12 +358,10 @@ export default function CheckoutScreen() {
         items: cartItems.map((i) => ({
           product_id: i.id,
           quantity: i.quantity,
-          price_sar: i.basePrice ?? i.price,
-        })),
+          price_sar: i.basePrice ?? i.price })),
         lat: deliveryAddress.lat!,
         lng: deliveryAddress.lng!,
-        address: deliveryAddress.address,
-      });
+        address: deliveryAddress.address });
       if (cancelled) return;
       if (quote.withinServiceArea) {
         setDeliveryQuoteFee(quote.feeSar);
@@ -476,8 +468,7 @@ export default function CheckoutScreen() {
         metadata: {
           order_id: orderIdRef.current,
           ...(merchantId ? { merchant_id: merchantId } : {}),
-          ...(user?.id ? { customer_id: user.id } : {}),
-        },
+          ...(user?.id ? { customer_id: user.id } : {}) },
         supportedNetworks: ['mada', 'visa', 'mastercard', 'amex'],
         creditCard: new CreditCardConfig({ saveCard: saveCardChecked, manual: false }),
         applePay: resolvedApplePayEnabled
@@ -485,11 +476,9 @@ export default function CheckoutScreen() {
               merchantId: resolvedApplePayMerchantId,
               label: appName || 'Nooks',
               manual: false,
-              saveCard: false,
-            })
+              saveCard: false })
           : undefined,
-        createSaveOnlyToken: false,
-      });
+        createSaveOnlyToken: false });
     } catch {
       return null;
     }
@@ -652,8 +641,7 @@ export default function CheckoutScreen() {
             quantity: item.quantity,
             image: item.image,
             customizations: item.customizations ?? null,
-            uniqueId: item.uniqueId,
-          })),
+            uniqueId: item.uniqueId })),
           orderType,
           deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
           deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
@@ -674,8 +662,7 @@ export default function CheckoutScreen() {
           // chargeAmount via paymentConfig.amount; this debits the
           // wallet so the ledger matches the customer's outlay.
           walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
-          relayToNooks: false,
-        });
+          relayToNooks: false });
       }
 
       // Server-side commit creates the Foodics order synchronously via
@@ -701,8 +688,7 @@ export default function CheckoutScreen() {
             quantity: item.quantity,
             image: item.image,
             customizations: item.customizations ?? null,
-            uniqueId: item.uniqueId,
-          })),
+            uniqueId: item.uniqueId })),
           orderType,
           deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
           deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
@@ -721,8 +707,7 @@ export default function CheckoutScreen() {
           customerNote: orderNote.trim() || null,
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
-          relayToNooks: true,
-        }).catch((err) => {
+          relayToNooks: true }).catch((err) => {
           console.warn('[Checkout] Background commit failed:', err?.message);
           Alert.alert(
             isArabic ? 'خطأ في المزامنة' : 'Sync issue',
@@ -756,8 +741,7 @@ export default function CheckoutScreen() {
           customerName: profile.fullName || undefined,
           customerPhone: profile.phone || undefined,
           customerEmail: profile.email || undefined,
-          serverPersisted: Boolean(user?.id),
-        },
+          serverPersisted: Boolean(user?.id) },
         orderId,
         // Match what we actually wrote to DB. Using 'Preparing' here
         // flashed the wrong badge until the Realtime UPDATE arrived.
@@ -862,8 +846,7 @@ export default function CheckoutScreen() {
             quantity: item.quantity,
             image: item.image,
             customizations: item.customizations ?? null,
-            uniqueId: item.uniqueId,
-          })),
+            uniqueId: item.uniqueId })),
           orderType,
           deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
           deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
@@ -878,8 +861,7 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
-          relayToNooks: false,
-        });
+          relayToNooks: false });
       }
 
       const result = await paymentApi.initiateStcPay(stcOrderId, merchantId, mobile, finalTotal);
@@ -1086,8 +1068,7 @@ export default function CheckoutScreen() {
               quantity: item.quantity,
               image: item.image,
               customizations: item.customizations ?? null,
-              uniqueId: item.uniqueId,
-            })),
+              uniqueId: item.uniqueId })),
             orderType,
             deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
             deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
@@ -1102,16 +1083,14 @@ export default function CheckoutScreen() {
             promoDiscountSar: promoApplied ? promoDiscount : null,
             promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
-            relayToNooks: false,
-          });
+            relayToNooks: false });
         }
         const session = await paymentApi.initiate({
           amount: finalTotal,
           currency: 'SAR',
           orderId: samsungOrderId,
           merchantId,
-          successUrl: 'alsdraft0://payment/success',
-        });
+          successUrl: 'alsdraft0://payment/success' });
         samsungPayInvoiceIdRef.current = session.id;
         if (session.url) {
           setMoyasarWebUrl(session.url);
@@ -1191,8 +1170,7 @@ export default function CheckoutScreen() {
             quantity: item.quantity,
             image: item.image,
             customizations: item.customizations ?? null,
-            uniqueId: item.uniqueId,
-          })),
+            uniqueId: item.uniqueId })),
           orderType,
           deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
           deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
@@ -1212,8 +1190,7 @@ export default function CheckoutScreen() {
           // explicit walletAmountSar too so the new code path is
           // also satisfied — defence in depth.
           walletAmountSar: Number(finalTotal.toFixed(2)),
-          relayToNooks: true,
-        });
+          relayToNooks: true });
 
         addOrder(
           {
@@ -1239,8 +1216,7 @@ export default function CheckoutScreen() {
             customerName: profile.fullName || undefined,
             customerPhone: profile.phone || undefined,
             customerEmail: profile.email || undefined,
-            serverPersisted: true,
-          },
+            serverPersisted: true },
           walletOrderId,
         );
 
@@ -1290,8 +1266,7 @@ export default function CheckoutScreen() {
               quantity: item.quantity,
               image: item.image,
               customizations: item.customizations ?? null,
-              uniqueId: item.uniqueId,
-            })),
+              uniqueId: item.uniqueId })),
             orderType,
             deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
             deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
@@ -1311,8 +1286,7 @@ export default function CheckoutScreen() {
             // /token-pay below subtracts the same amount from
             // total_sar so the card only charges the remainder.
             walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
-            relayToNooks: false,
-          });
+            relayToNooks: false });
         }
         const session = await paymentApi.payWithSavedCard(tokenOrderId, merchantId, selectedSavedCardId);
         if (session.status === 'paid' || session.status === 'captured') {
@@ -1428,8 +1402,7 @@ export default function CheckoutScreen() {
               style={{
                 backgroundColor: isClosed ? '#fef2f2' : '#fffbeb',
                 borderWidth: 1,
-                borderColor: isClosed ? '#fecaca' : '#fde68a',
-              }}
+                borderColor: isClosed ? '#fecaca' : '#fde68a' }}
             >
               <View style={{ marginTop: 2 }}>
                 {isClosed ? (
@@ -1443,8 +1416,7 @@ export default function CheckoutScreen() {
                   style={{
                     color: isClosed ? '#991b1b' : '#92400e',
                     fontWeight: '700',
-                    fontSize: 14,
-                  }}
+                    fontSize: 14 }}
                 >
                   {isClosed
                     ? (isArabic
@@ -1458,8 +1430,7 @@ export default function CheckoutScreen() {
                   style={{
                     color: isClosed ? '#b91c1c' : '#a16207',
                     fontSize: 12,
-                    marginTop: 4,
-                  }}
+                    marginTop: 4 }}
                 >
                   {orderType === 'delivery'
                     ? (isArabic
@@ -1611,8 +1582,7 @@ export default function CheckoutScreen() {
               style={{
                 borderWidth: 1,
                 borderColor: usePoints ? primaryColor : '#e2e8f0',
-                backgroundColor: usePoints ? `${primaryColor}08` : '#f8fafc',
-              }}
+                backgroundColor: usePoints ? `${primaryColor}08` : '#f8fafc' }}
               activeOpacity={0.7}
             >
               <View className="flex-row items-center flex-1">
@@ -1620,8 +1590,7 @@ export default function CheckoutScreen() {
                   style={{
                     width: 36, height: 36, borderRadius: 18,
                     backgroundColor: usePoints ? primaryColor : '#f1f5f9',
-                    alignItems: 'center', justifyContent: 'center',
-                  }}
+                    alignItems: 'center', justifyContent: 'center' }}
                 >
                   <Star size={18} color={usePoints ? '#fff' : '#94a3b8'} fill={usePoints ? '#fff' : 'none'} />
                 </View>
@@ -1648,8 +1617,7 @@ export default function CheckoutScreen() {
                   width: 44, height: 26, borderRadius: 13,
                   backgroundColor: usePoints ? primaryColor : '#cbd5e1',
                   justifyContent: 'center',
-                  paddingHorizontal: 2,
-                }}
+                  paddingHorizontal: 2 }}
               >
                 <View
                   style={{
@@ -1657,8 +1625,7 @@ export default function CheckoutScreen() {
                     backgroundColor: '#fff',
                     alignSelf: usePoints ? 'flex-end' : 'flex-start',
                     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-                    shadowOpacity: 0.15, shadowRadius: 2, elevation: 2,
-                  }}
+                    shadowOpacity: 0.15, shadowRadius: 2, elevation: 2 }}
                 />
               </View>
             </TouchableOpacity>
@@ -1675,8 +1642,7 @@ export default function CheckoutScreen() {
               style={{
                 borderWidth: 1,
                 borderColor: useWallet ? primaryColor : '#e2e8f0',
-                backgroundColor: useWallet ? `${primaryColor}08` : '#f8fafc',
-              }}
+                backgroundColor: useWallet ? `${primaryColor}08` : '#f8fafc' }}
               activeOpacity={0.7}
             >
               <View className="flex-row items-center flex-1">
@@ -1684,13 +1650,12 @@ export default function CheckoutScreen() {
                   style={{
                     width: 36, height: 36, borderRadius: 18,
                     backgroundColor: useWallet ? primaryColor : '#f1f5f9',
-                    alignItems: 'center', justifyContent: 'center',
-                  }}
+                    alignItems: 'center', justifyContent: 'center' }}
                 >
                   <Wallet size={18} color={useWallet ? '#fff' : '#94a3b8'} />
                 </View>
                 <View className="ml-3 flex-1">
-                  <Text className="font-bold text-slate-900" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+                  <Text className="font-bold text-slate-900" style={{ }}>
                     {isArabic
                       ? `استخدم ${walletBalanceSar.toFixed(2)} ر.س من المحفظة`
                       : `Use ${walletBalanceSar.toFixed(2)} SAR from wallet`}
@@ -1713,8 +1678,7 @@ export default function CheckoutScreen() {
                   width: 44, height: 26, borderRadius: 13,
                   backgroundColor: useWallet ? primaryColor : '#cbd5e1',
                   justifyContent: 'center',
-                  paddingHorizontal: 2,
-                }}
+                  paddingHorizontal: 2 }}
               >
                 <View
                   style={{
@@ -1722,8 +1686,7 @@ export default function CheckoutScreen() {
                     backgroundColor: '#fff',
                     alignSelf: useWallet ? 'flex-end' : 'flex-start',
                     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-                    shadowOpacity: 0.15, shadowRadius: 2, elevation: 2,
-                  }}
+                    shadowOpacity: 0.15, shadowRadius: 2, elevation: 2 }}
                 />
               </View>
             </TouchableOpacity>
@@ -1757,8 +1720,7 @@ export default function CheckoutScreen() {
                     style={{
                       borderWidth: 1,
                       borderColor: selected ? primaryColor : '#e2e8f0',
-                      backgroundColor: selected ? `${primaryColor}10` : '#fff',
-                    }}
+                      backgroundColor: selected ? `${primaryColor}10` : '#fff' }}
                     activeOpacity={0.7}
                   >
                     <View className="flex-1 pr-3">
@@ -1775,8 +1737,7 @@ export default function CheckoutScreen() {
                         borderWidth: 2,
                         borderColor: selected ? primaryColor : '#cbd5e1',
                         backgroundColor: selected ? primaryColor : '#fff',
-                        alignItems: 'center', justifyContent: 'center',
-                      }}
+                        alignItems: 'center', justifyContent: 'center' }}
                     >
                       {selected && <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#fff' }} />}
                     </View>
@@ -1906,7 +1867,7 @@ export default function CheckoutScreen() {
             address or switch to pickup. */}
         {orderType === 'delivery' && !deliveryQuoteWithin && !deliveryQuoteLoading && (
           <View className="mb-3 rounded-2xl bg-red-50 border border-red-100 p-3">
-            <Text className="text-red-700 text-sm font-bold" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+            <Text className="text-red-700 text-sm font-bold" style={{ }}>
               {deliveryQuoteReason === 'out_of_zone'
                 ? (isArabic
                     ? 'عنوانك خارج منطقة التوصيل للمتجر'
@@ -1915,7 +1876,7 @@ export default function CheckoutScreen() {
                     ? 'تعذر حساب رسوم التوصيل — حاول مرة أخرى أو اختر الاستلام'
                     : "Couldn't get a delivery quote — try again or switch to pickup")}
             </Text>
-            <Text className="text-red-600 text-xs mt-1" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+            <Text className="text-red-600 text-xs mt-1" style={{ }}>
               {isArabic ? 'اختر عنواناً آخر أو غيّر نوع الطلب إلى الاستلام' : 'Pick a different address or switch order type to pickup'}
             </Text>
           </View>
@@ -1960,11 +1921,11 @@ export default function CheckoutScreen() {
                   </Text>
                 </View>
               ) : (
-                <View className="flex-row items-center" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+                <View className="flex-row items-center" style={{ flexDirection: 'row' }}>
                   <Text className="text-white font-bold text-base">
                     {isArabic ? 'ادفع' : 'Pay'}
                   </Text>
-                  <View style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}>
+                  <View style={{ marginStart: 8 }}>
                     <PriceWithSymbol
                       amount={chargeAmount}
                       iconSize={16}
@@ -1976,10 +1937,8 @@ export default function CheckoutScreen() {
                     size={18}
                     color="white"
                     style={{
-                      marginLeft: isArabic ? 0 : 8,
-                      marginRight: isArabic ? 8 : 0,
-                      transform: [{ scaleX: isArabic ? -1 : 1 }],
-                    }}
+                      marginStart: 8,
+                      transform: [{ scaleX: isArabic ? -1 : 1 }] }}
                   />
                 </View>
               )}
@@ -2054,8 +2013,7 @@ export default function CheckoutScreen() {
                     className="flex-row items-center p-4 mb-3 rounded-2xl bg-white"
                     style={{
                       borderWidth: 1,
-                      borderColor: selectedSavedCardId === card.id && paymentMethod === 'saved_card' ? primaryColor : '#f1f5f9',
-                    }}
+                      borderColor: selectedSavedCardId === card.id && paymentMethod === 'saved_card' ? primaryColor : '#f1f5f9' }}
                   >
                     <View className="bg-slate-100 p-3 rounded-xl">
                       <CreditCard size={20} color="#64748b" />
@@ -2266,7 +2224,7 @@ export default function CheckoutScreen() {
                     keyboardType="phone-pad"
                     maxLength={10}
                     className="flex-1 text-slate-900 font-medium text-base"
-                    style={{ textAlign: isArabic ? 'right' : 'left' }}
+                    style={{ }}
                   />
                 </View>
                 <TouchableOpacity
@@ -2274,8 +2232,7 @@ export default function CheckoutScreen() {
                   disabled={stcPayLoading || stcPayMobile.length !== 10}
                   className="py-4 rounded-2xl items-center"
                   style={{
-                    backgroundColor: stcPayMobile.length === 10 ? '#4F3B8E' : '#cbd5e1',
-                  }}
+                    backgroundColor: stcPayMobile.length === 10 ? '#4F3B8E' : '#cbd5e1' }}
                 >
                   {stcPayLoading ? (
                     <ActivityIndicator size="small" color="white" />
@@ -2335,8 +2292,7 @@ export default function CheckoutScreen() {
                   disabled={stcPayLoading || stcPayOtp.length !== 6}
                   className="py-4 rounded-2xl items-center"
                   style={{
-                    backgroundColor: stcPayOtp.length === 6 ? '#4F3B8E' : '#cbd5e1',
-                  }}
+                    backgroundColor: stcPayOtp.length === 6 ? '#4F3B8E' : '#cbd5e1' }}
                 >
                   {stcPayLoading ? (
                     <ActivityIndicator size="small" color="white" />

@@ -19,8 +19,7 @@ import {
   RotateCcw,
   ShoppingBag,
   Wallet,
-  X,
-} from 'lucide-react-native';
+  X } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -31,8 +30,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-} from 'react-native';
+  View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -43,8 +41,7 @@ import {
   PaymentConfig,
   PaymentResponse,
   PaymentStatus,
-  isMoyasarError,
-} from 'react-native-moyasar-sdk';
+  isMoyasarError } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { APPLE_PAY_MERCHANT_ID, MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY } from '../src/api/config';
 import { walletApi, type WalletBalance, type WalletEntry } from '../src/api/wallet';
@@ -64,8 +61,7 @@ function formatDate(iso: string | null | undefined, locale: 'ar' | 'en'): string
   if (Number.isNaN(d.getTime())) return '—';
   return new Intl.DateTimeFormat(locale === 'ar' ? 'ar-SA' : 'en-GB', {
     dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(d);
+    timeStyle: 'short' }).format(d);
 }
 
 function entryAccent(entry: WalletEntry): { tint: string; bg: string; Icon: typeof Plus } {
@@ -121,7 +117,7 @@ export default function WalletModal() {
   if (!user?.id || !merchantId) {
     return (
       <SafeAreaView className="flex-1 bg-white" edges={['top']}>
-        <View className="px-5 py-4 border-b border-slate-100 flex-row items-center justify-between" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+        <View className="px-5 py-4 border-b border-slate-100 flex-row items-center justify-between" style={{ flexDirection: 'row' }}>
           <TouchableOpacity onPress={() => router.back()} className="p-2 rounded-full bg-slate-100">
             <BackIcon size={20} color="#334155" />
           </TouchableOpacity>
@@ -140,7 +136,7 @@ export default function WalletModal() {
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={['top']}>
-      <View className="px-5 py-4 border-b border-slate-100 flex-row items-center justify-between" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+      <View className="px-5 py-4 border-b border-slate-100 flex-row items-center justify-between" style={{ flexDirection: 'row' }}>
         <TouchableOpacity onPress={() => router.back()} className="p-2 rounded-full bg-slate-100">
           <BackIcon size={20} color="#334155" />
         </TouchableOpacity>
@@ -151,7 +147,7 @@ export default function WalletModal() {
       <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
         {/* Balance card */}
         <View className="mx-5 mt-5 rounded-[28px] p-6" style={{ backgroundColor: primaryColor }}>
-          <Text className="text-white/80 text-xs uppercase tracking-wider" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+          <Text className="text-white/80 text-xs uppercase tracking-wider" style={{ }}>
             {isArabic ? `رصيد ${cafeName ?? 'المحفظة'}` : `${cafeName ?? 'Wallet'} balance`}
           </Text>
           <View className="mt-2" style={{ alignItems: isArabic ? 'flex-end' : 'flex-start' }}>
@@ -166,7 +162,7 @@ export default function WalletModal() {
               />
             )}
           </View>
-          <View className="mt-5" style={{ flexDirection: isArabic ? 'row-reverse' : 'row' }}>
+          <View className="mt-5" style={{ flexDirection: 'row' }}>
             <TouchableOpacity
               onPress={() => setTopupOpen(true)}
               className="flex-1 bg-white/15 rounded-2xl py-3 px-4 flex-row items-center justify-center"
@@ -181,7 +177,7 @@ export default function WalletModal() {
         {balance && !loading && (
           <View className="mx-5 mt-5 flex-row gap-3">
             <View className="flex-1 rounded-2xl bg-slate-50 border border-slate-100 p-4">
-              <Text className="text-xs text-slate-500 uppercase tracking-wider" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+              <Text className="text-xs text-slate-500 uppercase tracking-wider" style={{ }}>
                 {isArabic ? 'مجموع الإضافات' : 'Total topped up'}
               </Text>
               <View className="mt-1.5" style={{ alignItems: isArabic ? 'flex-end' : 'flex-start' }}>
@@ -189,7 +185,7 @@ export default function WalletModal() {
               </View>
             </View>
             <View className="flex-1 rounded-2xl bg-slate-50 border border-slate-100 p-4">
-              <Text className="text-xs text-slate-500 uppercase tracking-wider" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+              <Text className="text-xs text-slate-500 uppercase tracking-wider" style={{ }}>
                 {isArabic ? 'مسترد' : 'Refunded'}
               </Text>
               <View className="mt-1.5" style={{ alignItems: isArabic ? 'flex-end' : 'flex-start' }}>
@@ -201,7 +197,7 @@ export default function WalletModal() {
 
         {/* History */}
         <View className="mx-5 mt-6">
-          <Text className="text-slate-900 text-lg font-bold mb-3" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+          <Text className="text-slate-900 text-lg font-bold mb-3" style={{ }}>
             {isArabic ? 'سجل المعاملات' : 'Transactions'}
           </Text>
           {loading ? (
@@ -221,13 +217,13 @@ export default function WalletModal() {
                 <View
                   key={entry.id}
                   className="rounded-2xl border border-slate-100 bg-white p-4 mb-2"
-                  style={{ flexDirection: isArabic ? 'row-reverse' : 'row', alignItems: 'center' }}
+                  style={{ flexDirection: 'row', alignItems: 'center' }}
                 >
                   <View className="rounded-full p-2.5" style={{ backgroundColor: bg }}>
                     <Icon size={18} color={tint} />
                   </View>
-                  <View className="flex-1" style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0 }}>
-                    <Text className="font-semibold text-slate-900" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+                  <View className="flex-1" style={{ marginStart: 12 }}>
+                    <Text className="font-semibold text-slate-900" style={{ }}>
                       {entry.entry_type === 'topup'
                         ? (isArabic ? 'تعبئة رصيد' : 'Top-up')
                         : entry.entry_type === 'refund'
@@ -236,7 +232,7 @@ export default function WalletModal() {
                             ? (isArabic ? 'دفع' : 'Spend')
                             : (isArabic ? 'تسوية' : 'Adjustment')}
                     </Text>
-                    <Text className="text-xs text-slate-400 mt-0.5" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+                    <Text className="text-xs text-slate-400 mt-0.5" style={{ }}>
                       {formatDate(entry.created_at, isArabic ? 'ar' : 'en')}
                       {entry.note ? ` · ${entry.note}` : ''}
                     </Text>
@@ -309,8 +305,7 @@ function TopupSheet({
   customerEmail,
   customerPhone,
   onClose,
-  onSuccess,
-}: {
+  onSuccess }: {
   merchantId: string;
   customerName: string;
   customerEmail?: string;
@@ -329,8 +324,7 @@ function TopupSheet({
     applePayEnabled,
     applePayMerchantId,
     cafeName,
-    appName,
-  } = useMerchantBranding();
+    appName } = useMerchantBranding();
 
   const resolvedApplePayMerchantId = (applePayMerchantId || APPLE_PAY_MERCHANT_ID || '').trim();
   const resolvedApplePayEnabled =
@@ -395,18 +389,15 @@ function TopupSheet({
         metadata: {
           type: 'wallet_topup',
           merchant_id: merchantId,
-          ...(user?.id ? { customer_id: user.id } : {}),
-        },
+          ...(user?.id ? { customer_id: user.id } : {}) },
         supportedNetworks: ['mada', 'visa', 'mastercard', 'amex'],
         creditCard: new CreditCardConfig({ saveCard: false, manual: false }),
         applePay: new ApplePayConfig({
           merchantId: resolvedApplePayMerchantId,
           label: appName || cafeName || 'Wallet',
           manual: false,
-          saveCard: false,
-        }),
-        createSaveOnlyToken: false,
-      });
+          saveCard: false }),
+        createSaveOnlyToken: false });
     } catch {
       return null;
     }
@@ -460,8 +451,7 @@ function TopupSheet({
       const res = await walletApi.topupWithSavedCard({
         merchantId,
         savedCardId: choice.cardId,
-        amount_sar: amountNum,
-      });
+        amount_sar: amountNum });
 
       // 3DS required — open verification URL in a WebView; finalize
       // once the bank lands back on sdk.moyasar.com/return.
@@ -521,7 +511,7 @@ function TopupSheet({
       <SafeAreaView className="flex-1 bg-white">
         <View
           className="px-5 py-4 border-b border-slate-100 items-center justify-between"
-          style={{ flexDirection: rowDirection }}
+          style={{ flexDirection: 'row' }}
         >
           <Text className="text-lg font-bold text-slate-800">
             {stage === 'pick' ? (isArabic ? 'إضافة رصيد' : 'Add money') : (isArabic ? 'الدفع' : 'Payment')}
@@ -548,8 +538,7 @@ function TopupSheet({
                     className="rounded-2xl px-5 py-3 border"
                     style={{
                       borderColor: selected ? primaryColor : '#e2e8f0',
-                      backgroundColor: selected ? `${primaryColor}10` : '#fff',
-                    }}
+                      backgroundColor: selected ? `${primaryColor}10` : '#fff' }}
                   >
                     <Text className="font-semibold" style={{ color: selected ? primaryColor : '#0f172a' }}>
                       {preset} {isArabic ? 'ر.س' : 'SAR'}
@@ -563,7 +552,7 @@ function TopupSheet({
             </Text>
             <View
               className="mt-2 items-center border border-slate-200 rounded-2xl px-4 py-3"
-              style={{ flexDirection: rowDirection }}
+              style={{ flexDirection: 'row' }}
             >
               <TextInput
                 value={amountText}
@@ -576,7 +565,7 @@ function TopupSheet({
               />
               <Text
                 className="text-slate-500"
-                style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}
+                style={{ marginStart: 8 }}
               >
                 {isArabic ? 'ر.س' : 'SAR'}
               </Text>
@@ -599,7 +588,7 @@ function TopupSheet({
             </Text>
             <View
               className="mt-1 items-center"
-              style={{ flexDirection: rowDirection }}
+              style={{ flexDirection: 'row' }}
             >
               <PriceWithSymbol
                 amount={amountNum}
@@ -610,7 +599,7 @@ function TopupSheet({
               <TouchableOpacity
                 onPress={() => setStage('pick')}
                 className="rounded-full px-3 py-1 bg-slate-100"
-                style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0 }}
+                style={{ marginStart: 12 }}
               >
                 <Text className="text-slate-700 text-xs font-semibold">
                   {isArabic ? 'تعديل' : 'Edit'}
@@ -631,17 +620,16 @@ function TopupSheet({
                 onPress={() => setChoice({ kind: 'apple_pay' })}
                 className="mt-3 items-center rounded-2xl border p-4"
                 style={{
-                  flexDirection: rowDirection,
+                  flexDirection: 'row',
                   borderColor: choice?.kind === 'apple_pay' ? primaryColor : '#e2e8f0',
-                  backgroundColor: choice?.kind === 'apple_pay' ? `${primaryColor}08` : '#fff',
-                }}
+                  backgroundColor: choice?.kind === 'apple_pay' ? `${primaryColor}08` : '#fff' }}
               >
                 <View className="w-12 h-8 bg-black rounded items-center justify-center">
                   <Text className="text-white font-bold text-xs">{'\uF8FF'} Pay</Text>
                 </View>
                 <Text
                   className="font-bold text-slate-900"
-                  style={{ marginLeft: isArabic ? 0 : 12, marginRight: isArabic ? 12 : 0, flex: 1, textAlign }}
+                  style={{ marginStart: 12, flex: 1, textAlign }}
                 >
                   {'\uF8FF'} Apple Pay
                 </Text>
@@ -662,12 +650,12 @@ function TopupSheet({
             ) : savedCards.length === 0 ? (
               <View
                 className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 items-center"
-                style={{ flexDirection: rowDirection }}
+                style={{ flexDirection: 'row' }}
               >
                 <CreditCard size={20} color="#94a3b8" />
                 <Text
                   className="text-slate-500 text-sm flex-1"
-                  style={{ marginLeft: isArabic ? 0 : 10, marginRight: isArabic ? 10 : 0, textAlign }}
+                  style={{ marginStart: 10, textAlign }}
                 >
                   {isArabic
                     ? 'لا توجد بطاقات محفوظة. أضف بطاقة لاستخدامها هنا.'
@@ -683,14 +671,13 @@ function TopupSheet({
                     onPress={() => setChoice({ kind: 'saved_card', cardId: card.id })}
                     className="mt-3 items-center rounded-2xl border p-4"
                     style={{
-                      flexDirection: rowDirection,
+                      flexDirection: 'row',
                       borderColor: selected ? primaryColor : '#e2e8f0',
-                      backgroundColor: selected ? `${primaryColor}08` : '#fff',
-                    }}
+                      backgroundColor: selected ? `${primaryColor}08` : '#fff' }}
                   >
                     <View
                       className="bg-slate-100 p-2.5 rounded-xl"
-                      style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}
+                      style={{ marginEnd: 12 }}
                     >
                       <CreditCard size={18} color={primaryColor} />
                     </View>
@@ -723,16 +710,14 @@ function TopupSheet({
             <TouchableOpacity
               onPress={() => router.push('/add-card-modal')}
               className="mt-3 items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 p-3"
-              style={{ flexDirection: rowDirection }}
+              style={{ flexDirection: 'row' }}
             >
               <Plus size={18} color={primaryColor} />
               <Text
                 className="font-bold"
                 style={{
                   color: primaryColor,
-                  marginLeft: isArabic ? 0 : 8,
-                  marginRight: isArabic ? 8 : 0,
-                }}
+                  marginStart: 8 }}
               >
                 {isArabic ? 'إضافة بطاقة جديدة' : 'Add a new card'}
               </Text>
@@ -755,8 +740,7 @@ function TopupSheet({
                     buttonStyle: 'black',
                     height: 50,
                     width: '100%',
-                    cornerRadius: 28,
-                  }}
+                    cornerRadius: 28 }}
                 />
               ) : (
                 <TouchableOpacity
@@ -772,8 +756,7 @@ function TopupSheet({
                     backgroundColor:
                       submitting || !choice || choice.kind !== 'saved_card'
                         ? '#cbd5e1'
-                        : primaryColor,
-                  }}
+                        : primaryColor }}
                   activeOpacity={0.9}
                 >
                   {submitting ? (
@@ -810,7 +793,7 @@ function TopupSheet({
           <SafeAreaView className="flex-1 bg-white">
             <View
               className="items-center justify-between px-5 py-4 border-b border-slate-100"
-              style={{ flexDirection: rowDirection }}
+              style={{ flexDirection: 'row' }}
             >
               <Text className="text-lg font-bold text-slate-800">
                 {isArabic ? 'تحقق البطاقة' : 'Card Verification'}

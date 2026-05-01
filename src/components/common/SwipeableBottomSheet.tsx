@@ -34,8 +34,7 @@ export function SwipeableBottomSheet({ children, onDismiss, height, style }: Pro
     });
 
   const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-  }));
+    transform: [{ translateY: translateY.value }] }));
 
   return (
     <GestureDetector gesture={pan}>

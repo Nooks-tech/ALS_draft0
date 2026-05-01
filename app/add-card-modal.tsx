@@ -11,8 +11,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-} from 'react-native';
+  View } from 'react-native';
 import { CreditCard, Lock, ShieldCheck, X } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { WebView } from 'react-native-webview';
@@ -24,8 +23,7 @@ import { paymentApi } from '../src/api/payment';
 import {
   createMoyasarToken,
   type CreateTokenResponse,
-  MoyasarTokenError,
-} from '../src/api/moyasarTokenize';
+  MoyasarTokenError } from '../src/api/moyasarTokenize';
 
 /**
  * Add-a-card screen. Replaces the Moyasar SDK's hosted card form with
@@ -220,8 +218,7 @@ export default function AddCardModal() {
         number: cardNumberRaw,
         cvc,
         month: expParsed.month,
-        year: expParsed.year,
-      });
+        year: expParsed.year });
 
       // Some BINs require 3DS even for save-only tokens. Open the
       // verification URL in a webview; once it lands back on
@@ -328,8 +325,7 @@ export default function AddCardModal() {
           borderTopLeftRadius: 40,
           borderTopRightRadius: 40,
           overflow: 'hidden',
-          maxHeight: '90%',
-        }}
+          maxHeight: '90%' }}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -338,7 +334,7 @@ export default function AddCardModal() {
         >
           <View
             className="items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100"
-            style={{ flexDirection: rowDirection }}
+            style={{ flexDirection: 'row' }}
           >
             <Text className="text-xl font-bold text-slate-800">
               {isArabic ? 'إضافة بطاقة' : 'Add a Card'}
@@ -346,7 +342,7 @@ export default function AddCardModal() {
             <TouchableOpacity
               onPress={close}
               className="p-2"
-              style={{ marginRight: isArabic ? 0 : -8, marginLeft: isArabic ? -8 : 0 }}
+              style={{ marginEnd: -8 }}
               disabled={submitting}
             >
               <X size={24} color="#64748b" />
@@ -365,7 +361,7 @@ export default function AddCardModal() {
             >
               <View
                 className="items-center justify-between"
-                style={{ flexDirection: rowDirection }}
+                style={{ flexDirection: 'row' }}
               >
                 <CreditCard size={28} color="white" />
                 {brand ? (
@@ -377,7 +373,7 @@ export default function AddCardModal() {
               </Text>
               <View
                 className="justify-between mt-4"
-                style={{ flexDirection: rowDirection }}
+                style={{ flexDirection: 'row' }}
               >
                 <View>
                   <Text className="text-white/60 text-[10px] uppercase tracking-widest">
@@ -411,8 +407,7 @@ export default function AddCardModal() {
                 className="bg-slate-50 px-4 py-3 rounded-2xl text-slate-800 font-medium border border-slate-100"
                 style={{
                   textAlign,
-                  writingDirection: isArabic ? 'rtl' : 'ltr',
-                }}
+                  writingDirection: isArabic ? 'rtl' : 'ltr' }}
                 editable={!submitting}
               />
               {errors.name ? (
@@ -435,8 +430,7 @@ export default function AddCardModal() {
                 style={{
                   textAlign: 'left',
                   writingDirection: 'ltr',
-                  fontVariant: ['tabular-nums'],
-                }}
+                  fontVariant: ['tabular-nums'] }}
                 // maxDigits + spaces (one space every 4 digits, with a
                 // 4-4-4-3 split for Amex). Recomputed lazily — for the
                 // common 16-digit case this is 16 + 3 = 19.
@@ -449,7 +443,7 @@ export default function AddCardModal() {
             </View>
 
             {/* Expiry + CVC row */}
-            <View className="gap-3" style={{ flexDirection: rowDirection }}>
+            <View className="gap-3" style={{ flexDirection: 'row' }}>
               <View className="flex-1 mb-4">
                 <Text className="text-slate-500 text-sm font-bold mb-2" style={{ textAlign }}>
                   {isArabic ? 'تاريخ الانتهاء' : 'Expiry'}
@@ -502,11 +496,11 @@ export default function AddCardModal() {
               {submitting ? (
                 <ActivityIndicator color="white" />
               ) : (
-                <View className="items-center" style={{ flexDirection: rowDirection }}>
+                <View className="items-center" style={{ flexDirection: 'row' }}>
                   <Lock size={18} color="white" />
                   <Text
                     className="text-white font-bold text-base"
-                    style={{ marginLeft: isArabic ? 0 : 8, marginRight: isArabic ? 8 : 0 }}
+                    style={{ marginStart: 8 }}
                   >
                     {isArabic ? 'حفظ البطاقة' : 'Save Card'}
                   </Text>
@@ -517,17 +511,15 @@ export default function AddCardModal() {
             {/* PCI safety note */}
             <View
               className="items-center mt-5 px-3 py-2.5 bg-emerald-50 rounded-2xl"
-              style={{ flexDirection: rowDirection }}
+              style={{ flexDirection: 'row' }}
             >
               <ShieldCheck size={16} color="#10b981" />
               <Text
                 className="text-emerald-700 text-xs flex-1"
                 style={{
-                  marginLeft: isArabic ? 0 : 8,
-                  marginRight: isArabic ? 8 : 0,
+                  marginStart: 8,
                   textAlign,
-                  lineHeight: 16,
-                }}
+                  lineHeight: 16 }}
               >
                 {isArabic
                   ? 'بياناتك تُرسل مباشرة إلى Moyasar (PCI DSS) — لا نحفظ أرقام البطاقات على خوادمنا.'
@@ -543,7 +535,7 @@ export default function AddCardModal() {
         <View className="flex-1 bg-white">
           <View
             className="items-center justify-between px-5 py-4 border-b border-slate-100"
-            style={{ flexDirection: rowDirection }}
+            style={{ flexDirection: 'row' }}
           >
             <Text className="text-lg font-bold text-slate-800">
               {isArabic ? 'تحقق البطاقة' : 'Card Verification'}

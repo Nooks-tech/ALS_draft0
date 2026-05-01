@@ -22,12 +22,12 @@ export default function OrdersScreen() {
       <StatusBar barStyle="dark-content" />
       <View
         className="pt-14 pb-4 px-5 items-center"
-        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0', flexDirection: isArabic ? 'row-reverse' : 'row' }}
+        style={{ backgroundColor, borderBottomWidth: 1, borderBottomColor: '#e2e8f0', flexDirection: 'row' }}
       >
         <TouchableOpacity
           onPress={() => router.replace('/(tabs)/menu')}
           className="p-2"
-          style={{ marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }}
+          style={{ marginEnd: 16 }}
         >
           <BackIcon size={24} color={textColor} />
         </TouchableOpacity>

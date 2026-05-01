@@ -34,8 +34,7 @@ export default function OtpScreen() {
         verifyContinue: 'تأكيد ومتابعة',
         didntReceive: 'لم يصلك الرمز؟',
         resendIn: 'إعادة الإرسال خلال',
-        resendCode: 'إعادة إرسال الرمز',
-      }
+        resendCode: 'إعادة إرسال الرمز' }
     : {
         error: 'Error',
         invalidCodeTitle: 'Invalid Code',
@@ -51,8 +50,7 @@ export default function OtpScreen() {
         verifyContinue: 'Verify & Continue',
         didntReceive: "Didn't receive the code?",
         resendIn: 'Resend in',
-        resendCode: 'Resend Code',
-      };
+        resendCode: 'Resend Code' };
 
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -119,10 +117,10 @@ export default function OtpScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} className="flex-1 justify-center">
         <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View className="mb-8">
-            <Text className="text-3xl font-bold text-gray-900 mb-2" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+            <Text className="text-3xl font-bold text-gray-900 mb-2" style={{ }}>
               {copy.title}
             </Text>
-            <Text className="text-gray-500 text-base" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+            <Text className="text-gray-500 text-base" style={{ }}>
               {isArabic ? 'أرسلنا رمزًا مكونًا من 6 أرقام إلى ' : 'We sent a 6-digit code to '}
               {maskedPhone || copy.yourPhone}.
               {'\n'}

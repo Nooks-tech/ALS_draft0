@@ -23,8 +23,7 @@ export default function CartScreen() {
     totalPrice,
     orderType,
     selectedBranch,
-    deliveryAddress,
-  } = useCart();
+    deliveryAddress } = useCart();
   const [zoneChecking, setZoneChecking] = useState(false);
 
   const handleEditItem = (item: (typeof cartItems)[0]) => {
@@ -73,12 +72,10 @@ export default function CartScreen() {
           items: cartItems.map((i) => ({
             product_id: (i as any).foodicsProductId || i.id,
             quantity: i.quantity,
-            price_sar: i.price,
-          })),
+            price_sar: i.price })),
           lat: deliveryAddress.lat,
           lng: deliveryAddress.lng,
-          address: deliveryAddress.address || undefined,
-        });
+          address: deliveryAddress.address || undefined });
         if (!quote.withinServiceArea) {
           Alert.alert(
             isArabic ? 'العنوان خارج منطقة التوصيل' : 'Address outside delivery zone',
@@ -88,8 +85,7 @@ export default function CartScreen() {
             [
               {
                 text: isArabic ? 'تغيير العنوان' : 'Change address',
-                onPress: () => router.push('/order-type'),
-              },
+                onPress: () => router.push('/order-type') },
               { text: isArabic ? 'إلغاء' : 'Cancel', style: 'cancel' },
             ],
           );
@@ -126,8 +122,8 @@ export default function CartScreen() {
         contentContainerStyle={{ paddingBottom: 200 }}
       >
         {/* --- ORDER TYPE STATUS --- */}
-          <View className="items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100" style={{ flexDirection: rowDirection }}>
-            <View style={[orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : undefined, { marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }]} className={orderType === 'delivery' ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
+          <View className="items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100" style={{ flexDirection: 'row' }}>
+            <View style={[orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : undefined, { marginEnd: 16 }]} className={orderType === 'delivery' ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
               {orderType === 'delivery' ? (
                 <Bike size={24} color={primaryColor} />
               ) : (
@@ -135,10 +131,10 @@ export default function CartScreen() {
               )}
             </View>
             <View className="flex-1">
-              <Text className="text-[10px] font-bold text-slate-400 uppercase tracking-widest" style={{ textAlign: isArabic ? 'right' : 'left' }}>
+              <Text className="text-[10px] font-bold text-slate-400 uppercase tracking-widest" style={{ }}>
                 {orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
               </Text>
-              <Text className="text-slate-800 font-bold text-base" style={{ textAlign: isArabic ? 'right' : 'left' }} numberOfLines={2}>
+              <Text className="text-slate-800 font-bold text-base" style={{ }} numberOfLines={2}>
                 {orderType === 'delivery'
                   ? deliveryAddress?.address || (isArabic ? 'أضف عنوان التوصيل' : 'Add delivery address')
                   : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch')}
@@ -149,7 +145,7 @@ export default function CartScreen() {
             </TouchableOpacity>
           </View>
 
-          <Text className="text-lg font-bold text-slate-900 mb-4" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'ملخص الطلب' : 'Order Summary'}</Text>
+          <Text className="text-lg font-bold text-slate-900 mb-4" style={{ }}>{isArabic ? 'ملخص الطلب' : 'Order Summary'}</Text>
 
           {/* --- CART ITEMS --- */}
           {cartItems.length === 0 ? (
@@ -167,7 +163,7 @@ export default function CartScreen() {
               <View
                 key={item.uniqueId}
                 className="items-center mb-6 bg-white rounded-3xl p-3 border border-slate-100 shadow-sm"
-                style={{ flexDirection: rowDirection, alignItems: 'center' }}
+                style={{ flexDirection: 'row', alignItems: 'center' }}
               >
                 <Image
                   source={{ uri: item.image }}
@@ -177,17 +173,15 @@ export default function CartScreen() {
                 <View
                   className="flex-1"
                   style={{
-                    marginLeft: isArabic ? 0 : 16,
-                    marginRight: isArabic ? 16 : 0,
-                    alignItems: isArabic ? 'flex-end' : 'flex-start',
-                  }}
+                    marginStart: 16,
+                    alignItems: isArabic ? 'flex-end' : 'flex-start' }}
                 >
-                  <Text className="text-base font-bold text-slate-800" style={{ textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1}>
+                  <Text className="text-base font-bold text-slate-800" style={{ }} numberOfLines={1}>
                     {item.name}
                   </Text>
 
                   {!!item.customizations && (
-                    <Text className="text-slate-400 text-xs mt-0.5" style={{ textAlign: isArabic ? 'right' : 'left' }} numberOfLines={1}>
+                    <Text className="text-slate-400 text-xs mt-0.5" style={{ }} numberOfLines={1}>
                       {Object.values(item.customizations)
                         .map((opt: any) => opt.name)
                         .join(' • ')}
@@ -201,7 +195,7 @@ export default function CartScreen() {
                   <TouchableOpacity
                     onPress={() => handleEditItem(item)}
                     className="mb-2 items-center p-2"
-                    style={{ flexDirection: rowDirection }}
+                    style={{ flexDirection: 'row' }}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <Pencil size={18} color={primaryColor} />
@@ -209,14 +203,12 @@ export default function CartScreen() {
                       className="font-bold text-sm"
                       style={{
                         color: primaryColor,
-                        marginLeft: isArabic ? 0 : 6,
-                        marginRight: isArabic ? 6 : 0,
-                      }}
+                        marginStart: 6 }}
                     >
                       {isArabic ? 'تعديل' : 'Edit'}
                     </Text>
                   </TouchableOpacity>
-                  <View className="items-center bg-slate-100 rounded-2xl p-2" style={{ flexDirection: rowDirection }}>
+                  <View className="items-center bg-slate-100 rounded-2xl p-2" style={{ flexDirection: 'row' }}>
                     <TouchableOpacity
                       onPress={() => updateQuantity(item.uniqueId, -1)}
                       className="p-2.5 bg-white rounded-xl shadow-sm"
@@ -253,8 +245,7 @@ export default function CartScreen() {
                           {
                             text: isArabic ? 'احذفه' : 'Remove',
                             style: 'destructive',
-                            onPress: () => removeFromCart(item),
-                          },
+                            onPress: () => removeFromCart(item) },
                         ],
                       );
                     }}
@@ -270,21 +261,21 @@ export default function CartScreen() {
 
           {!!cartItems.length && (
             <View className="mt-4 p-6 bg-slate-50 rounded-[32px] border border-slate-100">
-              <View className="justify-between mb-3" style={{ flexDirection: rowDirection }}>
-                <Text className="text-slate-500 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'المجموع الفرعي' : 'Subtotal'}</Text>
+              <View className="justify-between mb-3" style={{ flexDirection: 'row' }}>
+                <Text className="text-slate-500 font-medium" style={{ }}>{isArabic ? 'المجموع الفرعي' : 'Subtotal'}</Text>
                 <PriceWithSymbol amount={totalPrice} iconSize={15} iconColor="#1e293b" textStyle={{ color: '#1e293b', fontWeight: '700' }} />
               </View>
               {orderType === 'delivery' && (
-                <View className="justify-between mb-3" style={{ flexDirection: rowDirection }}>
-                  <Text className="text-slate-500 font-medium" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'رسوم التوصيل' : 'Delivery'}</Text>
+                <View className="justify-between mb-3" style={{ flexDirection: 'row' }}>
+                  <Text className="text-slate-500 font-medium" style={{ }}>{isArabic ? 'رسوم التوصيل' : 'Delivery'}</Text>
                   <Text className="text-slate-400 text-sm">{isArabic ? 'تُحسب عند الدفع' : 'Calculated at checkout'}</Text>
                 </View>
               )}
 
               <View className="h-[1px] bg-slate-200 my-4" />
 
-              <View className="justify-between" style={{ flexDirection: rowDirection }}>
-                <Text className="text-xl font-bold text-slate-900" style={{ textAlign: isArabic ? 'right' : 'left' }}>{isArabic ? 'الإجمالي' : 'Total'}</Text>
+              <View className="justify-between" style={{ flexDirection: 'row' }}>
+                <Text className="text-xl font-bold text-slate-900" style={{ }}>{isArabic ? 'الإجمالي' : 'Total'}</Text>
                 <View style={{ alignItems: isArabic ? 'flex-start' : 'flex-end' }}>
                   <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 20 }} />
                   <Text className="text-[10px] text-slate-400" style={{ textAlign: isArabic ? 'left' : 'right' }}>{isArabic ? 'شامل الضريبة' : 'VAT Included'}</Text>
@@ -297,13 +288,13 @@ export default function CartScreen() {
       {!!cartItems.length && (
         <View className="p-6 pt-4 pb-8 bg-white border-t border-slate-100">
           <TouchableOpacity
-            style={{ backgroundColor: primaryColor, flexDirection: rowDirection, opacity: zoneChecking ? 0.6 : 1 }}
+            style={{ backgroundColor: primaryColor, flexDirection: 'row', opacity: zoneChecking ? 0.6 : 1 }}
             className="p-5 rounded-[28px] items-center shadow-xl"
             activeOpacity={0.9}
             onPress={handleCheckout}
             disabled={zoneChecking}
           >
-            <View className="bg-white/20 px-3 py-1.5 rounded-xl" style={{ marginRight: isArabic ? 0 : 12, marginLeft: isArabic ? 12 : 0 }}>
+            <View className="bg-white/20 px-3 py-1.5 rounded-xl" style={{ marginEnd: 12 }}>
               <Text className="text-white font-bold">{cartItems.length}</Text>
             </View>
             <Text className="text-white font-bold text-xl">

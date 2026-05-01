@@ -85,8 +85,7 @@ export default function PaymentModal() {
             } finally {
               setDeletingId(null);
             }
-          },
-        },
+          } },
       ],
     );
   };
@@ -101,13 +100,13 @@ export default function PaymentModal() {
       >
         <View
           className="items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100"
-          style={{ flexDirection: rowDirection }}
+          style={{ flexDirection: 'row' }}
         >
           <Text className="text-xl font-bold text-slate-800">{isArabic ? 'طرق الدفع' : 'Payment Methods'}</Text>
           <TouchableOpacity
             onPress={() => router.back()}
             className="p-2"
-            style={{ marginRight: isArabic ? 0 : -8, marginLeft: isArabic ? -8 : 0 }}
+            style={{ marginEnd: -8 }}
           >
             <X size={24} color="#64748b" />
           </TouchableOpacity>
@@ -134,11 +133,11 @@ export default function PaymentModal() {
               <View
                 key={card.id}
                 className="items-center p-4 mb-3 bg-slate-50 rounded-2xl border border-slate-100"
-                style={{ flexDirection: rowDirection }}
+                style={{ flexDirection: 'row' }}
               >
                 <View
                   className="bg-white p-3 rounded-xl"
-                  style={{ marginRight: isArabic ? 0 : 16, marginLeft: isArabic ? 16 : 0 }}
+                  style={{ marginEnd: 16 }}
                 >
                   <CreditCard size={24} color={primaryColor} />
                 </View>
@@ -176,7 +175,7 @@ export default function PaymentModal() {
           <TouchableOpacity
             onPress={() => router.push('/add-card-modal')}
             className="items-center justify-center mt-3 py-4 px-4 rounded-2xl border-2 border-dashed border-slate-200"
-            style={{ flexDirection: rowDirection }}
+            style={{ flexDirection: 'row' }}
             activeOpacity={0.8}
           >
             <Plus size={20} color={primaryColor} />
@@ -184,9 +183,7 @@ export default function PaymentModal() {
               className="font-bold"
               style={{
                 color: primaryColor,
-                marginLeft: isArabic ? 0 : 8,
-                marginRight: isArabic ? 8 : 0,
-              }}
+                marginStart: 8 }}
             >
               {isArabic ? 'إضافة بطاقة جديدة' : 'Add New Card'}
             </Text>
@@ -194,12 +191,12 @@ export default function PaymentModal() {
 
           <View
             className="items-center mt-6 px-4 py-3 bg-emerald-50 rounded-2xl"
-            style={{ flexDirection: rowDirection }}
+            style={{ flexDirection: 'row' }}
           >
             <ShieldCheck size={18} color="#10b981" />
             <Text
               className="text-emerald-700 text-xs flex-1"
-              style={{ marginLeft: isArabic ? 0 : 10, marginRight: isArabic ? 10 : 0, textAlign }}
+              style={{ marginStart: 10, textAlign }}
             >
               {isArabic
                 ? 'بياناتك محمية بمعيار PCI DSS من Moyasar — لا نقوم بحفظ أرقام البطاقات في تطبيقنا.'

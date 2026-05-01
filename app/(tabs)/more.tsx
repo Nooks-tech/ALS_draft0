@@ -18,8 +18,7 @@ import {
   Shield,
   Star,
   User,
-  Wallet,
-} from 'lucide-react-native';
+  Wallet } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../src/context/AuthContext';
 import { useMerchant } from '../../src/context/MerchantContext';
@@ -125,16 +124,13 @@ export default function MoreScreen() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
+          Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
           customerId: user.id,
           token: existing.expo_push_token,
           platform: existing.platform ?? Platform.OS,
           appLanguage: existing.app_language ?? (isArabic ? 'ar' : 'en'),
-          marketingOptIn: next,
-        }),
-      });
+          marketingOptIn: next }) });
     } catch (e) {
       setMarketingOptIn(!next);
       Alert.alert(isArabic ? 'خطأ' : 'Error', isArabic ? 'ما قدرنا نحفظ التفضيل.' : "Couldn't save preference.");
@@ -153,8 +149,7 @@ export default function MoreScreen() {
         return;
       }
       const res = await fetch(`${API_URL}/api/account/export`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
+        headers: { Authorization: `Bearer ${session.access_token}` } });
       if (!res.ok) throw new Error('Export failed');
       const text = await res.text();
       const dir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
@@ -164,8 +159,7 @@ export default function MoreScreen() {
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(path, {
           mimeType: 'application/json',
-          dialogTitle: isArabic ? 'بياناتي' : 'My data',
-        });
+          dialogTitle: isArabic ? 'بياناتي' : 'My data' });
       } else {
         Alert.alert(
           isArabic ? 'تم التصدير' : 'Export ready',
@@ -200,8 +194,7 @@ export default function MoreScreen() {
               if (!session?.access_token) throw new Error('No session');
               const res = await fetch(`${API_URL}/api/account`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${session.access_token}` },
-              });
+                headers: { Authorization: `Bearer ${session.access_token}` } });
               if (!res.ok) throw new Error('Delete failed');
               await signOut();
               router.replace('/(auth)/login');
@@ -213,8 +206,7 @@ export default function MoreScreen() {
             } finally {
               setDeletingAccount(false);
             }
-          },
-        },
+          } },
       ],
     );
   };
@@ -253,8 +245,7 @@ export default function MoreScreen() {
         terms: 'الشروط والأحكام',
         refund: 'سياسة الاسترجاع والإلغاء',
         logOut: 'تسجيل الخروج',
-        version: 'الإصدار 1.0.0',
-      }
+        version: 'الإصدار 1.0.0' }
     : {
         error: 'Error',
         changeLanguageFailed: 'Could not change language.',
@@ -289,8 +280,7 @@ export default function MoreScreen() {
         terms: 'Terms & Conditions',
         refund: 'Refund & Cancellation',
         logOut: 'Log Out',
-        version: 'Version 1.0.0',
-      };
+        version: 'Version 1.0.0' };
 
   const [languageSwitching, setLanguageSwitching] = useState(false);
   const toggleLanguage = async () => {
@@ -340,14 +330,12 @@ export default function MoreScreen() {
               await unregisterPushToken({
                 merchantId,
                 customerId: user.id,
-                token: tokenRes?.data,
-              });
+                token: tokenRes?.data });
             }
           } catch {}
           await signOut();
           router.replace('/(auth)/login');
-        },
-      },
+        } },
     ]);
   };
 
@@ -359,7 +347,7 @@ export default function MoreScreen() {
     <TouchableOpacity
       onPress={onPress}
       className="items-center p-4 mb-[1px]"
-      style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+      style={{ backgroundColor: menuCardColor, flexDirection: 'row' }}
     >
       <View
         style={
@@ -374,12 +362,10 @@ export default function MoreScreen() {
       <View
         className="flex-1"
         style={{
-          marginLeft: isArabic ? 0 : 16,
-          marginRight: isArabic ? 16 : 0,
-        }}
+          marginStart: 16 }}
       >
-        <Text className="text-base font-bold" style={{ color: isDestructive ? '#ef4444' : textColor, textAlign: isArabic ? 'right' : 'left' }}>{title}</Text>
-        {subtitle && <Text className="text-xs" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{subtitle}</Text>}
+        <Text className="text-base font-bold" style={{ color: isDestructive ? '#ef4444' : textColor }}>{title}</Text>
+        {subtitle && <Text className="text-xs" style={{ color: textColor }}>{subtitle}</Text>}
       </View>
       {!isDestructive && <ChevronRight size={20} color={textColor} style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />}
     </TouchableOpacity>
@@ -431,7 +417,7 @@ export default function MoreScreen() {
           <TouchableOpacity
             onPress={toggleLanguage}
             className="items-center p-4"
-            style={{ backgroundColor: menuCardColor, flexDirection: isArabic ? 'row-reverse' : 'row' }}
+            style={{ backgroundColor: menuCardColor, flexDirection: 'row' }}
           >
             <View className="w-10 h-10 rounded-full justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
               <Globe size={20} color={primaryColor} />
@@ -439,12 +425,10 @@ export default function MoreScreen() {
             <View
               className="flex-1"
               style={{
-                marginLeft: isArabic ? 0 : 16,
-                marginRight: isArabic ? 16 : 0,
-              }}
+                marginStart: 16 }}
             >
-              <Text className="text-base font-bold" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>Language / اللغة</Text>
-              <Text className="text-xs" style={{ color: textColor, textAlign: isArabic ? 'right' : 'left' }}>{i18n.language === 'en' ? copy.english : 'العربية'}</Text>
+              <Text className="text-base font-bold" style={{ color: textColor }}>Language / اللغة</Text>
+              <Text className="text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? copy.english : 'العربية'}</Text>
             </View>
             <View className="px-3 py-1 rounded-full" style={{ backgroundColor: menuCardColor }}>
               <Text className="font-bold text-xs" style={{ color: textColor }}>{i18n.language === 'en' ? 'AR' : 'EN'}</Text>
@@ -485,8 +469,7 @@ export default function MoreScreen() {
             flex: 1,
             backgroundColor: backgroundColor || '#0d9488',
             alignItems: 'center',
-            justifyContent: 'center',
-          }}
+            justifyContent: 'center' }}
         >
           {(appIconUrl || logoUrl) ? (
             <Image

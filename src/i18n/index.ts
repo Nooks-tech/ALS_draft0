@@ -29,18 +29,19 @@ const initI18n = async () => {
     },
   });
 
-  // Keep forceRTL OFF on every launch. Native RTL was breaking
-  // English: the codebase is full of manual `flexDirection:
-  // isArabic ? 'row-reverse' : 'row'` swaps, and once forceRTL was
-  // enabled for Arabic those swaps became double-flips (and on the
-  // English side, native RTL stayed sticky between sessions and
-  // turned every plain `row` into `row-reverse`). The manual flips
-  // on each screen are the single source of truth; English renders
-  // LTR natively and Arabic mirrors via the flips.
-  if (I18nManager.isRTL) {
+  // Native RTL is now the single source of truth. The manual
+  // `isArabic ? 'row-reverse' : 'row'` / `marginLeft: isArabic ? ...`
+  // / `textAlign: isArabic ? ...` swaps have been stripped from the
+  // tree (see the rtl-refactor commit), so plain `flexDirection:
+  // 'row'` + `marginStart`/`marginEnd` + default text alignment
+  // mirror automatically when `forceRTL(true)` is set. The more.tsx
+  // language toggle calls Updates.reloadAsync after this runs so
+  // the new direction takes effect on the next paint.
+  const wantRTL = savedLanguage === 'ar';
+  if (I18nManager.isRTL !== wantRTL) {
     try {
-      I18nManager.allowRTL(false);
-      I18nManager.forceRTL(false);
+      I18nManager.allowRTL(wantRTL);
+      I18nManager.forceRTL(wantRTL);
     } catch {}
   }
 };

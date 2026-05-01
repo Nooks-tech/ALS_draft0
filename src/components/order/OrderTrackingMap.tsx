@@ -41,8 +41,7 @@ export function OrderTrackingMap({
   driverLon,
   branchName,
   accentColor = DEFAULT_ACCENT,
-  etaLabel = null,
-}: OrderTrackingMapProps) {
+  etaLabel = null }: OrderTrackingMapProps) {
   const { i18n } = useTranslation();
   const runtimeGoogleMapsKey = (
     (Constants.expoConfig?.extra as { googleMapsApiKey?: string } | undefined)?.googleMapsApiKey
@@ -116,8 +115,7 @@ export function OrderTrackingMap({
             latitude: centerLat,
             longitude: centerLng,
             latitudeDelta: latDelta,
-            longitudeDelta: lngDelta,
-          }}
+            longitudeDelta: lngDelta }}
           showsUserLocation={false}
           showsMyLocationButton={false}
         >
@@ -165,10 +163,9 @@ export function OrderTrackingMap({
             padding: 14,
             borderRadius: 16,
             backgroundColor: `${accentColor}15`,
-            flexDirection: isArabic ? 'row-reverse' : 'row',
+            flexDirection: 'row',
             justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
+            alignItems: 'center' }}
         >
           <View>
             <Text style={{ color: '#475569', fontSize: 11, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' }}>
@@ -198,6 +195,4 @@ const styles = StyleSheet.create({
   container: {
     borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#f1f5f9',
-  },
-});
+    backgroundColor: '#f1f5f9' } });

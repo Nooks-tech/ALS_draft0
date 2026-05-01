@@ -185,8 +185,7 @@ export default function LoyaltyModal() {
                     style={{
                       borderRadius: 24, overflow: 'hidden',
                       shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
-                    }}
+                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10 }}
                   >
                     <LinearGradient
                       colors={[cardBgColor, gradientEnd]}
@@ -238,8 +237,7 @@ export default function LoyaltyModal() {
                                     // the column-gap math stays tidy without
                                     // needing flexBasis%.
                                     paddingLeft: i % cols === 0 ? 0 : gapPx / 2,
-                                    paddingRight: (i + 1) % cols === 0 ? 0 : gapPx / 2,
-                                  }}
+                                    paddingRight: (i + 1) % cols === 0 ? 0 : gapPx / 2 }}
                                 >
                                   <View
                                     style={{
@@ -250,8 +248,7 @@ export default function LoyaltyModal() {
                                       justifyContent: 'center',
                                       backgroundColor: filled
                                         ? stampBoxColor
-                                        : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)'),
-                                    }}
+                                        : (cardLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.1)') }}
                                   >
                                     {filled ? (
                                       stampIconUrl ? (
@@ -296,8 +293,7 @@ export default function LoyaltyModal() {
                                       paddingLeft: isRightCol ? 6 : 0,
                                       paddingRight: isRightCol ? 0 : 6,
                                       marginTop: i >= 2 ? 10 : 0,
-                                      alignItems: isRightCol ? 'flex-end' : 'flex-start',
-                                    }}
+                                      alignItems: isRightCol ? 'flex-end' : 'flex-start' }}
                                   >
                                     <Text style={{ color: cardSubTextColor, fontSize: 10, letterSpacing: 1 }}>
                                       {isArabic ? `الختم ${m.stamp_number}` : `STAMP ${m.stamp_number}`}
@@ -351,8 +347,7 @@ export default function LoyaltyModal() {
                     style={{
                       borderRadius: 24, overflow: 'hidden',
                       shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
-                    }}
+                      shadowOpacity: 0.2, shadowRadius: 16, elevation: 10 }}
                   >
                     <LinearGradient
                       colors={[primaryColor, gradientEnd]}
@@ -442,8 +437,7 @@ export default function LoyaltyModal() {
                   style={{
                     borderRadius: 24, overflow: 'hidden',
                     shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
-                    shadowOpacity: 0.2, shadowRadius: 16, elevation: 10,
-                  }}
+                    shadowOpacity: 0.2, shadowRadius: 16, elevation: 10 }}
                 >
                   <LinearGradient
                     colors={[primaryColor, gradientEnd]}
