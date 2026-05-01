@@ -62,7 +62,8 @@
           "icon": "./assets/images/icon.png",
           "color": "#ffffff"
         }
-      ]
+      ],
+      "./plugins/withTransparentRootView.js"
     ],
     "experiments": {
       "typedRoutes": true,
