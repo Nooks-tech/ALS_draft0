@@ -32,11 +32,17 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
   const [finished, setFinished] = useState(false);
   const [nativeSplashHidden, setNativeSplashHidden] = useState(false);
 
+  // Logo + dots start at full opacity / final position so the
+  // overlay paints fully formed the instant it mounts. This is the
+  // bridge between the native splash (which hides without animating)
+  // and the branded JS splash — fading in from nothing produced a
+  // visible flash of white between the two and a 'wait spinner'
+  // feel that the customer noticed during language switches.
   const containerOpacity = useRef(new Animated.Value(1)).current;
-  const logoScale = useRef(new Animated.Value(0.94)).current;
-  const logoOpacity = useRef(new Animated.Value(0)).current;
-  const logoTranslateY = useRef(new Animated.Value(18)).current;
-  const dotsOpacity = useRef(new Animated.Value(0)).current;
+  const logoScale = useRef(new Animated.Value(1)).current;
+  const logoOpacity = useRef(new Animated.Value(1)).current;
+  const logoTranslateY = useRef(new Animated.Value(0)).current;
+  const dotsOpacity = useRef(new Animated.Value(1)).current;
   const nativeHideRequested = useRef(false);
 
   const releaseNativeSplash = useCallback(() => {
@@ -55,32 +61,10 @@ export function BrandedSplashOverlay({ onDismiss }: BrandedSplashOverlayProps) {
     return () => clearTimeout(t);
   }, [nativeSplashHidden]);
 
-  useEffect(() => {
-    if (!nativeSplashHidden) return;
-    Animated.parallel([
-      Animated.timing(logoOpacity, {
-        toValue: 1,
-        duration: 420,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true }),
-      Animated.spring(logoScale, {
-        toValue: 1,
-        friction: 8,
-        tension: 72,
-        useNativeDriver: true }),
-      Animated.timing(logoTranslateY, {
-        toValue: 0,
-        duration: 460,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true }),
-      Animated.timing(dotsOpacity, {
-        toValue: 1,
-        duration: 320,
-        delay: 140,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true }),
-    ]).start();
-  }, [dotsOpacity, logoOpacity, logoScale, logoTranslateY, nativeSplashHidden]);
+  // Entrance animation removed — logo and dots are already at their
+  // final values (see useRef defaults above). The dots themselves
+  // animate continuously inside SubtleDots, which is the only motion
+  // that needs to be visible during the language-switch hand-off.
 
   const handleLayout = useCallback(() => {
     releaseNativeSplash();
