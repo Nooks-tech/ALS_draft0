@@ -20,7 +20,12 @@ import * as SplashScreen from 'expo-splash-screen';
 import { MerchantLogoImage } from '../branding/MerchantLogoImage';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 
-const COLD_START_MIN_VISIBLE_MS = 900;
+// How long the cold-start splash stays on screen at minimum,
+// regardless of how quickly branding finishes loading. 900 ms felt
+// like a stutter — the icon barely materialised before fading out.
+// 2000 ms reads as a deliberate splash and gives the merchant
+// branding a proper moment of focus before the menu paints.
+const COLD_START_MIN_VISIBLE_MS = 2000;
 
 type AppSplashProps = {
   /**
