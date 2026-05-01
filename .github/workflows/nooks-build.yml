@@ -376,6 +376,27 @@ jobs:
             console.log('[channel] production.channel =', process.env.MERCHANT_ID);
           "
 
+      - name: Commit ephemeral merchant patches before EAS upload
+        # CRITICAL: EAS Build's default git mode uploads ONLY files
+        # committed to the local git repository — modifications made
+        # earlier in this workflow (app.json splash backgroundColor,
+        # eas.json channel, generated splash-icon.png, downloaded
+        # merchant-app-icon.png, the bumped buildNumber, the .env)
+        # are uncommitted and would be silently dropped from the
+        # archive uploaded to EAS, so EAS would build from the
+        # ORIGINAL committed app.json with #3B5F1D splash and the
+        # placeholder icon. That's why prior builds appeared to
+        # ignore the per-merchant patches. Stage + commit
+        # everything in a throwaway local commit so EAS's git
+        # archive matches what we actually want shipped. Nothing is
+        # pushed back to origin — the runner is ephemeral.
+        run: |
+          git config --local user.email "ci@nooks.app"
+          git config --local user.name "Nooks CI"
+          git add -A
+          git status --short
+          git commit --no-verify -m "ci: ephemeral merchant patch (build-only, not pushed)" || echo "no patches to commit"
+
       - name: Build Android
         run: |
           if [ "${{ github.event.inputs.use_test_builds }}" = "true" ]; then
