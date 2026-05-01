@@ -29,16 +29,18 @@ const initI18n = async () => {
     },
   });
 
-  // Native RTL — the bottom tab bar, navigation gestures, and any
-  // platform component that captures direction at mount don't flip
-  // unless I18nManager.forceRTL is on. The `more.tsx` language
-  // toggle calls Updates.reloadAsync after this so the new direction
-  // applies on the next paint, not the next install.
-  const wantRTL = savedLanguage === 'ar';
-  if (I18nManager.isRTL !== wantRTL) {
+  // Keep forceRTL OFF on every launch. Native RTL was breaking
+  // English: the codebase is full of manual `flexDirection:
+  // isArabic ? 'row-reverse' : 'row'` swaps, and once forceRTL was
+  // enabled for Arabic those swaps became double-flips (and on the
+  // English side, native RTL stayed sticky between sessions and
+  // turned every plain `row` into `row-reverse`). The manual flips
+  // on each screen are the single source of truth; English renders
+  // LTR natively and Arabic mirrors via the flips.
+  if (I18nManager.isRTL) {
     try {
-      I18nManager.allowRTL(wantRTL);
-      I18nManager.forceRTL(wantRTL);
+      I18nManager.allowRTL(false);
+      I18nManager.forceRTL(false);
     } catch {}
   }
 };
