@@ -838,14 +838,51 @@ paymentRouter.post('/token-pay', async (req, res) => {
       });
     }
 
-    const session = await paymentService.initiateMoyasarTokenPayment({
-      amount: chargeAmount,
-      currency: 'SAR',
-      orderId,
-      token: card.token,
-      merchantId: scopedMerchantId,
-      metadata: { merchant_id: scopedMerchantId },
-    });
+    let session;
+    try {
+      session = await paymentService.initiateMoyasarTokenPayment({
+        amount: chargeAmount,
+        currency: 'SAR',
+        orderId,
+        token: card.token,
+        merchantId: scopedMerchantId,
+        metadata: { merchant_id: scopedMerchantId },
+      });
+    } catch (chargeErr: any) {
+      const msg = String(chargeErr?.message ?? '').toLowerCase();
+      // Moyasar surface for a token that's been deleted, expired,
+      // or never existed in the merchant's account: the verbatim
+      // error message contains 'token' AND 'invalid'. When this
+      // happens the saved-cards row in our DB is just dead weight
+      // — every future Pay tap will hit the same wall. Drop the
+      // row and tell the client to ask the customer to add a new
+      // card. This also covers the case where the token was
+      // tokenised under a different (test) merchant account and
+      // the merchant has since switched to live keys.
+      const looksLikeBadToken =
+        msg.includes('token') &&
+        (msg.includes('invalid') || msg.includes('not found') || msg.includes('expired'));
+      if (looksLikeBadToken) {
+        await supabaseAdmin
+          .from('customer_saved_cards')
+          .delete()
+          .eq('id', savedCardId)
+          .eq('customer_id', user.id);
+        console.warn(
+          '[TokenPay] Auto-removed bad saved-card row',
+          savedCardId,
+          '— Moyasar error:',
+          chargeErr?.message,
+        );
+        return res.status(409).json({
+          error: 'SAVED_CARD_INVALID',
+          message:
+            'This saved card is no longer accepted by Moyasar. Please add a new card and try again.',
+        });
+      }
+      // Some other error (gateway, validation, etc.) — bubble it.
+      throw chargeErr;
+    }
 
     // Record commission against the actual charged amount, not the
     // pre-wallet total — the merchant only gets paid for what was

@@ -1302,11 +1302,29 @@ export default function CheckoutScreen() {
             isArabic ? 'تعذر إتمام الدفع ببطاقتك المحفوظة.' : 'Could not complete payment with saved card.',
           );
         }
-      } catch (err: unknown) {
-        Alert.alert(
-          isArabic ? 'خطأ في الدفع' : 'Payment Error',
-          err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.'),
-        );
+      } catch (err: any) {
+        const msg = String(err?.message ?? '');
+        // Server returned 409 SAVED_CARD_INVALID — the bad row is
+        // already deleted server-side. Drop it from local state,
+        // unselect, switch back to the credit_card method so the
+        // 'Add new card' tile shows up, and tell the customer in
+        // plain language to add a new card.
+        if (msg.includes('SAVED_CARD_INVALID') || msg.toLowerCase().includes('no longer accepted')) {
+          setSavedCards((prev) => prev.filter((c) => c.id !== selectedSavedCardId));
+          setSelectedSavedCardId(null);
+          setPaymentMethod('credit_card');
+          Alert.alert(
+            isArabic ? 'البطاقة لم تعد صالحة' : 'Card no longer valid',
+            isArabic
+              ? 'البطاقة المحفوظة لم تعد مقبولة لدى Moyasar. أضف بطاقة جديدة وأعد المحاولة.'
+              : 'Your saved card is no longer accepted by Moyasar. Please add a new card and try again.',
+          );
+        } else {
+          Alert.alert(
+            isArabic ? 'خطأ في الدفع' : 'Payment Error',
+            err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.'),
+          );
+        }
       } finally {
         setTokenPayLoading(false);
         setSubmitting(false);
