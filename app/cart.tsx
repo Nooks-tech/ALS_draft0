@@ -103,7 +103,13 @@ export default function CartScreen() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-white">
+    // edges = top + bottom only. The default safe-area-context
+    // SafeAreaView pads ALL physical insets (including the device's
+    // left + right margins on rounded-corner phones) which adds up
+    // to slightly asymmetric horizontal space in some RTL layouts.
+    // The body content already paints behind the modal's own edge
+    // mask, so we only need vertical safe-area handling.
+    <SafeAreaView className="flex-1 bg-white" edges={['top', 'bottom']}>
       {/* --- HEADER --- */}
       <View className="px-5 py-4 border-b border-slate-100 items-center justify-center relative">
         <TouchableOpacity
@@ -118,8 +124,8 @@ export default function CartScreen() {
 
       <ScrollView
         showsVerticalScrollIndicator={false}
-        className="flex-1 px-5 pt-6"
-        contentContainerStyle={{ paddingBottom: 200 }}
+        className="flex-1"
+        contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 24, paddingBottom: 200 }}
       >
         {/* --- ORDER TYPE STATUS --- */}
           <View className="items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100" style={{ flexDirection: 'row' }}>
