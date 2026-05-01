@@ -150,7 +150,7 @@ export default function WalletModal() {
           <Text className="text-white/80 text-xs uppercase tracking-wider" style={{ }}>
             {isArabic ? `رصيد ${cafeName ?? 'المحفظة'}` : `${cafeName ?? 'Wallet'} balance`}
           </Text>
-          <View className="mt-2" style={{ alignItems: isArabic ? 'flex-end' : 'flex-start' }}>
+          <View className="mt-2" style={{ alignItems: 'flex-start' }}>
             {loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
@@ -180,7 +180,7 @@ export default function WalletModal() {
               <Text className="text-xs text-slate-500 uppercase tracking-wider" style={{ }}>
                 {isArabic ? 'مجموع الإضافات' : 'Total topped up'}
               </Text>
-              <View className="mt-1.5" style={{ alignItems: isArabic ? 'flex-end' : 'flex-start' }}>
+              <View className="mt-1.5" style={{ alignItems: 'flex-start' }}>
                 <PriceWithSymbol amount={balance.total_topup_sar} iconSize={14} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 16 }} />
               </View>
             </View>
@@ -188,7 +188,7 @@ export default function WalletModal() {
               <Text className="text-xs text-slate-500 uppercase tracking-wider" style={{ }}>
                 {isArabic ? 'مسترد' : 'Refunded'}
               </Text>
-              <View className="mt-1.5" style={{ alignItems: isArabic ? 'flex-end' : 'flex-start' }}>
+              <View className="mt-1.5" style={{ alignItems: 'flex-start' }}>
                 <PriceWithSymbol amount={balance.total_refunded_sar} iconSize={14} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 16 }} />
               </View>
             </View>
@@ -237,7 +237,7 @@ export default function WalletModal() {
                       {entry.note ? ` · ${entry.note}` : ''}
                     </Text>
                   </View>
-                  <View style={{ alignItems: isArabic ? 'flex-start' : 'flex-end' }}>
+                  <View style={{ alignItems: 'flex-end' }}>
                     <PriceWithSymbol
                       amount={Math.abs(entry.amount_sar)}
                       prefix={credit ? '+ ' : '- '}

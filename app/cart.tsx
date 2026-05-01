@@ -109,7 +109,7 @@ export default function CartScreen() {
         <TouchableOpacity
           onPress={() => router.back()}
           className="bg-slate-100 p-2 rounded-full absolute"
-          style={{ [isArabic ? 'right' : 'left']: 20, top: 12 }}
+          style={{ start: 20, top: 12 }}
         >
           <BackIcon size={22} color="#334155" />
         </TouchableOpacity>
@@ -185,7 +185,12 @@ export default function CartScreen() {
                   className="flex-1"
                   style={{
                     marginStart: 16,
-                    alignItems: isArabic ? 'flex-end' : 'flex-start' }}
+                    // Native RTL auto-flips flex-start, so the explicit
+                    // isArabic check was double-flipping and pinning
+                    // text to the wrong side in Arabic. Plain
+                    // 'flex-start' aligns to the start of the line in
+                    // either direction.
+                    alignItems: 'flex-start' }}
                 >
                   <Text className="text-base font-bold text-slate-800" style={{ }} numberOfLines={1}>
                     {item.name}
@@ -287,9 +292,9 @@ export default function CartScreen() {
 
               <View className="justify-between" style={{ flexDirection: 'row' }}>
                 <Text className="text-xl font-bold text-slate-900" style={{ }}>{isArabic ? 'الإجمالي' : 'Total'}</Text>
-                <View style={{ alignItems: isArabic ? 'flex-start' : 'flex-end' }}>
+                <View style={{ alignItems: 'flex-end' }}>
                   <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 20 }} />
-                  <Text className="text-[10px] text-slate-400" style={{ textAlign: isArabic ? 'left' : 'right' }}>{isArabic ? 'شامل الضريبة' : 'VAT Included'}</Text>
+                  <Text className="text-[10px] text-slate-400">{isArabic ? 'شامل الضريبة' : 'VAT Included'}</Text>
                 </View>
               </View>
             </View>

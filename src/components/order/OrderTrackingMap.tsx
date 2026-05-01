@@ -176,7 +176,7 @@ export function OrderTrackingMap({
             </Text>
           </View>
           {distanceLabel && (
-            <View style={{ alignItems: isArabic ? 'flex-start' : 'flex-end' }}>
+            <View style={{ alignItems: 'flex-end' }}>
               <Text style={{ color: '#475569', fontSize: 11, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' }}>
                 {isArabic ? 'بُعد السائق' : 'Driver distance'}
               </Text>

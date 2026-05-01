@@ -298,6 +298,12 @@ export default function MoreScreen() {
       // so the user sees a deliberate transition rather than a
       // half-flipped UI.
       setLanguageSwitching(true);
+      // Hold the splash on screen for ~600 ms before triggering the
+      // bundle reload so the customer sees a deliberate transition
+      // instead of a flicker. Without this delay, the modal renders
+      // for one frame and is immediately torn down by reloadAsync,
+      // which the eye reads as a stutter rather than a screen change.
+      await new Promise((r) => setTimeout(r, 600));
       try {
         await Updates.reloadAsync();
       } catch {
