@@ -14,7 +14,7 @@
  * tile, no glow ring — the icon just floats on the bg, identical
  * in both contexts.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Modal, StyleSheet, Text, View } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { MerchantLogoImage } from '../branding/MerchantLogoImage';
@@ -92,10 +92,11 @@ export function AppSplash({ mode, visible }: AppSplashProps) {
   const splashBg = backgroundColor || '#0d9488';
   const dotColor = primaryColor || textColor || tabTextColor || '#ffffff';
   const splashLogoUri = appIconUrl || logoUrl;
-  // Logo size adapts to the merchant's launcher icon scale; clamp
-  // so a bad value can't push the icon to 0 px or past the screen.
-  const logoBase = 140;
-  const tileLogoScale = Math.min(1.2, Math.max(0.6, (launcherIconScale ?? 100) / 100));
+  // surfaceColor = the rounded tile's color. Prefer the merchant's
+  // explicit app-icon-bg; fall back to primary so the tile reads as
+  // 'their brand' instead of being colorless.
+  const surfaceColor = branding.appIconBgColor || primaryColor || '#0D9488';
+  const tileLogoScale = Math.min(1.12, Math.max(0.64, (launcherIconScale ?? 100) / 100));
 
   const body = (
     <Animated.View
@@ -111,12 +112,21 @@ export function AppSplash({ mode, visible }: AppSplashProps) {
       ]}
     >
       {splashLogoUri ? (
-        <MerchantLogoImage
-          uri={splashLogoUri}
-          sizeDp={logoBase}
-          scaleFactor={tileLogoScale}
-          accessibilityLabel="Logo"
-        />
+        // Rounded merchant-colored tile with a soft glow ring,
+        // logo centered inside. Matches the language-change
+        // splash visual exactly so the cold-start splash and the
+        // language-switch splash are identical.
+        <View style={styles.logoStage}>
+          <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
+          <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
+            <MerchantLogoImage
+              uri={splashLogoUri}
+              sizeDp={94}
+              scaleFactor={tileLogoScale}
+              accessibilityLabel="Logo"
+            />
+          </View>
+        </View>
       ) : (
         <Text
           style={{
@@ -181,6 +191,34 @@ function PulsingDots({ color }: { color: string }) {
 }
 
 const styles = StyleSheet.create({
+  // Rounded merchant tile sized like an iOS app icon (~176 dp) with
+  // a 44 dp corner radius. The glow ring sits behind it at ~10%
+  // opacity to lift it off the merchant background.
+  logoStage: {
+    width: 224,
+    height: 224,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoGlow: {
+    position: 'absolute',
+    width: 210,
+    height: 210,
+    borderRadius: 60,
+    opacity: 0.12,
+  },
+  logoTile: {
+    width: 176,
+    height: 176,
+    borderRadius: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOpacity: 0.18,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 14 },
+    elevation: 12,
+  },
   dots: { position: 'absolute', bottom: '19%', left: 0, right: 0, alignItems: 'center' },
   dotRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   dot: { width: 6, height: 6, borderRadius: 3 },
