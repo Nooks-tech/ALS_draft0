@@ -1,7 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect, useRouter } from 'expo-router';
-import * as Updates from 'expo-updates';
-import * as SystemUI from 'expo-system-ui';
 import {
   Bell,
   ChevronRight,
@@ -31,7 +29,7 @@ import { useProfile } from '../../src/context/ProfileContext';
 import { useCallback, useEffect, useState } from 'react';
 import { walletApi } from '../../src/api/wallet';
 import { Alert, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
-import { AppSplash } from '../../src/components/splash/AppSplash';
+import { useLanguageSwitch } from '../../src/context/LanguageSwitchContext';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { API_URL } from '../../src/api/config';
@@ -284,53 +282,14 @@ export default function MoreScreen() {
         logOut: 'Log Out',
         version: 'Version 1.0.0' };
 
-  const [languageSwitching, setLanguageSwitching] = useState(false);
-  const toggleLanguage = async () => {
-    try {
-      const nextLang = i18n.language === 'en' ? 'ar' : 'en';
-      await AsyncStorage.setItem('language', nextLang);
-      await i18n.changeLanguage(nextLang);
-      // Tabs, picker buttons, and many native sub-views capture their
-      // dimensions / labels once on mount. Just calling
-      // i18n.changeLanguage re-renders our React tree but leaves
-      // navigation stale: the bottom-tab layout, screen titles, and
-      // any cached arrows remain in the previous language. Reload the
-      // JS bundle so every screen rebuilds from scratch in the new
-      // language. Show a splash overlay during the (sub-second) gap
-      // so the user sees a deliberate transition rather than a
-      // half-flipped UI.
-      // Pin the iOS root view to the merchant's bg BEFORE showing
-      // the modal. This is the layer that's visible underneath
-      // RCTRootView during the bridge-reload window — without this
-      // a flash of the OS-default white view bled through between
-      // the language modal and the new bundle's BrandedSplashOverlay.
-      // We await it to guarantee the native call completes before
-      // the modal mounts (and well before reloadAsync detonates JS).
-      const overlayBg = backgroundColor || '#0d9488';
-      try {
-        await SystemUI.setBackgroundColorAsync(overlayBg);
-      } catch {}
-
-      setLanguageSwitching(true);
-      // Hold the splash on screen for ~1500 ms before triggering the
-      // bundle reload so the customer sees the dot pulse cycle once
-      // and registers it as a deliberate splash transition instead
-      // of a stutter. Less than ~1200ms and the dots barely complete
-      // one frame of the loop before reloadAsync detonates the JS.
-      await new Promise((r) => setTimeout(r, 1500));
-      try {
-        await Updates.reloadAsync();
-      } catch {
-        // Updates.reloadAsync is unavailable in dev / Expo Go; in
-        // those environments the in-place re-render is the best we
-        // can do. Drop the splash so the user isn't stuck.
-        setLanguageSwitching(false);
-      }
-    } catch {
-      setLanguageSwitching(false);
-      Alert.alert(copy.error, copy.changeLanguageFailed);
-    }
-  };
+  // Language toggle now goes through the LanguageSwitchProvider
+  // context (see _layout.tsx). The context owns the AppSplash
+  // visibility, the routed-tree remount key, and the i18n / RTL
+  // flip — handing the lifecycle off lets the splash overlay live
+  // ABOVE the remount point so it survives the tree rebuild and
+  // the customer sees one continuous animation start to finish
+  // (no bridge swap, no white gap).
+  const { toggleLanguage } = useLanguageSwitch();
 
   const handleLogout = () => {
     Alert.alert(copy.logoutTitle, copy.logoutConfirm, [
@@ -479,11 +438,9 @@ export default function MoreScreen() {
         <Text className="text-center text-xs mb-8" style={{ color: textColor }}>{copy.version}</Text>
       </ScrollView>
 
-      {/* Branded splash mid-language-toggle. Same visual identity
-          as the cold-start BrandedSplashOverlay (icon-on-tile +
-          three pulsing dots) so the transition feels like a
-          deliberate splash, not a flicker. */}
-      <AppSplash mode="overlay" visible={languageSwitching} />
+      {/* The language-switch overlay is mounted in _layout.tsx
+          ABOVE the tree-remount point so it survives the rebuild
+          that flips RTL. Nothing to render here. */}
     </SafeAreaView>
   );
 }

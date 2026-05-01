@@ -14,6 +14,11 @@ import { Platform } from 'react-native';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
 import { AppSplash } from '../src/components/splash/AppSplash';
+import {
+  LanguageSwitchProvider,
+  useLanguageSwitch,
+} from '../src/context/LanguageSwitchContext';
+import { View } from 'react-native';
 import * as SystemUI from 'expo-system-ui';
 
 // Pin the iOS / Android root-view backgroundColor to the merchant's
@@ -72,6 +77,30 @@ import '../src/i18n';
 // Keep the splash screen visible while we fetch resources
 SplashScreen.preventAutoHideAsync();
 
+// Wraps the routed tree in a `View key={remountKey}` so a language
+// toggle bumps the key and forces React to fully unmount + remount
+// the tree. Yoga re-evaluates flexDirection on the next layout pass
+// with the freshly-set I18nManager.isRTL value, which flips tabs /
+// headers / row layouts the same way a bundle reload would — but
+// without the bridge swap that produced the white-gap.
+function RoutedTreeWithRemount({ children }: { children: React.ReactNode }) {
+  const { remountKey } = useLanguageSwitch();
+  return (
+    <View key={remountKey} style={{ flex: 1 }}>
+      {children}
+    </View>
+  );
+}
+
+// Reads the language-switch state from context and renders AppSplash
+// in overlay mode. Has to live ABOVE the remount wrapper so it
+// stays mounted while the tree below is being rebuilt — otherwise
+// the customer sees a flash of unstyled UI mid-transition.
+function LanguageSwitchOverlay() {
+  const { switching } = useLanguageSwitch();
+  return <AppSplash mode="overlay" visible={switching} />;
+}
+
 function SplashGate() {
   const { loading } = useMerchantBranding();
   const releasedRef = useRef(false);
@@ -121,12 +150,19 @@ export default function RootLayout() {
         <AuthProvider>
         <MerchantProvider>
         <MerchantBrandingWrapper>
+        <LanguageSwitchProvider>
         {/* AppSplash in 'cold-start' mode = the only splash. Hides
             the native iOS / Android splash on its first layout pass
             and stays visible (with the merchant icon + pulsing dots
             on the merchant background) until branding has loaded
             AND a minimum visible time has elapsed, then fades. */}
         <AppSplash mode="cold-start" />
+        {/* Language-switch overlay sits OUTSIDE the remount tree so
+            it survives the tree rebuild that flips RTL. Without
+            this, the overlay would unmount mid-transition and the
+            customer would see a flash of the half-rebuilt menu. */}
+        <LanguageSwitchOverlay />
+        <RoutedTreeWithRemount>
         <CartProvider>
         <OperationsProvider>
           <MenuProvider>
@@ -166,6 +202,8 @@ export default function RootLayout() {
           </MenuProvider>
         </OperationsProvider>
         </CartProvider>
+        </RoutedTreeWithRemount>
+        </LanguageSwitchProvider>
         </MerchantBrandingWrapper>
         </MerchantProvider>
         </AuthProvider>
