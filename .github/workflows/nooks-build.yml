@@ -129,6 +129,31 @@ jobs:
             exit 1
           fi
 
+      - name: Require per-merchant bundle/package for production builds
+        # Multi-merchant safety. Without these inputs, app.config.js falls
+        # back to the placeholder com.nooksbusiness.als — every merchant
+        # would ship to the SAME App Store / Play Console app and collide
+        # signing/upload. We only enforce on production builds because
+        # preview/test builds are sideloadable and don't go to the stores.
+        if: github.event.inputs.use_test_builds != 'true'
+        env:
+          IOS_BUNDLE_ID: ${{ github.event.inputs.ios_bundle_id }}
+          ANDROID_PACKAGE_ID: ${{ github.event.inputs.android_package_id }}
+        run: |
+          missing=0
+          if [ -z "$IOS_BUNDLE_ID" ]; then
+            echo "::error::ios_bundle_id input is empty. Production builds require a per-merchant iOS bundle id (e.g. sa.nooks.<merchant-slug>) registered in App Store Connect."
+            missing=1
+          fi
+          if [ -z "$ANDROID_PACKAGE_ID" ]; then
+            echo "::error::android_package_id input is empty. Production builds require a per-merchant Android package (e.g. com.nooksbusiness.<merchant-slug>) created in Play Console."
+            missing=1
+          fi
+          if [ "$missing" -eq 1 ]; then
+            echo "Pass these via the workflow_dispatch inputs (or fix the upstream nooksweb trigger that's calling this workflow)."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -452,7 +477,18 @@ jobs:
             echo "::warning::GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 is empty — Android submit will fail. Set the repo secret per docs/ANDROID_SUBMIT_SETUP.md before running."
           else
             mkdir -p fastlane
-            printf '%s' "$KEY_B64" | base64 -d > fastlane/google-service-account.json
+            # -di (decode + ignore garbage) tolerates stray whitespace,
+            # line-wraps, BOMs, or trailing newlines that sneak in when
+            # the base64 is pasted into GitHub's secret textarea. Without
+            # -i, GNU base64 fails the whole step on a single bad char.
+            KEY_LEN=${#KEY_B64}
+            echo "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 length: $KEY_LEN chars"
+            if ! printf '%s' "$KEY_B64" | base64 -di > fastlane/google-service-account.json 2>/tmp/b64.err; then
+              echo "::error::base64 decode failed:"
+              cat /tmp/b64.err
+              echo "::error::Re-encode the service-account JSON and re-paste the GOOGLE_PLAY_SERVICE_ACCOUNT_JSON_BASE64 secret as one continuous string."
+              exit 1
+            fi
             wc -c fastlane/google-service-account.json
             head -c 40 fastlane/google-service-account.json
             echo ""
