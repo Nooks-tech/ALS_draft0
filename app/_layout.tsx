@@ -230,10 +230,17 @@ function PushTokenRegistrar() {
     let cancelled = false;
     const run = async () => {
       if (!user?.id || !merchantId) return;
+      // DEBUG (TEMP): record each push-registration attempt + outcome
+      // so we can see exactly where the chain breaks on Android (no
+      // FCM tokens are landing in the DB despite the user being
+      // signed in). Removed after diagnosis lands.
+      let stage = 'init';
       try {
         const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas?.projectId;
+        stage = 'getExpoPushTokenAsync';
         const token = (await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined)).data;
         if (!token || cancelled) return;
+        stage = 'registerPushToken';
         await registerPushToken({
           merchantId,
           customerId: user.id,
@@ -241,13 +248,29 @@ function PushTokenRegistrar() {
           appLanguage });
         // Clear the failure flag so the banner disappears if it was shown.
         AsyncStorage.removeItem(PUSH_REGISTRATION_FAILURE_KEY).catch(() => {});
+        AsyncStorage.setItem(
+          '@push_debug_last',
+          JSON.stringify({ ok: true, ts: Date.now(), tokenPreview: token.slice(0, 30) + '...' + token.slice(-6), platform: Platform.OS }),
+        ).catch(() => {});
       } catch (err: any) {
-        console.warn('[Push] Registration failed:', err?.message || 'unknown error');
-        // Persist the failure so the customer's next app launch shows a
-        // visible banner asking them to enable notifications. Without this
-        // they get zero signal when push stops working and miss order
-        // status updates entirely.
+        const msg = err?.message || String(err) || 'unknown error';
+        const detail = `[${stage}] ${msg}`;
+        console.warn('[Push] Registration failed:', detail);
         AsyncStorage.setItem(PUSH_REGISTRATION_FAILURE_KEY, '1').catch(() => {});
+        AsyncStorage.setItem(
+          '@push_debug_last',
+          JSON.stringify({ ok: false, ts: Date.now(), stage, error: msg, platform: Platform.OS }),
+        ).catch(() => {});
+        // DEBUG (TEMP): surface the failure on screen so we can read
+        // the actual error from a production install on Android. Lazy
+        // require to avoid a top-of-file Alert import in this huge file.
+        if (Platform.OS === 'android') {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const { Alert } = require('react-native');
+          setTimeout(() => {
+            Alert.alert('Push debug (Khrtoom)', detail);
+          }, 1500);
+        }
       }
     };
     run();
