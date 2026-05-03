@@ -30,6 +30,22 @@ Done once for the entire Nooks app, reused for every merchant.
 
 This single JSON has project-level access — it works for every merchant Android app you'll later register inside this Firebase project.
 
+### 3. Add the SA JSON to GitHub secrets (enables auto-link)
+
+Convert the JSON to base64 and store it as `GOOGLE_FCM_SERVICE_ACCOUNT_JSON_BASE64`:
+
+```powershell
+# Windows PowerShell
+$b = [IO.File]::ReadAllBytes("$HOME\Downloads\nooks-push-firebase-adminsdk-*.json")
+[Convert]::ToBase64String($b) | Set-Clipboard
+```
+
+Paste the clipboard value into a new repo secret at <https://github.com/Nooks-tech/ALS_draft0/settings/secrets/actions/new>:
+- Name: `GOOGLE_FCM_SERVICE_ACCOUNT_JSON_BASE64`
+- Value: the base64 string from clipboard
+
+Once this is set, `scripts/link-fcm-credentials.mjs` runs on every Android build and idempotently links the SA key to each merchant's package on Expo's side. No more manual upload per merchant.
+
 ## Per-merchant onboarding (5 min, manual)
 
 You repeat these steps once for each new merchant. Same as the Play Console / App Store Connect manual steps — Google deliberately doesn't expose APIs to fully automate these.
@@ -52,6 +68,15 @@ You repeat these steps once for each new merchant. Same as the Play Console / Ap
 `google-services.json` is **client config**, not a secret. Firebase explicitly considers it public; it's safe to commit. Keys inside it (`current_key`) are restrictable in the Cloud Console if you ever need stricter scoping.
 
 ### 3. Upload the FCM v1 service-account JSON to Expo
+
+**Automated (preferred)**: once the `GOOGLE_FCM_SERVICE_ACCOUNT_JSON_BASE64` GitHub secret is set (see one-time setup section), every Android build runs `scripts/link-fcm-credentials.mjs`, which:
+- Finds or uploads the SA JSON to Expo (deduped by the JSON's `private_key_id`)
+- Finds or creates AndroidAppCredentials for the merchant's package
+- Links the SA key as the FCM v1 sender
+
+The script is idempotent — re-runs are no-ops once linked. Fail-open — if Expo's GraphQL schema shifts the script logs a warning and exits 0 so the build still ships, and you fall back to the manual flow below.
+
+**Manual fallback (if the script logs a warning)**:
 
 1. Open the Expo credentials page for this Android package:
    ```
@@ -92,7 +117,7 @@ After completing setup for a merchant, confirm all four:
 
 ## What's NOT automated yet
 
-- Auto-registering each new merchant Android package as a Firebase Android app via the Firebase Management API
-- Auto-uploading the FCM SA JSON to Expo for each new package via Expo's GraphQL API
+- **Registering each new merchant Android package as a Firebase Android app**. Firebase Management API supports this (`POST /v1beta1/projects/{projectId}/androidApps`) but requires the SA to have the `roles/firebase.developAdmin` IAM role. For now this remains a manual ~30 sec step per merchant in the Firebase console.
+- **Re-downloading `google-services.json` after registering a new package**. Could be automated via the same Firebase Management API once the SA has the right role, but for now: manual download + commit per merchant.
 
-These are doable (same pattern as `scripts/link-expo-push-key.mjs` does for APNs/iOS) but need careful schema testing against Expo's API. Tracked as a future task — for now the 5-min manual process above is reliable.
+The FCM SA upload to Expo IS automated (see step 3 above and `scripts/link-fcm-credentials.mjs`).

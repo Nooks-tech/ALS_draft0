@@ -494,6 +494,45 @@ jobs:
             echo ""
           fi
 
+      - name: Decode Firebase FCM v1 service-account JSON
+        # Separate from the Play SA above — Firebase project's SA is
+        # used by Expo Push Service to send Android pushes via FCM v1.
+        # The Play SA is for uploading AABs to Play Console; different
+        # Google Cloud project, different role. Both come from
+        # GitHub repo secrets, base64-encoded.
+        env:
+          FCM_KEY_B64: ${{ secrets.GOOGLE_FCM_SERVICE_ACCOUNT_JSON_BASE64 }}
+        run: |
+          if [ -z "$FCM_KEY_B64" ]; then
+            echo "::warning::GOOGLE_FCM_SERVICE_ACCOUNT_JSON_BASE64 is empty — Android pushes will fail. See docs/ANDROID_PUSH_SETUP.md for one-time Firebase setup."
+            echo "FCM_SA_JSON_PATH=" >> $GITHUB_ENV
+          else
+            mkdir -p .nooks-build
+            FCM_LEN=${#FCM_KEY_B64}
+            echo "GOOGLE_FCM_SERVICE_ACCOUNT_JSON_BASE64 length: $FCM_LEN chars"
+            if ! printf '%s' "$FCM_KEY_B64" | base64 -di > .nooks-build/fcm-service-account.json 2>/tmp/fcm-b64.err; then
+              echo "::error::FCM SA base64 decode failed:"
+              cat /tmp/fcm-b64.err
+              echo "::error::Re-encode the FCM SA JSON and re-paste GOOGLE_FCM_SERVICE_ACCOUNT_JSON_BASE64."
+              exit 1
+            fi
+            wc -c .nooks-build/fcm-service-account.json
+            echo "FCM_SA_JSON_PATH=$(pwd)/.nooks-build/fcm-service-account.json" >> $GITHUB_ENV
+          fi
+
+      - name: Auto-link FCM credentials to merchant Android package
+        # Per-package one-time setup on Expo's side. Mirrors what
+        # link-expo-push-key.mjs does for iOS APNs. Idempotent — re-runs
+        # are no-ops once linked. Fail-open: if Expo's GraphQL schema
+        # has shifted, the script logs a warning and exits 0 so the
+        # build still ships; operator falls back to the manual upload
+        # documented in docs/ANDROID_PUSH_SETUP.md.
+        if: env.FCM_SA_JSON_PATH != ''
+        env:
+          ANDROID_PACKAGE_ID: ${{ github.event.inputs.android_package_id }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: node scripts/link-fcm-credentials.mjs
+
       - name: Build Android
         # Production build: AAB + auto-submit to Play Internal track.
         # Preview build: APK, no submit (used for direct sideloading).

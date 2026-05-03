@@ -1,0 +1,104 @@
+# Broadcast a JS-only OTA update to every active merchant in one shot.
+# Use this when shipping a global fix (e.g. a bug in shared app code)
+# that should reach every merchant's existing installs without
+# rebuilding native binaries.
+#
+# Per-merchant isolation is preserved: each merchant has its own EAS
+# Update channel (= merchant_id), and this workflow simply iterates
+# over the active set and pushes to each channel sequentially. If one
+# merchant's update fails, the others still get pushed; the workflow
+# fails (red) so you notice.
+#
+# Targeting:
+#   target=all                broadcast to every active merchant (default)
+#   target=<merchant-uuid>    push to one specific merchant (same as
+#                             nooks-update.yml but without needing to
+#                             pass branding inputs — pulled from DB)
+#
+# Required GitHub secrets (most already set; SUPABASE_SERVICE_ROLE_KEY
+# is the new one):
+#   EXPO_TOKEN                   eas-cli auth (existing)
+#   SUPABASE_URL                 (existing)
+#   SUPABASE_ANON_KEY            (existing) — passed into per-merchant .env
+#   SUPABASE_SERVICE_ROLE_KEY    NEW — needed to query merchants/app_config
+#   API_URL                      (existing)
+#   NOOKS_API_BASE_URL           (existing)
+#   GOOGLE_MAPS_API_KEY          optional
+name: Nooks broadcast OTA update
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Update message shown in EAS dashboard (e.g. 'fix(push): permission initializer')"
+        required: true
+        type: string
+      target:
+        description: "'all' to broadcast, or a specific merchant UUID"
+        required: false
+        type: string
+        default: "all"
+      platform:
+        description: "Which platforms to update: 'all' (default), 'ios', or 'android'"
+        required: false
+        type: string
+        default: "all"
+
+jobs:
+  broadcast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required secrets
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          missing=0
+          [ -z "$EXPO_TOKEN" ] && echo "::error::EXPO_TOKEN secret missing" && missing=1
+          [ -z "$SUPABASE_URL" ] && echo "::error::SUPABASE_URL secret missing" && missing=1
+          [ -z "$SUPABASE_ANON_KEY" ] && echo "::error::SUPABASE_ANON_KEY secret missing" && missing=1
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY secret missing."
+            echo "Add it: Repo -> Settings -> Secrets and variables -> Actions -> New repository secret."
+            echo "Value: from Supabase dashboard -> Project Settings -> API -> service_role key."
+            missing=1
+          fi
+          [ "$missing" -eq 0 ] || exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run broadcast
+        # Pass the inputs through env to dodge shell-quoting hazards in
+        # the message (apostrophes, parens, etc. are common in update
+        # notes). The script reads them via process.env / argv and
+        # spawns `eas update` per merchant.
+        env:
+          UPDATE_MESSAGE: ${{ github.event.inputs.message }}
+          UPDATE_TARGET: ${{ github.event.inputs.target }}
+          UPDATE_PLATFORM: ${{ github.event.inputs.platform }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          API_URL: ${{ secrets.API_URL }}
+          NOOKS_API_BASE_URL: ${{ secrets.NOOKS_API_BASE_URL }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+        run: |
+          node scripts/broadcast-update.mjs \
+            --message "$UPDATE_MESSAGE" \
+            --target "$UPDATE_TARGET" \
+            --platform "$UPDATE_PLATFORM"
