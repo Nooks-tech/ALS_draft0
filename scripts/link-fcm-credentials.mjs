@@ -107,8 +107,14 @@ async function gql(query, variables = {}) {
   // Step 1: Look up existing GoogleServiceAccountKeys on the account.
   // We dedupe by privateKeyIdentifier so re-running this script doesn't
   // pile up duplicate keys on the Expo dashboard.
+  //
+  // NOTE: Expo's `account.byId` field expects accountId as String!
+  // (NOT ID! — confirmed by the schema mismatch error from the first
+  // run). Other Expo fields like appleTeam.byAppleTeamIdentifier do
+  // take ID! for accountId, so the schema is genuinely inconsistent
+  // across resolvers.
   const accountQuery = await gql(
-    `query($accountId: ID!) {
+    `query($accountId: String!) {
       account {
         byId(accountId: $accountId) {
           id
