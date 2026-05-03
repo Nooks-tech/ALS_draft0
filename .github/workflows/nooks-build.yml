@@ -129,16 +129,20 @@ jobs:
             exit 1
           fi
 
-      - name: Require per-merchant bundle/package for production builds
-        # Multi-merchant safety. Without these inputs, app.config.js falls
-        # back to the placeholder com.nooksbusiness.als — every merchant
-        # would ship to the SAME App Store / Play Console app and collide
-        # signing/upload. We only enforce on production builds because
-        # preview/test builds are sideloadable and don't go to the stores.
+      - name: Require per-merchant bundle/package/Apple-Pay for production builds
+        # Multi-merchant safety. Without these inputs, app.config.js
+        # falls back to placeholder values:
+        #   - bundle/package -> com.nooksbusiness.als (collides across
+        #     merchants on App Store / Play Console)
+        #   - Apple Pay merchant ID -> merchant.com.nooks (a non-existent
+        #     placeholder that makes Apple Pay fail silently at checkout)
+        # We only enforce on production builds because preview/test
+        # builds are sideloadable and don't process real payments.
         if: github.event.inputs.use_test_builds != 'true'
         env:
           IOS_BUNDLE_ID: ${{ github.event.inputs.ios_bundle_id }}
           ANDROID_PACKAGE_ID: ${{ github.event.inputs.android_package_id }}
+          APPLE_PAY_MERCHANT_ID: ${{ github.event.inputs.apple_pay_merchant_id }}
         run: |
           missing=0
           if [ -z "$IOS_BUNDLE_ID" ]; then
@@ -147,6 +151,10 @@ jobs:
           fi
           if [ -z "$ANDROID_PACKAGE_ID" ]; then
             echo "::error::android_package_id input is empty. Production builds require a per-merchant Android package (e.g. com.nooksbusiness.<merchant-slug>) created in Play Console."
+            missing=1
+          fi
+          if [ -z "$APPLE_PAY_MERCHANT_ID" ]; then
+            echo "::error::apple_pay_merchant_id input is empty. Production builds need the merchant's Apple Pay merchant id (e.g. merchant.com.nooks.<slug>) registered in the Apple Developer Portal — without it, the IPA falls back to merchant.com.nooks placeholder and Apple Pay fails at checkout."
             missing=1
           fi
           if [ "$missing" -eq 1 ]; then

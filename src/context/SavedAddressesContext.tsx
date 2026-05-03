@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useMerchant } from './MerchantContext';
 
-const SAVED_ADDRESSES_KEY = '@als_saved_addresses';
+const LEGACY_SAVED_ADDRESSES_KEY = '@als_saved_addresses';
 
 export type SavedAddress = {
   id: string;
@@ -24,59 +25,105 @@ export type SavedAddressesContextType = {
 
 const SavedAddressesContext = createContext<SavedAddressesContextType | undefined>(undefined);
 
-const persist = async (addresses: SavedAddress[]) => {
-  await AsyncStorage.setItem(SAVED_ADDRESSES_KEY, JSON.stringify(addresses));
-};
-
 export const SavedAddressesProvider = ({ children }: { children: ReactNode }) => {
+  const { merchantId } = useMerchant();
   const [addresses, setAddresses] = useState<SavedAddress[]>([]);
 
+  // Per-merchant namespaced cache. Saved addresses are personal data
+  // and especially important to scope per-merchant — a customer who
+  // ordered from Merchant A shouldn't see those same addresses
+  // pre-filled when they install Merchant B's app on the same device.
+  // (Production builds are per-bundle so AsyncStorage is sandboxed
+  // anyway, but this keeps dev/preview safe and future-proofs against
+  // a multi-merchant single-app deployment.)
+  const addressesKey = `@als_saved_addresses_${merchantId || 'default'}`;
+
   useEffect(() => {
-    AsyncStorage.getItem(SAVED_ADDRESSES_KEY).then((raw) => {
-      if (raw) {
-        try {
+    let cancelled = false;
+    (async () => {
+      try {
+        let raw = await AsyncStorage.getItem(addressesKey);
+        // One-time migration of pre-namespacing data.
+        if (!raw && merchantId) {
+          const legacy = await AsyncStorage.getItem(LEGACY_SAVED_ADDRESSES_KEY);
+          if (legacy) {
+            await AsyncStorage.setItem(addressesKey, legacy);
+            await AsyncStorage.removeItem(LEGACY_SAVED_ADDRESSES_KEY);
+            raw = legacy;
+          }
+        }
+        if (cancelled) return;
+        if (raw) {
           setAddresses(JSON.parse(raw));
-        } catch (_) {}
+        } else {
+          setAddresses([]);
+        }
+      } catch {
+        if (!cancelled) setAddresses([]);
       }
-    });
-  }, []);
-
-  const addAddress = useCallback((addr: Omit<SavedAddress, 'id'>) => {
-    const newAddr: SavedAddress = {
-      ...addr,
-      id: `addr-${Date.now()}`,
+    })();
+    return () => {
+      cancelled = true;
     };
-    setAddresses((prev) => {
-      const next = prev.map((a) => ({ ...a, isDefault: addr.isDefault ? false : a.isDefault }));
-      const list = [...next, { ...newAddr, isDefault: addr.isDefault ?? (prev.length === 0) }];
-      persist(list);
-      return list;
-    });
-  }, []);
+  }, [addressesKey, merchantId]);
 
-  const updateAddress = useCallback((id: string, data: Partial<SavedAddress>) => {
-    setAddresses((prev) => {
-      const next = prev.map((a) => (a.id === id ? { ...a, ...data } : a));
-      persist(next);
-      return next;
-    });
-  }, []);
+  const persist = useCallback(
+    async (next: SavedAddress[]) => {
+      try {
+        await AsyncStorage.setItem(addressesKey, JSON.stringify(next));
+      } catch {}
+    },
+    [addressesKey],
+  );
 
-  const removeAddress = useCallback((id: string) => {
-    setAddresses((prev) => {
-      const next = prev.filter((a) => a.id !== id);
-      persist(next);
-      return next;
-    });
-  }, []);
+  const addAddress = useCallback(
+    (addr: Omit<SavedAddress, 'id'>) => {
+      const newAddr: SavedAddress = {
+        ...addr,
+        id: `addr-${Date.now()}`,
+      };
+      setAddresses((prev) => {
+        const next = prev.map((a) => ({ ...a, isDefault: addr.isDefault ? false : a.isDefault }));
+        const list = [...next, { ...newAddr, isDefault: addr.isDefault ?? (prev.length === 0) }];
+        void persist(list);
+        return list;
+      });
+    },
+    [persist],
+  );
 
-  const setDefault = useCallback((id: string) => {
-    setAddresses((prev) => {
-      const next = prev.map((a) => ({ ...a, isDefault: a.id === id }));
-      persist(next);
-      return next;
-    });
-  }, []);
+  const updateAddress = useCallback(
+    (id: string, data: Partial<SavedAddress>) => {
+      setAddresses((prev) => {
+        const next = prev.map((a) => (a.id === id ? { ...a, ...data } : a));
+        void persist(next);
+        return next;
+      });
+    },
+    [persist],
+  );
+
+  const removeAddress = useCallback(
+    (id: string) => {
+      setAddresses((prev) => {
+        const next = prev.filter((a) => a.id !== id);
+        void persist(next);
+        return next;
+      });
+    },
+    [persist],
+  );
+
+  const setDefault = useCallback(
+    (id: string) => {
+      setAddresses((prev) => {
+        const next = prev.map((a) => ({ ...a, isDefault: a.id === id }));
+        void persist(next);
+        return next;
+      });
+    },
+    [persist],
+  );
 
   const addressesSorted = useMemo(
     () => [...addresses].sort((a, b) => (a.isDefault ? 0 : 1) - (b.isDefault ? 0 : 1)),

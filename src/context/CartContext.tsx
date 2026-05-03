@@ -4,6 +4,7 @@ import { AppState } from 'react-native';
 import i18n from '../i18n';
 import { cancelAbandonedCartReminder, CART_TTL_MS, scheduleAbandonedCartReminder } from '../utils/cartNotifications';
 import { useAuth } from './AuthContext';
+import { useMerchant } from './MerchantContext';
 import { useMerchantBranding } from './MerchantBrandingContext';
 
 // 1. Define the item structure (Restored from your old code)
@@ -62,6 +63,7 @@ type PersistedCart = {
 
 export const CartProvider = ({ children }: { children: ReactNode }) => {
   const { user, initialized } = useAuth();
+  const { merchantId } = useMerchant();
   const { appName, cafeName } = useMerchantBranding();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [orderType, setOrderTypeState] = useState<'delivery' | 'pickup' | 'drivethru'>('pickup');
@@ -72,11 +74,18 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const [deliveryCarrierName, setDeliveryCarrierNameState] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number>(Date.now());
-  const prevUserRef = useRef<string | null>(null);
+  // Tracks the previous (merchant, user) scope so we can clear cart
+  // state when EITHER axis changes — was previously just user.
+  const prevReminderKeyRef = useRef<string | null>(null);
 
   const uid = user?.id ?? 'guest';
-  const CART_CACHE_KEY = `@als_cart_${uid}`;
-  const CART_REMINDER_KEY = `@als_cart_reminder_${uid}`;
+  const merchantScope = merchantId || 'default';
+  // Per-(merchant, user) scoped cache. Production builds have one
+  // bundle per merchant so this is belt-and-suspenders against the
+  // sandboxed AsyncStorage; in dev/preview where one app can switch
+  // merchants via URL it actively prevents leaking cart contents.
+  const CART_CACHE_KEY = `@als_cart_${merchantScope}_${uid}`;
+  const CART_REMINDER_KEY = `@als_cart_reminder_${merchantScope}_${uid}`;
   const totalItems = cartItems.reduce((sum, item) => sum + item.quantity, 0);
   const totalPrice = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
@@ -84,10 +93,14 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     setLastUpdatedAt(Date.now());
   }, []);
 
-  // Reset cart state when user changes
+  // Reset cart state when EITHER user or merchant scope changes.
+  // The reminder key carries both axes so it triggers on either flip.
   useEffect(() => {
-    if (prevUserRef.current !== null && prevUserRef.current !== uid) {
-      void cancelAbandonedCartReminder(`@als_cart_reminder_${prevUserRef.current}`);
+    if (
+      prevReminderKeyRef.current !== null &&
+      prevReminderKeyRef.current !== CART_REMINDER_KEY
+    ) {
+      void cancelAbandonedCartReminder(prevReminderKeyRef.current);
       setCartItems([]);
       setOrderTypeState('pickup');
       setSelectedBranchState(null);
@@ -95,13 +108,25 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       setHydrated(false);
       setLastUpdatedAt(Date.now());
     }
-    prevUserRef.current = uid;
-  }, [uid]);
+    prevReminderKeyRef.current = CART_REMINDER_KEY;
+  }, [CART_REMINDER_KEY]);
 
   useEffect(() => {
     if (!initialized || hydrated) return;
-    AsyncStorage.getItem(CART_CACHE_KEY)
-      .then((raw) => {
+    (async () => {
+      try {
+        let raw = await AsyncStorage.getItem(CART_CACHE_KEY);
+        // One-time migration of legacy non-namespaced cart data so
+        // existing customers don't lose their basket on the OTA
+        // update that introduced merchant scoping.
+        if (!raw && uid !== 'guest') {
+          const legacy = await AsyncStorage.getItem(`@als_cart_${uid}`);
+          if (legacy) {
+            await AsyncStorage.setItem(CART_CACHE_KEY, legacy);
+            await AsyncStorage.removeItem(`@als_cart_${uid}`);
+            raw = legacy;
+          }
+        }
         if (!raw) return;
         const parsed = JSON.parse(raw) as PersistedCart;
         const now = Date.now();
@@ -113,7 +138,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
               : null;
 
         if (expiresAt != null && expiresAt <= now) {
-          void AsyncStorage.removeItem(CART_CACHE_KEY);
+          await AsyncStorage.removeItem(CART_CACHE_KEY);
           return;
         }
 
@@ -122,10 +147,13 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         if (parsed.selectedBranch) setSelectedBranchState(parsed.selectedBranch);
         if (parsed.deliveryAddress) setDeliveryAddressState(parsed.deliveryAddress);
         setLastUpdatedAt(typeof parsed.updatedAt === 'number' ? parsed.updatedAt : now);
-      })
-      .catch(() => {})
-      .finally(() => setHydrated(true));
-  }, [CART_CACHE_KEY, hydrated, initialized]);
+      } catch {
+        // Corrupted JSON or AsyncStorage error — start fresh.
+      } finally {
+        setHydrated(true);
+      }
+    })();
+  }, [CART_CACHE_KEY, hydrated, initialized, uid]);
 
   useEffect(() => {
     if (!hydrated) return;
