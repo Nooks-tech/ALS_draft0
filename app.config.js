@@ -1,21 +1,24 @@
 const dotenv = require('dotenv');
-const fs = require('fs');
 dotenv.config();
 
 const appJson = require('./app.json');
 const withApplePayEntitlement = require('./plugins/withApplePay');
 const withExpoWalletPatch = require('./plugins/withExpoWalletPatch');
 
-// Wire up Firebase google-services.json if present at the project
-// root. The file contains FCM client config for every merchant
-// Android package registered under the Nooks Firebase project — one
-// file with multiple `client` entries, Firebase SDK on-device picks
-// the right one based on the AAB's package name. Without this file,
-// Android FCM token registration silently no-ops and pushes never
-// reach Android devices. See docs/ANDROID_PUSH_SETUP.md for the
-// per-merchant onboarding flow that keeps the file in sync.
-const googleServicesFilePath = './google-services.json';
-const hasGoogleServicesFile = fs.existsSync(googleServicesFilePath);
+// google-services.json is wired up via app.json's
+// expo.android.googleServicesFile (static config). It used to live
+// here as a conditional `fs.existsSync` check, but a real Khrtoom
+// build proved the runtime initializer fails with
+// "Default FirebaseApp is not initialized" — meaning EAS prebuild
+// didn't see the file. The dynamic-config existsSync was lying
+// (likely working dir mismatch on EAS's build host vs CI's pwd).
+// Static config in app.json resolves the path through Expo's normal
+// projectRoot resolution and reliably copies the file into
+// android/app/ at prebuild time.
+//
+// Per-merchant onboarding still requires re-downloading
+// google-services.json from Firebase after registering the new
+// merchant package — see docs/ANDROID_PUSH_SETUP.md.
 
 const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.nooks';
 const buildTimeAppName = process.env.EXPO_PUBLIC_APP_NAME || '';
@@ -60,7 +63,6 @@ const resolvedIcon = config.expo.icon || resolvedAppIconFile;
 config.expo.android = {
   ...(config.expo.android || {}),
   ...(androidPackageId.trim() ? { package: androidPackageId.trim() } : {}),
-  ...(hasGoogleServicesFile ? { googleServicesFile: googleServicesFilePath } : {}),
   adaptiveIcon: {
     backgroundColor: (buildTimeAppIconBgColor && buildTimeAppIconBgColor !== 'none')
       ? buildTimeAppIconBgColor
