@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "458789879749",
+    "project_id": "nooks-push",
+    "storage_bucket": "nooks-push.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:458789879749:android:9bae15ec46e5776e7ed5ac",
+        "android_client_info": {
+          "package_name": "sa.nooks.khrtoom"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCpGe-C17EqlpKRK8rXX4idlVIrjK_2Df8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
