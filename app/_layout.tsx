@@ -4,7 +4,7 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import Constants from 'expo-constants';
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
@@ -61,7 +61,7 @@ async function requestNotificationPermissions() {
 }
 import { AuthProvider } from '../src/context/AuthContext';
 import { CartProvider } from '../src/context/CartContext';
-import { MerchantBrandingWrapper, useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { MerchantBrandingWrapper } from '../src/context/MerchantBrandingContext';
 import { MerchantProvider } from '../src/context/MerchantContext';
 import { OperationsProvider } from '../src/context/OperationsContext';
 import { FavoritesProvider } from '../src/context/FavoritesContext';
@@ -87,22 +87,33 @@ function LanguageSwitchOverlay() {
   return <AppSplash mode="overlay" visible={switching} />;
 }
 
-function SplashGate() {
-  const { loading } = useMerchantBranding();
-  const releasedRef = useRef(false);
-
+function NotificationPermissionInitializer() {
+  // Runs once on app mount, after a small delay so the cold-start
+  // splash gets a frame to render before the iOS / Android 13+
+  // permission modal pops over it. Crucially this is NOT gated on
+  // merchant-branding load state — the previous SplashGate-based
+  // wiring depended on `loading` flipping to false, which in turn
+  // depended on the merchant fetch resolving. A slow fetch (or
+  // a user who killed the app before splash hide) meant
+  // requestPermissionsAsync was never invoked, so iOS never created
+  // a Notifications row in Settings and the device could never
+  // receive pushes. This decoupling means every cold launch fires
+  // the request regardless of network conditions or user impatience.
+  //
+  // SplashScreen.hideAsync() lives in AppSplash now (cold-start
+  // mode releases the native splash itself once branding loads +
+  // min visible time elapses), so we don't need to call it here.
   useEffect(() => {
-    if (loading || releasedRef.current) return;
-    releasedRef.current = true;
-
-    void SplashScreen.hideAsync()
-      .catch(() => {
-        // Ignore startup timing races when the native splash is already gone.
-      })
-      .finally(() => {
-        void requestNotificationPermissions();
-      });
-  }, [loading]);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      void requestNotificationPermissions();
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
 
   return null;
 }
@@ -133,6 +144,12 @@ export default function RootLayout() {
       }}
     >
       <SafeAreaProvider>
+        {/* Runs requestNotificationPermissions() 1.5s after mount,
+            independent of merchant context. Replaces the old
+            SplashGate path which got orphaned during the splash
+            refactor and was silently leaving new devices without
+            an iOS Notifications row. */}
+        <NotificationPermissionInitializer />
         <AuthProvider>
         <MerchantProvider>
         <MerchantBrandingWrapper>

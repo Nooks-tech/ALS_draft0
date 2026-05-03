@@ -1,9 +1,21 @@
 const dotenv = require('dotenv');
+const fs = require('fs');
 dotenv.config();
 
 const appJson = require('./app.json');
 const withApplePayEntitlement = require('./plugins/withApplePay');
 const withExpoWalletPatch = require('./plugins/withExpoWalletPatch');
+
+// Wire up Firebase google-services.json if present at the project
+// root. The file contains FCM client config for every merchant
+// Android package registered under the Nooks Firebase project — one
+// file with multiple `client` entries, Firebase SDK on-device picks
+// the right one based on the AAB's package name. Without this file,
+// Android FCM token registration silently no-ops and pushes never
+// reach Android devices. See docs/ANDROID_PUSH_SETUP.md for the
+// per-merchant onboarding flow that keeps the file in sync.
+const googleServicesFilePath = './google-services.json';
+const hasGoogleServicesFile = fs.existsSync(googleServicesFilePath);
 
 const applePayMerchantId = process.env.EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID || 'merchant.com.nooks';
 const buildTimeAppName = process.env.EXPO_PUBLIC_APP_NAME || '';
@@ -48,6 +60,7 @@ const resolvedIcon = config.expo.icon || resolvedAppIconFile;
 config.expo.android = {
   ...(config.expo.android || {}),
   ...(androidPackageId.trim() ? { package: androidPackageId.trim() } : {}),
+  ...(hasGoogleServicesFile ? { googleServicesFile: googleServicesFilePath } : {}),
   adaptiveIcon: {
     backgroundColor: (buildTimeAppIconBgColor && buildTimeAppIconBgColor !== 'none')
       ? buildTimeAppIconBgColor
