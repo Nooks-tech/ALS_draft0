@@ -77,6 +77,11 @@ on:
         required: false
         type: string
         default: ""
+      tester_apple_id:
+        description: "Optional. Merchant's Apple ID email — auto-added as TestFlight external tester after submit. Apple sends invite. Skip Android (Saudi market is mostly iOS)."
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -744,6 +749,28 @@ jobs:
           "
 
           eas submit --platform ios --latest --profile production --non-interactive
+
+      - name: Auto-invite merchant Apple ID to TestFlight
+        # Optional — only fires when the operator filled the
+        # tester_apple_id field on the Go Live form. Adds the merchant's
+        # Apple ID as an external tester to a per-merchant beta group;
+        # Apple emails the invite automatically. Fail-open: any ASC
+        # error logs a warning and exits 0 so the build still ships.
+        # Android-side tester invites aren't automated (Play Developer
+        # API doesn't expose tester-list management) — Saudi market is
+        # mostly iOS so we skip that.
+        if: |
+          github.event.inputs.use_test_builds != 'true' &&
+          github.event.inputs.app_store_apple_id != '' &&
+          github.event.inputs.tester_apple_id != ''
+        env:
+          APPLE_ID: ${{ github.event.inputs.tester_apple_id }}
+          BUNDLE_ID: ${{ github.event.inputs.ios_bundle_id }}
+          MERCHANT_SLUG: ${{ github.event.inputs.merchant_id }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          ASC_API_KEY_PATH: ./.nooks-build/AuthKey_${{ secrets.ASC_API_KEY_ID }}.p8
+        run: node scripts/add-testflight-tester.mjs
 
       - name: Cleanup iOS credentials
         if: always()
