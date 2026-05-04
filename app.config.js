@@ -67,8 +67,20 @@ config.expo.android = {
     backgroundColor: (buildTimeAppIconBgColor && buildTimeAppIconBgColor !== 'none')
       ? buildTimeAppIconBgColor
       : (config.expo.android?.adaptiveIcon?.backgroundColor || '#E6F4FE'),
-    foregroundImage: resolvedIcon,
-    monochromeImage: resolvedIcon,
+    // Adaptive icon foreground / monochrome MUST be the transparent
+    // raw icon — the workflow's "Write .env for EAS" step copies the
+    // raw merchant logo (with transparent margins) into
+    // android-icon-foreground.png + android-icon-monochrome.png. The
+    // launcher then composites foreground over backgroundColor and
+    // applies the device-specific mask shape (circle / squircle /
+    // teardrop). Pointing this at resolvedIcon (the COMPOSITED icon
+    // with bg already baked in) gave the launcher an opaque square
+    // with no transparent area, which is why icons rendered as
+    // sharp-edged rectangles instead of getting masked. Stick to the
+    // android-icon-foreground.png / android-icon-monochrome.png
+    // paths that app.json already declares.
+    foregroundImage: './assets/images/android-icon-foreground.png',
+    monochromeImage: './assets/images/android-icon-monochrome.png',
   },
   config: {
     ...((config.expo.android && config.expo.android.config) || {}),

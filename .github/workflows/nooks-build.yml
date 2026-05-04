@@ -340,10 +340,23 @@ jobs:
           });
           EOF
           # Keep launcher/icon assets aligned with the merchant icon while using a dedicated splash card artwork.
-          for target in android-icon-foreground.png android-icon-monochrome.png icon.png; do
+          # iOS legacy + universal icon = composited (bg-baked) variant
+          # because iOS doesn't have adaptive icons; the app icon is a
+          # static square that gets the system corner-radius applied.
+          # Android ADAPTIVE icon foreground/monochrome must be the
+          # TRANSPARENT raw icon — Android's launcher renders the
+          # foreground over a separately-set bg color and applies the
+          # device-specific mask shape (circle / squircle / teardrop).
+          # Pre-baking the bg into the foreground was making the icon
+          # look like a sharp-edged opaque square because the launcher
+          # had no transparent area to work with for proper masking.
+          if [ "$(realpath "$APP_ICON_FILE")" != "$(realpath "./assets/images/icon.png")" ]; then
+            cp "$APP_ICON_FILE" "./assets/images/icon.png"
+          fi
+          for target in android-icon-foreground.png android-icon-monochrome.png; do
             dest="./assets/images/$target"
-            if [ "$(realpath "$APP_ICON_FILE")" != "$(realpath "$dest")" ]; then
-              cp "$APP_ICON_FILE" "$dest"
+            if [ "$(realpath "$RAW_ICON_FILE")" != "$(realpath "$dest")" ]; then
+              cp "$RAW_ICON_FILE" "$dest"
             fi
           done
           echo "EXPO_PUBLIC_MERCHANT_ID=${{ github.event.inputs.merchant_id }}" > .env
