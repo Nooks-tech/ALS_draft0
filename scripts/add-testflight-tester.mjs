@@ -110,9 +110,15 @@ async function asc(path, init = {}) {
   console.log(`[tf-tester] App: ${app.id} (${app.attributes?.name})`);
 
   // 2. Find or create a beta group for this merchant.
+  //
+  // ASC API note: /v1/apps/{id}/betaGroups (the relationship
+  // sub-resource) rejects filter[name] with a 400
+  // PARAMETER_ERROR.ILLEGAL. The top-level /v1/betaGroups endpoint
+  // DOES accept both filter[app] and filter[name] together — same
+  // result, supported parameters. Use that.
   const groupName = `${MERCHANT_SLUG} testers`.slice(0, 50);
   const existingGroups = await asc(
-    `/v1/apps/${app.id}/betaGroups?filter[name]=${encodeURIComponent(groupName)}&limit=10`
+    `/v1/betaGroups?filter[app]=${encodeURIComponent(app.id)}&filter[name]=${encodeURIComponent(groupName)}&limit=10`
   );
   let group = (existingGroups?.data ?? []).find(
     (g) => g.attributes?.name === groupName
