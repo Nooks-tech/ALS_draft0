@@ -121,12 +121,26 @@ export type CommitOrderPayload = {
   relayToNooks?: boolean;
 };
 
-export async function fetchOrdersForCustomer(customerId: string): Promise<OrderRow[]> {
+export async function fetchOrdersForCustomer(
+  customerId: string,
+  merchantId: string,
+): Promise<OrderRow[]> {
   if (!supabase) return [];
+  // CRITICAL multi-tenant filter: same Supabase auth.uid is shared
+  // across every merchant's app (one user can install Mafasa AND
+  // GrindHouse and sign in with the same phone), so filtering only by
+  // customer_id leaks every order this user ever placed across all
+  // merchants. Filter by merchant_id too — the orders row already
+  // carries it (set when the order was placed in this merchant's app).
+  if (!merchantId) {
+    console.warn('[Orders] fetchOrdersForCustomer called without merchantId — refusing to query (would leak across merchants)');
+    return [];
+  }
   const primary = await supabase
     .from('customer_orders')
     .select('*')
     .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
     .order('created_at', { ascending: false });
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
     console.warn('[Orders] Fetch error:', primary.error.message);
@@ -137,6 +151,7 @@ export async function fetchOrdersForCustomer(customerId: string): Promise<OrderR
     .from('orders')
     .select('*')
     .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
     .order('created_at', { ascending: false });
   if (fallback.error) {
     console.warn('[Orders] Legacy fetch error:', fallback.error.message);
@@ -145,19 +160,27 @@ export async function fetchOrdersForCustomer(customerId: string): Promise<OrderR
   return (fallback.data ?? []).map((r) => normalizeLegacy(r as Record<string, any>));
 }
 
-export async function fetchOrderById(orderId: string): Promise<OrderRow | null> {
+export async function fetchOrderById(
+  orderId: string,
+  merchantId: string,
+): Promise<OrderRow | null> {
   if (!supabase || !orderId) return null;
+  if (!merchantId) {
+    console.warn('[Orders] fetchOrderById called without merchantId — refusing to query');
+    return null;
+  }
   const primary = await supabase
     .from('customer_orders')
     .select('*')
     .eq('id', orderId)
+    .eq('merchant_id', merchantId)
     .maybeSingle();
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
     console.warn('[Orders] Fetch by id error:', primary.error.message);
     return null;
   }
   if (!primary.error) return (primary.data as OrderRow | null) ?? null;
-  const fallback = await supabase.from('orders').select('*').eq('id', orderId).maybeSingle();
+  const fallback = await supabase.from('orders').select('*').eq('id', orderId).eq('merchant_id', merchantId).maybeSingle();
   if (fallback.error) {
     console.warn('[Orders] Legacy fetch by id error:', fallback.error.message);
     return null;
@@ -282,13 +305,24 @@ export async function getOrderComplaint(orderId: string): Promise<ComplaintRow |
 
 export function subscribeToOrders(
   customerId: string,
+  merchantId: string,
   onInsert: (row: OrderRow) => void,
   onUpdate: (row: OrderRow) => void
 ): RealtimeChannel | null {
   if (!supabase) return null;
+  if (!merchantId) {
+    console.warn('[Orders] subscribeToOrders called without merchantId — skipping realtime');
+    return null;
+  }
   const table = 'customer_orders';
+  // Supabase Realtime postgres_changes filter only supports a single
+  // column equality. Filter on customer_id at the wire level (so
+  // we get fewer events than nothing), then drop rows whose
+  // merchant_id doesn't match in the callback. Without this guard,
+  // a parallel order placed by the same auth.uid on a DIFFERENT
+  // merchant's app would push into THIS app's order list.
   const channel = supabase
-    .channel(table)
+    .channel(`${table}:${customerId}:${merchantId}`)
     .on(
       'postgres_changes',
       {
@@ -298,7 +332,9 @@ export function subscribeToOrders(
         filter: `customer_id=eq.${customerId}`,
       },
       (payload) => {
-        onInsert(payload.new as OrderRow);
+        const row = payload.new as OrderRow;
+        if (row.merchant_id !== merchantId) return;
+        onInsert(row);
       }
     )
     .on(
@@ -310,7 +346,9 @@ export function subscribeToOrders(
         filter: `customer_id=eq.${customerId}`,
       },
       (payload) => {
-        onUpdate(payload.new as OrderRow);
+        const row = payload.new as OrderRow;
+        if (row.merchant_id !== merchantId) return;
+        onUpdate(row);
       }
     )
     .subscribe();

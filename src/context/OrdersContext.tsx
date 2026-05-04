@@ -3,6 +3,7 @@ import { AppState } from 'react-native';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { customerCancelOrder, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
+import { useMerchant } from './MerchantContext';
 import { submitOrderToNooks } from '../api/nooksOrders';
 import type { CartItem } from './CartContext';
 import { useAuth } from './AuthContext';
@@ -145,35 +146,42 @@ function mergeOrderHistory(primary: PlacedOrder[], secondary: PlacedOrder[]): Pl
 
 export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
   const { user, loading: authLoading, initialized } = useAuth();
+  const { merchantId } = useMerchant();
   const [orders, setOrders] = useState<PlacedOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const channelRef = useRef<RealtimeChannel | null>(null);
 
   const customerId = user?.id ?? null;
-  const cacheKey = `@als_orders_${customerId ?? 'guest'}`;
+  const merchantScope = merchantId || 'default';
+  // Cache + reset key tracks BOTH axes so signing in with the same
+  // phone on a sibling merchant's app (same auth.uid) doesn't pull
+  // the previous merchant's cached order list. Same hardening as
+  // CartContext / FavoritesContext.
+  const cacheKey = `@als_orders_${merchantScope}_${customerId ?? 'guest'}`;
 
   const persistOrdersCache = useCallback((nextOrders: PlacedOrder[]) => {
     const capped = nextOrders.slice(0, MAX_HISTORY_ORDERS);
     AsyncStorage.setItem(cacheKey, JSON.stringify(capped)).catch(() => {});
   }, [cacheKey]);
 
-  // Reset orders when user changes
-  const prevCustomerRef = useRef<string | null>(null);
+  // Reset orders when EITHER user or merchant scope changes.
+  const prevScopeRef = useRef<string | null>(null);
   useEffect(() => {
-    if (prevCustomerRef.current !== null && prevCustomerRef.current !== (customerId ?? 'guest')) {
+    const scope = `${merchantScope}:${customerId ?? 'guest'}`;
+    if (prevScopeRef.current !== null && prevScopeRef.current !== scope) {
       setOrders([]);
     }
-    prevCustomerRef.current = customerId ?? 'guest';
-  }, [customerId]);
+    prevScopeRef.current = scope;
+  }, [customerId, merchantScope]);
 
   // Pull fresh orders from Supabase. Exposed via context so callers can
   // force a refresh — used by AppState ('active' transition) to recover
   // from missed realtime updates and by screens that want a manual
   // pull-to-refresh.
   const refresh = useCallback(async () => {
-    if (!customerId) return;
+    if (!customerId || !merchantId) return;
     try {
-      const rows = await fetchOrdersForCustomer(customerId);
+      const rows = await fetchOrdersForCustomer(customerId, merchantId);
       const mapped = rows.map(rowToOrder);
       if (mapped.length > 0) {
         setOrders((prev) => {
@@ -185,7 +193,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     } catch {
       // best effort — realtime + AppState retry will catch up later
     }
-  }, [customerId, persistOrdersCache]);
+  }, [customerId, merchantId, persistOrdersCache]);
 
   useEffect(() => {
     if (!initialized || authLoading) return;
@@ -203,11 +211,11 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         } catch {}
       })
       .catch(() => {});
-    if (!customerId) {
+    if (!customerId || !merchantId) {
       setLoading(false);
       return;
     }
-    fetchOrdersForCustomer(customerId).then((rows) => {
+    fetchOrdersForCustomer(customerId, merchantId).then((rows) => {
       if (!cancelled) {
         const mapped = rows.map(rowToOrder);
         if (mapped.length > 0) {
@@ -223,7 +231,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     return () => {
       cancelled = true;
     };
-  }, [customerId, initialized, authLoading, cacheKey, persistOrdersCache]);
+  }, [customerId, merchantId, initialized, authLoading, cacheKey, persistOrdersCache]);
 
   // Foreground refresh — Supabase realtime occasionally drops updates if
   // the app was backgrounded, sleeping, or on a flaky network. Without
@@ -243,9 +251,10 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
   }, [orders, persistOrdersCache]);
 
   useEffect(() => {
-    if (!customerId) return;
+    if (!customerId || !merchantId) return;
     channelRef.current = subscribeToOrders(
       customerId,
+      merchantId,
       (row) => setOrders((prev) => [rowToOrder(row), ...prev.filter((o) => o.id !== row.id)]),
       // Update list only — do NOT fire a local notification here. The
       // server (Foodics webhook → sendLocalizedPushToCustomer) already
@@ -259,7 +268,7 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
       channelRef.current?.unsubscribe();
       channelRef.current = null;
     };
-  }, [customerId]);
+  }, [customerId, merchantId]);
 
   const addOrder = useCallback(
     (
