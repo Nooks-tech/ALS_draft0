@@ -115,9 +115,36 @@ After completing setup for a merchant, confirm all four:
 | App installs but `getExpoPushTokenAsync` throws | `google-services.json` missing or malformed | Re-download from Firebase |
 | Push delivered but device doesn't show banner | OS-level notification permission denied | User: iOS Settings / Android Settings → app → Notifications → enable |
 
-## What's NOT automated yet
+## Per-merchant Firebase setup is now AUTOMATED
 
-- **Registering each new merchant Android package as a Firebase Android app**. Firebase Management API supports this (`POST /v1beta1/projects/{projectId}/androidApps`) but requires the SA to have the `roles/firebase.developAdmin` IAM role. For now this remains a manual ~30 sec step per merchant in the Firebase console.
-- **Re-downloading `google-services.json` after registering a new package**. Could be automated via the same Firebase Management API once the SA has the right role, but for now: manual download + commit per merchant.
+`scripts/sync-firebase-android-app.mjs` runs on every Android build (wired into `nooks-build.yml`). For each new merchant package:
 
-The FCM SA upload to Expo IS automated (see step 3 above and `scripts/link-fcm-credentials.mjs`).
+1. Calls the Firebase Management API to register the package as an Android app under `nooks-push` (no-op if already registered).
+2. Pulls the merged `google-services.json` (one file with `client[]` entries for every merchant).
+3. Writes it to the repo root.
+4. The next workflow step re-commits the file so EAS's git-mode upload picks it up.
+
+**Idempotent and fast-path optimized**: if the merchant's package is already in the local `google-services.json`, the script exits before making any API call. Most builds (re-builds for existing merchants) are zero-cost.
+
+**Fail-open**: any permission / network error logs a warning and exits 0. The build continues with the existing `google-services.json`.
+
+### One-time SA permission grant (required for the auto-sync)
+
+The Firebase Admin SDK service account (`firebase-adminsdk-fbsvc@nooks-push.iam.gserviceaccount.com`) has data-plane access by default but cannot create new Android apps. Grant it `roles/firebase.developAdmin` once:
+
+1. Open <https://console.cloud.google.com/iam-admin/iam?project=nooks-push>.
+2. Find the row for `firebase-adminsdk-fbsvc@nooks-push.iam.gserviceaccount.com`.
+3. Click the pencil → **Add another role** → search **Firebase Develop Admin** → Save.
+
+Without this role the script logs a warning and falls back to the manual flow below.
+
+## Manual fallback (only if the auto-sync fails)
+
+If a merchant's first build logs `Firebase Android app sync failed`, do this once for that merchant:
+
+1. https://console.firebase.google.com → **nooks-push** → ⚙ → **Add app → Android**.
+2. Package name: the merchant's exact `sa.nooks.<slug>`.
+3. Download the new `google-services.json` (it now contains an entry for the new merchant alongside every existing one).
+4. Replace `google-services.json` at the repo root, commit + push.
+
+Then re-trigger the build.

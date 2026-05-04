@@ -533,6 +533,38 @@ jobs:
             echo "FCM_SA_JSON_PATH=$(pwd)/.nooks-build/fcm-service-account.json" >> $GITHUB_ENV
           fi
 
+      - name: Sync merchant Android app to Firebase + refresh google-services.json
+        # Auto-registers the merchant's Android package as an Android
+        # app in the nooks-push Firebase project (if not already
+        # registered) and rewrites google-services.json with the merged
+        # client list for every merchant in the project. Eliminates
+        # the per-merchant manual step of going to Firebase Console,
+        # adding the package, downloading the JSON, and committing it.
+        # Idempotent — fast-path no-op when the package is already in
+        # the local file. Fail-open if the SA lacks
+        # firebase.androidApps.create permission.
+        if: env.FCM_SA_JSON_PATH != ''
+        env:
+          ANDROID_PACKAGE_ID: ${{ github.event.inputs.android_package_id }}
+          MERCHANT_SLUG: ${{ github.event.inputs.merchant_id }}
+        run: node scripts/sync-firebase-android-app.mjs
+
+      - name: Re-commit refreshed google-services.json
+        # The ephemeral commit earlier captured the working tree
+        # BEFORE the Firebase sync. If the sync wrote a new
+        # google-services.json (because a merchant's package was just
+        # registered for the first time), we need a second commit so
+        # EAS Build's git-mode upload picks it up. No-op when the
+        # sync didn't change anything.
+        if: env.FCM_SA_JSON_PATH != ''
+        run: |
+          if git diff --quiet google-services.json 2>/dev/null && git diff --cached --quiet google-services.json 2>/dev/null; then
+            echo "google-services.json unchanged — skipping re-commit"
+          else
+            git add google-services.json
+            git commit --no-verify -m "ci: refresh google-services.json after Firebase sync"
+          fi
+
       - name: Auto-link FCM credentials to merchant Android package
         # Per-package one-time setup on Expo's side. Mirrors what
         # link-expo-push-key.mjs does for iOS APNs. Idempotent — re-runs
