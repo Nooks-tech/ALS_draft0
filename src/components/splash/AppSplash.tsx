@@ -21,15 +21,19 @@ import { MerchantLogoImage } from '../branding/MerchantLogoImage';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 import { useMenuContext } from '../../context/MenuContext';
 
-// How long the cold-start splash stays on screen at minimum,
-// regardless of how quickly branding finishes loading. 2000 ms reads
-// as a deliberate splash and gives the merchant branding a proper
-// moment of focus before the menu paints.
+// How long the cold-start splash stays on screen at minimum.
+// 2000 ms reads as a deliberate splash and gives the merchant
+// branding a proper moment of focus before the menu paints. It's
+// also enough time for the warmup coordinator to land the menu
+// fetch + offers banners + loyalty/wallet from cache.
 const COLD_START_MIN_VISIBLE_MS = 2000;
 // Hard ceiling — even if branding/menu never resolve (offline first
 // install with no cache), the splash MUST eventually let the user in
-// rather than trapping them on the loading screen.
-const COLD_START_MAX_VISIBLE_MS = 4500;
+// rather than trapping them on the loading screen. 4 s is the
+// product-side cap requested by ops: long enough for the menu fetch
+// on a slow Saudi 4G link, short enough that a permanently offline
+// device still gets to the menu rather than feeling stuck.
+const COLD_START_MAX_VISIBLE_MS = 4000;
 
 type AppSplashProps = {
   /**

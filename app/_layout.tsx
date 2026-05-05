@@ -73,6 +73,7 @@ import { SavedAddressesProvider } from '../src/context/SavedAddressesContext';
 import { useAuth } from '../src/context/AuthContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { registerPushToken } from '../src/api/push';
+import { runWarmup } from '../src/lib/warmup';
 import '../src/i18n';
 
 // Keep the splash screen visible while we fetch resources
@@ -133,6 +134,59 @@ function OtaUpdateGate() {
     })();
     return () => { cancelled = true; };
   }, []);
+  return null;
+}
+
+/**
+ * Background prefetcher. Runs once auth + merchant context are
+ * resolved (whether the user is signed in or not) and fires a
+ * fan-out of HTTP requests that warm every cache key the rest of
+ * the app reads on screen mount: offers, loyalty, wallet, saved
+ * cards, recent orders, Apple Wallet pass.
+ *
+ * By the time the customer leaves the menu and visits any other
+ * tab, the cached data is already on disk and the screen paints
+ * on the very first frame. Network-perceived latency on every
+ * non-menu screen drops to ~0.
+ *
+ * Mounted ABOVE every consumer provider so prefetch starts running
+ * in parallel with the splash min-time timer — the customer never
+ * sees the warmup happen.
+ */
+function WarmupRunner() {
+  const { user, initialized } = useAuth();
+  const { merchantId } = useMerchant();
+
+  useEffect(() => {
+    if (!initialized) return;
+    if (!merchantId) return;
+    let cancelled = false;
+    // Apple Wallet "already added" flag is a per-(merchant, customer)
+    // bool stored by the offers screen the first time the customer
+    // taps Add. Reading it here lets warmup skip the heavy pass
+    // generation when the customer doesn't need it.
+    (async () => {
+      let alreadyAdded = false;
+      if (user?.id) {
+        try {
+          const v = await AsyncStorage.getItem(
+            `apple_pass_added::${merchantId}::${user.id}`,
+          );
+          alreadyAdded = v === '1';
+        } catch {
+          alreadyAdded = false;
+        }
+      }
+      if (cancelled) return;
+      void runWarmup({
+        userId: user?.id ?? null,
+        merchantId,
+        applePassAlreadyAdded: alreadyAdded,
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [initialized, merchantId, user?.id]);
+
   return null;
 }
 
@@ -200,8 +254,17 @@ export default function RootLayout() {
             an iOS Notifications row. */}
         <OtaUpdateGate />
         <NotificationPermissionInitializer />
+        {/* WarmupRunner mounts inside Auth + Merchant providers (it
+            depends on both contexts) — see further down where it's
+            placed. The component itself returns null and just fires
+            a fan-out of background fetches. */}
         <AuthProvider>
         <MerchantProvider>
+        {/* WarmupRunner needs both auth + merchant contexts. Renders
+            null; just fires the prefetch fan-out so the splash time
+            window does double-duty as a warmup window for every
+            non-menu screen's cache. */}
+        <WarmupRunner />
         <MerchantBrandingWrapper>
         <LanguageSwitchProvider>
         {/* MenuProvider is hoisted above the splash so the menu fetch
