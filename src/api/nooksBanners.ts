@@ -5,6 +5,7 @@
  * Returns [] when EXPO_PUBLIC_NOOKS_API_BASE_URL is not set or endpoint fails.
  */
 import Constants from 'expo-constants';
+import { fetchWithTimeout } from '../lib/persistentCache';
 
 const BASE_URL =
   Constants.expoConfig?.extra?.nooksApiBaseUrl ||
@@ -26,7 +27,7 @@ export async function fetchNooksBanners(merchantId: string): Promise<NooksBanner
   if (!BASE_URL.trim() || !merchantId.trim()) return [];
   const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/banners`;
   try {
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return [];
     const data = (await res.json()) as NooksBanner[] | { banners?: NooksBanner[] };
     if (Array.isArray(data)) return data;

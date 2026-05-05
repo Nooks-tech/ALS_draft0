@@ -44,29 +44,46 @@ export function useMenu() {
   const [error, setError] = useState<string | null>(null);
   /** 'nooks' = fetched from Foodics-synced data, 'empty' = no products yet */
   const [source, setSource] = useState<'nooks' | 'empty'>('empty');
+  // True once the cache-load attempt has resolved (with or without a
+  // hit) AND/OR a fresh fetch has resolved. The splash screen reads
+  // this so it can hold itself visible until the menu has *something*
+  // to paint, instead of fading out into an empty merchant-colored
+  // screen on first install with no cache yet.
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     const cacheKey = `@als_menu_${merchantId || 'default'}`;
 
     // Load cache immediately so the UI doesn't flash empty on open
-    AsyncStorage.getItem(cacheKey).then((raw) => {
-      if (!raw || cancelled) return;
-      try {
-        const cached = JSON.parse(raw) as {
-          products?: MenuItem[];
-          categories?: string[];
-          branches?: MenuBranch[];
-          source?: 'nooks' | 'empty';
-        };
-        if (cached.products?.length) setProducts(cached.products);
-        if (cached.categories?.length) setCategories(cached.categories);
-        if (cached.branches?.length) setBranches(cached.branches);
-        if (cached.source) setSource(cached.source);
-      } catch {
-        // Ignore corrupt cache
-      }
-    });
+    AsyncStorage.getItem(cacheKey)
+      .then((raw) => {
+        if (cancelled) return;
+        if (raw) {
+          try {
+            const cached = JSON.parse(raw) as {
+              products?: MenuItem[];
+              categories?: string[];
+              branches?: MenuBranch[];
+              source?: 'nooks' | 'empty';
+            };
+            if (cached.products?.length) setProducts(cached.products);
+            if (cached.categories?.length) setCategories(cached.categories);
+            if (cached.branches?.length) setBranches(cached.branches);
+            if (cached.source) setSource(cached.source);
+            setHydrated(true);
+          } catch {
+            // Ignore corrupt cache; still mark hydrated so splash
+            // doesn't sit forever waiting on a parse error.
+            setHydrated(true);
+          }
+        }
+        // No cache hit — leave hydrated false; the network fetch
+        // below will flip it true once it resolves (success or error).
+      })
+      .catch(() => {
+        if (!cancelled) setHydrated(true);
+      });
 
     async function fetchMenu() {
       if (!cancelled) setLoading(true);
@@ -166,7 +183,13 @@ export function useMenu() {
         // Fetch failed — keep whatever the cache had, surface the error
         setError(e instanceof Error ? e.message : 'Failed to load menu');
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          // Always flip hydrated true once the fetch resolves so the
+          // splash gate releases even when there's no cache and the
+          // network call returned [] / errored.
+          setHydrated(true);
+        }
       }
     }
 
@@ -180,5 +203,5 @@ export function useMenu() {
     };
   }, [merchantId]);
 
-  return { products, categories, branches, loading, error, source };
+  return { products, categories, branches, loading, error, source, hydrated };
 }

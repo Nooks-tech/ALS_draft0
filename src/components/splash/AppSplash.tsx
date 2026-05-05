@@ -19,13 +19,17 @@ import { Animated, Easing, Modal, StyleSheet, Text, View } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { MerchantLogoImage } from '../branding/MerchantLogoImage';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
+import { useMenuContext } from '../../context/MenuContext';
 
 // How long the cold-start splash stays on screen at minimum,
-// regardless of how quickly branding finishes loading. 900 ms felt
-// like a stutter — the icon barely materialised before fading out.
-// 2000 ms reads as a deliberate splash and gives the merchant
-// branding a proper moment of focus before the menu paints.
+// regardless of how quickly branding finishes loading. 2000 ms reads
+// as a deliberate splash and gives the merchant branding a proper
+// moment of focus before the menu paints.
 const COLD_START_MIN_VISIBLE_MS = 2000;
+// Hard ceiling — even if branding/menu never resolve (offline first
+// install with no cache), the splash MUST eventually let the user in
+// rather than trapping them on the loading screen.
+const COLD_START_MAX_VISIBLE_MS = 4500;
 
 type AppSplashProps = {
   /**
@@ -54,32 +58,48 @@ export function AppSplash({ mode, visible }: AppSplashProps) {
     launcherIconScale,
     loading,
   } = branding;
+  // useMenuContext is only safe to call when MenuProvider is mounted
+  // above this component. _layout.tsx hoists MenuProvider above
+  // AppSplash for that reason. Reading menu.hydrated lets the splash
+  // hold itself visible until the menu has at least *attempted* its
+  // cache load, so the user doesn't see a teal-background-empty-menu
+  // flash between splash fade and first paint.
+  const menu = useMenuContext();
 
   const [minTimePassed, setMinTimePassed] = useState(false);
+  const [maxTimePassed, setMaxTimePassed] = useState(false);
   const [coldStartDone, setColdStartDone] = useState(false);
   const fadeOpacity = useRef(new Animated.Value(1)).current;
   const nativeHidden = useRef(false);
 
-  // Cold-start min visible timer. Doesn't run in overlay mode.
+  // Cold-start min/max visible timers. Don't run in overlay mode.
   useEffect(() => {
     if (mode !== 'cold-start') return;
-    const t = setTimeout(() => setMinTimePassed(true), COLD_START_MIN_VISIBLE_MS);
-    return () => clearTimeout(t);
+    const minT = setTimeout(() => setMinTimePassed(true), COLD_START_MIN_VISIBLE_MS);
+    const maxT = setTimeout(() => setMaxTimePassed(true), COLD_START_MAX_VISIBLE_MS);
+    return () => {
+      clearTimeout(minT);
+      clearTimeout(maxT);
+    };
   }, [mode]);
 
-  // Cold-start dismissal once branding is ready and min time
-  // has elapsed. Fades out smoothly so the menu paint isn't a
-  // hard cut.
+  // Cold-start dismissal: fade out once we have something real to
+  // show underneath (branding + menu hydrated AND min time elapsed),
+  // OR the max-wait ceiling is hit (so a permanently broken network
+  // doesn't trap the user on the splash).
   useEffect(() => {
-    if (mode !== 'cold-start') return;
-    if (loading || !minTimePassed || coldStartDone) return;
+    if (mode !== 'cold-start' || coldStartDone) return;
+    const readyToFade =
+      maxTimePassed ||
+      (minTimePassed && !loading && menu.hydrated);
+    if (!readyToFade) return;
     Animated.timing(fadeOpacity, {
       toValue: 0,
       duration: 320,
       easing: Easing.in(Easing.cubic),
       useNativeDriver: true,
     }).start(() => setColdStartDone(true));
-  }, [mode, loading, minTimePassed, coldStartDone, fadeOpacity]);
+  }, [mode, loading, minTimePassed, maxTimePassed, menu.hydrated, coldStartDone, fadeOpacity]);
 
   const releaseNativeSplash = useCallback(() => {
     if (mode !== 'cold-start' || nativeHidden.current) return;

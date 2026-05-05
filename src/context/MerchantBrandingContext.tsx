@@ -10,6 +10,7 @@ import React, { createContext, ReactNode, useContext, useEffect, useMemo, useRef
 import * as SystemUI from 'expo-system-ui';
 import { AppState } from 'react-native';
 import { useMerchant } from './MerchantContext';
+import { fetchWithTimeout } from '../lib/persistentCache';
 
 /** Bump when branding shape changes (e.g. new API fields) so stale cache merges with defaults. */
 const BRANDING_CACHE_PREFIX = '@als_branding_v2_';
@@ -267,7 +268,7 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
     const doFetch = async () => {
       const url = `${BASE_URL}/api/public/merchants/${encodeURIComponent(merchantId)}/branding`;
       if (__DEV__) console.log(TAG, 'fetching', url);
-      const res = await fetch(url, { headers: { 'Cache-Control': 'no-cache' } });
+      const res = await fetchWithTimeout(url, { headers: { 'Cache-Control': 'no-cache' } });
       if (!res.ok) {
         if (__DEV__) console.warn(TAG, 'HTTP', res.status, res.statusText);
         return;
@@ -297,7 +298,7 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
       const mid = merchantIdRef.current;
       if (!mid) return;
       const url = `${BASE_URL}/api/public/merchants/${encodeURIComponent(mid)}/branding`;
-      fetch(url, { headers: { 'Cache-Control': 'no-cache' } })
+      fetchWithTimeout(url, { headers: { 'Cache-Control': 'no-cache' } })
         .then((r) => { if (!r.ok && __DEV__) console.warn(TAG, 'bg refresh', r.status); return r.ok ? r.json() : null; })
         .then((data) => {
           if (!data) return;

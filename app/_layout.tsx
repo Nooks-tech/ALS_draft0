@@ -154,6 +154,13 @@ export default function RootLayout() {
         <MerchantProvider>
         <MerchantBrandingWrapper>
         <LanguageSwitchProvider>
+        {/* MenuProvider is hoisted above the splash so the menu fetch
+            kicks off in parallel with the splash min-visible timer
+            (instead of after splash fades, which leaves the menu
+            screen blank for an extra beat). The splash also reads
+            menu.hydrated to hold itself visible until there's
+            something to paint underneath. */}
+        <MenuProvider>
         {/* AppSplash in 'cold-start' mode = the only splash. Hides
             the native iOS / Android splash on its first layout pass
             and stays visible (with the merchant icon + pulsing dots
@@ -168,7 +175,6 @@ export default function RootLayout() {
         <LanguageSwitchOverlay />
         <CartProvider>
         <OperationsProvider>
-          <MenuProvider>
           <FavoritesProvider>
           <OrdersProvider>
           <ProfileProvider>
@@ -202,9 +208,9 @@ export default function RootLayout() {
           </ProfileProvider>
           </OrdersProvider>
           </FavoritesProvider>
-          </MenuProvider>
         </OperationsProvider>
         </CartProvider>
+        </MenuProvider>
         </LanguageSwitchProvider>
         </MerchantBrandingWrapper>
         </MerchantProvider>

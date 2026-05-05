@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { fetchWithTimeout } from '../lib/persistentCache';
 
 const BASE_URL =
   Constants.expoConfig?.extra?.nooksApiBaseUrl ||
@@ -46,7 +47,7 @@ export async function fetchNooksMenu(merchantId: string, branchId?: string): Pro
   let url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/menu`;
   if (branchId) url += `?branchId=${encodeURIComponent(branchId)}`;
   try {
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     if (!res.ok) return null;
     const data = (await res.json()) as NooksMenuResponse | null;
     if (!data || !Array.isArray(data.categories)) return null;

@@ -66,6 +66,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 import { commitOrder } from '../src/api/orders';
 import { useMenu } from '../src/hooks/useMenu';
+import { readCache, writeCache } from '../src/lib/persistentCache';
 
 // Wallet is no longer one of these — it's a redeemable credit
 // applied via the useWallet toggle (see the cashback-style row in
@@ -154,9 +155,24 @@ export default function CheckoutScreen() {
   // added.
   const loadSavedCards = useCallback(async () => {
     if (!user?.id || !merchantId) return;
+    const cacheKey = `@als_saved_cards_${merchantId}_${user.id}`;
+    // Hydrate saved cards from disk so the "•••• 4242" row paints
+    // instantly when the customer opens the checkout — no half-second
+    // gap where the Pay button briefly says "credit card" and then
+    // flips to "saved card".
+    const cached = await readCache<SavedCard[]>(cacheKey);
+    if (cached?.length) {
+      setSavedCards(cached);
+      setSelectedSavedCardId((prev) => {
+        if (prev && cached.some((c) => c.id === prev)) return prev;
+        return cached[0].id;
+      });
+      setPaymentMethod((prev) => (prev === 'apple_pay' || prev === 'samsung_pay' ? prev : 'saved_card'));
+    }
     try {
       const cards = await paymentApi.getSavedCards(merchantId);
       setSavedCards(cards);
+      writeCache<SavedCard[]>(cacheKey, cards);
       if (cards.length > 0) {
         setSelectedSavedCardId((prev) => {
           // Keep the prior selection if it's still in the list,
@@ -272,11 +288,28 @@ export default function CheckoutScreen() {
 
   useEffect(() => {
     if (!user?.id || !merchantId) return;
+    let cancelled = false;
+    const cacheKey = `@als_loyalty_balance_${merchantId}_${user.id}`;
+    // SWR: paint cached balance + stamps + cashback IMMEDIATELY so
+    // the "Use cashback" / "Use stamps" rows on checkout don't sit
+    // empty for 500-1500 ms while the network call resolves. Same
+    // cache key is shared with the offers screen via readCache so a
+    // recent open of /(tabs)/offers warms checkout for free.
+    readCache<LoyaltyBalance>(cacheKey).then((cached) => {
+      if (cancelled || !cached) return;
+      setLoyaltyBalance(cached);
+      setPointsLoading(false);
+    });
     setPointsLoading(true);
     loyaltyApi.getBalance(user.id, merchantId)
-      .then((bal) => setLoyaltyBalance(bal))
+      .then((bal) => {
+        if (cancelled) return;
+        setLoyaltyBalance(bal);
+        if (bal) writeCache<LoyaltyBalance>(cacheKey, bal);
+      })
       .catch(() => {})
-      .finally(() => setPointsLoading(false));
+      .finally(() => { if (!cancelled) setPointsLoading(false); });
+    return () => { cancelled = true; };
   }, [user?.id, merchantId]);
 
   // Wallet balance — drives the "Use wallet credit" toggle (mirrors
@@ -291,9 +324,18 @@ export default function CheckoutScreen() {
       setWalletBalanceSar(null);
       return;
     }
+    const cacheKey = `@als_wallet_balance_${merchantId}_${user.id}`;
+    // SWR: cached wallet balance paints instantly so the "Use wallet
+    // credit" row shows the SAR amount the moment the screen opens.
+    // Stale-by-a-few-seconds is acceptable here because the toggle is
+    // a hint — the server re-validates the actual debit on order
+    // submission, so a stale-display can never overspend.
+    const cached = await readCache<number>(cacheKey);
+    if (cached != null) setWalletBalanceSar(cached);
     try {
       const b = await walletApi.getBalance(merchantId);
       setWalletBalanceSar(b.balance_sar);
+      writeCache<number>(cacheKey, b.balance_sar);
     } catch {
       // Best-effort — keep prior value on transient errors.
     }

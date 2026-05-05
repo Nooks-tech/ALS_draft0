@@ -45,6 +45,7 @@ import {
   type LoyaltyBalance,
   type LoyaltyReward,
   type LoyaltyTransaction } from '../../src/api/loyalty';
+import { readCache, writeCache, fetchWithTimeout } from '../../src/lib/persistentCache';
 import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
@@ -310,10 +311,25 @@ export default function OffersScreen() {
       setNooksPromos([]);
       return;
     }
-    setOffersFetchDone(false);
     let cancelled = false;
-    const MIN_MS = 650;
-    const started = Date.now();
+    const cacheKey = `@als_offers_${merchantId}`;
+    type OffersCache = { banners: NooksBanner[]; promos: typeof nooksPromos };
+
+    // Stale-while-revalidate: paint cached banners + promos
+    // INSTANTLY on mount (no spinner), then refresh in background.
+    // First-ever open with no cache = brief spinner; every open after
+    // that = instant content. Removed the old 650ms "minimum spinner
+    // time" — that was making fast networks feel artificially slow.
+    readCache<OffersCache>(cacheKey).then((cached) => {
+      if (cancelled) return;
+      if (cached) {
+        setNooksBanners(cached.banners ?? []);
+        setNooksPromos(cached.promos ?? []);
+        setOffersFetchDone(true);
+      } else {
+        setOffersFetchDone(false);
+      }
+    });
 
     (async () => {
       try {
@@ -324,18 +340,11 @@ export default function OffersScreen() {
         if (cancelled) return;
         setNooksBanners(banners);
         setNooksPromos(promos);
+        writeCache<OffersCache>(cacheKey, { banners, promos });
       } catch {
-        if (!cancelled) {
-          setNooksBanners([]);
-          setNooksPromos([]);
-        }
+        // Network blip — keep whatever cache hydrated us with.
       } finally {
-        if (cancelled) return;
-        const elapsed = Date.now() - started;
-        const rest = Math.max(0, MIN_MS - elapsed);
-        setTimeout(() => {
-          if (!cancelled) setOffersFetchDone(true);
-        }, rest);
+        if (!cancelled) setOffersFetchDone(true);
       }
     })();
 
@@ -349,7 +358,27 @@ export default function OffersScreen() {
       console.warn('[loyalty] skip load — user.id:', !!user?.id, 'merchantId:', !!merchantId);
       return;
     }
-    setLoyaltyLoading(true);
+    const cacheKey = `@als_loyalty_${merchantId}_${user.id}`;
+    type LoyaltyCache = {
+      balance: LoyaltyBalance | null;
+      transactions: LoyaltyTransaction[];
+      rewards: LoyaltyReward[];
+    };
+
+    // Stale-while-revalidate. First read paints the loyalty card
+    // instantly from disk (cashback/stamps/rewards/history); the
+    // network fetch runs in parallel and updates state when it lands.
+    const cached = await readCache<LoyaltyCache>(cacheKey);
+    if (cached) {
+      if (cached.balance) setBalance(cached.balance);
+      if (cached.transactions?.length) setTransactions(cached.transactions);
+      if (cached.rewards?.length) setRewards(cached.rewards);
+      // Skip the spinner entirely — we have something to show.
+      setLoyaltyLoading(false);
+    } else {
+      setLoyaltyLoading(true);
+    }
+
     try {
       const [bal, hist, rw] = await Promise.all([
         loyaltyApi.getBalance(user.id, merchantId).catch((e) => {
@@ -366,15 +395,24 @@ export default function OffersScreen() {
         }),
       ]);
       if (bal) setBalance(bal);
-      else console.warn('[loyalty] balance came back null — loyaltyType will render as "not active"');
+      else if (!cached?.balance) console.warn('[loyalty] balance came back null');
       if (hist) setTransactions(hist.transactions);
       if (rw) setRewards(rw.rewards);
+      // Persist whatever we got — even if one of the three failed,
+      // the others still update the cache.
+      writeCache<LoyaltyCache>(cacheKey, {
+        balance: bal ?? cached?.balance ?? null,
+        transactions: hist?.transactions ?? cached?.transactions ?? [],
+        rewards: rw?.rewards ?? cached?.rewards ?? [],
+      });
     } catch { /* best-effort */ }
     setLoyaltyLoading(false);
 
+    // Wallet-availability probes — wrapped with fetchWithTimeout so a
+    // dead server doesn't leave the loyalty tab spinning forever.
     const checks = await Promise.all([
-      fetch(`${API_URL}/api/loyalty/wallet-pass/check`).then(r => r.ok).catch(() => false),
-      fetch(`${API_URL}/api/loyalty/google-wallet/check`).then(r => r.ok && r.json().then((d: any) => d.available)).catch(() => false),
+      fetchWithTimeout(`${API_URL}/api/loyalty/wallet-pass/check`).then(r => r.ok).catch(() => false),
+      fetchWithTimeout(`${API_URL}/api/loyalty/google-wallet/check`).then(r => r.ok && r.json().then((d: any) => d.available)).catch(() => false),
     ]);
     const nativeAppleWalletAvailable =
       Platform.OS === 'ios' && checks[0] ? await isAppleWalletBridgeAvailable().catch(() => false) : false;
@@ -390,35 +428,52 @@ export default function OffersScreen() {
     if (!user?.id || !merchantId) return;
     setWalletLoading(true);
     try {
-      const authToken = await getAuthToken();
-      if (!authToken) {
-        Alert.alert('Error', 'Please sign in again to add this pass.');
-        return;
+      // Cache the base64 .pkpass per (merchant, customer) so the
+      // SECOND press is instant — generating a pass server-side is
+      // expensive (cert signing + zip + ~10s on first hit). The
+      // pass content rarely changes (logo + member code), and PassKit
+      // dedupes by passTypeId+serialNumber anyway, so reusing a cached
+      // copy is safe. If something changes we'd have to bust this
+      // cache; for now the pass survives for the install lifetime,
+      // which is the right tradeoff for the latency we're saving.
+      const passCacheKey = `@als_apple_pass_${merchantId}_${user.id}`;
+      let base64: string | null = await readCache<string>(passCacheKey);
+
+      if (!base64) {
+        const authToken = await getAuthToken();
+        if (!authToken) {
+          Alert.alert('Error', 'Please sign in again to add this pass.');
+          return;
+        }
+        const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
+        const res = await fetch(passUrl, {
+          headers: { Authorization: `Bearer ${authToken}` } });
+        if (!res.ok) {
+          let msg = `Server returned ${res.status}`;
+          try {
+            const data = await res.json();
+            if (data.error) msg = data.error;
+          } catch { /* not JSON */ }
+          Alert.alert('Error', msg);
+          return;
+        }
+        const data = await res.json();
+        if (data.error) {
+          Alert.alert('Error', data.error);
+          return;
+        }
+        base64 = data.base64 as string;
+        if (!base64 || base64.length === 0) {
+          Alert.alert('Error', 'Empty pass data from server.');
+          return;
+        }
+        console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
+        // Persist for instant re-add.
+        writeCache<string>(passCacheKey, base64);
+      } else {
+        console.log('[AppleWallet] reusing cached pass, length:', base64.length);
       }
 
-      const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
-      const res = await fetch(passUrl, {
-        headers: { Authorization: `Bearer ${authToken}` } });
-      if (!res.ok) {
-        let msg = `Server returned ${res.status}`;
-        try {
-          const data = await res.json();
-          if (data.error) msg = data.error;
-        } catch { /* not JSON */ }
-        Alert.alert('Error', msg);
-        return;
-      }
-      const data = await res.json();
-      if (data.error) {
-        Alert.alert('Error', data.error);
-        return;
-      }
-      const base64: string = data.base64;
-      if (!base64 || base64.length === 0) {
-        Alert.alert('Error', 'Empty pass data from server.');
-        return;
-      }
-      console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
       await addPassToAppleWallet(base64);
       // Mark the pass as added so the button flips to the
       // "already in your wallet" state and prevents repeat attempts.

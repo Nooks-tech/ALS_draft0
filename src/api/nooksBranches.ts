@@ -3,6 +3,7 @@
  * Used when EXPO_PUBLIC_NOOKS_API_BASE_URL is set so new merchants/branches appear without app changes.
  */
 import Constants from 'expo-constants';
+import { fetchWithTimeout } from '../lib/persistentCache';
 
 const BASE_URL =
   Constants.expoConfig?.extra?.nooksApiBaseUrl ||
@@ -29,9 +30,16 @@ export type NooksBranch = {
 export async function fetchNooksBranches(merchantId: string): Promise<NooksBranch[]> {
   if (!BASE_URL.trim() || !merchantId.trim()) return [];
   const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/branches`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const data = (await res.json()) as NooksBranch[] | { branches?: NooksBranch[] };
+  // Wrap with timeout + try/catch so offline / captive-portal fetches
+  // resolve quickly to [] instead of hanging the menu screen forever.
+  let data: NooksBranch[] | { branches?: NooksBranch[] };
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) return [];
+    data = (await res.json()) as NooksBranch[] | { branches?: NooksBranch[] };
+  } catch {
+    return [];
+  }
   const list = Array.isArray(data) ? data : data?.branches ?? [];
   return list.map((b) => ({
     id: String(b.id),
