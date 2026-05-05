@@ -410,6 +410,22 @@ export default function OffersScreen() {
 
     // Wallet-availability probes — wrapped with fetchWithTimeout so a
     // dead server doesn't leave the loyalty tab spinning forever.
+    // Wallet-availability probes — read warmup's cached result first
+    // so the Add-to-Wallet button can render on the same frame as
+    // the loyalty card (otherwise it pops in 200-1000 ms later when
+    // the network probes resolve). Then refresh in the background
+    // so a flipped server config eventually shows up.
+    const cachedAvail = await readCache<{ apple: boolean; google: boolean }>(
+      '@als_wallet_availability',
+    );
+    if (cachedAvail) {
+      const cachedNativeApple =
+        Platform.OS === 'ios' && cachedAvail.apple
+          ? await isAppleWalletBridgeAvailable().catch(() => false)
+          : false;
+      setAppleWalletAvailable(cachedNativeApple);
+      setGoogleWalletAvailable(Platform.OS === 'android' && cachedAvail.google);
+    }
     const checks = await Promise.all([
       fetchWithTimeout(`${API_URL}/api/loyalty/wallet-pass/check`).then(r => r.ok).catch(() => false),
       fetchWithTimeout(`${API_URL}/api/loyalty/google-wallet/check`).then(r => r.ok && r.json().then((d: any) => d.available)).catch(() => false),
@@ -418,6 +434,8 @@ export default function OffersScreen() {
       Platform.OS === 'ios' && checks[0] ? await isAppleWalletBridgeAvailable().catch(() => false) : false;
     setAppleWalletAvailable(nativeAppleWalletAvailable);
     setGoogleWalletAvailable(Platform.OS === 'android' && checks[1]);
+    // Refresh the cache for the next launch.
+    writeCache('@als_wallet_availability', { apple: checks[0], google: Boolean(checks[1]) });
   }, [user?.id, merchantId]);
 
   useEffect(() => {

@@ -180,6 +180,35 @@ async function warmupApplePass(
   }
 }
 
+/* ─── Wallet availability checks (Apple/Google) ──────────────────── */
+
+/**
+ * The offers loyalty tab fires two unrelated probes ('does this server
+ * have an Apple wallet-pass cert configured?' and 'does it have a
+ * Google wallet issuer?') and gates the visibility of the Add-to-Wallet
+ * button on them. Those probes rarely change and add 200-1000 ms to
+ * the loyalty page paint. Prefetching them into a cache key the offers
+ * screen reads removes that gate from the critical path.
+ */
+async function warmupWalletAvailability(): Promise<void> {
+  try {
+    const [apple, google] = await Promise.all([
+      fetchWithTimeout(`${API_URL}/api/loyalty/wallet-pass/check`)
+        .then((r) => r.ok)
+        .catch(() => false),
+      fetchWithTimeout(`${API_URL}/api/loyalty/google-wallet/check`)
+        .then((r) => (r.ok ? r.json().then((d: any) => Boolean(d?.available)) : false))
+        .catch(() => false),
+    ]);
+    await writeCache<{ apple: boolean; google: boolean }>(
+      '@als_wallet_availability',
+      { apple, google },
+    );
+  } catch {
+    // best effort
+  }
+}
+
 /* ─── Public entrypoint ──────────────────────────────────────────── */
 
 export async function runWarmup(ctx: WarmupContext): Promise<void> {
@@ -187,25 +216,26 @@ export async function runWarmup(ctx: WarmupContext): Promise<void> {
   if (!merchantId) return;
 
   // Phase 1: merchant-scoped data — runs even without auth so the
-  // offers tab is hot for guests too.
+  // offers tab is hot for guests too. Wallet availability is part of
+  // this phase since it's not customer-scoped — the same cache key
+  // is shared across users.
   void warmupOffers(merchantId);
+  void warmupWalletAvailability();
 
   if (!userId) return;
 
-  // Phase 2: customer-scoped data — fire all in parallel. HTTP/2
-  // multiplexes requests over a single TCP connection, so firing 4
-  // at once doesn't meaningfully delay any individual request and
-  // lets the slowest one set the floor instead of stacking serially.
+  // Phase 2: customer-scoped data — fire all in parallel including
+  // the heavy Apple Wallet pass. HTTP/2 multiplexes over a single
+  // socket so firing them concurrently doesn't meaningfully slow any
+  // individual request, and the previously-applied 1500 ms delay on
+  // the pass fetch only ever helped when bandwidth was the bottleneck
+  // (which it usually isn't — the server-side cert signing + image
+  // composition is). Firing the pass request alongside Phase 2 means
+  // the cached pkpass is on disk ~1.5 s sooner, which directly
+  // shortens the worst-case window where a customer might tap "Add
+  // to Apple Wallet" before warmup finished.
   void warmupLoyalty(userId, merchantId);
   void warmupWallet(userId, merchantId);
   void warmupSavedCards(userId, merchantId);
-
-  // Phase 3: heavy Apple Wallet pass — delayed by 1500 ms so it
-  // doesn't compete with Phase 1/2 for the first burst of bandwidth
-  // (the customer is still on the splash + menu, those need to feel
-  // snappy). The pass payload is several hundred KB, so giving it
-  // its own quieter window minimizes user-visible impact.
-  setTimeout(() => {
-    void warmupApplePass(userId, merchantId, applePassAlreadyAdded);
-  }, 1500);
+  void warmupApplePass(userId, merchantId, applePassAlreadyAdded);
 }
