@@ -3,6 +3,7 @@ import { Poppins_400Regular, Poppins_700Bold } from '@expo-google-fonts/poppins'
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import * as Updates from 'expo-updates';
 import Constants from 'expo-constants';
 import { useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -87,6 +88,54 @@ function LanguageSwitchOverlay() {
   return <AppSplash mode="overlay" visible={switching} />;
 }
 
+/**
+ * Proactive OTA-update applier. With the default expo-updates policy
+ * (fallbackToCacheTimeout: 0), a freshly published OTA only takes
+ * effect on the SECOND cold launch — the current launch always runs
+ * the cached old bundle, the update downloads in the background, and
+ * the next launch picks it up. That cost a full perf rollout: a
+ * customer who opened, used, and closed the app within the download
+ * window kept seeing the OLD bundle even though the new one was
+ * sitting on the CDN.
+ *
+ * This component runs once on mount, asks Expo if a new bundle is
+ * available, downloads it, and reloads with it BEFORE the customer
+ * gets to interact with the old code. The whole check is gated on
+ * __DEV__ being false so local dev / Expo Go isn't disrupted, and
+ * on Updates.isEnabled so it no-ops in environments where the update
+ * runtime isn't wired (e.g. internal distribution builds without
+ * EAS Update channels).
+ *
+ * Worst case (network slow): the customer sees the splash for a
+ * second longer than usual while the bundle downloads, then the
+ * NEW bundle reloads in. That's strictly better than the old
+ * "use the slow bundle, then maybe get the fast one next time"
+ * behavior.
+ */
+function OtaUpdateGate() {
+  useEffect(() => {
+    if (__DEV__) return;
+    if (!Updates.isEnabled) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const check = await Updates.checkForUpdateAsync();
+        if (cancelled || !check.isAvailable) return;
+        const fetched = await Updates.fetchUpdateAsync();
+        if (cancelled || !fetched.isNew) return;
+        // Reload with the freshly-downloaded bundle. The customer
+        // sees one extra splash flicker but is now on current code.
+        await Updates.reloadAsync();
+      } catch {
+        // Update server unreachable / runtime version mismatch /
+        // already-up-to-date — none of which should block the app.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  return null;
+}
+
 function NotificationPermissionInitializer() {
   // Runs once on app mount, after a small delay so the cold-start
   // splash gets a frame to render before the iOS / Android 13+
@@ -149,6 +198,7 @@ export default function RootLayout() {
             SplashGate path which got orphaned during the splash
             refactor and was silently leaving new devices without
             an iOS Notifications row. */}
+        <OtaUpdateGate />
         <NotificationPermissionInitializer />
         <AuthProvider>
         <MerchantProvider>
