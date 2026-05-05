@@ -250,15 +250,12 @@ jobs:
                 const bottomPad = Math.max(0, canvasPx - innerPx - topPad);
                 const rightPad = Math.max(0, canvasPx - innerPx - leftPad);
                 console.log('Icon overlay size:', iconMeta.width, 'x', iconMeta.height, 'canvas:', canvasPx, 'x', canvasPx, 'pad:', leftPad, topPad, rightPad, bottomPad);
-                // Two-stage flatten guarantees the final iOS icon has
-                // ZERO transparency anywhere — even at antialiased
-                // edges that .flatten() alone can leave faintly
-                // translucent. iOS interprets any sub-100% alpha at
-                // the rounded-mask edge as wallpaper showing through,
-                // which renders as a thin "white gap" between the
-                // tile and iOS's corner-rounding mask. removeAlpha()
-                // after flatten strips the alpha channel entirely so
-                // the PNG is RGB-only, eliminating that path.
+                // Two-stage flatten + removeAlpha guarantees the final
+                // iOS icon has zero transparency anywhere, even at
+                // antialiased edges. Sub-100 percent alpha at the
+                // rounded-mask edge shows up as a thin pale halo
+                // between the tile and the iOS corner mask. Stripping
+                // the alpha channel entirely after flatten kills that.
                 await sharp(iconBuf)
                   .extend({
                     top: topPad,
