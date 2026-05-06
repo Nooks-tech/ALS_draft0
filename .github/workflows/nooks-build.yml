@@ -220,61 +220,59 @@ jobs:
           ANDROID_PACKAGE_ID_VALUE="${{ github.event.inputs.android_package_id }}"
           echo "Using launcher_icon_scale=${RAW_SCALE}%"
           npm install --no-save sharp 2>/dev/null || true
-          if [ -n "$BG_COLOR" ] && [ "$BG_COLOR" != "none" ] && [ "$BG_COLOR" != "null" ]; then
-            echo "Compositing icon with background color $BG_COLOR for iOS..."
-            node -e "
-              const sharp = require('sharp');
-              const scalePct = ${RAW_SCALE};
-              const K = 'lanczos3';
-              (async () => {
-                const iconPath = '$APP_ICON_FILE';
-                const bgColor = '$BG_COLOR';
-                const icon = sharp(iconPath, { pages: 1 });
-                const meta = await icon.metadata();
-                const srcW = meta.width || 1024;
-                const srcH = meta.height || 1024;
-                const srcMax = Math.max(srcW, srcH);
-                const size = Math.min(4096, Math.max(1024, srcMax));
-                const inner = Math.max(8, Math.min(size, Math.round(size * (scalePct / 100))));
-                const SS = 2;
-                const canvasPx = size * SS;
-                const innerPx = inner * SS;
-                const iconBuf = await icon
-                  .ensureAlpha()
-                  .resize(innerPx, innerPx, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: K })
-                  .png({ compressionLevel: 6, effort: 10 })
-                  .toBuffer();
-                const iconMeta = await sharp(iconBuf).metadata();
-                const topPad = Math.max(0, Math.floor((canvasPx - innerPx) / 2));
-                const leftPad = Math.max(0, Math.floor((canvasPx - innerPx) / 2));
-                const bottomPad = Math.max(0, canvasPx - innerPx - topPad);
-                const rightPad = Math.max(0, canvasPx - innerPx - leftPad);
-                console.log('Icon overlay size:', iconMeta.width, 'x', iconMeta.height, 'canvas:', canvasPx, 'x', canvasPx, 'pad:', leftPad, topPad, rightPad, bottomPad);
-                // Two-stage flatten + removeAlpha guarantees the final
-                // iOS icon has zero transparency anywhere, even at
-                // antialiased edges. Sub-100 percent alpha at the
-                // rounded-mask edge shows up as a thin pale halo
-                // between the tile and the iOS corner mask. Stripping
-                // the alpha channel entirely after flatten kills that.
-                await sharp(iconBuf)
-                  .extend({
-                    top: topPad,
-                    bottom: bottomPad,
-                    left: leftPad,
-                    right: rightPad,
-                    background: { r: 0, g: 0, b: 0, alpha: 0 },
-                  })
-                  .flatten({ background: bgColor })
-                  .removeAlpha()
-                  .resize(size, size, { kernel: K, fit: 'fill' })
-                  .flatten({ background: bgColor })
-                  .removeAlpha()
-                  .png({ compressionLevel: 6, effort: 10 })
-                  .toFile(iconPath);
-                console.log('Icon composited (2x supersample + lanczos3):', bgColor, 'scale:', scalePct + '%', 'out:', size, 'inner:', inner);
-              })().catch(e => { console.error(e); process.exit(1); });
-            "
+          # Resolve an effective bg color for the iOS composite. The
+          # composite MUST always run when there is a merchant icon URL
+          # because iOS doesn't tolerate transparent app icons — any
+          # alpha = 0 pixel is rendered as solid BLACK on the home
+          # screen, producing a black ring around the merchant tile
+          # exactly like the GrindHouse / Mafasa report. So we fall
+          # back through app_icon_bg_color -> primary_color -> a safe
+          # default, and the conditional below only skips when the
+          # input icon is literally the repo's default Nooks logo.
+          ICON_BG="$BG_COLOR"
+          if [ -z "$ICON_BG" ] || [ "$ICON_BG" = "none" ] || [ "$ICON_BG" = "null" ]; then
+            ICON_BG="${{ github.event.inputs.primary_color }}"
           fi
+          if [ -z "$ICON_BG" ] || [ "$ICON_BG" = "none" ] || [ "$ICON_BG" = "null" ]; then
+            ICON_BG="#0D9488"
+          fi
+          echo "Compositing icon with effective background color $ICON_BG for iOS..."
+          # Single-pipeline resize -> extend -> flatten. The previous
+          # version did a 2x supersample + a SECOND resize/flatten
+          # chained on the same sharp() call; sharp internally orders
+          # operations (resize before extend before flatten regardless
+          # of JS chain order) and silently collapsed the duplicate
+          # resize/flatten, producing a 1188x1188 output with a black
+          # padding ring (the extend's transparent bg never got
+          # flattened to bgColor before the implicit final encode).
+          # The fix is to keep the pipeline minimal: one resize at
+          # the inner size, one extend with transparent padding, one
+          # flatten with bgColor — flatten itself drops the alpha
+          # channel, so no separate removeAlpha is needed.
+          node -e "
+            const sharp = require('sharp');
+            const scalePct = ${RAW_SCALE};
+            (async () => {
+              const iconPath = '$APP_ICON_FILE';
+              const bgColor = '$ICON_BG';
+              const meta = await sharp(iconPath, { pages: 1 }).metadata();
+              const srcMax = Math.max(meta.width || 1024, meta.height || 1024);
+              const size = Math.min(4096, Math.max(1024, srcMax));
+              const inner = Math.max(8, Math.min(size, Math.round(size * (scalePct / 100))));
+              const padTop = Math.floor((size - inner) / 2);
+              const padLeft = padTop;
+              const padBottom = size - inner - padTop;
+              const padRight = padBottom;
+              await sharp(iconPath, { pages: 1 })
+                .ensureAlpha()
+                .resize(inner, inner, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: 'lanczos3' })
+                .extend({ top: padTop, bottom: padBottom, left: padLeft, right: padRight, background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                .flatten({ background: bgColor })
+                .png({ compressionLevel: 6, effort: 10 })
+                .toFile(iconPath);
+              console.log('Icon composited: bg=' + bgColor + ' size=' + size + ' inner=' + inner + ' pad=' + padTop + '/' + padBottom);
+            })().catch(e => { console.error(e); process.exit(1); });
+          "
           echo "Generating splash icon: rounded merchant tile + logo (matches AppSplash JS layer)..."
           # The native splash MUST visually match the JS AppSplash so
           # the hand-off (native → JS) is seamless — no jump from a
