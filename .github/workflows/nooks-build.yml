@@ -237,40 +237,56 @@ jobs:
             ICON_BG="#0D9488"
           fi
           echo "Compositing icon with effective background color $ICON_BG for iOS..."
-          # Single-pipeline resize -> extend -> flatten. The previous
-          # version did a 2x supersample + a SECOND resize/flatten
-          # chained on the same sharp() call; sharp internally orders
-          # operations (resize before extend before flatten regardless
-          # of JS chain order) and silently collapsed the duplicate
-          # resize/flatten, producing a 1188x1188 output with a black
-          # padding ring (the extend's transparent bg never got
-          # flattened to bgColor before the implicit final encode).
-          # The fix is to keep the pipeline minimal: one resize at
-          # the inner size, one extend with transparent padding, one
-          # flatten with bgColor — flatten itself drops the alpha
-          # channel, so no separate removeAlpha is needed.
+          # iOS app-icon composite via sharp.create + composite. The
+          # previous extend+flatten pipeline LOOKED correct in image
+          # viewers but actually shipped a 4-channel PNG with alpha=0
+          # padding pixels — viewers composite alpha=0 against their
+          # own background so it RENDERED as bgColor in our local
+          # checks, but iOS renders alpha=0 as SOLID BLACK on the
+          # home screen, which is exactly the black ring around
+          # Mafasa's tile that the user reported. Sharp's pipeline
+          # reorders extend/flatten in non-obvious ways that left
+          # the padding ring stuck at alpha=0 regardless of how the
+          # chain was written.
+          #
+          # The fix: build a SOLID bg-colored canvas via create(),
+          # then composite the resized icon on top, then removeAlpha
+          # so the output is RGB-only (Apple's app-icon requirement).
+          # Two pipelines separated by a buffer — sharp can't reorder
+          # across the buffer boundary, so the canvas is genuinely
+          # opaque from frame zero. Verified with magenta-tracer
+          # flatten across scales 20/50/92/99/100/150 + 3-digit hex
+          # bg + uppercase hex bg + non-square sources: every outer
+          # pixel is the requested bg color, no alpha=0 anywhere.
           node -e "
             const sharp = require('sharp');
             const scalePct = ${RAW_SCALE};
+            const bgHex = '$ICON_BG';
+            function hexToRgb(hex) {
+              const v = hex.replace('#', '');
+              const exp = v.length === 3 ? v.split('').map((c) => c + c).join('') : v;
+              return { r: parseInt(exp.slice(0, 2), 16), g: parseInt(exp.slice(2, 4), 16), b: parseInt(exp.slice(4, 6), 16) };
+            }
             (async () => {
               const iconPath = '$APP_ICON_FILE';
-              const bgColor = '$ICON_BG';
               const meta = await sharp(iconPath, { pages: 1 }).metadata();
               const srcMax = Math.max(meta.width || 1024, meta.height || 1024);
               const size = Math.min(4096, Math.max(1024, srcMax));
               const inner = Math.max(8, Math.min(size, Math.round(size * (scalePct / 100))));
-              const padTop = Math.floor((size - inner) / 2);
-              const padLeft = padTop;
-              const padBottom = size - inner - padTop;
-              const padRight = padBottom;
-              await sharp(iconPath, { pages: 1 })
+              const iconBuf = await sharp(iconPath, { pages: 1 })
                 .ensureAlpha()
                 .resize(inner, inner, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: 'lanczos3' })
-                .extend({ top: padTop, bottom: padBottom, left: padLeft, right: padRight, background: { r: 0, g: 0, b: 0, alpha: 0 } })
-                .flatten({ background: bgColor })
+                .png({ compressionLevel: 6, effort: 10 })
+                .toBuffer();
+              const bgRgb = hexToRgb(bgHex);
+              await sharp({
+                create: { width: size, height: size, channels: 4, background: { r: bgRgb.r, g: bgRgb.g, b: bgRgb.b, alpha: 1 } },
+              })
+                .composite([{ input: iconBuf, gravity: 'center' }])
+                .removeAlpha()
                 .png({ compressionLevel: 6, effort: 10 })
                 .toFile(iconPath);
-              console.log('Icon composited: bg=' + bgColor + ' size=' + size + ' inner=' + inner + ' pad=' + padTop + '/' + padBottom);
+              console.log('Icon composited (create+composite): bg=' + bgHex + ' size=' + size + ' inner=' + inner);
             })().catch(e => { console.error(e); process.exit(1); });
           "
           echo "Generating splash icon: rounded merchant tile + logo (matches AppSplash JS layer)..."
