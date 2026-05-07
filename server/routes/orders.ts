@@ -179,6 +179,43 @@ ordersRouter.post('/commit', async (req, res) => {
     if (typeof totalSar !== 'number' || !Number.isFinite(totalSar) || totalSar < 0) {
       return res.status(400).json({ error: 'totalSar must be a valid non-negative number' });
     }
+
+    // ─── Defense-in-depth: per-item price floor + total sanity ───
+    // Audit Tier 1 #1: client-supplied total_sar can be tampered to
+    // place orders for far less than the items are actually worth (the
+    // wallet-only path skips Moyasar's amount-mismatch check entirely).
+    // Full server-side recompute against the merchant menu requires
+    // nooksweb integration that's still pending. Until that lands, this
+    // floor catches the obvious tampering: each item must have a unit
+    // price ≥ 0.50 SAR (no SAR-cent F&B item exists in the real world)
+    // and the total must be at least items.length * 0.50 (no tampered
+    // total can claim a 0.01 SAR order with 50 items in cart).
+    const MIN_ITEM_PRICE_SAR = 0.5;
+    let computedItemFloor = 0;
+    for (const it of items as Array<{ price?: unknown; quantity?: unknown; basePrice?: unknown }>) {
+      const unitPrice = Number(it.basePrice ?? it.price ?? 0);
+      const qty = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
+      if (!Number.isFinite(unitPrice) || unitPrice < MIN_ITEM_PRICE_SAR) {
+        return res.status(400).json({
+          error: `Item price below the ${MIN_ITEM_PRICE_SAR} SAR per-unit floor; refusing to commit a likely-tampered order.`,
+        });
+      }
+      computedItemFloor += unitPrice * qty;
+    }
+    // The server's lower-bound computed floor ignores discounts (promo,
+    // loyalty, wallet) so the comparison is "does the claimed total at
+    // least cover the per-item baseline minus reasonable discounts?"
+    // We allow up to 95% discount stack (promo + loyalty + wallet) before
+    // rejecting — anything below that is impossible-to-justify on real
+    // pricing. Production-grade fix is server menu re-compute; this is
+    // a stop-gap that closes the >95% drain attack.
+    const MAX_DISCOUNT_RATIO = 0.95;
+    const minAcceptableTotal = computedItemFloor * (1 - MAX_DISCOUNT_RATIO);
+    if (Number(totalSar) < minAcceptableTotal - 0.01) {
+      return res.status(400).json({
+        error: `Order total ${totalSar} is implausibly low for ${items.length} item(s) with floor ${computedItemFloor.toFixed(2)} SAR; refusing to commit.`,
+      });
+    }
     if (orderType !== 'delivery' && orderType !== 'pickup' && orderType !== 'drivethru') {
       return res.status(400).json({ error: 'orderType must be delivery, pickup, or drivethru' });
     }

@@ -1361,6 +1361,37 @@ loyaltyRouter.post('/redeem-cashback', async (req, res) => {
     const amount = +Number(amountSar).toFixed(2);
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
 
+    // ─── Idempotency guard (audit Tier 2 #14) ───
+    // Reject a second redemption against the same orderId. The atomic
+    // balance update further down prevents going negative, but without
+    // this guard a customer could chain multiple /redeem-cashback calls
+    // during the checkout window — each one debits some cashback for
+    // the same single order, draining their balance into one Foodics
+    // line that the merchant POS only sees as one discount. With this
+    // check, repeat calls return 200 with the original redemption (so
+    // a flaky-network retry by the client doesn't 500), and any new
+    // attempt is rejected.
+    const { data: priorRedeem } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('amount_sar, created_at')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .eq('order_id', orderId)
+      .eq('type', 'redeem')
+      .eq('loyalty_type', 'cashback')
+      .maybeSingle();
+    if (priorRedeem) {
+      const prevAmount = Math.abs(Number(priorRedeem.amount_sar ?? 0));
+      // Same amount = idempotent retry, return success silently.
+      // Different amount = real attempt to chain redemption, reject.
+      if (Math.abs(prevAmount - amount) <= 0.01) {
+        return res.json({ success: true, amountRedeemed: prevAmount, newBalance: null, deduplicated: true });
+      }
+      return res.status(409).json({
+        error: `Order ${orderId} already has a cashback redemption of ${prevAmount} SAR. Cannot stack a second redemption.`,
+      });
+    }
+
     // Enforce max cashback per order cap
     const config = await getMerchantConfig(merchantId);
     const maxCap = config.max_cashback_per_order_sar;
