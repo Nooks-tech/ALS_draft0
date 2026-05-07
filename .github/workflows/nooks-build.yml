@@ -673,9 +673,11 @@ jobs:
         if: github.event.inputs.use_test_builds != 'true'
         env:
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
           ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
         run: |
           : "${ASC_API_KEY_ID:?ASC_API_KEY_ID secret missing on the repo}"
+          : "${ASC_API_ISSUER_ID:?ASC_API_ISSUER_ID secret missing on the repo}"
           : "${ASC_API_KEY_P8_BASE64:?ASC_API_KEY_P8_BASE64 secret missing}"
           mkdir -p .nooks-build
           # Decode .p8 with -i (ignore-garbage) to mirror the .p12 path —
