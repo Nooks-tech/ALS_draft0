@@ -141,6 +141,7 @@ jobs:
           echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env
+          echo "EXPO_PUBLIC_SENTRY_DSN=${{ secrets.SENTRY_DSN_MOBILE }}" >> .env
           echo "EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}" >> .env
           echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=${{ github.event.inputs.moyasar_publishable_key }}" >> .env
           echo "EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID=${{ github.event.inputs.apple_pay_merchant_id }}" >> .env

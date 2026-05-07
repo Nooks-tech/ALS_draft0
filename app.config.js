@@ -175,6 +175,11 @@ config.expo.plugins = [
   ...(config.expo.plugins || []),
   [withApplePayEntitlement, { merchantId: applePayMerchantId }],
   withExpoWalletPatch,
+  // Sentry's Expo plugin wires the native iOS/Android SDKs at prebuild
+  // time so JS-thrown errors AND native crashes both get captured. Safe
+  // to leave in even when EXPO_PUBLIC_SENTRY_DSN is unset — the Sentry.init
+  // call in app/_layout.tsx no-ops, so the SDK adds zero runtime cost.
+  '@sentry/react-native/expo',
 ];
 
 module.exports = config;

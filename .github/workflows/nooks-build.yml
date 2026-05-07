@@ -398,6 +398,10 @@ jobs:
           echo "EXPO_PUBLIC_SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
           echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> .env
           echo "EXPO_PUBLIC_API_URL=${{ secrets.API_URL }}" >> .env
+          # Sentry DSN — bake into JS bundle so the mobile SDK can ship
+          # crashes/errors. Empty string = Sentry.init no-ops, harmless
+          # for builds where the secret isn't set yet.
+          echo "EXPO_PUBLIC_SENTRY_DSN=${{ secrets.SENTRY_DSN_MOBILE }}" >> .env
           echo "EXPO_PUBLIC_NOOKS_API_BASE_URL=${{ secrets.NOOKS_API_BASE_URL }}" >> .env
           echo "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY=$MOYASAR_PUBLISHABLE_KEY_VALUE" >> .env
           echo "EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID=$APPLE_PAY_MERCHANT_ID_VALUE" >> .env

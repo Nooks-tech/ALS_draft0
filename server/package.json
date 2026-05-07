@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@nwpr/pass-js": "^7.0.2",
+    "@sentry/node": "^10.52.0",
     "@supabase/supabase-js": "^2.95.3",
     "adm-zip": "^0.5.16",
     "cors": "^2.8.5",

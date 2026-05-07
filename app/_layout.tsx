@@ -9,6 +9,23 @@ import { useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GestureHandlerRootView } from 'react-native-gesture-handler'; // 👈 CRITICAL FIX
 import { SafeAreaProvider } from 'react-native-safe-area-context'; // 👈 STABILITY FIX
+import * as Sentry from '@sentry/react-native';
+
+// Sentry init at module load — must run before any code that could
+// throw, so unhandled errors during bundle bootstrap are still
+// captured. DSN is read from EXPO_PUBLIC_SENTRY_DSN baked into the
+// bundle at build time. Empty DSN = no-op (silent in dev / Expo Go).
+// tracesSampleRate=0 keeps the free tier quota intact (errors only,
+// no perf tracing); flip to 0.1 once we want spans for slow API
+// calls. enableNative=true (default) hooks iOS/Android crashes too.
+const SENTRY_DSN = (process.env.EXPO_PUBLIC_SENTRY_DSN || '').trim();
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    tracesSampleRate: 0,
+    environment: __DEV__ ? 'development' : 'production',
+  });
+}
 
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';

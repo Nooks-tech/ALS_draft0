@@ -3,6 +3,22 @@ import { validateEnv } from './validateEnv';
 
 validateEnv();
 
+// Sentry must initialize BEFORE express is required so it can hook into
+// Node's runtime instrumentation (HTTP, fs, etc.). Reads SENTRY_DSN from
+// env — if unset, Sentry.init becomes a no-op so dev / unconfigured
+// environments aren't affected. tracesSampleRate=0 disables performance
+// tracing (we only want errors at pilot stage; tracing eats free-tier
+// quota fast). environment lets us filter prod vs preview in the UI.
+import * as Sentry from '@sentry/node';
+const SENTRY_DSN = (process.env.SENTRY_DSN ?? '').trim();
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    tracesSampleRate: 0,
+    environment: process.env.NODE_ENV || 'development',
+  });
+}
+
 import cors from 'cors';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
@@ -96,6 +112,15 @@ app.use('/api/payment', paymentRouter);
 app.use('/api/complaints', complaintsRouter);
 app.use('/api/wallet', walletRouter);
 app.use('/api/support', supportRouter);
+
+// Sentry's Express error handler MUST be registered after all routes
+// but before any other custom error middleware. It catches every error
+// raised inside route handlers, ships it to Sentry with full request
+// context (route, headers, body), then re-throws so any subsequent
+// error middleware still runs. No-op when SENTRY_DSN isn't set.
+if (SENTRY_DSN) {
+  Sentry.setupExpressErrorHandler(app);
+}
 
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`ALS API running on port ${PORT}`);
