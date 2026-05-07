@@ -134,15 +134,16 @@ export default function OrderDetailModal() {
   const [driverLat, setDriverLat] = useState<number | null>(null);
   const [driverLng, setDriverLng] = useState<number | null>(null);
   useEffect(() => {
-    if (!orderId || !order?.merchantId) return;
+    if (!orderId || !order?.merchantId || !user?.id) return;
     if (order.status !== 'Out for delivery' || order.orderType !== 'delivery') {
       setDriverLat(null);
       setDriverLng(null);
       return;
     }
+    const customerId = user.id;
     let cancelled = false;
     const poll = async () => {
-      const snap = await fetchDriverLocation(String(order.merchantId), String(orderId));
+      const snap = await fetchDriverLocation(String(order.merchantId), String(orderId), customerId);
       if (cancelled) return;
       setDriverLat(snap?.driver_lat ?? null);
       setDriverLng(snap?.driver_lng ?? null);
