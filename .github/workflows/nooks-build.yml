@@ -719,8 +719,11 @@ jobs:
           fi
           # Sign a probe JWT and decode the header so we can verify kid
           # matches the secret. Doesn't hit Apple, just checks our own
-          # token shape.
-          node -e "
+          # token shape. Bash env-assignment must come BEFORE the
+          # command, not after — `node ... VAR=val` would pass the
+          # assignment as argv, not as env, and process.env.VAR would
+          # be undefined inside the script.
+          ASC_API_KEY_PATH=".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8" node -e "
             const { createPrivateKey, createSign } = require('crypto');
             const fs = require('fs');
             const kid = process.env.ASC_API_KEY_ID;
@@ -736,7 +739,7 @@ jobs:
             console.log('[asc-diag] JWT payload (decoded):', JSON.stringify(payload));
             console.log('[asc-diag] JWT signature length:', sig.length, 'bytes (expect 64 for raw ES256)');
             console.log('[asc-diag] JWT iat=' + payload.iat + ' exp=' + payload.exp + ' (' + new Date(payload.iat*1000).toISOString() + ')');
-          " ASC_API_KEY_PATH=".nooks-build/AuthKey_${ASC_API_KEY_ID}.p8"
+          "
           ls -la .nooks-build/
 
       - name: Link Expo push key for this bundle
