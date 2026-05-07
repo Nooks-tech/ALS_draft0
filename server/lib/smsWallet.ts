@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DEFAULT_LOW_BALANCE_THRESHOLD_HALALAS = 3000;
-const DEFAULT_CHARGE_PER_OTP_HALALAS = 15;
+const DEFAULT_CHARGE_PER_OTP_HALALAS = 20;
 
 const adminClient =
   SUPABASE_URL && SUPABASE_SERVICE_KEY

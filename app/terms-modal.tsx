@@ -158,7 +158,7 @@ export default function TermsModal() {
                 {'• The merchant may update product prices and availability at any time.\n'}
                 {'• An order is deemed confirmed once payment has been successfully processed and the merchant has received the order.\n'}
                 {'• Additional delivery fees may apply and will be clearly displayed before order confirmation.\n'}
-                {'• A service fee may apply and will be shown in the order summary before payment.'}
+                {'• The customer pays only for the items, applicable taxes, and any delivery fee. No platform service fee is added to the customer total.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'4. Payments'}</Text>

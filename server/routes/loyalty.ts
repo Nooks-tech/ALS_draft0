@@ -422,15 +422,25 @@ loyaltyRouter.put('/config', async (req, res) => {
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
+    // stamp_target is a platform-locked invariant (always 8). Removed from
+    // the allowed list so a merchant can't change it via the dashboard;
+    // the DB default + the seed in DEFAULT_LOYALTY_CONFIG handle the value.
+    // Reasoning: at 8 stamps × 10 SAR floor, every "buy 8 get 1 free" card
+    // is at minimum 80 SAR of real spend, which keeps the loyalty system
+    // economic for the merchant and stops merchants from configuring
+    // 2-stamp cards that hand out free items at 20 SAR.
     const allowed = [
       'loyalty_type', 'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
       'cashback_percent',
-      'expiry_months', 'stamp_enabled', 'stamp_target', 'stamp_reward_description',
+      'expiry_months', 'stamp_enabled', 'stamp_reward_description',
       'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
       'wallet_card_label', 'wallet_card_secondary_label', 'wallet_card_logo_scale',
       'wallet_card_banner_url', 'wallet_stamp_box_color', 'wallet_stamp_icon_color',
       'wallet_stamp_icon_url', 'wallet_stamp_icon_scale', 'business_type', 'pass_template_type',
     ];
+    if ('stamp_target' in fields) {
+      console.warn('[loyalty] Refusing to set stamp_target — platform-locked at 8');
+    }
 
     // Config versioning: if loyalty_type or key rates changed, bump version
     const currentConfig = await getMerchantConfig(merchantId);
@@ -641,6 +651,24 @@ loyaltyRouter.post('/earn', async (req, res) => {
     }
 
     if (loyaltyType === 'stamps') {
+      // ─── Minimum order subtotal for a stamp (anti-spam) ───
+      // Without a floor a malicious customer could spam an order of
+      // a 1-SAR item to farm stamps. Anything below 10 SAR is treated
+      // as ineligible — order still completes normally, but no stamp
+      // is granted. The merchant can no longer override this floor;
+      // it's a platform invariant, like the locked stamp_target=8.
+      const STAMP_MIN_SUBTOTAL_SAR = 10;
+      if (Number(orderSubtotal) < STAMP_MIN_SUBTOTAL_SAR) {
+        return res.json({
+          success: true,
+          stampSkipped: true,
+          reason: 'below_minimum_subtotal',
+          minSubtotalSar: STAMP_MIN_SUBTOTAL_SAR,
+          stamps: 0,
+          milestoneReached: false,
+        });
+      }
+
       // Idempotency: if we've already stamped this order, short-circuit.
       // Without this, any webhook replay that squeaks past the regression
       // guard in the Foodics handler would double-stamp the customer.
@@ -1650,11 +1678,12 @@ loyaltyRouter.post('/programs/retire-and-launch', async (req, res) => {
 
     if (createErr) return res.status(500).json({ error: createErr.message });
 
-    // Update loyalty_config with new settings
+    // Update loyalty_config with new settings.
+    // stamp_target intentionally NOT in allowedFields — platform-locked at 8.
     const configPayload: Record<string, unknown> = { merchant_id: merchantId };
     const allowedFields = [
       'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
-      'expiry_months', 'stamp_enabled', 'stamp_target', 'stamp_reward_description',
+      'expiry_months', 'stamp_enabled', 'stamp_reward_description',
       'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
       'wallet_card_label', 'wallet_card_secondary_label', 'pass_template_type',
     ];

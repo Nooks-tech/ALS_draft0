@@ -339,6 +339,16 @@ ordersRouter.post('/commit', async (req, res) => {
           : (typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null),
       payment_method: typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null,
       car_details: orderType === 'drivethru' && carDetails && typeof carDetails === 'object' ? carDetails : null,
+      // Per-order processing fee billed to the merchant (NOT to the
+      // end customer — the customer's total never includes it). Recorded
+      // at commit so cancelled / refused orders flip to 'cancelled' and
+      // delivered orders flip to 'earned' downstream. Aggregated monthly
+      // and invoiced to the merchant out-of-band. Pickup + delivery both
+      // count; the customer-received handler only updates the status,
+      // not the amount.
+      commission_amount: 1,
+      commission_rate: 0,
+      commission_status: 'pending',
       updated_at: new Date().toISOString(),
     };
 
