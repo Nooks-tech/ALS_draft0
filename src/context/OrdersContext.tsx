@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { AppState } from 'react-native';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { customerCancelOrder, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
+import { fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
 import { useMerchant } from './MerchantContext';
 import { submitOrderToNooks } from '../api/nooksOrders';
 import type { CartItem } from './CartContext';
@@ -400,18 +400,17 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     [customerId, persistOrdersCache]
   );
 
-  const cancelOrder = useCallback(async (orderId: string) => {
-    try {
-      const result = await customerCancelOrder(orderId);
-      if (result.success) {
-        setOrders((prev) =>
-          prev.map((o) => (o.id === orderId ? { ...o, status: 'Cancelled' as OrderStatus, cancelledBy: 'customer', cancellationReason: 'Cancelled by customer', refundStatus: result.refundStatus } : o))
-        );
-      }
-      return result;
-    } catch (err: any) {
-      return { success: false, error: err?.message || 'Failed to cancel' };
-    }
+  // Customer-cancel was removed per platform policy: end users cannot
+  // directly cancel orders. Refunds happen exclusively through the
+  // complaint flow (resolved by the merchant, credited to the
+  // customer's wallet). This function is kept as a stub to preserve
+  // the OrdersContext API shape so existing UI code calling it still
+  // type-checks; the call always rejects with a guidance message.
+  const cancelOrder = useCallback(async (_orderId: string) => {
+    return {
+      success: false,
+      error: 'Direct cancel is no longer supported. To request a refund, file a complaint after delivery — the merchant will credit your wallet.',
+    };
   }, []);
 
   const holdOrderForEdit = useCallback(async (orderId: string) => {

@@ -4,7 +4,6 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
-import { cancelPayment } from '../services/payment';
 import { creditWalletForRefund } from './wallet';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -250,13 +249,41 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
       return res.json({ success: true, status: 'rejected' });
     }
 
-    // Approve → partial refund
-    const refundSAR = approved_refund_amount != null
-      ? Math.min(Number(approved_refund_amount), order?.total_sar ?? Infinity)
-      : complaint.requested_refund_amount ?? 0;
+    // Compute the maximum refundable amount, AWARE of any prior wallet
+    // refunds already issued for this order (merchant-refuse, system-
+    // cancel, earlier resolved complaints). Without this aggregation a
+    // sequence like "merchant-refuse 50% → customer files complaint →
+    // approve full refund" would credit the customer 150% of what they
+    // paid. Wallet refund rows live in `customer_wallet_transactions`
+    // with entry_type='refund' and order_id matching this order.
+    let priorRefundedSar = 0;
+    if (order && supabaseAdmin) {
+      const { data: priorRefunds } = await supabaseAdmin
+        .from('customer_wallet_transactions')
+        .select('amount_halalas')
+        .eq('order_id', complaint.order_id)
+        .eq('customer_id', order.customer_id)
+        .eq('merchant_id', order.merchant_id)
+        .eq('entry_type', 'refund');
+      priorRefundedSar = (priorRefunds ?? []).reduce(
+        (sum: number, r: any) => sum + Math.abs(Number(r.amount_halalas ?? 0)) / 100,
+        0,
+      );
+    }
+    const orderTotal = Number(order?.total_sar ?? 0);
+    const maxRefundableSar = Math.max(0, orderTotal - priorRefundedSar);
+
+    const requestedRefundSar = approved_refund_amount != null
+      ? Number(approved_refund_amount)
+      : Number(complaint.requested_refund_amount ?? 0);
+    const refundSAR = Math.min(requestedRefundSar, maxRefundableSar);
 
     if (refundSAR <= 0) {
-      return res.status(400).json({ error: 'approved_refund_amount must be > 0' });
+      return res.status(400).json({
+        error: priorRefundedSar >= orderTotal
+          ? 'Order has already been fully refunded'
+          : 'approved_refund_amount must be > 0',
+      });
     }
 
     let refundId: string | null = null;
@@ -264,42 +291,29 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
     let refundMethod: string | null = null;
     let complaintStatus = 'approved';
 
-    // Refund policy moved from Moyasar card refund to instant wallet
-    // credit. The customer can use the credit on their next order; the
-    // merchant skips Moyasar's 1-SAR-per-refund fee and the 5-10
-    // business-day card-refund delay. Old behaviour (cancelPayment
-    // call) is kept reachable as a fallback when wallet credit fails
-    // (e.g. database hiccup) so a refund still goes through.
+    // Per platform policy, all refunds go to the customer wallet — the
+    // card-refund fallback was removed because (a) wallet credits are
+    // instant vs card refunds taking 5-10 business days, and (b) the
+    // double-execution risk of mixing two refund paths on the same
+    // order produced over-refunds when the wallet credit succeeded but
+    // the row update failed and a retry hit the card-refund branch.
+    // If creditWalletForRefund throws now, the caller sees an error and
+    // can retry — no silent fall-through to a different refund method.
     if (order?.customer_id && order.merchant_id) {
-      try {
-        const credit = await creditWalletForRefund({
-          customerId: order.customer_id,
-          merchantId: order.merchant_id,
-          amountSar: refundSAR,
-          orderId: complaint.order_id,
-          complaintId,
-          note: merchant_notes ? String(merchant_notes).slice(0, 200) : undefined,
-        });
-        complaintStatus = 'refunded';
-        refundId = credit.transactionId;
-        refundFee = 0;
-        refundMethod = 'wallet';
-      } catch (walletErr: any) {
-        console.error('[Complaints] Wallet refund failed, falling back to card:', walletErr?.message);
-        if (order?.payment_id) {
-          const amountHalals = Math.round(refundSAR * 100);
-          const result = await cancelPayment(order.payment_id, amountHalals, order.merchant_id);
-          if (result.method === 'failed') {
-            complaintStatus = 'approved';
-            console.error('[Complaints] Card-refund fallback also failed for complaint', complaintId, result.error);
-          } else {
-            complaintStatus = 'refunded';
-            refundId = result.moyasarId ?? null;
-            refundFee = result.fee;
-            refundMethod = result.method;
-          }
-        }
-      }
+      const credit = await creditWalletForRefund({
+        customerId: order.customer_id,
+        merchantId: order.merchant_id,
+        amountSar: refundSAR,
+        orderId: complaint.order_id,
+        complaintId,
+        note: merchant_notes ? String(merchant_notes).slice(0, 200) : undefined,
+      });
+      complaintStatus = 'refunded';
+      refundId = credit.transactionId;
+      refundFee = 0;
+      refundMethod = 'wallet';
+    } else {
+      return res.status(500).json({ error: 'Order has no customer or merchant binding' });
     }
 
     await supabaseAdmin

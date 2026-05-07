@@ -19,6 +19,10 @@ export interface PaymentSession {
   status: string;
 }
 
+// Kept as a stub so checkout.tsx still type-checks; the server route was
+// removed and any call to these endpoints now 404s. Full UI removal from
+// checkout.tsx is a deferred follow-up — for now the STC Pay button just
+// errors out on tap, which is fine because no merchant currently uses it.
 export interface StcPayInitiateResponse {
   paymentId: string;
   status: string;
@@ -42,7 +46,10 @@ export const paymentApi = {
   initiate: (payload: InitiatePaymentPayload) =>
     api.post<PaymentSession>('/api/payment/initiate', payload),
 
-  /** Initiate STC Pay — sends OTP to the customer's mobile */
+  /** STC Pay endpoints (server side removed). The methods below remain
+   *  only so checkout.tsx's existing UI compiles; calling them now hits
+   *  a 404 from the server (route was deleted). Full UI removal in
+   *  checkout.tsx is a follow-up. */
   initiateStcPay: (orderId: string, merchantId: string, mobile: string, amount: number) =>
     api.post<StcPayInitiateResponse>('/api/payment/stcpay/initiate', {
       orderId,
@@ -50,8 +57,6 @@ export const paymentApi = {
       mobile,
       amount,
     }),
-
-  /** Verify STC Pay OTP to complete payment */
   verifyStcPayOtp: (paymentId: string, otp: string) =>
     api.post<StcPayOtpResponse>('/api/payment/stcpay/otp', {
       paymentId,

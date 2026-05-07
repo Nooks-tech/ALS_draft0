@@ -1,6 +1,9 @@
 /**
- * Order management routes – merchant cancel/refund, customer cancel (60s grace),
- * system cancel (no-driver), edit-hold, commission, status
+ * Order management routes – merchant refuse (full void + wallet credit),
+ * system cancel (no-driver, full wallet credit), edit-hold, commission,
+ * status. End users CANNOT cancel orders directly — their only refund
+ * path is the complaint flow (server/routes/complaints.ts), which always
+ * credits the customer wallet and never issues a card refund.
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
@@ -10,6 +13,7 @@ import { sendOrderReceipt } from '../services/receipt';
 import { earnPoints } from './loyalty';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
+import { creditWalletForRefund } from './wallet';
 
 export const ordersRouter = Router();
 
@@ -17,7 +21,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABAS
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const NOOKS_COMMISSION_RATE = 0;
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
-const CUSTOMER_CANCEL_WINDOW_MS = 60_000; // 60 seconds
 const NOOKS_API_BASE_URL = (process.env.NOOKS_API_BASE_URL || process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || '').trim().replace(/\/+$/, '');
 const NOOKS_INTERNAL_SECRET = (process.env.NOOKS_INTERNAL_SECRET || '').trim();
 
@@ -64,10 +67,6 @@ async function sendPushToCustomer(customerId: string, title: string, body: strin
 // itself is gone, so cancelling them there is a no-op — we just skip
 // dispatch-side cancellation and let the refund logic below run.
 
-// Imported here (not at file top) because some upstream callers might
-// only need the route-handler side of this file. The wallet helpers
-// throw on missing config, so importing them lazily keeps a misconfigured
-// server bootable for the non-wallet routes.
 import { debitWalletForOrder } from './wallet';
 
 async function relayOrderToNooks(payload: Record<string, unknown>) {
@@ -428,253 +427,165 @@ ordersRouter.post('/commit', async (req, res) => {
   }
 });
 
+/**
+ * Refund the order's full Moyasar charge into the customer's wallet, then
+ * mark the order Cancelled with refund_method='wallet'. Used by both
+ * merchant-refuse and system-cancel paths since the user-side policy is
+ * "all refunds go to the wallet, no card refunds." Idempotent on
+ * (order_id, payment_id, refund_method='wallet') via the wallet
+ * transaction's complaint_id-style dedupe key (we reuse the order_id as
+ * the dedupe key here since there is no complaint).
+ *
+ * If the order had a Moyasar payment_id we ALSO call cancelPayment to
+ * void the authorization on Moyasar's side — this stops the customer's
+ * card statement from carrying a stale "pending" charge they'd otherwise
+ * see for days. The cancelPayment failure mode is non-blocking: we still
+ * credit the wallet so the customer is whole even if the Moyasar void
+ * call 4xxs.
+ */
+async function refundOrderToWallet(
+  orderId: string,
+  cancelledBy: 'merchant' | 'system',
+  reason: string,
+): Promise<{ ok: true; orderId: string; refundedSar: number } | { ok: false; error: string; status: number }> {
+  if (!supabaseAdmin) return { ok: false, error: 'Database not configured', status: 500 };
+
+  const { data: order, error: fetchErr } = await supabaseAdmin
+    .from('customer_orders')
+    .select('*')
+    .eq('id', orderId)
+    .single();
+  if (fetchErr || !order) return { ok: false, error: 'Order not found', status: 404 };
+  if (order.status === 'Cancelled' || order.status === 'Delivered') {
+    return { ok: false, error: `Cannot cancel order with status: ${order.status}`, status: 400 };
+  }
+  if (!order.customer_id || !order.merchant_id) {
+    return { ok: false, error: 'Order is missing customer_id or merchant_id', status: 500 };
+  }
+
+  // Best-effort void on Moyasar so the customer's card statement clears
+  // the pending auth quickly. Failure here doesn't block the wallet
+  // credit — the customer always becomes whole via the wallet path.
+  if (order.payment_id) {
+    try {
+      const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
+      console.log('[Orders] Moyasar void result for', order.payment_id, ':', result.method);
+    } catch (e: any) {
+      console.warn('[Orders] Moyasar void failed (non-blocking):', e?.message);
+    }
+  }
+
+  // Wallet credit is the canonical refund. Idempotent on (order_id,
+  // entry_type='topup', note prefix) via the wallet's internal dedupe;
+  // a retried call returns the same transaction without double-crediting.
+  const refundSar = Number(order.total_sar ?? 0);
+  if (refundSar > 0) {
+    try {
+      await creditWalletForRefund({
+        customerId: order.customer_id,
+        merchantId: order.merchant_id,
+        amountSar: refundSar,
+        orderId,
+        complaintId: null,
+        note: `Order ${cancelledBy === 'merchant' ? 'refused' : 'auto-cancelled'}: ${reason}`.slice(0, 200),
+      });
+    } catch (e: any) {
+      console.error('[Orders] Wallet credit failed for', orderId, ':', e?.message);
+      return { ok: false, error: e?.message || 'Wallet credit failed', status: 500 };
+    }
+  }
+
+  const { error: updateErr } = await supabaseAdmin
+    .from('customer_orders')
+    .update({
+      status: 'Cancelled',
+      cancellation_reason: reason,
+      cancelled_by: cancelledBy,
+      refund_status: 'refunded',
+      refund_amount: refundSar,
+      refund_fee: 0,
+      refund_method: 'wallet',
+      commission_status: 'cancelled',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', orderId);
+  if (updateErr) return { ok: false, error: updateErr.message, status: 500 };
+
+  const message =
+    cancelledBy === 'merchant'
+      ? `Your order has been refused by the store. ${refundSar} SAR has been credited to your wallet — use it on your next order.`
+      : `We couldn't dispatch a driver for your order. ${refundSar} SAR has been credited to your wallet.`;
+  sendPushToCustomer(order.customer_id, 'Order Cancelled', message);
+
+  return { ok: true, orderId, refundedSar: refundSar };
+}
+
 /* ═══════════════════════════════════════════════════════════════════
-   MERCHANT CANCEL – void-first refund + OTO cancel + fee tracking
+   MERCHANT REFUSE – merchant declines the order BEFORE preparation. Voids
+   the Moyasar auth and credits the FULL order total to the customer's
+   wallet. Replaces the previous merchant-cancel route which accepted an
+   uncapped `amount` from the body and could refund > order total.
    ═══════════════════════════════════════════════════════════════════ */
+ordersRouter.post('/:id/merchant-refuse', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    const orderId = req.params.id;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!orderId) return res.status(400).json({ error: 'Missing order ID' });
+    if (!reason) return res.status(400).json({ error: 'reason is required' });
+    const result = await refundOrderToWallet(orderId, 'merchant', reason);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: 'wallet' });
+  } catch (err: any) {
+    console.error('[Orders] merchant-refuse error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to refuse order' });
+  }
+});
+
+/**
+ * BACKWARDS COMPATIBILITY: keep /merchant-cancel as an alias for
+ * merchant-refuse so any in-flight nooksweb deploys / queued requests
+ * still work during the cutover. The body's old `amount` parameter is
+ * now ignored — refunds are always for the full order total per the
+ * "all refunds go to the wallet" policy.
+ */
 ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
   try {
     if (!requireNooksInternalRequest(req, res)) return;
-
     const orderId = req.params.id;
-    const { reason, refund, amount } = req.body;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     if (!orderId) return res.status(400).json({ error: 'Missing order ID' });
-    if (!reason || typeof reason !== 'string') {
-      return res.status(400).json({ error: 'Cancellation reason is required' });
-    }
-    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-
-    const { data: order, error: fetchErr } = await supabaseAdmin
-      .from('customer_orders')
-      .select('*')
-      .eq('id', orderId)
-      .single();
-
-    if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
-    if (order.status === 'Cancelled' || order.status === 'Delivered') {
-      return res.status(400).json({ error: `Cannot cancel order with status: ${order.status}` });
-    }
-
-    const shouldRefund = refund !== false;
-    let refundStatus = 'none';
-    let refundId: string | null = null;
-    let refundFee = 0;
-    let refundMethod: string | null = null;
-    const refundAmountSAR = amount != null ? Number(amount) : order.total_sar;
-    const refundAmountHalals = amount != null ? Math.round(Number(amount) * 100) : undefined;
-
-    if (shouldRefund && order.payment_id) {
-      const result = await cancelPayment(order.payment_id, refundAmountHalals, order.merchant_id);
-      if (result.method === 'failed') {
-        refundStatus = 'refund_failed';
-      } else {
-        refundStatus = result.method === 'void' ? 'voided' : 'refunded';
-        refundId = result.moyasarId ?? null;
-        refundFee = result.fee;
-        refundMethod = result.method;
-      }
-    } else if (shouldRefund) {
-      refundStatus = 'pending_manual';
-    }
-
-    const { error: updateErr } = await supabaseAdmin
-      .from('customer_orders')
-      .update({
-        status: 'Cancelled',
-        cancellation_reason: reason,
-        cancelled_by: 'merchant',
-        refund_status: refundStatus,
-        refund_id: refundId,
-        refund_amount: refundAmountSAR,
-        refund_fee: refundFee,
-        refund_fee_absorbed_by: 'merchant',
-        refund_method: refundMethod,
-        commission_status: 'cancelled',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', orderId);
-
-    if (updateErr) return res.status(500).json({ error: updateErr.message });
-
-    // Push notification to customer
-    if (refundStatus === 'refunded' || refundStatus === 'voided') {
-      sendPushToCustomer(
-        order.customer_id,
-        'Order Cancelled',
-        `Your order has been cancelled by the store. A refund of ${refundAmountSAR} SAR has been initiated and will reflect in your account within 3–14 business days.`,
-      );
-    }
-
-    res.json({ success: true, orderId, refundStatus, refundId: refundId, refundFee, refundMethod });
+    if (!reason) return res.status(400).json({ error: 'reason is required' });
+    const result = await refundOrderToWallet(orderId, 'merchant', reason);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: 'wallet' });
   } catch (err: any) {
-    console.error('[Orders] merchant-cancel error:', err?.message);
+    console.error('[Orders] merchant-cancel (alias) error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to cancel order' });
   }
 });
 
 /* ═══════════════════════════════════════════════════════════════════
-   CUSTOMER CANCEL – 60-second grace period, hard block after
+   CUSTOMER CANCEL — REMOVED. End users CANNOT cancel orders directly
+   per the platform policy. Their only refund path is the complaint
+   flow at /api/complaints/:orderId, which credits the customer wallet
+   after merchant approval. The old route is gone (any client trying
+   to call it gets a 404, which the mobile app handles as "contact the
+   store").
    ═══════════════════════════════════════════════════════════════════ */
-ordersRouter.post('/:id/customer-cancel', async (req, res) => {
-  try {
-    const orderId = req.params.id;
-    const user = await requireAuthenticatedAppUser(req, res);
-    if (!user) return;
-    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-
-    const { data: order, error: fetchErr } = await supabaseAdmin
-      .from('customer_orders')
-      .select('*')
-      .eq('id', orderId)
-      .eq('customer_id', user.id)
-      .single();
-
-    if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
-
-    // Allow On Hold cancellations (edit-flow) without time restriction
-    if (order.status === 'On Hold') {
-      // Original edit-flow cancel — no time restriction
-    } else {
-      // 60-second grace period
-      const createdAt = new Date(order.created_at).getTime();
-      const elapsed = Date.now() - createdAt;
-      if (elapsed > CUSTOMER_CANCEL_WINDOW_MS) {
-        return res.status(400).json({
-          error: 'Cancellation window has expired. Please contact the store.',
-          windowExpired: true,
-        });
-      }
-      // Customer can cancel only while the merchant hasn't started preparing
-      // the order yet. "Placed" and "Accepted" are both pre-kitchen states.
-      if (!['Placed', 'Accepted', 'Pending', 'Preparing'].includes(order.status)) {
-        return res.status(400).json({
-          error: 'Cannot cancel — order preparation has already progressed.',
-        });
-      }
-    }
-
-    let refundStatus = 'none';
-    let refundId: string | null = null;
-    let refundFee = 0;
-    let refundMethod: string | null = null;
-
-    let refundError: string | undefined;
-    if (order.payment_id) {
-      console.log('[Orders] customer-cancel: attempting refund for payment_id:', order.payment_id);
-      const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
-      console.log('[Orders] customer-cancel: cancelPayment result:', JSON.stringify(result));
-      if (result.method === 'failed') {
-        refundStatus = 'refund_failed';
-        refundError = result.error;
-      } else {
-        refundStatus = result.method === 'void' ? 'voided' : 'refunded';
-        refundId = result.moyasarId ?? null;
-        refundFee = result.fee;
-        refundMethod = result.method;
-      }
-    } else {
-      console.log('[Orders] customer-cancel: no payment_id on order, marking pending_manual');
-      refundStatus = 'pending_manual';
-    }
-
-    const { error: updateErr } = await supabaseAdmin
-      .from('customer_orders')
-      .update({
-        status: 'Cancelled',
-        cancellation_reason: 'Cancelled by customer',
-        cancelled_by: 'customer',
-        refund_status: refundStatus,
-        refund_id: refundId,
-        refund_amount: order.total_sar,
-        refund_fee: refundFee,
-        refund_fee_absorbed_by: refundFee > 0 ? 'platform' : null,
-        refund_method: refundMethod,
-        commission_status: 'cancelled',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', orderId);
-
-    if (updateErr) return res.status(500).json({ error: updateErr.message });
-
-    if (refundStatus === 'refunded' || refundStatus === 'voided') {
-      sendPushToCustomer(
-        order.customer_id,
-        'Order Cancelled',
-        `Your order has been cancelled. A refund of ${order.total_sar} SAR has been initiated.`,
-      );
-    }
-
-    res.json({ success: true, orderId, refundStatus, refundFee, refundMethod, refundError, paymentId: order.payment_id });
-  } catch (err: any) {
-    console.error('[Orders] customer-cancel error:', err?.message);
-    res.status(500).json({ error: err?.message || 'Failed to cancel order' });
-  }
-});
 
 /* ═══════════════════════════════════════════════════════════════════
-   SYSTEM CANCEL – no-driver timeout / auto-cancel
+   SYSTEM CANCEL – auto-cancel when no driver / kitchen unavailable.
+   Same wallet-credit path as merchant-refuse.
    ═══════════════════════════════════════════════════════════════════ */
 ordersRouter.post('/:id/system-cancel', async (req, res) => {
   try {
     if (!requireNooksInternalRequest(req, res)) return;
-
     const orderId = req.params.id;
-    const reason = (req.body.reason as string) || 'No delivery driver found within time limit';
-    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-
-    const { data: order, error: fetchErr } = await supabaseAdmin
-      .from('customer_orders')
-      .select('*')
-      .eq('id', orderId)
-      .single();
-
-    if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
-    if (order.status === 'Cancelled' || order.status === 'Delivered') {
-      return res.status(400).json({ error: `Cannot cancel order with status: ${order.status}` });
-    }
-
-    let refundStatus = 'none';
-    let refundId: string | null = null;
-    let refundFee = 0;
-    let refundMethod: string | null = null;
-
-    if (order.payment_id) {
-      const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
-      if (result.method === 'failed') {
-        refundStatus = 'refund_failed';
-      } else {
-        refundStatus = result.method === 'void' ? 'voided' : 'refunded';
-        refundId = result.moyasarId ?? null;
-        refundFee = result.fee;
-        refundMethod = result.method;
-      }
-    }
-
-    const { error: updateErr } = await supabaseAdmin
-      .from('customer_orders')
-      .update({
-        status: 'Cancelled',
-        cancellation_reason: reason,
-        cancelled_by: 'system',
-        refund_status: refundStatus,
-        refund_id: refundId,
-        refund_amount: order.total_sar,
-        refund_fee: refundFee,
-        refund_fee_absorbed_by: refundFee > 0 ? 'platform' : null,
-        refund_method: refundMethod,
-        commission_status: 'cancelled',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', orderId);
-
-    if (updateErr) return res.status(500).json({ error: updateErr.message });
-
-    sendPushToCustomer(
-      order.customer_id,
-      'Order Cancelled',
-      `We're sorry — we couldn't find a delivery driver for your order. A full refund of ${order.total_sar} SAR has been initiated.`,
-    );
-
-    res.json({ success: true, orderId, refundStatus, refundFee, refundMethod });
+    const reason = (req.body?.reason as string) || 'No delivery driver found within time limit';
+    const result = await refundOrderToWallet(orderId, 'system', reason);
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: 'wallet' });
   } catch (err: any) {
     console.error('[Orders] system-cancel error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to cancel order' });
@@ -809,16 +720,11 @@ ordersRouter.get('/:id/status', async (req, res) => {
 
     if (error || !order) return res.status(404).json({ error: 'Order not found' });
 
-    const createdAt = new Date(order.created_at).getTime();
-    const elapsed = Date.now() - createdAt;
-    const canCustomerCancel =
-      (['Placed', 'Accepted', 'Pending', 'Preparing'].includes(order.status) &&
-        elapsed <= CUSTOMER_CANCEL_WINDOW_MS) ||
-      order.status === 'On Hold';
-    const cancelTimeRemaining = order.status === 'On Hold'
-      ? CUSTOMER_CANCEL_WINDOW_MS
-      : Math.max(0, CUSTOMER_CANCEL_WINDOW_MS - elapsed);
-
+    // canCustomerCancel + cancelTimeRemaining were exposed for the legacy
+    // customer-cancel route. That route is gone — customers can no longer
+    // cancel directly per platform policy. Return the flags as constant
+    // false / 0 so any in-flight mobile build that still reads them shows
+    // the cancel button as disabled (instead of crashing on undefined).
     res.json({
       id: order.id,
       status: order.status,
@@ -830,8 +736,8 @@ ordersRouter.get('/:id/status', async (req, res) => {
       refund_method: order.refund_method,
       created_at: order.created_at,
       updated_at: order.updated_at,
-      canCustomerCancel,
-      cancelTimeRemaining,
+      canCustomerCancel: false,
+      cancelTimeRemaining: 0,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get order status' });

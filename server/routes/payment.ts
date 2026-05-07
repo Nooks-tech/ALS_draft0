@@ -133,183 +133,11 @@ paymentRouter.post('/initiate', paymentRateLimit, async (req, res) => {
   }
 });
 
-/** POST /api/payment/stcpay/initiate – Initiate STC Pay (sends OTP to mobile) */
-paymentRouter.post('/stcpay/initiate', async (req, res) => {
-  try {
-    const user = await requireAuthenticatedAppUser(req, res);
-    if (!user) return;
-    const { orderId, merchantId, mobile, amount } = req.body;
-    console.log('[STC Pay] Initiate request:', { orderId, merchantId, mobile: mobile?.replace(/.(?=.{4})/g, '*') });
-
-    const scopedMerchantId = typeof merchantId === 'string' ? merchantId.trim() : '';
-    if (!scopedMerchantId) {
-      return res.status(400).json({ error: 'merchantId is required' });
-    }
-    if (!orderId || typeof orderId !== 'string') {
-      return res.status(400).json({ error: 'orderId is required' });
-    }
-    if (!mobile || typeof mobile !== 'string') {
-      return res.status(400).json({ error: 'mobile is required' });
-    }
-    if (!supabaseAdmin) {
-      return res.status(503).json({ error: 'Database not configured' });
-    }
-
-    // Validate order exists and amount matches
-    const { data: order, error: orderError } = await supabaseAdmin
-      .from('customer_orders')
-      .select('id, total_sar, customer_id, merchant_id, status')
-      .eq('id', orderId)
-      .eq('merchant_id', scopedMerchantId)
-      .eq('customer_id', user.id)
-      .maybeSingle();
-    if (orderError) {
-      return res.status(500).json({ error: orderError.message });
-    }
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found for this customer' });
-    }
-
-    const requestedAmount = Number(amount);
-    const persistedAmount = Number(order.total_sar ?? 0);
-    if (!Number.isFinite(requestedAmount) || Math.abs(requestedAmount - persistedAmount) > 0.01) {
-      return res.status(400).json({ error: 'Amount does not match the persisted order total' });
-    }
-    if (order.status === 'Cancelled' || order.status === 'Delivered') {
-      return res.status(400).json({ error: `Cannot initiate payment for order status: ${order.status}` });
-    }
-
-    const session = await paymentService.initiateStcPay({
-      amount: requestedAmount,
-      currency: 'SAR',
-      orderId,
-      mobile,
-      merchantId: scopedMerchantId,
-      metadata: { merchant_id: scopedMerchantId },
-    });
-
-    // Store payment_id on the order
-    const commission = calculateCommission(requestedAmount, Number(order.total_sar ?? 0) - requestedAmount);
-    const { error: updateError } = await supabaseAdmin
-      .from('customer_orders')
-      .update({
-        payment_id: session.id,
-        commission_amount: commission.amount,
-        commission_rate: commission.rate,
-        commission_status: 'pending',
-      })
-      .eq('id', orderId)
-      .eq('merchant_id', scopedMerchantId)
-      .eq('customer_id', user.id);
-    if (updateError) {
-      console.warn('[STC Pay] Commission record failed:', updateError.message);
-    }
-
-    console.log('[STC Pay] Session created:', session.id, 'status:', session.status);
-    res.json({ paymentId: session.id, status: session.status });
-  } catch (error: any) {
-    console.error('[STC Pay] Initiate error:', error?.message);
-    res.status(500).json({ error: error?.message || 'Failed to initiate STC Pay' });
-  }
-});
-
-/** POST /api/payment/stcpay/otp – Verify STC Pay OTP */
-paymentRouter.post('/stcpay/otp', async (req, res) => {
-  try {
-    const user = await requireAuthenticatedAppUser(req, res);
-    if (!user) return;
-    const { paymentId, otp } = req.body;
-    console.log('[STC Pay] OTP verification for payment:', paymentId);
-
-    if (!paymentId || typeof paymentId !== 'string') {
-      return res.status(400).json({ error: 'paymentId is required' });
-    }
-    if (!otp || typeof otp !== 'string') {
-      return res.status(400).json({ error: 'otp is required' });
-    }
-    if (!supabaseAdmin) {
-      return res.status(503).json({ error: 'Database not configured' });
-    }
-
-    // Look up the order to get the merchant's secret key
-    const { data: order, error: orderError } = await supabaseAdmin
-      .from('customer_orders')
-      .select('id, merchant_id, total_sar, status')
-      .eq('payment_id', paymentId)
-      .eq('customer_id', user.id)
-      .maybeSingle();
-    if (orderError) {
-      return res.status(500).json({ error: orderError.message });
-    }
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found for this payment' });
-    }
-
-    const merchantId = normalizeMerchantId(order.merchant_id);
-    if (!merchantId) {
-      return res.status(400).json({ error: 'Merchant ID not found on order' });
-    }
-
-    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
-    const secretKey = runtimeConfig.secretKey;
-    if (!secretKey) {
-      return res.status(500).json({ error: 'Moyasar secret key is not configured' });
-    }
-
-    const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
-
-    // Call Moyasar to verify the OTP
-    const moyasarRes = await fetch(`https://api.moyasar.com/v1/stc_pays/${paymentId}/proceed`, {
-      method: 'POST',
-      headers: {
-        Authorization: authHeader,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ otp_value: otp }),
-    });
-    const data = await moyasarRes.json();
-
-    if (!moyasarRes.ok) {
-      console.error('[STC Pay] OTP verification failed:', moyasarRes.status, data);
-      return res.status(moyasarRes.status >= 500 ? 502 : 400).json({
-        error: data?.message || 'OTP verification failed',
-        status: data?.status,
-      });
-    }
-
-    console.log('[STC Pay] OTP result:', data.id, 'status:', data.status);
-
-    // If payment succeeded, update the order
-    if (data.status === 'paid') {
-      const updates: Record<string, unknown> = {
-        payment_id: data.id || paymentId,
-        payment_method: 'stcpay',
-        updated_at: new Date().toISOString(),
-      };
-      const { error: updateError } = await supabaseAdmin
-        .from('customer_orders')
-        .update(updates)
-        .eq('id', order.id)
-        .eq('merchant_id', merchantId);
-      if (updateError) {
-        console.warn('[STC Pay] Order update failed:', updateError.message);
-      }
-
-      // Record Moyasar fee for STC Pay
-      const fee = calculateMoyasarFee(Number(order.total_sar), 'stcpay');
-      await supabaseAdmin
-        .from('customer_orders')
-        .update({ moyasar_fee: fee })
-        .eq('id', order.id)
-        .eq('merchant_id', merchantId);
-    }
-
-    res.json({ paymentId: data.id || paymentId, status: data.status });
-  } catch (error: any) {
-    console.error('[STC Pay] OTP error:', error?.message);
-    res.status(500).json({ error: error?.message || 'Failed to verify OTP' });
-  }
-});
+// STC Pay routes (/stcpay/initiate + /stcpay/otp) were removed: not used
+// by any active merchant. Customers pay via Apple Pay or saved card only.
+// initiateStcPay() in services/payment.ts and the calculateMoyasarFee
+// 'stcpay' branch can also be cleaned up — left in place for now to keep
+// this PR scoped to route removal; cleanup is a follow-up.
 
 /** POST /api/payment/webhook – Moyasar payment status callback */
 paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
@@ -341,9 +169,19 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
 
     const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
     const merchantSecretKey = runtimeConfig.secretKey;
-    const platformSecretKey = (process.env.MOYASAR_SECRET_KEY || '').trim();
 
-    if (!merchantSecretKey && !platformSecretKey) {
+    // Strict per-merchant verification: the merchant's OWN Moyasar secret
+    // key is the only acceptable verifier. The previous implementation
+    // fell back to a platform-wide MOYASAR_SECRET_KEY when the merchant's
+    // key 401/403/404'd — that fallback was an attacker-controllable
+    // bypass: any sandbox publishable key visible to the platform key
+    // could mark unrelated merchants' orders paid via crafted webhook
+    // bodies whose `metadata.merchant_id` named the target. Removing the
+    // fallback closes that path. Sandbox testing requires per-merchant
+    // test keys to be set on `merchant_payment_settings.moyasar_*` —
+    // that's already how production works.
+    if (!merchantSecretKey) {
+      console.warn('[Payment Webhook] No merchant Moyasar secret key for', merchantId, '— rejecting');
       return res.status(503).json({ error: 'Merchant Moyasar secret key is not configured' });
     }
     if (!id) {
@@ -351,41 +189,20 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
     }
 
     // Webhook bodies are untrusted — Moyasar doesn't sign them, and the
-    // optional "secret_token" field is a weak shared-secret at best. Instead
-    // we verify the payment by calling Moyasar's own API with the merchant's
-    // secret key (which we already store to process payments). A forged body
-    // with status=paid can't survive this check because Moyasar will return
-    // the real payment state, or 401/403 if the payment doesn't belong to
-    // this merchant's account.
-    //
-    // Sandbox note: Moyasar's public sandbox publishable key
-    // (`pk_test_ciMvyPA...`) belongs to a shared Moyasar demo account, not
-    // the merchant's own account. Verifying those payments with a merchant
-    // secret key returns 404 every time. If the merchant secret 404s we
-    // fall back to a platform-level key so sandbox testing still verifies.
-    const tryVerify = async (key: string) =>
-      fetch(`https://api.moyasar.com/v1/payments/${encodeURIComponent(id)}`, {
+    // optional "secret_token" field is a weak shared-secret at best.
+    // We verify the payment by calling Moyasar's own API with the
+    // merchant's secret key. A forged body with status=paid can't survive
+    // this check because Moyasar returns the real payment state, or
+    // 401/403/404 if the payment doesn't belong to this merchant's account.
+    const verifyRes = await fetch(
+      `https://api.moyasar.com/v1/payments/${encodeURIComponent(id)}`,
+      {
         headers: {
-          Authorization: `Basic ${Buffer.from(`${key}:`).toString('base64')}`,
+          Authorization: `Basic ${Buffer.from(`${merchantSecretKey}:`).toString('base64')}`,
           Accept: 'application/json',
         },
-      });
-
-    let verifyRes: Response | null = null;
-    if (merchantSecretKey) {
-      verifyRes = await tryVerify(merchantSecretKey);
-    }
-    if (
-      platformSecretKey &&
-      (!verifyRes || [401, 403, 404].includes(verifyRes.status))
-    ) {
-      const platformRes = await tryVerify(platformSecretKey);
-      if (platformRes.ok) verifyRes = platformRes;
-      else if (!verifyRes) verifyRes = platformRes;
-    }
-    if (!verifyRes) {
-      return res.status(503).json({ error: 'No Moyasar secret key available to verify' });
-    }
+      },
+    );
 
     if (verifyRes.status === 401 || verifyRes.status === 403 || verifyRes.status === 404) {
       // Log at info level — the common cause is a sandbox publishable key

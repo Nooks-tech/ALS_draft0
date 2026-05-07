@@ -1260,15 +1260,21 @@ loyaltyRouter.get('/history', async (req, res) => {
     const customerId = req.query.customerId as string;
     const merchantId = req.query.merchantId as string;
     if (!customerId) return res.status(400).json({ error: 'customerId required' });
+    // merchantId is now REQUIRED. Without it, this endpoint returned the
+    // union of every loyalty transaction the customer ever earned across
+    // every merchant they've used — a multi-tenant data leak when the
+    // same Supabase auth.uid is logged into two different merchants'
+    // apps. The mobile app already always sends merchantId; rejecting
+    // omitted merchantId here is defense-in-depth.
+    if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
     if (!await requireMatchingCustomer(req, res, customerId)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
-    let query = supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('loyalty_transactions')
       .select('*')
-      .eq('customer_id', customerId);
-    if (merchantId) query = query.eq('merchant_id', merchantId);
-    const { data, error } = await query
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
       .order('created_at', { ascending: false })
       .limit(50);
 

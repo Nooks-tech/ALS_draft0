@@ -231,9 +231,10 @@ export async function commitOrder(payload: CommitOrderPayload) {
   );
 }
 
-export async function customerCancelOrder(orderId: string): Promise<{ success: boolean; refundStatus?: string; error?: string }> {
-  return api.post<{ success: boolean; refundStatus?: string; error?: string }>(`/api/orders/${orderId}/customer-cancel`, {});
-}
+// customerCancelOrder() removed: end users cannot cancel orders per
+// platform policy. The complaint flow is the single refund path. Any
+// remaining UI button that referenced this function should now route to
+// the complaint-submit screen instead.
 
 export async function customerMarkReceived(orderId: string): Promise<{
   success: boolean;

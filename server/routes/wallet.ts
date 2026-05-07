@@ -468,7 +468,10 @@ export async function creditWalletForRefund(params: {
   merchantId: string;
   amountSar: number;
   orderId: string;
-  complaintId: string;
+  /** Pass null when the refund is from merchant-refuse / system-cancel
+   *  (no associated complaint row). Pass the complaint UUID when called
+   *  from the complaint-resolve path. */
+  complaintId: string | null;
   note?: string;
 }): Promise<{ newBalanceSar: number; transactionId: string }> {
   if (!supabaseAdmin) throw new Error('Database not configured');
