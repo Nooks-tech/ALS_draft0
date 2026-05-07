@@ -175,18 +175,23 @@ export function AppSplash({ mode, visible }: AppSplashProps) {
     </Animated.View>
   );
 
-  // Cold start renders inline (above the Stack via z-index in
-  // _layout.tsx). Overlay mode wraps in a transparent Modal so
-  // the layer floats above whatever screen is currently visible
-  // when the language toggle is invoked.
-  if (mode === 'overlay') {
-    return (
-      <Modal visible animationType="none" transparent statusBarTranslucent>
-        {body}
-      </Modal>
-    );
-  }
-  return body;
+  // BOTH modes wrap in a transparent Modal so the splash floats
+  // above the navigation Stack. Returning `body` inline used to be
+  // the cold-start path, but the JSX position of <AppSplash /> in
+  // _layout.tsx is BEFORE <Stack>, which means React Native renders
+  // the Stack on top in the same parent tree — the cold-start
+  // splash has been silently invisible since the splash refactor.
+  // The user only ever saw the NATIVE iOS launch storyboard for
+  // ~1 s while the JS bundle loaded; the JS-rendered logo + pulsing
+  // dots overlay never appeared. A Modal is a sibling-of-everything
+  // native overlay (UIModalPresentation.fullScreen on iOS), so it
+  // sits above whatever the navigation stack is rendering, exactly
+  // like the overlay-mode language-switch path always has.
+  return (
+    <Modal visible animationType="none" transparent statusBarTranslucent>
+      {body}
+    </Modal>
+  );
 }
 
 function PulsingDots({ color }: { color: string }) {
