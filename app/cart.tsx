@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ArrowRight, Bike, ChevronLeft, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -9,6 +9,7 @@ import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
+import { reportCartEvent } from '../src/api/cartEvents';
 export default function CartScreen() {
   const router = useRouter();
   const { i18n } = useTranslation();
@@ -25,6 +26,23 @@ export default function CartScreen() {
     selectedBranch,
     deliveryAddress } = useCart();
   const [zoneChecking, setZoneChecking] = useState(false);
+
+  // Phase 5 — fire a cart.opened event the first time the cart screen
+  // mounts with items. Empty-cart visits don't count as engagement, so
+  // we gate on cartItems.length. Fires once per mount; same session id
+  // is reused across opens within an app launch (see getCartSessionId).
+  useEffect(() => {
+    if (!merchantId || cartItems.length === 0) return;
+    reportCartEvent({
+      event: 'cart.opened',
+      merchantId,
+      cartItemCount: cartItems.length,
+      cartTotalSar: totalPrice,
+    });
+    // Intentional: we want the open event tied to the mount + first
+    // observation of items, not refire every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [merchantId]);
 
   const handleEditItem = (item: (typeof cartItems)[0]) => {
     router.push({ pathname: '/product', params: { id: item.id, uniqueId: item.uniqueId } });

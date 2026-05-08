@@ -34,6 +34,7 @@ import { walletRouter } from './routes/wallet';
 import { walletPassRouter } from './routes/walletPass';
 import { googleWalletRouter } from './routes/googleWallet';
 import { supportRouter } from './routes/support';
+import { analyticsRouter } from './routes/analytics';
 import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
 import { startComplaintEscalationCron } from './cron/complaintEscalation';
 
@@ -112,6 +113,7 @@ app.use('/api/payment', paymentRouter);
 app.use('/api/complaints', complaintsRouter);
 app.use('/api/wallet', walletRouter);
 app.use('/api/support', supportRouter);
+app.use('/api/analytics', analyticsRouter);
 
 // Sentry's Express error handler MUST be registered after all routes
 // but before any other custom error middleware. It catches every error

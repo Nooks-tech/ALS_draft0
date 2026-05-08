@@ -65,6 +65,7 @@ import { useProfile } from '../src/context/ProfileContext';
 import { useAuth } from '../src/context/AuthContext';
 import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 import { commitOrder } from '../src/api/orders';
+import { reportCartEvent } from '../src/api/cartEvents';
 import { useMenu } from '../src/hooks/useMenu';
 import { readCache, writeCache } from '../src/lib/persistentCache';
 
@@ -819,6 +820,16 @@ export default function CheckoutScreen() {
       setMoyasarWebUrl(null);
       setShowPaymentPicker(false);
       orderIdRef.current = `order-${Date.now()}`;
+      // Phase 5 — pair with the cart.opened ping from CartScreen so the
+      // dashboard can compute abandonment.
+      if (merchantId) {
+        reportCartEvent({
+          event: 'cart.committed',
+          merchantId,
+          cartItemCount: cartItems.length,
+          cartTotalSar: finalTotal,
+        });
+      }
       router.dismissAll();
       // Immediate navigation — no setTimeout. Commit/loyalty/promo are
       // all firing in the background now, so there's nothing to wait for.
@@ -1265,6 +1276,14 @@ export default function CheckoutScreen() {
         setSelectedMilestoneIds(new Set());
         clearCart();
         orderIdRef.current = `order-${Date.now()}`;
+        if (merchantId) {
+          reportCartEvent({
+            event: 'cart.committed',
+            merchantId,
+            cartItemCount: cartItems.length,
+            cartTotalSar: finalTotal,
+          });
+        }
         router.replace({ pathname: '/order-confirmed', params: { orderId: walletOrderId } });
       } catch (err: any) {
         const msg = err?.message ?? '';
