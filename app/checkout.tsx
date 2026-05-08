@@ -9,7 +9,6 @@ import {
   Percent,
   Pencil,
   Plus,
-  Smartphone,
   Star,
   Trash2,
   Wallet,
@@ -38,7 +37,7 @@ import {
   PaymentStatus,
   isMoyasarError } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
-import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID, SAMSUNG_PAY_ENABLED } from '../src/api/config';
+import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from '../src/api/config';
 import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
@@ -72,7 +71,7 @@ import { readCache, writeCache } from '../src/lib/persistentCache';
 // Wallet is no longer one of these — it's a redeemable credit
 // applied via the useWallet toggle (see the cashback-style row in
 // render). Card / Apple Pay handles the post-wallet remainder.
-export type PaymentMethod = 'apple_pay' | 'samsung_pay' | 'credit_card' | 'stcpay' | 'saved_card';
+export type PaymentMethod = 'apple_pay' | 'credit_card' | 'saved_card';
 
 const VAT_RATE = 0.15; // 15% Saudi VAT
 
@@ -106,7 +105,7 @@ export default function CheckoutScreen() {
   const resolvedApplePayEnabled = Platform.OS === 'ios' && applePayEnabled && Boolean(resolvedApplePayMerchantId);
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
-    resolvedApplePayEnabled ? 'apple_pay' : (SAMSUNG_PAY_ENABLED ? 'samsung_pay' : 'credit_card')
+    resolvedApplePayEnabled ? 'apple_pay' : 'credit_card'
   );
   const [submitting, setSubmitting] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -130,18 +129,10 @@ export default function CheckoutScreen() {
   const [promoValidating, setPromoValidating] = useState(false);
   const [moyasarWebUrl, setMoyasarWebUrl] = useState<string | null>(null);
   const paymentSuccessHandled = useRef(false);
-  const samsungPayInvoiceIdRef = useRef<string | null>(null);
+  // Holds the Moyasar invoice/payment id for the saved-card 3DS redirect
+  // flow so the WebView callback can pass it back to the order commit.
+  const moyasarInvoiceIdRef = useRef<string | null>(null);
   const orderIdRef = useRef(`order-${Date.now()}`);
-
-  // STC Pay flow state
-  const [showStcPaySheet, setShowStcPaySheet] = useState(false);
-  const [stcPayMobile, setStcPayMobile] = useState('');
-  const [stcPayStep, setStcPayStep] = useState<'mobile' | 'otp'>('mobile');
-  const [stcPayOtp, setStcPayOtp] = useState('');
-  const [stcPayPaymentId, setStcPayPaymentId] = useState<string | null>(null);
-  const [stcPayLoading, setStcPayLoading] = useState(false);
-  const [stcPayCountdown, setStcPayCountdown] = useState(0);
-  const stcPayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Saved cards (tokenization)
   const [savedCards, setSavedCards] = useState<SavedCard[]>([]);
@@ -168,7 +159,7 @@ export default function CheckoutScreen() {
         if (prev && cached.some((c) => c.id === prev)) return prev;
         return cached[0].id;
       });
-      setPaymentMethod((prev) => (prev === 'apple_pay' || prev === 'samsung_pay' ? prev : 'saved_card'));
+      setPaymentMethod((prev) => (prev === 'apple_pay' ? prev : 'saved_card'));
     }
     try {
       const cards = await paymentApi.getSavedCards(merchantId);
@@ -181,7 +172,7 @@ export default function CheckoutScreen() {
           if (prev && cards.some((c) => c.id === prev)) return prev;
           return cards[0].id;
         });
-        setPaymentMethod((prev) => (prev === 'apple_pay' || prev === 'samsung_pay' ? prev : 'saved_card'));
+        setPaymentMethod((prev) => (prev === 'apple_pay' ? prev : 'saved_card'));
       }
     } catch {
       /* network blip — keep prior list */
@@ -345,26 +336,6 @@ export default function CheckoutScreen() {
   // Refresh on focus so a top-up done in /wallet-modal lands here as
   // soon as the customer comes back to checkout.
   useFocusEffect(useCallback(() => { void reloadWalletBalance(); }, [reloadWalletBalance]));
-
-  // Pre-fill STC Pay mobile from profile
-  useEffect(() => {
-    if (profile.phone && !stcPayMobile) {
-      const cleaned = profile.phone.replace(/\D/g, '');
-      // Convert +966XXXXXXXXX or 966XXXXXXXXX to 05XXXXXXXX
-      if (cleaned.startsWith('966') && cleaned.length >= 12) {
-        setStcPayMobile('0' + cleaned.slice(3));
-      } else if (cleaned.startsWith('05') && cleaned.length === 10) {
-        setStcPayMobile(cleaned);
-      }
-    }
-  }, [profile.phone]);
-
-  // Cleanup STC Pay countdown timer
-  useEffect(() => {
-    return () => {
-      if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
-    };
-  }, []);
 
   useEffect(() => {
     if (paymentMethod === 'apple_pay' && !resolvedApplePayEnabled) {
@@ -701,9 +672,9 @@ export default function CheckoutScreen() {
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
           carDetails: orderType === 'drivethru' ? { make: carMake, color: carColor, plate: carPlate } : null,
-          // Apple Pay / Samsung Pay charged the post-wallet
-          // chargeAmount via paymentConfig.amount; this debits the
-          // wallet so the ledger matches the customer's outlay.
+          // Apple Pay charged the post-wallet chargeAmount via
+          // paymentConfig.amount; this debits the wallet so the
+          // ledger matches the customer's outlay.
           walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
           relayToNooks: false });
       }
@@ -871,109 +842,6 @@ export default function CheckoutScreen() {
     [createOrderAfterPayment]
   );
 
-  // STC Pay: Send OTP to mobile
-  const handleStcPaySendOtp = async () => {
-    const mobile = stcPayMobile.trim();
-    if (!/^05\d{8}$/.test(mobile)) {
-      Alert.alert(isArabic ? 'رقم غير صالح' : 'Invalid Number', isArabic ? 'يرجى إدخال رقم سعودي صالح (05XXXXXXXX)' : 'Please enter a valid Saudi mobile (05XXXXXXXX)');
-      return;
-    }
-    if (!merchantId || !selectedBranch?.id) return;
-
-    setStcPayLoading(true);
-    try {
-      const stcOrderId = orderIdRef.current;
-      // Pre-create the order in Pending status before payment
-      if (user?.id) {
-        await commitOrder({
-          id: stcOrderId,
-          merchantId,
-          branchId: selectedBranch.id,
-          branchName: selectedBranch.name ?? null,
-          totalSar: Number(finalTotal.toFixed(2)),
-          status: 'Placed',
-          items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
-            id: item.id,
-            name: item.name,
-            price: item.price, basePrice: item.basePrice ?? item.price,
-            quantity: item.quantity,
-            image: item.image,
-            customizations: item.customizations ?? null,
-            uniqueId: item.uniqueId })),
-          orderType,
-          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
-          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
-          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
-          deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
-          deliveryFee,
-          paymentMethod: 'stcpay',
-          customerName: profile.fullName || null,
-          customerPhone: profile.phone || null,
-          customerEmail: profile.email || null,
-          promoCode: promoApplied ? promoCode : null,
-          promoDiscountSar: promoApplied ? promoDiscount : null,
-          promoScope: promoApplied ? promoScope : null,
-          customerNote: orderNote.trim() || null,
-          relayToNooks: false });
-      }
-
-      const result = await paymentApi.initiateStcPay(stcOrderId, merchantId, mobile, finalTotal);
-      setStcPayPaymentId(result.paymentId);
-      setStcPayStep('otp');
-      setStcPayOtp('');
-
-      // Start 60-second countdown for resend
-      setStcPayCountdown(60);
-      if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
-      stcPayTimerRef.current = setInterval(() => {
-        setStcPayCountdown((prev) => {
-          if (prev <= 1) {
-            if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    } catch (err: unknown) {
-      Alert.alert(
-        isArabic ? 'خطأ في STC Pay' : 'STC Pay Error',
-        err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع' : 'Failed to initiate payment'),
-      );
-    } finally {
-      setStcPayLoading(false);
-    }
-  };
-
-  // STC Pay: Verify OTP
-  const handleStcPayVerifyOtp = async (otpValue?: string) => {
-    const otp = (otpValue || stcPayOtp).trim();
-    if (otp.length !== 6 || !stcPayPaymentId) return;
-
-    setStcPayLoading(true);
-    try {
-      const result = await paymentApi.verifyStcPayOtp(stcPayPaymentId, otp);
-      if (result.status === 'paid') {
-        setShowStcPaySheet(false);
-        setStcPayStep('mobile');
-        setStcPayOtp('');
-        if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
-        createOrderAfterPayment(result.paymentId);
-      } else {
-        Alert.alert(
-          isArabic ? 'فشل التحقق' : 'Verification Failed',
-          isArabic ? 'لم يتم التحقق من الدفع. يرجى المحاولة مرة أخرى.' : 'Payment verification failed. Please try again.',
-        );
-      }
-    } catch (err: unknown) {
-      Alert.alert(
-        isArabic ? 'خطأ في التحقق' : 'Verification Error',
-        err instanceof Error ? err.message : (isArabic ? 'تعذر التحقق من الرمز' : 'Failed to verify OTP'),
-      );
-    } finally {
-      setStcPayLoading(false);
-    }
-  };
-
   const handleDeleteSavedCard = async (cardId: string) => {
     try {
       await paymentApi.deleteSavedCard(cardId);
@@ -1082,90 +950,7 @@ export default function CheckoutScreen() {
       );
       return;
     }
-    if (paymentMethod === 'samsung_pay' && Platform.OS !== 'android') {
-      Alert.alert(
-        'Samsung Pay',
-        isArabic ? 'سامسونج باي متاح على أجهزة Android فقط.' : 'Samsung Pay is only available on Android.',
-      );
-      return;
-    }
-    if (paymentMethod === 'samsung_pay' && !SAMSUNG_PAY_ENABLED) {
-      Alert.alert(
-        'Samsung Pay',
-        isArabic ? 'سامسونج باي لسه ما معد لهذا المتجر. استخدم البطاقة.' : 'Samsung Pay is not configured for this merchant yet. Please use card payment.',
-      );
-      return;
-    }
-
     if (paymentMethod === 'apple_pay') {
-      return;
-    }
-
-    if (paymentMethod === 'samsung_pay') {
-      paymentSuccessHandled.current = false;
-      setSubmitting(true);
-      try {
-        const samsungOrderId = orderIdRef.current;
-        if (user?.id) {
-          await commitOrder({
-            id: samsungOrderId,
-            merchantId,
-            branchId: selectedBranch.id,
-            branchName: selectedBranch.name ?? null,
-            totalSar: Number(finalTotal.toFixed(2)),
-            status: 'Placed',
-            items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
-              id: item.id,
-              name: item.name,
-              price: item.price, basePrice: item.basePrice ?? item.price,
-              quantity: item.quantity,
-              image: item.image,
-              customizations: item.customizations ?? null,
-              uniqueId: item.uniqueId })),
-            orderType,
-            deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
-            deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
-            deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
-            deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
-            deliveryFee,
-            paymentMethod,
-            customerName: profile.fullName || null,
-            customerPhone: profile.phone || null,
-            customerEmail: profile.email || null,
-            promoCode: promoApplied ? promoCode : null,
-            promoDiscountSar: promoApplied ? promoDiscount : null,
-            promoScope: promoApplied ? promoScope : null,
-            customerNote: orderNote.trim() || null,
-            relayToNooks: false });
-        }
-        const session = await paymentApi.initiate({
-          amount: finalTotal,
-          currency: 'SAR',
-          orderId: samsungOrderId,
-          merchantId,
-          successUrl: 'alsdraft0://payment/success' });
-        samsungPayInvoiceIdRef.current = session.id;
-        if (session.url) {
-          setMoyasarWebUrl(session.url);
-        } else {
-          Alert.alert(
-            isArabic ? 'خطأ في الدفع' : 'Payment Error',
-            isArabic ? 'ما قدرنا نفتح صفحة الدفع. حاول مرة ثانية.' : 'Could not open payment page. Please try again.',
-          );
-        }
-      } catch (err: unknown) {
-        Alert.alert(isArabic ? 'خطأ في الدفع' : 'Payment Error', err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.'));
-      } finally {
-        setSubmitting(false);
-      }
-      return;
-    }
-
-    if (paymentMethod === 'stcpay') {
-      setStcPayStep('mobile');
-      setStcPayOtp('');
-      setStcPayPaymentId(null);
-      setShowStcPaySheet(true);
       return;
     }
 
@@ -1355,7 +1140,7 @@ export default function CheckoutScreen() {
         } else if (session.url) {
           // 3DS redirect required
           paymentSuccessHandled.current = false;
-          samsungPayInvoiceIdRef.current = session.id;
+          moyasarInvoiceIdRef.current = session.id;
           setMoyasarWebUrl(session.url);
         } else {
           Alert.alert(
@@ -1405,13 +1190,9 @@ export default function CheckoutScreen() {
   const paymentLabel =
     paymentMethod === 'apple_pay'
       ? '\uF8FF Apple Pay'
-      : paymentMethod === 'samsung_pay'
-        ? 'Samsung Pay'
-        : paymentMethod === 'stcpay'
-          ? 'STC Pay'
-          : paymentMethod === 'saved_card' && selectedSavedCard
-            ? `${(selectedSavedCard.brand || 'Card').toUpperCase()} •••• ${selectedSavedCard.last_four || '****'}`
-            : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
+      : paymentMethod === 'saved_card' && selectedSavedCard
+        ? `${(selectedSavedCard.brand || 'Card').toUpperCase()} •••• ${selectedSavedCard.last_four || '****'}`
+        : isArabic ? 'بطاقة ائتمانية / مدى' : 'Credit / Debit Card';
 
   if (cartItems.length === 0) {
     return (
@@ -1915,14 +1696,6 @@ export default function CheckoutScreen() {
                 <View className="w-12 h-8 bg-black rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
                   <Text className="text-white font-bold text-xs">{'\uF8FF'} Pay</Text>
                 </View>
-              ) : paymentMethod === 'samsung_pay' ? (
-                <View className="w-12 h-8 bg-blue-900 rounded" style={{ justifyContent: 'center', alignItems: 'center' }}>
-                  <Text className="text-white font-bold text-xs">S Pay</Text>
-                </View>
-              ) : paymentMethod === 'stcpay' ? (
-                <View className="w-12 h-8 rounded" style={{ justifyContent: 'center', alignItems: 'center', backgroundColor: '#4F3B8E' }}>
-                  <Smartphone size={16} color="#fff" />
-                </View>
               ) : paymentMethod === 'saved_card' ? (
                 <View className="w-12 h-10 rounded-lg items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
                   <CreditCard size={20} color={primaryColor} />
@@ -1985,13 +1758,6 @@ export default function CheckoutScreen() {
             >
               {submitting ? (
                 <ActivityIndicator size="small" color="white" />
-              ) : paymentMethod === 'samsung_pay' ? (
-                <Text className="text-white font-bold text-base">{isArabic ? 'الدفع عبر Samsung Pay' : 'Pay with Samsung Pay'}</Text>
-              ) : paymentMethod === 'stcpay' ? (
-                <View className="flex-row items-center">
-                  <Smartphone size={18} color="white" />
-                  <Text className="text-white font-bold text-base ms-2">{isArabic ? 'الدفع عبر STC Pay' : 'Pay with STC Pay'}</Text>
-                </View>
               ) : walletCoversAll ? (
                 <View className="flex-row items-center">
                   <Wallet size={18} color="white" />
@@ -2141,17 +1907,6 @@ export default function CheckoutScreen() {
                 <Text className="ms-3 font-bold text-slate-900">{'\uF8FF'} Apple Pay</Text>
               </TouchableOpacity>
             )}
-            {Platform.OS === 'android' && SAMSUNG_PAY_ENABLED && (
-              <TouchableOpacity
-                onPress={() => { setPaymentMethod('samsung_pay'); setShowPaymentPicker(false); }}
-                className="flex-row items-center py-4 px-4 mb-3 rounded-[24px] bg-slate-50 border border-slate-100"
-              >
-                <View className="w-12 h-8 bg-blue-900 rounded items-center justify-center">
-                  <Text className="text-white font-bold text-xs">S Pay</Text>
-                </View>
-                <Text className="ms-3 font-bold text-slate-900">Samsung Pay</Text>
-              </TouchableOpacity>
-            )}
             {/* Wallet is no longer a payment method — it's a redeemable
                 credit applied via a toggle outside this picker (same UX
                 as the cashback loyalty redemption row). */}
@@ -2182,11 +1937,11 @@ export default function CheckoutScreen() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Moyasar Web Page - Samsung Pay (opens hosted checkout) */}
+      {/* Moyasar 3DS hosted-checkout WebView (saved-card flow). */}
       <Modal visible={!!moyasarWebUrl} animationType="slide" presentationStyle="pageSheet">
         <SafeAreaView className="flex-1 bg-white">
           <View className="flex-row items-center justify-between px-5 py-4 border-b border-slate-100">
-            <Text className="text-lg font-bold text-slate-800">الدفع عبر Samsung Pay</Text>
+            <Text className="text-lg font-bold text-slate-800">{isArabic ? 'الدفع' : 'Payment'}</Text>
             <TouchableOpacity onPress={() => setMoyasarWebUrl(null)} className="p-2">
               <X size={24} color="#64748b" />
             </TouchableOpacity>
@@ -2200,7 +1955,7 @@ export default function CheckoutScreen() {
                 if ((url.includes('alsdraft0://') || url.includes('/api/payment/redirect')) && !paymentSuccessHandled.current) {
                   paymentSuccessHandled.current = true;
                   setMoyasarWebUrl(null);
-                  createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
+                  createOrderAfterPayment(moyasarInvoiceIdRef.current || undefined);
                   return false;
                 }
                 return true;
@@ -2210,14 +1965,14 @@ export default function CheckoutScreen() {
                 if ((url.includes('alsdraft0://') || url.includes('/api/payment/redirect')) && !paymentSuccessHandled.current) {
                   paymentSuccessHandled.current = true;
                   setMoyasarWebUrl(null);
-                  createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
+                  createOrderAfterPayment(moyasarInvoiceIdRef.current || undefined);
                   return;
                 }
                 if (url.includes('moyasar') && (url.includes('callback') || url.includes('return') || url.includes('status=paid'))) {
                   if (!paymentSuccessHandled.current) {
                     paymentSuccessHandled.current = true;
                     setMoyasarWebUrl(null);
-                    createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
+                    createOrderAfterPayment(moyasarInvoiceIdRef.current || undefined);
                   }
                 }
               }}
@@ -2245,7 +2000,7 @@ export default function CheckoutScreen() {
                 if (e.nativeEvent?.data === 'PAYMENT_SUCCESS' && !paymentSuccessHandled.current) {
                   paymentSuccessHandled.current = true;
                   setMoyasarWebUrl(null);
-                  createOrderAfterPayment(samsungPayInvoiceIdRef.current || undefined);
+                  createOrderAfterPayment(moyasarInvoiceIdRef.current || undefined);
                 }
               }}
             />
@@ -2253,139 +2008,6 @@ export default function CheckoutScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* STC Pay Bottom Sheet */}
-      <Modal visible={showStcPaySheet} transparent animationType="slide">
-        <TouchableOpacity
-          activeOpacity={1}
-          onPress={() => {
-            setShowStcPaySheet(false);
-            setStcPayStep('mobile');
-            setStcPayOtp('');
-            if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
-          }}
-          className="flex-1 bg-black/50 justify-end"
-        >
-          <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="bg-white rounded-t-[32px] p-6 pb-10">
-            {/* Header */}
-            <View className="flex-row items-center justify-between mb-5">
-              <View className="flex-row items-center">
-                <View className="w-10 h-10 rounded-2xl items-center justify-center" style={{ backgroundColor: '#4F3B8E' }}>
-                  <Smartphone size={20} color="#fff" />
-                </View>
-                <Text className="ms-3 text-lg font-bold text-slate-900">STC Pay</Text>
-              </View>
-              <TouchableOpacity
-                onPress={() => {
-                  setShowStcPaySheet(false);
-                  setStcPayStep('mobile');
-                  setStcPayOtp('');
-                  if (stcPayTimerRef.current) clearInterval(stcPayTimerRef.current);
-                }}
-                className="p-2"
-              >
-                <X size={22} color="#64748b" />
-              </TouchableOpacity>
-            </View>
-
-            {stcPayStep === 'mobile' ? (
-              /* Step 1: Phone Number Input */
-              <View>
-                <Text className="text-slate-600 mb-3">
-                  {isArabic ? 'أدخل رقم الجوال المسجل في STC Pay' : 'Enter your STC Pay registered mobile number'}
-                </Text>
-                <View className="flex-row items-center bg-slate-50 rounded-2xl border border-slate-200 px-4 py-3 mb-4">
-                  <Text className="text-slate-400 font-bold me-2">+966</Text>
-                  <TextInput
-                    value={stcPayMobile}
-                    onChangeText={(text) => setStcPayMobile(text.replace(/[^0-9]/g, '').slice(0, 10))}
-                    placeholder="05XXXXXXXX"
-                    placeholderTextColor="#94a3b8"
-                    keyboardType="phone-pad"
-                    maxLength={10}
-                    className="flex-1 text-slate-900 font-medium text-base"
-                    style={{ }}
-                  />
-                </View>
-                <TouchableOpacity
-                  onPress={handleStcPaySendOtp}
-                  disabled={stcPayLoading || stcPayMobile.length !== 10}
-                  className="py-4 rounded-2xl items-center"
-                  style={{
-                    backgroundColor: stcPayMobile.length === 10 ? '#4F3B8E' : '#cbd5e1' }}
-                >
-                  {stcPayLoading ? (
-                    <ActivityIndicator size="small" color="white" />
-                  ) : (
-                    <Text className="text-white font-bold text-base">
-                      {isArabic ? 'إرسال رمز التحقق' : 'Send OTP'}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            ) : (
-              /* Step 2: OTP Input */
-              <View>
-                <Text className="text-slate-600 mb-1">
-                  {isArabic ? 'أدخل رمز التحقق المرسل إلى' : 'Enter the OTP sent to'}
-                </Text>
-                <Text className="text-slate-900 font-bold mb-4">{stcPayMobile}</Text>
-                <View className="bg-slate-50 rounded-2xl border border-slate-200 px-4 py-3 mb-3">
-                  <TextInput
-                    value={stcPayOtp}
-                    onChangeText={(text) => {
-                      const digits = text.replace(/[^0-9]/g, '').slice(0, 6);
-                      setStcPayOtp(digits);
-                      // Auto-submit when 6 digits entered
-                      if (digits.length === 6) {
-                        handleStcPayVerifyOtp(digits);
-                      }
-                    }}
-                    placeholder="000000"
-                    placeholderTextColor="#94a3b8"
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    autoFocus
-                    className="text-center text-slate-900 font-bold text-2xl tracking-[12px]"
-                  />
-                </View>
-                {stcPayCountdown > 0 && (
-                  <Text className="text-slate-400 text-sm text-center mb-3">
-                    {isArabic ? `إعادة الإرسال خلال ${stcPayCountdown} ثانية` : `Resend in ${stcPayCountdown}s`}
-                  </Text>
-                )}
-                {stcPayCountdown === 0 && (
-                  <TouchableOpacity
-                    onPress={() => {
-                      setStcPayStep('mobile');
-                      setStcPayOtp('');
-                    }}
-                    className="mb-3"
-                  >
-                    <Text className="text-center font-bold" style={{ color: '#4F3B8E' }}>
-                      {isArabic ? 'إعادة الإرسال' : 'Resend OTP'}
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  onPress={() => handleStcPayVerifyOtp()}
-                  disabled={stcPayLoading || stcPayOtp.length !== 6}
-                  className="py-4 rounded-2xl items-center"
-                  style={{
-                    backgroundColor: stcPayOtp.length === 6 ? '#4F3B8E' : '#cbd5e1' }}
-                >
-                  {stcPayLoading ? (
-                    <ActivityIndicator size="small" color="white" />
-                  ) : (
-                    <Text className="text-white font-bold text-base">
-                      {isArabic ? 'تأكيد الدفع' : 'Verify & Pay'}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            )}
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
     </SafeAreaView>
   );
 }
