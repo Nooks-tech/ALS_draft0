@@ -13,6 +13,7 @@ import {
   Mail,
   MapPin,
   Megaphone,
+  Receipt,
   RotateCcw,
   Shield,
   Star,
@@ -223,6 +224,8 @@ export default function MoreScreen() {
         editDetails: 'تعديل بياناتك',
         myAddresses: 'عناويني',
         manageLocations: 'إدارة مواقع التوصيل',
+        receipts: 'إيصالاتي',
+        receiptsSubtitle: 'سجل جميع طلباتك',
         notifications: 'الإشعارات',
         offersUpdates: 'العروض والتحديثات',
         favorites: 'المفضلة',
@@ -258,6 +261,8 @@ export default function MoreScreen() {
         editDetails: 'Edit your details',
         myAddresses: 'My Addresses',
         manageLocations: 'Manage delivery locations',
+        receipts: 'My Receipts',
+        receiptsSubtitle: 'History of all your orders',
         notifications: 'Notifications',
         offersUpdates: 'Offers & Updates',
         favorites: 'Favorites',
@@ -369,6 +374,12 @@ export default function MoreScreen() {
         <View className="mb-6 rounded-2xl overflow-hidden mx-4" style={{ backgroundColor: menuCardColor }}>
           <MenuItem icon={User} title={copy.profileInfo} subtitle={copy.editDetails} onPress={() => router.push('/profile-modal')} accentColor={primaryColor} />
           <MenuItem icon={MapPin} title={copy.myAddresses} subtitle={copy.manageLocations} onPress={() => router.push('/address-modal')} accentColor={primaryColor} />
+          {/* Receipts: tab-bar's Orders tab already lists every order
+              the customer has placed and tapping any opens a receipt
+              modal. Linking from More gives Saudi customers used to
+              "find my receipts in account settings" a familiar entry
+              point even though the same screen is one tab away. */}
+          <MenuItem icon={Receipt} title={copy.receipts} subtitle={copy.receiptsSubtitle} onPress={() => router.push('/(tabs)/orders')} accentColor={primaryColor} />
           <MenuItem icon={Bell} title={copy.notifications} subtitle={copy.offersUpdates} onPress={openNotificationSettings} accentColor={primaryColor} />
           <MenuItem icon={Heart} title={copy.favorites} subtitle={copy.savedItems} onPress={() => router.push('/favorites-modal')} accentColor={primaryColor} />
         </View>
