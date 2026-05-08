@@ -180,6 +180,10 @@ config.expo.plugins = [
   // to leave in even when EXPO_PUBLIC_SENTRY_DSN is unset — the Sentry.init
   // call in app/_layout.tsx no-ops, so the SDK adds zero runtime cost.
   '@sentry/react-native/expo',
+  // Encrypt the Supabase auth session at rest (iOS Keychain / Android
+  // Keystore). Replaces AsyncStorage which was readable by anything
+  // running as the app user. Requires a native rebuild.
+  'expo-secure-store',
 ];
 
 module.exports = config;
