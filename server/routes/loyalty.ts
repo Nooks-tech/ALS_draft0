@@ -641,6 +641,29 @@ loyaltyRouter.post('/earn', async (req, res) => {
     if (!config.loyalty_type) {
       return res.status(400).json({ error: 'Loyalty is not activated for this merchant' });
     }
+
+    // Defense-in-depth (Tier 2 audit): the endpoint is restricted to
+    // internal nooksweb callers via requireNooksInternalRequest, but we
+    // still want to validate orderId server-side so a buggy or
+    // compromised internal caller can't grant stamps/cashback for a
+    // fabricated, cancelled, or refunded order. Cancellation routes set
+    // status='Cancelled', so excluding that one status is sufficient —
+    // any other lifecycle state (Pending, Preparing, Ready, Delivered)
+    // means the customer has paid and the merchant accepted it.
+    const orderCheck = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, status, customer_id, merchant_id, total_sar')
+      .eq('id', orderId)
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId || '')
+      .maybeSingle();
+    if (!orderCheck.data) {
+      return res.status(404).json({ error: 'Order not found for this customer + merchant' });
+    }
+    if (orderCheck.data.status === 'Cancelled') {
+      return res.status(409).json({ error: 'Cannot earn loyalty on a cancelled order' });
+    }
+
     await ensureLoyaltyMemberProfile(merchantId || '', customerId);
     const customerType = await initCustomerLoyaltyType(merchantId || '', customerId, config.loyalty_type);
     const loyaltyType = customerType;

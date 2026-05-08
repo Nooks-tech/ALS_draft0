@@ -28,6 +28,18 @@ accountRouter.get('/export', async (req, res) => {
     if (!user) return;
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
+    // Multi-tenant scoping: a single Supabase auth.uid is shared across
+    // every merchant's white-label app. Without merchant scoping this
+    // endpoint would let a customer in merchant A's app download orders
+    // they made in merchant B's app — same identity, different brand.
+    // Required for Tier 2 audit issue: mobile callers MUST pass the
+    // current merchant context. Saved addresses + profile stay global
+    // (one customer identity), but everything else is per-merchant.
+    const merchantId = typeof req.query.merchantId === 'string' ? req.query.merchantId : '';
+    if (!merchantId) {
+      return res.status(400).json({ error: 'merchantId query parameter is required' });
+    }
+
     const [profile, orders, complaints, loyaltyTx, stamps, points, cashback, addresses, subs] =
       await Promise.all([
         supabaseAdmin.from('profiles').select('*').eq('user_id', user.id).maybeSingle(),
@@ -35,14 +47,15 @@ accountRouter.get('/export', async (req, res) => {
           .from('customer_orders')
           .select('id, merchant_id, branch_name, total_sar, status, order_type, created_at, delivered_at, items, delivery_address')
           .eq('customer_id', user.id)
+          .eq('merchant_id', merchantId)
           .limit(5000),
-        supabaseAdmin.from('order_complaints').select('*').eq('customer_id', user.id).limit(500),
-        supabaseAdmin.from('loyalty_transactions').select('*').eq('customer_id', user.id).limit(5000),
-        supabaseAdmin.from('loyalty_stamps').select('*').eq('customer_id', user.id),
-        supabaseAdmin.from('loyalty_points').select('*').eq('customer_id', user.id),
-        supabaseAdmin.from('loyalty_cashback_balances').select('*').eq('customer_id', user.id),
+        supabaseAdmin.from('order_complaints').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId).limit(500),
+        supabaseAdmin.from('loyalty_transactions').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId).limit(5000),
+        supabaseAdmin.from('loyalty_stamps').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
+        supabaseAdmin.from('loyalty_points').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
+        supabaseAdmin.from('loyalty_cashback_balances').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('saved_addresses').select('*').eq('user_id', user.id),
-        supabaseAdmin.from('push_subscriptions').select('merchant_id, platform, app_language, marketing_opt_in, last_seen_at').eq('user_id', user.id),
+        supabaseAdmin.from('push_subscriptions').select('merchant_id, platform, app_language, marketing_opt_in, last_seen_at').eq('user_id', user.id).eq('merchant_id', merchantId),
       ]);
 
     await supabaseAdmin.from('data_export_requests').insert({

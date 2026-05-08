@@ -149,7 +149,7 @@ export default function MoreScreen() {
         Alert.alert(isArabic ? 'خطأ' : 'Error', isArabic ? 'سجّل دخول من جديد.' : 'Please sign in again.');
         return;
       }
-      const res = await fetch(`${API_URL}/api/account/export`, {
+      const res = await fetch(`${API_URL}/api/account/export?merchantId=${encodeURIComponent(merchantId ?? '')}`, {
         headers: { Authorization: `Bearer ${session.access_token}` } });
       if (!res.ok) throw new Error('Export failed');
       const text = await res.text();
