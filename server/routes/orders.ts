@@ -558,6 +558,31 @@ async function refundOrderToWallet(
     .eq('id', orderId);
   if (updateErr) return { ok: false, error: updateErr.message, status: 500 };
 
+  // Tell Foodics the order is cancelled so the kitchen stops cooking.
+  // Best-effort — a Foodics outage must NOT roll back the wallet credit
+  // we just made. The customer is already whole; if Foodics drops the
+  // call, the merchant can void manually in the Foodics console (which
+  // already triggers the inverse webhook). audit_log on the nooksweb
+  // side records every attempt so ops can spot drift.
+  if (NOOKS_API_BASE_URL && NOOKS_INTERNAL_SECRET) {
+    fetch(`${NOOKS_API_BASE_URL}/api/public/orders/cancel-foodics`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
+      },
+      body: JSON.stringify({ internalOrderId: orderId, reason }),
+    })
+      .then(async (resp) => {
+        if (!resp.ok) {
+          console.warn('[Orders] Foodics cancel relay non-2xx:', resp.status);
+        }
+      })
+      .catch((e) => {
+        console.warn('[Orders] Foodics cancel relay failed (non-blocking):', e?.message);
+      });
+  }
+
   const message =
     cancelledBy === 'merchant'
       ? `Your order has been refused by the store. ${refundSar} SAR has been credited to your wallet — use it on your next order.`
