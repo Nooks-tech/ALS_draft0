@@ -7,36 +7,15 @@ import { Router } from 'express';
 import { creditWalletForRefund } from './wallet';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
+import { sendPushScoped } from '../utils/push';
 
 export const complaintsRouter = Router();
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
-
-async function sendPush(userId: string, title: string, body: string) {
-  if (!supabaseAdmin) return;
-  try {
-    const { data: subs } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('expo_push_token')
-      .eq('user_id', userId);
-    const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
-    if (tokens.length === 0) return;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
-    if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(tokens.map((t: string) => ({
-        to: t, sound: 'default', title, body, channelId: 'marketing',
-      }))),
-    });
-  } catch { /* best-effort */ }
-}
 
 const COMPLAINT_WINDOW_HOURS = 24;
 const ABUSE_THRESHOLD_PERCENT = 30;
@@ -239,11 +218,13 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
         .eq('id', complaintId);
 
       if (order) {
-        sendPush(
-          order.customer_id,
-          'Complaint Update',
-          `Your complaint for order #${complaint.order_id.replace('order-', '')} was not approved. Please contact support if you disagree.`,
-        );
+        sendPushScoped({
+          customerId: order.customer_id,
+          merchantId: order.merchant_id,
+          title: 'Complaint Update',
+          body: `Your complaint for order #${complaint.order_id.replace('order-', '')} was not approved. Please contact support if you disagree.`,
+          channel: 'marketing',
+        });
       }
 
       return res.json({ success: true, status: 'rejected' });
@@ -330,11 +311,13 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
       .eq('id', complaintId);
 
     if (order) {
-      sendPush(
-        order.customer_id,
-        'Refund Approved',
-        `Your complaint for order #${complaint.order_id.replace('order-', '')} has been approved. A refund of ${refundSAR} SAR has been initiated.`,
-      );
+      sendPushScoped({
+        customerId: order.customer_id,
+        merchantId: order.merchant_id,
+        title: 'Refund Approved',
+        body: `Your complaint for order #${complaint.order_id.replace('order-', '')} has been approved. A refund of ${refundSAR} SAR has been initiated.`,
+        channel: 'marketing',
+      });
     }
 
     res.json({ success: true, status: complaintStatus, refundAmount: refundSAR, refundFee, refundMethod });
