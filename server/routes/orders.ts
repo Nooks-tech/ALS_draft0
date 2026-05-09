@@ -28,13 +28,26 @@ const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 /* ── Push notification helper ── */
-async function sendPushToCustomer(customerId: string, title: string, body: string) {
+async function sendPushToCustomer(
+  customerId: string,
+  title: string,
+  body: string,
+  merchantId?: string,
+) {
   if (!supabaseAdmin) return;
   try {
-    const { data: subs } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('expo_push_token')
-      .eq('user_id', customerId);
+    // CRITICAL multi-tenant scoping: same Supabase auth.uid is shared
+    // across every merchant's white-label app, so a customer with
+    // Mafasa AND GrindHouse installed has TWO push_subscriptions rows
+    // under the same user_id. Without merchant scoping, an
+    // "Order Cancelled" push for a Mafasa order fans out to both apps
+    // — confused customer, duplicate notifications, brand confusion.
+    //
+    // merchantId is optional only because a few legacy callers haven't
+    // been updated yet. Always pass it when you know it.
+    let q = supabaseAdmin.from('push_subscriptions').select('expo_push_token').eq('user_id', customerId);
+    if (merchantId) q = q.eq('merchant_id', merchantId);
+    const { data: subs } = await q;
     const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
     if (tokens.length === 0) return;
 
@@ -587,7 +600,7 @@ async function refundOrderToWallet(
     cancelledBy === 'merchant'
       ? `Your order has been refused by the store. ${refundSar} SAR has been credited to your wallet — use it on your next order.`
       : `We couldn't dispatch a driver for your order. ${refundSar} SAR has been credited to your wallet.`;
-  sendPushToCustomer(order.customer_id, 'Order Cancelled', message);
+  sendPushToCustomer(order.customer_id, 'Order Cancelled', message, order.merchant_id);
 
   return { ok: true, orderId, refundedSar: refundSar };
 }
@@ -894,6 +907,7 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
       order.customer_id,
       'Order Received',
       'Thanks — we marked your pickup order as received.',
+      order.merchant_id ?? undefined,
     ).catch(() => {});
 
     res.json({ success: true, status: 'Delivered' });
@@ -942,12 +956,13 @@ ordersRouter.patch('/:id/status', async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
 
     if (order.customer_id) {
+      const mid = order.merchant_id ?? undefined;
       if (status === 'Ready') {
-        sendPushToCustomer(order.customer_id, 'Order Ready!', 'Your order is ready for pickup.');
+        sendPushToCustomer(order.customer_id, 'Order Ready!', 'Your order is ready for pickup.', mid);
       } else if (status === 'Out for delivery') {
-        sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.');
+        sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.', mid);
       } else if (status === 'Delivered') {
-        sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!');
+        sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!', mid);
         earnPoints(order.customer_id, orderId, order.total_sar ?? 0, order.merchant_id ?? '').catch(
           (e: any) => console.warn('[Orders] Auto-earn loyalty failed:', e?.message),
         );
