@@ -1535,6 +1535,37 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
       .select('*').eq('id', milestoneId).eq('merchant_id', merchantId).single();
     if (!milestone) return res.status(404).json({ error: 'Milestone not found' });
 
+    // Idempotency belt-and-suspenders: if we redeemed THIS exact
+    // milestone for this customer in the last 30 seconds, treat the
+    // call as a no-op replay of a successful prior redemption. The
+    // optimistic-concurrency check below ALREADY blocks the actual
+    // double-deduct race, but a flaky client that retries on a 200
+    // response could otherwise hit "stamps changed during redemption"
+    // 409s on the retry path. With this dedupe the retry returns the
+    // original success.
+    const dedupeWindowMs = 30 * 1000;
+    const dedupeSinceIso = new Date(Date.now() - dedupeWindowMs).toISOString();
+    const { data: recentRedeem } = await supabaseAdmin
+      .from('loyalty_stamp_redemptions')
+      .select('id, redeemed_at')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .eq('milestone_id', milestoneId)
+      .not('redeemed_at', 'is', null)
+      .gte('redeemed_at', dedupeSinceIso)
+      .order('redeemed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (recentRedeem) {
+      return res.json({
+        success: true,
+        idempotent: true,
+        rewardName: milestone.reward_name,
+        stampsDeducted: 0,
+        newStamps: undefined,
+      });
+    }
+
     // Atomic stamp deduction with optimistic concurrency. The previous
     // implementation was read-then-update, which let a fast double-tap
     // (or a checkout with multiple selected milestones) deduct from the
