@@ -273,10 +273,22 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
         .eq('merchant_id', merchantId)
         .limit(1);
 
-      if (metaOrderId) {
+      // Validate metaOrderId + id against strict patterns before
+      // interpolating into Supabase's .or() filter DSL. The DSL parses
+      // its argument as a filter expression — so a webhook payload
+      // crafted with metaOrderId=`x,status.eq.Cancelled` would let an
+      // attacker who can sign Moyasar webhooks (insider access) match
+      // arbitrary orders. Order ids are `order-<digits>` and payment
+      // ids are alnum/dash UUIDs; reject anything else.
+      const isSafeOrderId = typeof metaOrderId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(metaOrderId);
+      const isSafePaymentId = typeof id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(id);
+      if (isSafeOrderId && isSafePaymentId) {
         lookup = lookup.or(`id.eq.${metaOrderId},payment_id.eq.${id}`);
-      } else {
+      } else if (isSafePaymentId) {
         lookup = lookup.eq('payment_id', id);
+      } else {
+        console.warn('[Payment Webhook] Rejecting unsafe lookup ids', { metaOrderId, id });
+        return res.status(400).json({ error: 'Invalid order/payment id format' });
       }
 
       const { data: order, error: lookupError } = await lookup.maybeSingle();
