@@ -294,12 +294,25 @@ export async function submitComplaint(orderId: string, data: ComplaintInsert): P
   return api.post(`/api/complaints/${orderId}`, data);
 }
 
-export async function getOrderComplaint(orderId: string): Promise<ComplaintRow | null> {
+export async function getOrderComplaint(
+  orderId: string,
+  merchantId: string,
+): Promise<ComplaintRow | null> {
   if (!supabase) return null;
+  // Multi-tenant scope: order_complaints rows are keyed by
+  // (order_id, merchant_id). Without the merchant_id filter a customer
+  // could fetch a complaint row from a different merchant if order ids
+  // ever collide. Refuse to query without it — log + return null so a
+  // missed merchantId surfaces as "no complaint" instead of leaking.
+  if (!merchantId) {
+    console.warn('[Orders] getOrderComplaint called without merchantId — refusing to query');
+    return null;
+  }
   const { data } = await supabase
     .from('order_complaints')
     .select('*')
     .eq('order_id', orderId)
+    .eq('merchant_id', merchantId)
     .maybeSingle();
   return (data as ComplaintRow | null) ?? null;
 }
