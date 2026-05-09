@@ -329,21 +329,38 @@ async function warnUpcomingExpiry() {
 
 // ── Startup ──
 
+async function runLoyaltyTick() {
+  // Each task is wrapped independently so one failure doesn't skip the
+  // rest. Top-level try/catch is for paranoia — anything that escapes
+  // the inner try/catches (e.g. an unhandled promise inside a task)
+  // would otherwise kill the cron worker process via unhandledRejection.
+  const tasks: Array<[string, () => Promise<void>]> = [
+    ['warnUpcomingExpiry', warnUpcomingExpiry],
+    ['expireStalePoints', expireStalePoints],
+    ['expireStaleCashback', expireStaleCashback],
+    ['expireStaleStamps', expireStaleStamps],
+    ['cleanupRetiredPrograms', cleanupRetiredPrograms],
+  ];
+  for (const [name, task] of tasks) {
+    try {
+      await task();
+    } catch (err: unknown) {
+      console.error(`[Loyalty Cron] ${name} failed:`, err instanceof Error ? err.message : err);
+    }
+  }
+}
+
 export function startLoyaltyExpirationCron() {
   console.log('[Cron] Loyalty expiration cron started (daily)');
-  setInterval(async () => {
-    await warnUpcomingExpiry();
-    await expireStalePoints();
-    await expireStaleCashback();
-    await expireStaleStamps();
-    await cleanupRetiredPrograms();
+  setInterval(() => {
+    runLoyaltyTick().catch((err) =>
+      console.error('[Loyalty Cron] runLoyaltyTick rejected (should be impossible):', err),
+    );
   }, POLL_INTERVAL_MS);
   // First run 30s after startup
-  setTimeout(async () => {
-    await warnUpcomingExpiry();
-    await expireStalePoints();
-    await expireStaleCashback();
-    await expireStaleStamps();
-    await cleanupRetiredPrograms();
+  setTimeout(() => {
+    runLoyaltyTick().catch((err) =>
+      console.error('[Loyalty Cron] startup runLoyaltyTick rejected:', err),
+    );
   }, 30_000);
 }
