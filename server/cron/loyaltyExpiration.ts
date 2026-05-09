@@ -4,10 +4,10 @@
  * 2. Cleans up retired loyalty programs past their grace period
  */
 import { createClient } from '@supabase/supabase-js';
+import { sendPushScoped } from '../utils/push';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
@@ -15,25 +15,8 @@ const supabaseAdmin =
 const POLL_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const BATCH_LIMIT = 200;
 
-async function sendPush(customerId: string, title: string, body: string) {
-  if (!supabaseAdmin) return;
-  try {
-    const { data: subs } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('expo_push_token')
-      .eq('user_id', customerId);
-    const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
-    if (tokens.length === 0) return;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
-    if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(tokens.map((t: string) => ({
-        to: t, sound: 'default', title, body, channelId: 'loyalty',
-      }))),
-    });
-  } catch { /* best-effort */ }
+function sendPush(customerId: string, merchantId: string, title: string, body: string) {
+  return sendPushScoped({ customerId, merchantId, title, body, channel: 'loyalty' });
 }
 
 // ── 1. Expire stale loyalty points ──
@@ -109,9 +92,9 @@ async function expireStalePoints() {
     const loyaltyType = (expiredTxns.find(t => t.customer_id === group.customerId) as any)?.loyalty_type;
     if (loyaltyType === 'cashback') {
       const sarValue = (group.totalPoints * 0.1).toFixed(2); // approximate
-      sendPush(group.customerId, 'Cashback Expired', `${sarValue} SAR cashback has expired.`);
+      sendPush(group.customerId, group.merchantId, 'Cashback Expired', `${sarValue} SAR cashback has expired.`);
     } else {
-      sendPush(group.customerId, 'Points Expired', `${group.totalPoints} loyalty points have expired.`);
+      sendPush(group.customerId, group.merchantId, 'Points Expired', `${group.totalPoints} loyalty points have expired.`);
     }
     console.log(`[Loyalty Cron] Expired ${group.totalPoints} points for customer ${group.customerId}`);
   }
@@ -169,7 +152,7 @@ async function expireStaleCashback() {
       points: 0, description: `${group.totalSar.toFixed(2)} SAR cashback expired`, source: 'system',
     });
 
-    sendPush(group.customerId, 'Cashback Expired', `${group.totalSar.toFixed(2)} SAR cashback has expired.`);
+    sendPush(group.customerId, group.merchantId, 'Cashback Expired', `${group.totalSar.toFixed(2)} SAR cashback has expired.`);
   }
 }
 
@@ -243,7 +226,7 @@ async function expireStaleStamps() {
       description: `${stampsToExpire} stamp(s) expired due to inactivity`, source: 'system',
     });
 
-    sendPush(group.customerId, 'Stamps Expired', `${stampsToExpire} stamp(s) have expired. Complete an order to keep earning!`);
+    sendPush(group.customerId, group.merchantId, 'Stamps Expired', `${stampsToExpire} stamp(s) have expired. Complete an order to keep earning!`);
     console.log(`[Loyalty Cron] Expired ${stampsToExpire} stamps for customer ${group.customerId}`);
   }
 }
@@ -335,11 +318,11 @@ async function warnUpcomingExpiry() {
     const days = `${group.daysLeft} day${group.daysLeft === 1 ? '' : 's'}`;
     if (txnType === 'cashback') {
       const sarValue = (group.totalPoints * 0.1).toFixed(2);
-      sendPush(group.customerId, 'Cashback Expiring Soon', `You have ${sarValue} SAR cashback expiring in ${days}. Use it before it expires!`);
+      sendPush(group.customerId, group.merchantId, 'Cashback Expiring Soon', `You have ${sarValue} SAR cashback expiring in ${days}. Use it before it expires!`);
     } else if (txnType === 'stamps') {
-      sendPush(group.customerId, 'Stamps Expiring Soon', `Your stamp card progress is expiring in ${days}. Complete an order to keep your stamps!`);
+      sendPush(group.customerId, group.merchantId, 'Stamps Expiring Soon', `Your stamp card progress is expiring in ${days}. Complete an order to keep your stamps!`);
     } else {
-      sendPush(group.customerId, 'Points Expiring Soon', `You have ${group.totalPoints} points expiring in ${days}. Use them before they expire!`);
+      sendPush(group.customerId, group.merchantId, 'Points Expiring Soon', `You have ${group.totalPoints} points expiring in ${days}. Use them before they expire!`);
     }
   }
 }
