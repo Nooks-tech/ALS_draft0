@@ -175,15 +175,61 @@ export async function debitMerchantSmsWallet(params: {
     | 'insufficient_balance'
     | 'already_applied'
     | 'unknown';
+  const newBalanceHalalas = intOrDefault(row?.balance_halalas, runtime.balanceHalalas);
+  const chargePerOtpHalalas =
+    intOrDefault(row?.charge_per_otp_halalas, runtime.chargePerOtpHalalas) ||
+    runtime.chargePerOtpHalalas;
+
+  // Threshold alert — fire-and-forget email when this debit pushed the
+  // wallet across the merchant's low-balance threshold for the first
+  // time since their last top-up. Idempotency is enforced on the
+  // nooksweb side via audit_log (action=sms_wallet.threshold_alert)
+  // so a flood of OTPs after the cross only sends one email.
+  if (
+    reason === 'debited' &&
+    Boolean(row?.applied) &&
+    runtime.balanceHalalas >= runtime.lowBalanceThresholdHalalas &&
+    newBalanceHalalas < runtime.lowBalanceThresholdHalalas
+  ) {
+    fireThresholdAlert({
+      merchantId: params.merchantId,
+      balanceHalalas: newBalanceHalalas,
+      thresholdHalalas: runtime.lowBalanceThresholdHalalas,
+      chargePerOtpHalalas,
+    });
+  }
+
   return {
     ok: reason === 'debited' || reason === 'not_enforced' || reason === 'already_applied',
     charged: Boolean(row?.applied),
     reason,
-    balanceHalalas: intOrDefault(row?.balance_halalas, runtime.balanceHalalas),
-    chargePerOtpHalalas:
-      intOrDefault(row?.charge_per_otp_halalas, runtime.chargePerOtpHalalas) ||
-      runtime.chargePerOtpHalalas,
+    balanceHalalas: newBalanceHalalas,
+    chargePerOtpHalalas,
   };
+}
+
+const NOOKS_API_BASE_URL = (
+  process.env.NOOKS_API_BASE_URL ||
+  process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL ||
+  ''
+).trim().replace(/\/+$/, '');
+const NOOKS_INTERNAL_SECRET = (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+
+function fireThresholdAlert(opts: {
+  merchantId: string;
+  balanceHalalas: number;
+  thresholdHalalas: number;
+  chargePerOtpHalalas: number;
+}) {
+  if (!NOOKS_API_BASE_URL || !NOOKS_INTERNAL_SECRET) return;
+  fetch(`${NOOKS_API_BASE_URL}/api/public/sms-wallet/threshold-alert`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
+    },
+    body: JSON.stringify(opts),
+  }).catch((e) => console.warn('[smsWallet] threshold-alert relay failed:', e?.message));
 }
 
 export async function creditMerchantSmsWallet(params: {
