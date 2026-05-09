@@ -1083,7 +1083,13 @@ walletPassRouter.get(
           stampTarget: config?.stamp_target ?? 8,
           bgColor,
           stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
-          stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
+          // Stamp icon color follows the card's text color — the
+          // dashboard no longer exposes a separate picker (the merchant
+          // told us "doesn't do anything" because Apple Wallet caches
+          // pass artwork until APNs nudges it to refresh). Falling back
+          // to text color keeps a single source of truth that always
+          // contrasts the card background by definition.
+          stampIconColor: config?.wallet_card_text_color ?? '#FFFFFF',
           stampIconUrl: config?.wallet_stamp_icon_url ?? null,
           businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
           iconScalePercent:

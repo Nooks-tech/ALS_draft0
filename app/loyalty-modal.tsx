@@ -170,7 +170,12 @@ export default function LoyaltyModal() {
             const cardTextColor = balance?.walletCardTextColor || (cardLight ? '#1f2937' : '#ffffff');
             const cardSubTextColor = cardLight ? 'rgba(31,41,55,0.6)' : 'rgba(255,255,255,0.7)';
             const stampBoxColor = balance?.walletStampBoxColor || 'rgba(255,255,255,0.15)';
-            const stampIconColor = balance?.walletStampIconColor || '#FFFFFF';
+            // Stamp icon color now follows the card's text color so the
+            // mobile preview matches the dashboard preview and the Apple
+            // Wallet pass output. The dashboard's standalone picker was
+            // removed (perceived as "does nothing" because Apple Wallet
+            // caches pass artwork until an APNs nudge).
+            const stampIconColor = cardTextColor;
             const stampIconUrl = balance?.walletStampIconUrl || null;
             const cardLogoUrl = balance?.walletCardLogoUrl || null;
 
