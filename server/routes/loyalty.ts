@@ -159,7 +159,7 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
       }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
 
     // Trigger pass update so the design changes to the new loyalty type
-    notifyPassUpdate(customerId, merchantId).catch(() => {});
+    notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
     console.log(`[loyalty] Auto-switched customer ${customerId.substring(0, 8)}… from ${customerType} to ${merchantType} (0 balance)`);
   }
   return { earn: merchantType, redeem: merchantType, transitioning: false, oldSystemType: customerType, oldBalance: 0 };
@@ -302,7 +302,7 @@ async function redeemPointsFromBalance(params: {
     ...(programId ? { program_id: programId } : {}),
   });
 
-  notifyPassUpdate(params.customerId, params.merchantId).catch(() => {});
+  notifyPassUpdate(params.customerId, params.merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
   return {
     success: true,
     pointsRedeemed: pointsToRedeem,
@@ -373,7 +373,7 @@ async function redeemRewardFromBalance(params: {
     metadata: { ...(params.context?.metadata ?? {}), reward_id: reward.id, reward_name: reward.name },
   });
 
-  notifyPassUpdate(params.customerId, params.merchantId).catch(() => {});
+  notifyPassUpdate(params.customerId, params.merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
   return {
     success: true,
     reward: reward.name,
@@ -827,7 +827,7 @@ loyaltyRouter.post('/earn', async (req, res) => {
         });
       }
 
-      notifyPassUpdate(customerId, merchantId || '').catch(() => {});
+      notifyPassUpdate(customerId, merchantId || '').catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
       return res.json({
         success: true, pointsEarned: pointsForStamp, newStamps, milestoneReached, milestoneName,
         newBalance: (ptsBal?.points ?? 0) + pointsForStamp,
@@ -1003,7 +1003,7 @@ export async function earnPoints(
     }
   }
 
-  notifyPassUpdate(customerId, merchantId).catch(() => {});
+  notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
 
   return {
     success: true,
@@ -1382,7 +1382,7 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
     source: 'app', expires_at: expiresAt, config_version: currentVersion,
   });
 
-  notifyPassUpdate(customerId, merchantId).catch(() => {});
+  notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
   return { success: true, cashbackEarned: cashbackSar, newBalance: +((balRow?.balance_sar ?? 0) + cashbackSar).toFixed(2) };
 }
 
@@ -1466,7 +1466,7 @@ loyaltyRouter.post('/redeem-cashback', async (req, res) => {
       source: 'app', config_version: balRow!.config_version,
     });
 
-    notifyPassUpdate(customerId, merchantId).catch(() => {});
+    notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
     res.json({ success: true, amountRedeemed: amount, newBalance: +(balance - amount).toFixed(2) });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem cashback' });
@@ -1636,7 +1636,7 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
       source: via === 'branch' ? 'branch' : 'app',
     });
 
-    notifyPassUpdate(customerId, merchantId).catch(() => {});
+    notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
     res.json({ success: true, rewardName: milestone.reward_name, stampsDeducted: milestone.stamp_number, newStamps: newStampCount });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem milestone' });
