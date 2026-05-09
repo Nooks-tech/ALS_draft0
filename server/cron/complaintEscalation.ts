@@ -35,14 +35,26 @@ async function escalateStaleComplaints() {
   console.log(`[Complaint Cron] Escalating ${staleComplaints.length} stale complaints`);
 
   for (const complaint of staleComplaints) {
-    await supabaseAdmin
+    // Atomic claim — only proceed for this complaint if WE are the
+    // first writer to flip escalated_at. Without this WHERE filter,
+    // two server replicas running the cron concurrently would both
+    // claim the same rows and double-escalate. .select() returns the
+    // rows we actually updated; an empty array means another replica
+    // beat us to it and we skip the rest of this iteration.
+    const { data: claimed } = await supabaseAdmin
       .from('order_complaints')
       .update({
         escalated_at: new Date().toISOString(),
         escalated_to: 'hq',
         escalation_reason: 'Unresolved for 24+ hours',
       })
-      .eq('id', complaint.id);
+      .eq('id', complaint.id)
+      .is('escalated_at', null)
+      .select('id');
+    if (!claimed || claimed.length === 0) {
+      console.log(`[Complaint Cron] Skipping ${complaint.id} — already escalated by another worker`);
+      continue;
+    }
 
     // Find merchant owner to notify
     const { data: merchant } = await supabaseAdmin
