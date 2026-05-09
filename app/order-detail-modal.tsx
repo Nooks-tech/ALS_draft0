@@ -81,13 +81,13 @@ export default function OrderDetailModal() {
 
   // Load existing complaint for delivered orders
   useEffect(() => {
-    if (!orderId || order?.status !== 'Delivered' || !order?.merchant_id) return;
+    if (!orderId || order?.status !== 'Delivered' || !order?.merchantId) return;
     setLoadingComplaint(true);
-    getOrderComplaint(orderId, order.merchant_id).then((c) => {
+    getOrderComplaint(orderId, order.merchantId).then((c) => {
       setExistingComplaint(c);
       setLoadingComplaint(false);
     }).catch(() => setLoadingComplaint(false));
-  }, [orderId, order?.status, order?.merchant_id]);
+  }, [orderId, order?.status, order?.merchantId]);
 
   // "Mark received" fallback for pickup orders where the cashier never
   // closed the ticket. We unlock the button 45 minutes after ready_at.
