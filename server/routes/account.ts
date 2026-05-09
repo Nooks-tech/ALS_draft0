@@ -40,7 +40,14 @@ accountRouter.get('/export', async (req, res) => {
       return res.status(400).json({ error: 'merchantId query parameter is required' });
     }
 
-    const [profile, orders, complaints, loyaltyTx, stamps, points, cashback, addresses, subs] =
+    // saved_addresses is device-local (AsyncStorage in the mobile app's
+    // SavedAddressesContext) — there is no Supabase table for it. The
+    // previous query against `saved_addresses` returned a 404 schema
+    // error and would have either thrown or silently returned []. The
+    // mobile app should include its locally-stored addresses in any
+    // PDPL data dump itself before uploading, since the server doesn't
+    // have them.
+    const [profile, orders, complaints, loyaltyTx, stamps, points, cashback, subs] =
       await Promise.all([
         supabaseAdmin.from('profiles').select('*').eq('user_id', user.id).maybeSingle(),
         supabaseAdmin
@@ -54,7 +61,6 @@ accountRouter.get('/export', async (req, res) => {
         supabaseAdmin.from('loyalty_stamps').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('loyalty_points').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('loyalty_cashback_balances').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
-        supabaseAdmin.from('saved_addresses').select('*').eq('user_id', user.id),
         supabaseAdmin.from('push_subscriptions').select('merchant_id, platform, app_language, marketing_opt_in, last_seen_at').eq('user_id', user.id).eq('merchant_id', merchantId),
       ]);
 
@@ -75,7 +81,7 @@ accountRouter.get('/export', async (req, res) => {
       loyalty_stamps: stamps.data ?? [],
       loyalty_points: points.data ?? [],
       cashback_balances: cashback.data ?? [],
-      saved_addresses: addresses.data ?? [],
+      saved_addresses_note: 'Saved delivery addresses are stored on your device only (in the app\'s local storage), not on our servers. They are not included in this server-side export.',
       push_subscriptions: subs.data ?? [],
     };
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -112,9 +118,16 @@ accountRouter.delete('/', async (req, res) => {
       })
       .eq('customer_id', user.id);
 
+    // saved_addresses lives in mobile-app AsyncStorage, not Supabase —
+    // the deletion of the Supabase auth user below means the next
+    // launch of any merchant app will sign the user out, but their
+    // device-local saved addresses survive locally and would be
+    // visible only if they re-sign in with the same phone (the same
+    // auth.uid is gone, so addresses keyed by the old uid are stale).
+    // The mobile app's account-deletion screen should also clear its
+    // own AsyncStorage to make the erasure complete.
     await Promise.all([
       supabaseAdmin.from('profiles').delete().eq('user_id', user.id),
-      supabaseAdmin.from('saved_addresses').delete().eq('user_id', user.id),
       supabaseAdmin.from('push_subscriptions').delete().eq('user_id', user.id),
       supabaseAdmin.from('loyalty_stamps').delete().eq('customer_id', user.id),
       supabaseAdmin.from('loyalty_points').delete().eq('customer_id', user.id),
