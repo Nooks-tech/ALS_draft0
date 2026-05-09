@@ -3,37 +3,16 @@
  * Auto-escalates pending complaints older than 24 hours to HQ
  */
 import { createClient } from '@supabase/supabase-js';
+import { sendPushScoped } from '../utils/push';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 const ESCALATION_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24 hours
 const POLL_INTERVAL_MS = 30 * 60 * 1000; // every 30 minutes
-
-async function sendPush(userId: string, title: string, body: string) {
-  if (!supabaseAdmin) return;
-  try {
-    const { data: subs } = await supabaseAdmin
-      .from('push_subscriptions')
-      .select('expo_push_token')
-      .eq('user_id', userId);
-    const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
-    if (tokens.length === 0) return;
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
-    if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(tokens.map((t: string) => ({
-        to: t, sound: 'default', title, body, channelId: 'operations',
-      }))),
-    });
-  } catch { /* best-effort */ }
-}
 
 async function escalateStaleComplaints() {
   if (!supabaseAdmin) return;
@@ -73,13 +52,27 @@ async function escalateStaleComplaints() {
       .single();
 
     if (merchant) {
-      // Notify via merchant_id as the user lookup — the owner's auth.uid matches merchants.id
-      // in nooksweb's auth flow (merchant is linked to auth user)
-      sendPush(
-        String(complaint.merchant_id),
-        'Complaint Escalated',
-        `Complaint for order ${complaint.order_id} has been escalated — unresolved for 24+ hours.`,
-      );
+      // Notify the merchant owner (NOT the customer). Look up the
+      // owner's user_id so the push lands on whichever device that
+      // user has the merchant dashboard installed on. Even though the
+      // recipient is the merchant owner, scope by the same merchant_id
+      // so we don't spray cross-merchant if the owner happens to also
+      // be a customer of another merchant under the same auth.uid.
+      const { data: ownerRow } = await supabaseAdmin
+        .from('merchants')
+        .select('user_id')
+        .eq('id', complaint.merchant_id)
+        .maybeSingle();
+      const ownerUserId = (ownerRow as { user_id?: string | null } | null)?.user_id;
+      if (ownerUserId) {
+        sendPushScoped({
+          customerId: ownerUserId,
+          merchantId: String(complaint.merchant_id),
+          title: 'Complaint Escalated',
+          body: `Complaint for order ${complaint.order_id} has been escalated — unresolved for 24+ hours.`,
+          channel: 'operations',
+        });
+      }
     }
 
     console.log(`[Complaint Cron] Escalated complaint ${complaint.id} for order ${complaint.order_id}`);
