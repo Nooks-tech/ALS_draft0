@@ -239,6 +239,13 @@ async function buildStampGridStripPng(opts: {
    * Clamped to [20, 200] — anything beyond starts to overflow the stamp box.
    */
   iconScalePercent?: number | null;
+  /**
+   * 1-based stamp numbers that have an active milestone reward. Each
+   * matching box gets a small gift-icon badge in the top-right corner
+   * so the customer can see at a glance which stamps trigger a reward
+   * without scanning the secondary-fields text rows below.
+   */
+  milestoneStamps?: number[];
 }): Promise<Buffer | null> {
   let sharpMod: typeof import('sharp');
   try {
@@ -352,6 +359,36 @@ async function buildStampGridStripPng(opts: {
       const viewBoxScale = iconSize / 24;
       parts.push(
         `<g transform="translate(${iconX} ${iconY}) scale(${viewBoxScale})" opacity="${iconOpacity}"><path d="${iconPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
+      );
+    }
+
+    // Milestone badge — small gift icon overlaid in the top-right of the
+    // cell when this stamp number triggers a reward. Earned milestones
+    // (i < filled) glow at full opacity, unearned ones sit at 55% so the
+    // customer sees "this is where the reward lives" while it's still
+    // ahead of them. Matches the Fstamp + Wstamp surfaces.
+    const stampNumber = i + 1;
+    const isMilestone = (opts.milestoneStamps ?? []).includes(stampNumber);
+    if (isMilestone) {
+      const badgeRadius = Math.max(8, Math.round(Math.min(boxW, boxH) * 0.18));
+      const badgePadding = Math.max(3, Math.round(Math.min(boxW, boxH) * 0.06));
+      const badgeCx = x + boxW - badgeRadius - badgePadding;
+      const badgeCy = y + badgeRadius + badgePadding;
+      const badgeOpacity = isFilled ? 1 : 0.55;
+      // Background circle for contrast — uses the strip's bg color (not
+      // the stamp box) so the badge always reads against either filled
+      // or unfilled state.
+      parts.push(
+        `<circle cx="${badgeCx}" cy="${badgeCy}" r="${badgeRadius}" fill="${opts.bgColor}" opacity="${badgeOpacity}"/>`,
+      );
+      // Inline gift glyph path (Lucide gift, 24×24 viewBox).
+      const giftPath = 'M20 12v10H4V12 M2 7h20v5H2z M12 22V7 M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z';
+      const giftSize = Math.round(badgeRadius * 1.4);
+      const giftScale = giftSize / 24;
+      const giftX = badgeCx - giftSize / 2;
+      const giftY = badgeCy - giftSize / 2;
+      parts.push(
+        `<g transform="translate(${giftX} ${giftY}) scale(${giftScale})" opacity="${badgeOpacity}"><path d="${giftPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
       );
     }
   }
@@ -1101,6 +1138,9 @@ walletPassRouter.get(
             config?.wallet_stamp_icon_scale != null
               ? Number(config.wallet_stamp_icon_scale)
               : null,
+          milestoneStamps: activeMilestones
+            .filter((m) => (m.reward_name || '').trim().length > 0)
+            .map((m) => m.stamp_number),
         });
         if (stampGrid) {
           files['strip.png'] = stampGrid;
@@ -1615,6 +1655,9 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
           config?.wallet_stamp_icon_scale != null
             ? Number(config.wallet_stamp_icon_scale)
             : null,
+        milestoneStamps: activeMilestones
+          .filter((m) => (m.reward_name || '').trim().length > 0)
+          .map((m) => m.stamp_number),
       });
       if (stampGrid) {
         files['strip.png'] = stampGrid;

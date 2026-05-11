@@ -76,13 +76,17 @@ function hexWithAlpha(hex: string, alpha: number): string {
  * stamps lay out as two rows. Filled boxes use the merchant's stamp_box_color
  * at full opacity; empty boxes sit at 22% of that same color.
  */
-function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScalePercent }: {
+function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScalePercent, milestoneStamps, cardBgColor }: {
   stampTarget: number;
   stamps: number;
   boxColor: string;
   iconColor: string;
   iconUrl: string | null;
   iconScalePercent: number | null;
+  /** 1-based stamp numbers that earn a reward — overlaid with a gift badge. */
+  milestoneStamps?: number[];
+  /** Card background color, used as the badge's contrast disc. */
+  cardBgColor: string;
 }) {
   const total = Math.max(1, Math.min(20, Math.round(stampTarget)));
   const filled = Math.max(0, Math.min(total, Math.round(stamps)));
@@ -100,10 +104,14 @@ function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScal
   const uploadedIconSize = `${Math.round(60 * iconFrac)}%` as const;
   const defaultIconSize = Math.max(10, Math.min(48, Math.floor(240 / cols) * iconFrac));
 
+  const milestoneSet = new Set((milestoneStamps ?? []).map((n) => Math.round(n)));
+
   return (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
       {Array.from({ length: total }).map((_, i) => {
         const isFilled = i < filled;
+        const stampNumber = i + 1;
+        const isMilestone = milestoneSet.has(stampNumber);
         return (
           <View key={i} style={{ width: cellWidthPct, paddingHorizontal: 4, paddingVertical: 4 }}>
             <View style={{
@@ -125,6 +133,28 @@ function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScal
                   fill={iconColor}
                   style={{ opacity: isFilled ? 1 : 0.35 }}
                 />
+              )}
+              {isMilestone && (
+                // Gift badge overlaid in the top-right corner. Disc uses
+                // the card's background color so it pops against either
+                // filled or unfilled stamp state. Earned milestones glow;
+                // unearned ones sit at 55% so the customer sees "reward
+                // is waiting here" even before they hit it.
+                <View
+                  style={{
+                    position: 'absolute',
+                    top: 4,
+                    right: 4,
+                    width: 18,
+                    height: 18,
+                    borderRadius: 9,
+                    backgroundColor: cardBgColor,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    opacity: isFilled ? 1 : 0.55 }}
+                >
+                  <Gift size={11} color={iconColor} strokeWidth={2.4} />
+                </View>
               )}
             </View>
           </View>
@@ -770,6 +800,8 @@ export default function OffersScreen() {
                       iconColor={iconColor}
                       iconUrl={iconUrl}
                       iconScalePercent={balance?.walletStampIconScale ?? null}
+                      milestoneStamps={filledMilestones.map((m) => m.stamp_number)}
+                      cardBgColor={cardBgColor}
                     />
                     {filledMilestones.length > 0 && (
                       <View style={{ marginTop: 16, flexDirection: 'row', flexWrap: 'wrap' }}>
