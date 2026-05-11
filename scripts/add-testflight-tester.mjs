@@ -148,8 +148,16 @@ async function asc(path, init = {}) {
   console.log(`[tf-tester] Group: ${group.id} (${group.attributes?.name})`);
 
   // 3. Check if this email is already a tester in the group.
+  //
+  // ASC API note: same gotcha as the betaGroups lookup above —
+  // /v1/betaGroups/{id}/betaTesters (the relationship sub-resource)
+  // rejects filter[email] with a 400 PARAMETER_ERROR.ILLEGAL ("The
+  // parameter 'filter[email]' can not be used with this request").
+  // The top-level /v1/betaTesters endpoint DOES accept both
+  // filter[betaGroups] and filter[email] together — same query,
+  // supported parameters. Use that.
   const existingTesters = await asc(
-    `/v1/betaGroups/${group.id}/betaTesters?filter[email]=${encodeURIComponent(APPLE_ID)}&limit=10`
+    `/v1/betaTesters?filter[betaGroups]=${encodeURIComponent(group.id)}&filter[email]=${encodeURIComponent(APPLE_ID)}&limit=10`
   );
   const alreadyAdded = (existingTesters?.data ?? []).some(
     (t) => (t.attributes?.email || "").toLowerCase() === APPLE_ID.toLowerCase()
