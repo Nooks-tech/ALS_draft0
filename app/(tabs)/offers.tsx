@@ -740,15 +740,18 @@ export default function OffersScreen() {
 
               // Merchant-controlled logo scale. Clamped so the card's top
               // padding and the title's vertical alignment can't break: the
-              // 40×40 slot stays fixed, only the inner image resizes. Max is
+              // slot stays fixed, only the inner image resizes. Max is
               // 100% to match the Apple Pass slot cap — higher values are a
               // no-op in the pass renderer, so the slider would lie.
+              // Slot bumped from 40 to 56 to match the dashboard preview's
+              // h-14/w-14 (56px) container so the logo reads at the same
+              // visual proportion across Wstamp / Fstamp.
               const logoFrac = Math.max(0.4, Math.min(1.0, (balance?.walletCardLogoScale ?? 100) / 100));
-              const logoInnerSize = Math.round(40 * logoFrac);
+              const logoInnerSize = Math.round(56 * logoFrac);
 
               const headerRow = (
                 <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12 }}>
-                  <View style={{ width: 40, height: 40, alignItems: 'flex-start', justifyContent: 'flex-start' }}>
+                  <View style={{ width: 56, height: 56, alignItems: 'flex-start', justifyContent: 'flex-start' }}>
                     {cardLogoUrl ? (
                       <Image
                         source={{ uri: cardLogoUrl }}
