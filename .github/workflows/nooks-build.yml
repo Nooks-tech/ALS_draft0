@@ -86,6 +86,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Skip Sentry's automatic source-map upload during EAS Build's
+      # gradle/Xcode invocations. The @sentry/react-native plugin tries
+      # to run `sentry-cli react-native gradle ...` at build time, which
+      # requires --org / --project / --auth-token. We haven't set up a
+      # Sentry org for Nooks yet, so without this flag every build fails
+      # at the Sentry upload step (the failure surfaces as
+      # "An organization ID or slug is required" in the gradlew logs).
+      # The runtime Sentry SDK still wires up native crash capture and
+      # JS error reporting — only the upload step is skipped, which
+      # means crash stacks land as minified for now. Switch to a real
+      # SENTRY_ORG + SENTRY_PROJECT + SENTRY_AUTH_TOKEN setup later to
+      # get source-mapped stacks on the Sentry dashboard.
+      SENTRY_DISABLE_AUTO_UPLOAD: 'true'
     steps:
       - name: Echo workflow inputs
         # Diagnostic so we can see exactly what nooks.space's trigger
