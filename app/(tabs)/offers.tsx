@@ -92,9 +92,13 @@ function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScal
   // Merchant slider scales the inner icon only; box stays 1:1 so the grid
   // never reflows. Clamped to [0.6, 1.4] so a bad value can't blow out the
   // stamp box or shrink the icon to an invisible dot.
+  //
+  // Unified baseline of 60% of cell (matches the wallet-pass strip image
+  // and the dashboard StampCardPreview). At 100% slider scale, all three
+  // surfaces render the icon at the same proportion.
   const iconFrac = Math.max(0.6, Math.min(1.4, (iconScalePercent ?? 100) / 100));
-  const uploadedIconSize = `${Math.round(55 * iconFrac)}%` as const;
-  const defaultIconSize = Math.max(10, Math.min(40, Math.floor(200 / cols) * iconFrac));
+  const uploadedIconSize = `${Math.round(60 * iconFrac)}%` as const;
+  const defaultIconSize = Math.max(10, Math.min(48, Math.floor(240 / cols) * iconFrac));
 
   return (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>

@@ -330,7 +330,12 @@ async function buildStampGridStripPng(opts: {
     // icon can't overflow the box or shrink to nothing.
     const rawScale = typeof opts.iconScalePercent === 'number' ? opts.iconScalePercent : 100;
     const scale = Math.max(20, Math.min(200, rawScale)) / 100;
-    const baseRatio = customDataUrl ? 0.72 : 0.66;
+    // Unified baseline: icon = 60% of cell shorter dimension at 100%
+    // scale, for both uploaded images and built-in glyphs. Matches the
+    // dashboard preview (Wstamp) and the customer app's StampGrid
+    // (Fstamp) so the merchant's slider has the same visual effect on
+    // all three surfaces.
+    const baseRatio = 0.6;
     // Cap effective ratio at 0.92 so even at 200% the icon keeps a small
     // bezel inside the box instead of touching the edge.
     const effectiveRatio = Math.min(0.92, baseRatio * scale);
@@ -1080,7 +1085,7 @@ walletPassRouter.get(
       if (loyaltyType === 'stamps') {
         const stampGrid = await buildStampGridStripPng({
           stamps: stampRow?.stamps ?? 0,
-          stampTarget: config?.stamp_target ?? 8,
+          stampTarget: 8,
           bgColor,
           stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
           // Stamp icon color follows the card's text color — the
@@ -1127,7 +1132,7 @@ walletPassRouter.get(
         cashbackPercent: config?.cashback_percent ?? 5,
         businessType: config?.business_type ?? 'cafe',
         stamps: stampRow?.stamps ?? 0,
-        stampTarget: config?.stamp_target ?? 8,
+        stampTarget: 8,
         stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
         nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
         nextRewardCost: cheapestReward?.points_cost ?? undefined,
@@ -1600,7 +1605,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     if (loyaltyType === 'stamps') {
       const stampGrid = await buildStampGridStripPng({
         stamps: stampRow?.stamps ?? 0,
-        stampTarget: config?.stamp_target ?? 8,
+        stampTarget: 8,
         bgColor,
         stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
         stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
@@ -1640,7 +1645,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       cashbackPercent: config?.cashback_percent ?? 5,
       businessType: config?.business_type ?? 'cafe',
       stamps: stampRow?.stamps ?? 0,
-      stampTarget: config?.stamp_target ?? 8,
+      stampTarget: 8,
       stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
       nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
       nextRewardCost: cheapestReward?.points_cost ?? undefined,
