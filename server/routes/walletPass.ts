@@ -1266,6 +1266,60 @@ export async function notifyPassUpdate(customerId: string, merchantId: string): 
   }
 }
 
+/**
+ * Bumps last_updated + sends APNs to EVERY customer's wallet pass for a
+ * given merchant. Used when the merchant saves loyalty config (colors,
+ * type switch stamps↔cashback, logo, milestone rewards, etc.) so every
+ * already-installed pass refetches and shows the new design without
+ * waiting for the customer to earn or redeem something first.
+ *
+ * Best-effort: any DB or APNs failure logs a warning and continues so a
+ * single bad pushToken can't block the rest of the fanout.
+ */
+export async function notifyMerchantPassesUpdate(merchantId: string): Promise<void> {
+  if (!supabaseAdmin || !isConfigured()) return;
+  if (!merchantId) return;
+
+  const prefix = `loyalty-${merchantId}-`;
+  const { data: regs, error } = await supabaseAdmin
+    .from('wallet_pass_registrations')
+    .select('serial_number, push_token')
+    .like('serial_number', `${prefix}%`);
+
+  if (error) {
+    console.warn('[WalletPass] notifyMerchantPassesUpdate select failed:', error.message);
+    return;
+  }
+  if (!regs || regs.length === 0) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const serials = [...new Set(regs.map((r: any) => r.serial_number as string))];
+
+  // Bump last_updated for every affected serial so any device polling
+  // /v1/devices/{id}/registrations/.../?passesUpdatedSince=… learns the
+  // pass changed and refetches the .pkpass.
+  if (serials.length > 0) {
+    const rows = serials.map((s) => ({ serial_number: s, last_updated: now }));
+    const { error: upErr } = await supabaseAdmin
+      .from('wallet_pass_updates')
+      .upsert(rows, { onConflict: 'serial_number' });
+    if (upErr) {
+      console.warn('[WalletPass] notifyMerchantPassesUpdate upsert failed:', upErr.message);
+    }
+  }
+
+  const uniqueTokens = [...new Set(regs.map((r: any) => r.push_token as string))].filter(Boolean);
+  console.log(`[WalletPass] Pushing pass-refresh APNs to ${uniqueTokens.length} device(s) for merchant ${merchantId}`);
+  for (const token of uniqueTokens) {
+    try {
+      const ok = await sendApnsPush(token);
+      console.log(`[WalletPass] APNs to ${token.substring(0, 8)}…: ${ok ? 'OK' : 'FAIL'}`);
+    } catch (err) {
+      console.warn('[WalletPass] APNs push threw:', err instanceof Error ? err.message : err);
+    }
+  }
+}
+
 // ─── Routes ───
 
 walletPassRouter.get('/wallet-pass/check', (_req, res) => {

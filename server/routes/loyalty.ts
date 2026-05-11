@@ -3,7 +3,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
-import { notifyPassUpdate } from './walletPass';
+import { notifyPassUpdate, notifyMerchantPassesUpdate } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -498,6 +498,19 @@ loyaltyRouter.put('/config', async (req, res) => {
       return res.status(500).json({ error: error.message, code: error.code, hint: error.hint });
     }
     console.log('[loyalty] upsert success:', JSON.stringify(data));
+
+    // Fan out an APNs pass-refresh push to every customer of this
+    // merchant so their already-installed Apple Wallet passes refetch
+    // and pick up the new colors / labels / loyalty type / milestones
+    // without having to do an earn/redeem action first. Best-effort —
+    // any failure here doesn't block the config save response.
+    notifyMerchantPassesUpdate(merchantId).catch((err) =>
+      console.warn(
+        '[loyalty] notifyMerchantPassesUpdate failed:',
+        err instanceof Error ? err.message : err,
+      ),
+    );
+
     res.json({ success: true });
   } catch (err: any) {
     const cause = (err as any)?.cause;
