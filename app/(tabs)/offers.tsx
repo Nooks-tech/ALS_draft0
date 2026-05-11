@@ -135,25 +135,26 @@ function StampGrid({ stampTarget, stamps, boxColor, iconColor, iconUrl, iconScal
                 />
               )}
               {isMilestone && (
-                // Gift badge overlaid in the top-right corner. Disc uses
-                // the card's background color so it pops against either
-                // filled or unfilled stamp state. Earned milestones glow;
-                // unearned ones sit at 55% so the customer sees "reward
-                // is waiting here" even before they hit it.
+                // Gift badge — small corner accent (not a competing
+                // icon). Disc uses the card's background color so it
+                // pops against either filled or unfilled stamp state.
+                // Earned milestones glow; unearned ones sit at 55% so
+                // the customer sees "reward is waiting here" even
+                // before they hit it.
                 <View
                   style={{
                     position: 'absolute',
-                    top: 4,
-                    right: 4,
-                    width: 18,
-                    height: 18,
-                    borderRadius: 9,
+                    top: 3,
+                    right: 3,
+                    width: 14,
+                    height: 14,
+                    borderRadius: 7,
                     backgroundColor: cardBgColor,
                     alignItems: 'center',
                     justifyContent: 'center',
                     opacity: isFilled ? 1 : 0.55 }}
                 >
-                  <Gift size={11} color={iconColor} strokeWidth={2.4} />
+                  <Gift size={8} color={iconColor} strokeWidth={2.6} />
                 </View>
               )}
             </View>

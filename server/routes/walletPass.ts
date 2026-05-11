@@ -370,8 +370,12 @@ async function buildStampGridStripPng(opts: {
     const stampNumber = i + 1;
     const isMilestone = (opts.milestoneStamps ?? []).includes(stampNumber);
     if (isMilestone) {
-      const badgeRadius = Math.max(8, Math.round(Math.min(boxW, boxH) * 0.18));
-      const badgePadding = Math.max(3, Math.round(Math.min(boxW, boxH) * 0.06));
+      // Badge sized small enough to read as a corner accent rather than
+      // a competing icon: radius is 12% of the cell's shorter dimension
+      // (~24% of the cell width). The gift glyph inside fills the disc
+      // 1:1 so it's tight against the edge of the circle.
+      const badgeRadius = Math.max(6, Math.round(Math.min(boxW, boxH) * 0.12));
+      const badgePadding = Math.max(3, Math.round(Math.min(boxW, boxH) * 0.05));
       const badgeCx = x + boxW - badgeRadius - badgePadding;
       const badgeCy = y + badgeRadius + badgePadding;
       const badgeOpacity = isFilled ? 1 : 0.55;
@@ -383,7 +387,7 @@ async function buildStampGridStripPng(opts: {
       );
       // Inline gift glyph path (Lucide gift, 24×24 viewBox).
       const giftPath = 'M20 12v10H4V12 M2 7h20v5H2z M12 22V7 M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z';
-      const giftSize = Math.round(badgeRadius * 1.4);
+      const giftSize = Math.round(badgeRadius * 1.1);
       const giftScale = giftSize / 24;
       const giftX = badgeCx - giftSize / 2;
       const giftY = badgeCy - giftSize / 2;
