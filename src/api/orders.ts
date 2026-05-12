@@ -118,6 +118,27 @@ export type CommitOrderPayload = {
    * on order_id.
    */
   walletAmountSar?: number | null;
+  /**
+   * Cashback (in SAR) the customer redeemed for this order. Separate
+   * from loyaltyDiscountSar so the server doesn't have to infer
+   * loyaltyType. Server stores it in customer_orders.cashback_paid_sar
+   * and on cancel re-credits the cashback balance.
+   */
+  cashbackAmountSar?: number | null;
+  /**
+   * Stamp milestones redeemed at checkout. Server stores them on the
+   * order row so cancel can restore each milestone's stamps and clear
+   * the redemption rows. Empty / omitted = no stamp redemption.
+   */
+  stampMilestoneIds?: string[];
+  /** SUM of milestone.stamp_number for each redeemed milestone. */
+  stampsConsumed?: number | null;
+  /**
+   * Loyalty-discount SAR (cashback-as-discount or points discount).
+   * Server uses this for Foodics line shrinking; for refund-time
+   * cashback reversal use cashbackAmountSar (more explicit).
+   */
+  loyaltyDiscountSar?: number | null;
   relayToNooks?: boolean;
 };
 

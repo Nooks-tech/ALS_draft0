@@ -8,9 +8,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
-import { cancelPayment } from '../services/payment';
+import { cancelPayment, verifyPaidPayment } from '../services/payment';
 import { sendOrderReceipt } from '../services/receipt';
-import { earnPoints } from './loyalty';
+import { earnPoints, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { creditWalletForRefund } from './wallet';
@@ -175,6 +175,14 @@ ordersRouter.post('/commit', async (req, res) => {
       relayToNooks,
       loyaltyDiscountSar,
       walletAmountSar,
+      // Payment composition — used at cancel time to "rewind" each
+      // source independently (cashback → cashback balance, stamps →
+      // stamp counter + redemption row). Optional; legacy clients that
+      // don't send these still commit fine, they just won't get
+      // multi-source reversal on cancel.
+      cashbackAmountSar,
+      stampMilestoneIds,
+      stampsConsumed,
     } = req.body ?? {};
 
     if (!id || typeof id !== 'string') {
@@ -264,6 +272,57 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(403).json({ error: 'Order does not belong to the authenticated user' });
     }
 
+    // ─── Server-side Moyasar payment verification ───
+    // The customer app fires commitOrder when the SDK reports
+    // PaymentStatus.paid — that signal comes from the client and is
+    // therefore untrustworthy. A buggy SDK build, a tampered client, or
+    // an OS that delivers the success callback while Moyasar hasn't yet
+    // captured the payment can all produce a paid-looking commit for
+    // an unpaid Moyasar payment. We saw exactly this: a Moyasar
+    // dashboard payment stuck in `initiated` while our DB row claimed
+    // it was placed.
+    //
+    // Defense: for any card-like payment (paymentId is a Moyasar id,
+    // not a wallet:* sentinel), GET the payment from Moyasar and
+    // require status ∈ {paid, captured} AND amount matching the order
+    // total. Reject otherwise — the row never gets created.
+    //
+    // Wallet-only / COD paths skip this check: their paymentId is
+    // either a `wallet:<txn>` sentinel (the wallet debit IS the
+    // payment) or null (COD pays cash on delivery). For partial-wallet
+    // orders the card still pays the remainder and Moyasar verifies
+    // that portion below; we round the expected halalas to match.
+    const trimmedPaymentId = typeof paymentId === 'string' ? paymentId.trim() : '';
+    const isMoyasarPaymentId = trimmedPaymentId && !trimmedPaymentId.startsWith('wallet:');
+    if (isMoyasarPaymentId && existing?.id !== id) {
+      // Compute expected card portion (totalSar minus wallet portion).
+      // Cashback / loyalty discounts are NOT subtracted here — the
+      // discount is applied as a Foodics line on the POS side and
+      // Moyasar charges the post-discount totalSar value the client
+      // sent us (which the per-item floor above already sanity-checked).
+      const cardPortionSar =
+        paymentMethod === 'wallet'
+          ? 0
+          : typeof walletAmountSar === 'number' && walletAmountSar > 0
+            ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
+            : Number(totalSar);
+      const expectedHalals = Math.round(cardPortionSar * 100);
+      const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalals, merchantId);
+      if (!verification.ok) {
+        console.warn(
+          '[Orders] Rejecting commit — Moyasar payment not paid:',
+          trimmedPaymentId,
+          verification.reason,
+          'status:',
+          verification.status,
+        );
+        return res.status(402).json({
+          error: `Payment not confirmed (${verification.reason}). The order was not created.`,
+          moyasarStatus: verification.status,
+        });
+      }
+    }
+
     // Wallet credit: applied to the order BEFORE saving it. Two
     // shapes the client can send:
     //   - paymentMethod === 'wallet'        → wallet covers the full
@@ -351,6 +410,38 @@ ordersRouter.post('/commit', async (req, res) => {
           ? walletPaymentId
           : (typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null),
       payment_method: typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null,
+      // Persist the payment-composition breakdown. Card portion is
+      // computed from totalSar minus the non-card portions so the four
+      // amounts always sum to totalSar (within rounding). loyaltyDiscountSar
+      // is the cashback-as-discount portion (only when loyaltyType is
+      // 'cashback' on the client). stampMilestoneIds is the JSON array of
+      // milestones the customer redeemed at checkout — used at refund time
+      // to restore each milestone's stamps.
+      wallet_paid_sar: walletAppliedSar > 0 ? walletAppliedSar : 0,
+      cashback_paid_sar:
+        typeof cashbackAmountSar === 'number' && cashbackAmountSar > 0
+          ? Number(cashbackAmountSar.toFixed(2))
+          : typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0
+            ? Number(loyaltyDiscountSar.toFixed(2))
+            : 0,
+      card_paid_sar:
+        paymentMethod === 'wallet'
+          ? 0
+          : Math.max(
+              0,
+              Number(
+                (
+                  Number(totalSar) -
+                  (walletAppliedSar > 0 ? walletAppliedSar : 0)
+                ).toFixed(2),
+              ),
+            ),
+      stamp_milestone_ids:
+        Array.isArray(stampMilestoneIds) && stampMilestoneIds.length > 0
+          ? stampMilestoneIds.filter((v) => typeof v === 'string')
+          : [],
+      stamps_consumed:
+        typeof stampsConsumed === 'number' && stampsConsumed > 0 ? Math.floor(stampsConsumed) : 0,
       car_details: orderType === 'drivethru' && carDetails && typeof carDetails === 'object' ? carDetails : null,
       // Per-order processing fee billed to the merchant (NOT to the
       // end customer — the customer's total never includes it). Recorded
@@ -488,25 +579,43 @@ ordersRouter.post('/commit', async (req, res) => {
 });
 
 /**
- * Refund the order's full charge to the customer. Money goes back to the
- * card when Moyasar can void/refund the original payment (free void
- * within ~2h of capture, or 1-3-day refund afterwards). Only when that
- * fails — Moyasar 4xx, no payment_id (wallet-only payment), missing
- * config — do we fall back to crediting the in-app wallet.
+ * "Rewind time" reversal for a cancelled order. Reads the order's
+ * payment-composition columns (card_paid_sar, wallet_paid_sar,
+ * cashback_paid_sar, stamp_milestone_ids, stamps_consumed) and returns
+ * each source to where it came from in parallel:
  *
- * Previous behavior credited the wallet AND voided on Moyasar, which
- * double-refunded the customer (money back to card + wallet credit for
- * the same order). The new rule: exactly one refund destination per
- * order. Returned `refundMethod` is the source of truth for callers and
- * is persisted to customer_orders.refund_method.
+ *   - card_paid_sar    → Moyasar void (free, ~2h) or refund (1-3d).
+ *                        Only credit wallet as a fallback if Moyasar
+ *                        cannot reverse the charge.
+ *   - wallet_paid_sar  → re-credit the in-app wallet via the wallet RPC.
+ *   - cashback_paid_sar→ re-credit loyalty_cashback_balances and log a
+ *                        +amount loyalty_transactions row.
+ *   - stamp_milestone_ids → re-add stamps to loyalty_stamps + clear the
+ *                        loyalty_stamp_redemptions rows so the milestone
+ *                        is re-eligible. Internal points are also
+ *                        restored.
+ *
+ * Returned refundBreakdown captures what was actually reversed per
+ * source, suitable for serialization to customer_orders.refund_method
+ * (now a JSON blob) and for naming each source in the push
+ * notification.
+ *
+ * Each sub-action is idempotent at its own helper level, so re-running
+ * a cancel (manual retry by ops, webhook replay) cannot double-rewind.
  */
 type RefundDestination = 'card' | 'wallet' | 'none';
+type ReversalBreakdown = {
+  card?: { method: 'void' | 'refund' | 'failed' | 'not_required' | 'skipped'; amountSar: number };
+  wallet?: { amountSar: number };
+  cashback?: { amountSar: number; alreadyRestored?: boolean };
+  stamps?: { count: number; milestones: string[]; alreadyRestored?: boolean };
+};
 async function refundOrderToWallet(
   orderId: string,
   cancelledBy: 'merchant' | 'system',
   reason: string,
 ): Promise<
-  | { ok: true; orderId: string; refundedSar: number; refundMethod: RefundDestination }
+  | { ok: true; orderId: string; refundedSar: number; refundMethod: RefundDestination; breakdown: ReversalBreakdown }
   | { ok: false; error: string; status: number }
 > {
   if (!supabaseAdmin) return { ok: false, error: 'Database not configured', status: 500 };
@@ -524,18 +633,46 @@ async function refundOrderToWallet(
     return { ok: false, error: 'Order is missing customer_id or merchant_id', status: 500 };
   }
 
-  // Try Moyasar void/refund first. Three buckets of outcomes:
-  //   - 'void' / 'refund'  → money is going back to the CARD (~2h or 1-3d).
-  //                          Skip wallet credit — that would double-refund.
-  //   - 'not_required'     → Moyasar says nothing was actually charged
-  //                          (status: initiated / failed / already voided /
-  //                          already refunded). No refund needed AT ALL —
-  //                          do not credit wallet because no money moved.
-  //   - 'failed' / skipped → wallet credit as fallback.
-  // The 'skipped' branch covers orders with no payment_id (wallet-only
-  // payments) where wallet credit is the correct destination.
+  // ─── Read payment composition ───
+  // Prefer the new breakdown columns. Fall back to legacy single-total
+  // for orders placed before 20260512_order_payment_composition: those
+  // rows have card_paid_sar=0, wallet_paid_sar=0, cashback_paid_sar=0
+  // and no milestone IDs. For legacy rows we treat total_sar as the
+  // card portion (or wallet portion if paymentMethod is wallet) so the
+  // refund still works — just without per-source granularity.
+  const totalSar = Number(order.total_sar ?? 0);
+  const cardPaidSar = Number((order as any).card_paid_sar ?? 0);
+  const walletPaidSar = Number((order as any).wallet_paid_sar ?? 0);
+  const cashbackPaidSar = Number((order as any).cashback_paid_sar ?? 0);
+  const milestoneIds: string[] = Array.isArray((order as any).stamp_milestone_ids)
+    ? ((order as any).stamp_milestone_ids as unknown[]).filter((v): v is string => typeof v === 'string')
+    : [];
+  const stampsConsumed = Math.max(0, Math.floor(Number((order as any).stamps_consumed ?? 0)));
+
+  // Legacy-row inference: if all breakdown columns are zero (pre-migration
+  // row) AND total_sar > 0, assume the whole total was paid via the
+  // primary payment_method. This keeps cancellations working for
+  // orders placed before P2 shipped.
+  const hasBreakdown = cardPaidSar > 0 || walletPaidSar > 0 || cashbackPaidSar > 0 || milestoneIds.length > 0;
+  const effectiveCardPaid = hasBreakdown ? cardPaidSar : (order.payment_method === 'wallet' ? 0 : totalSar);
+  const effectiveWalletPaid = hasBreakdown
+    ? walletPaidSar
+    : (order.payment_method === 'wallet' ? totalSar : 0);
+  const effectiveCashbackPaid = hasBreakdown ? cashbackPaidSar : 0;
+
+  const breakdown: ReversalBreakdown = {};
+
+  // ─── Card reversal (existing logic, slightly trimmed) ───
+  // Three Moyasar outcomes:
+  //   - void / refund   → money is going back to the CARD. No wallet
+  //                       fallback.
+  //   - not_required    → Moyasar says nothing was charged. No refund
+  //                       owed.
+  //   - failed / skipped→ if there was a card portion the customer
+  //                       paid, we fall back to wallet credit so they
+  //                       become whole.
   let moyasarMethod: 'void' | 'refund' | 'failed' | 'not_required' | 'skipped' = 'skipped';
-  if (order.payment_id) {
+  if (effectiveCardPaid > 0 && order.payment_id) {
     try {
       const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
       moyasarMethod = result.method;
@@ -545,32 +682,93 @@ async function refundOrderToWallet(
       console.warn('[Orders] Moyasar cancel threw:', e?.message);
     }
   }
+  const cardReturnedToCustomer = moyasarMethod === 'void' || moyasarMethod === 'refund';
+  const cardNothingOwed = moyasarMethod === 'not_required';
+  breakdown.card = { method: moyasarMethod, amountSar: effectiveCardPaid };
 
-  const refundedToCard = moyasarMethod === 'void' || moyasarMethod === 'refund';
-  const noChargeMade = moyasarMethod === 'not_required';
-  const refundMethod: RefundDestination = refundedToCard ? 'card' : noChargeMade ? 'none' : 'wallet';
-  const refundSar = Number(order.total_sar ?? 0);
-
-  // Wallet credit only fires when (a) the card was charged but Moyasar
-  // can't reverse it, OR (b) the order has no Moyasar payment_id at all
-  // (wallet-only payment). When refundMethod is 'card' the customer
-  // already gets the money back via card; when it's 'none' the customer
-  // was never charged so they don't get anything.
-  if (refundMethod === 'wallet' && refundSar > 0) {
+  // ─── Wallet reversal ───
+  // (a) Always re-credit the wallet portion the customer used at checkout.
+  // (b) If the card portion couldn't be reversed via Moyasar AND money
+  //     actually moved (not 'not_required'), credit the card portion to
+  //     the wallet too as a fallback.
+  let walletCreditSar = effectiveWalletPaid;
+  if (effectiveCardPaid > 0 && !cardReturnedToCustomer && !cardNothingOwed) {
+    walletCreditSar = +(walletCreditSar + effectiveCardPaid).toFixed(2);
+  }
+  if (walletCreditSar > 0) {
     try {
       await creditWalletForRefund({
         customerId: order.customer_id,
         merchantId: order.merchant_id,
-        amountSar: refundSar,
+        amountSar: walletCreditSar,
         orderId,
         complaintId: null,
         note: `Order ${cancelledBy === 'merchant' ? 'refused' : 'auto-cancelled'}: ${reason}`.slice(0, 200),
       });
+      breakdown.wallet = { amountSar: walletCreditSar };
     } catch (e: any) {
       console.error('[Orders] Wallet credit failed for', orderId, ':', e?.message);
       return { ok: false, error: e?.message || 'Wallet credit failed', status: 500 };
     }
   }
+
+  // ─── Cashback reversal ───
+  if (effectiveCashbackPaid > 0) {
+    try {
+      const r = await restoreCashbackForRefund({
+        customerId: order.customer_id,
+        merchantId: order.merchant_id,
+        amountSar: effectiveCashbackPaid,
+        orderId,
+      });
+      breakdown.cashback = { amountSar: r.restoredSar, alreadyRestored: r.alreadyRestored };
+    } catch (e: any) {
+      console.warn('[Orders] Cashback restore failed (non-blocking):', e?.message);
+    }
+  }
+
+  // ─── Stamp reversal ───
+  if (milestoneIds.length > 0 && stampsConsumed > 0) {
+    try {
+      const r = await restoreStampMilestonesForRefund({
+        customerId: order.customer_id,
+        merchantId: order.merchant_id,
+        milestoneIds,
+        stampsConsumed,
+        orderId,
+      });
+      breakdown.stamps = {
+        count: r.stampsRestored,
+        milestones: r.milestonesCleared,
+        alreadyRestored: r.alreadyRestored,
+      };
+    } catch (e: any) {
+      console.warn('[Orders] Stamp restore failed (non-blocking):', e?.message);
+    }
+  }
+
+  // ─── Headline refundMethod for legacy callers + dashboard display ───
+  // Pick the destination that's most relevant to the customer:
+  //  - card if any card portion went back to the card
+  //  - wallet if wallet credit fired
+  //  - none if nothing was owed (card portion was never charged AND
+  //    there was no wallet/cashback/stamp portion)
+  const refundMethod: RefundDestination =
+    cardReturnedToCustomer
+      ? 'card'
+      : breakdown.wallet
+        ? 'wallet'
+        : breakdown.cashback || breakdown.stamps
+          ? 'wallet'
+          : cardNothingOwed && effectiveWalletPaid === 0 && effectiveCashbackPaid === 0 && stampsConsumed === 0
+            ? 'none'
+            : 'wallet';
+  const refundedSarHeadline =
+    refundMethod === 'card'
+      ? effectiveCardPaid
+      : refundMethod === 'wallet'
+        ? walletCreditSar
+        : 0;
 
   const { error: updateErr } = await supabaseAdmin
     .from('customer_orders')
@@ -579,7 +777,7 @@ async function refundOrderToWallet(
       cancellation_reason: reason,
       cancelled_by: cancelledBy,
       refund_status: refundMethod === 'none' ? 'not_required' : 'refunded',
-      refund_amount: refundMethod === 'none' ? 0 : refundSar,
+      refund_amount: refundedSarHeadline,
       refund_fee: 0,
       refund_method: refundMethod,
       commission_status: 'cancelled',
@@ -613,25 +811,64 @@ async function refundOrderToWallet(
       });
   }
 
+  // Compose a multi-source push message that names each restored
+  // source. Order: card → wallet → cashback → stamps. We skip the
+  // "no charge" message unless literally nothing was reversed.
   const lead =
     cancelledBy === 'merchant'
       ? 'Your order has been refused by the store.'
       : "We couldn't dispatch a driver for your order.";
-  const refundLine =
-    refundMethod === 'card'
-      ? moyasarMethod === 'void'
-        ? `${refundSar} SAR will be returned to your card within a few hours.`
-        : `${refundSar} SAR is being returned to your card and will arrive within 1-3 business days.`
-      : refundMethod === 'none'
-        ? 'No charge was made to your card, so nothing needs to be refunded.'
-        : `${refundSar} SAR has been credited to your wallet — use it on your next order.`;
+  const pieces: string[] = [];
+  if (cardReturnedToCustomer && effectiveCardPaid > 0) {
+    pieces.push(
+      moyasarMethod === 'void'
+        ? `${effectiveCardPaid} SAR will be returned to your card within a few hours`
+        : `${effectiveCardPaid} SAR is being returned to your card (1-3 business days)`,
+    );
+  }
+  if (breakdown.wallet && breakdown.wallet.amountSar > 0) {
+    pieces.push(`${breakdown.wallet.amountSar} SAR credited to your wallet`);
+  }
+  if (breakdown.cashback && breakdown.cashback.amountSar > 0 && !breakdown.cashback.alreadyRestored) {
+    pieces.push(`${breakdown.cashback.amountSar} SAR cashback restored`);
+  }
+  if (breakdown.stamps && breakdown.stamps.count > 0 && !breakdown.stamps.alreadyRestored) {
+    pieces.push(`${breakdown.stamps.count} stamps restored`);
+  }
+  const refundLine = pieces.length
+    ? `${pieces.join(', ')}.`
+    : 'No charge was made to your card, so nothing needs to be refunded.';
   sendPushToCustomer(order.customer_id, 'Order Cancelled', `${lead} ${refundLine}`, order.merchant_id);
+
+  // Audit row — one record per order_id. Replays UPSERT into the same
+  // row so a retried cancel doesn't create duplicate audit entries
+  // (the sub-actions are already idempotent at their own layer). This
+  // is what ops queries to answer "what happened when this order was
+  // cancelled — where did the money / stamps / cashback go?"
+  await supabaseAdmin
+    .from('order_reversals')
+    .upsert(
+      {
+        order_id: orderId,
+        cancelled_by: cancelledBy,
+        reason: reason || null,
+        refund_method: refundMethod,
+        refunded_sar: refundedSarHeadline,
+        breakdown,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'order_id' },
+    )
+    .then(({ error }) => {
+      if (error) console.warn('[Orders] order_reversals upsert failed (non-blocking):', error.message);
+    });
 
   return {
     ok: true,
     orderId,
-    refundedSar: refundMethod === 'none' ? 0 : refundSar,
+    refundedSar: refundedSarHeadline,
     refundMethod,
+    breakdown,
   };
 }
 

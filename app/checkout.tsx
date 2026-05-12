@@ -427,6 +427,29 @@ export default function CheckoutScreen() {
       : Math.min(loyaltyBalance.points, Math.ceil(pointsDiscount / loyaltyBalance.pointValueSar))
     : 0;
 
+  // Payment composition snapshot for the server's customer_orders row.
+  // Used at cancel time to "rewind time" — each source returns to where
+  // it came from (card → Moyasar void, wallet → in-app wallet, cashback
+  // → loyalty_cashback_balances, stamps → loyalty_stamps). Computed
+  // once here and reused by every commitOrder call site below so the
+  // four numbers stay consistent across card / wallet / saved-card
+  // payment paths.
+  const stampMilestoneIdsForOrder = useMemo(
+    () => Array.from(selectedMilestoneIds),
+    [selectedMilestoneIds],
+  );
+  const stampsConsumedForOrder = useMemo(() => {
+    if (!loyaltyBalance || selectedMilestoneIds.size === 0) return 0;
+    let total = 0;
+    for (const id of selectedMilestoneIds) {
+      const m = loyaltyBalance.stampMilestones.find((x) => x.id === id);
+      if (m) total += m.stamp_number;
+    }
+    return total;
+  }, [loyaltyBalance, selectedMilestoneIds]);
+  const cashbackAmountForOrder =
+    loyaltyType === 'cashback' && pointsDiscount > 0 ? Number(pointsDiscount.toFixed(2)) : 0;
+
   // Foodics Order Calculation Formulas (tax-inclusive pricing — Saudi standard)
   // See: https://developers.foodics.com/guides/order-calculation-formulas.html
   //
@@ -676,6 +699,9 @@ export default function CheckoutScreen() {
           // paymentConfig.amount; this debits the wallet so the
           // ledger matches the customer's outlay.
           walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
+          cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
+          stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
+          stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
           relayToNooks: false });
       }
 
@@ -721,6 +747,9 @@ export default function CheckoutScreen() {
           customerNote: orderNote.trim() || null,
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
+          cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
+          stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
+          stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
           relayToNooks: true }).catch((err) => {
           console.warn('[Checkout] Background commit failed:', err?.message);
           Alert.alert(
@@ -1028,6 +1057,10 @@ export default function CheckoutScreen() {
           // explicit walletAmountSar too so the new code path is
           // also satisfied — defence in depth.
           walletAmountSar: Number(finalTotal.toFixed(2)),
+          cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
+          stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
+          stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
+          loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true });
 
         addOrder(
@@ -1132,6 +1165,10 @@ export default function CheckoutScreen() {
             // /token-pay below subtracts the same amount from
             // total_sar so the card only charges the remainder.
             walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
+            cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
+            stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
+            stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
+            loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
             relayToNooks: false });
         }
         const session = await paymentApi.payWithSavedCard(tokenOrderId, merchantId, selectedSavedCardId);

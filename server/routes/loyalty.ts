@@ -1393,6 +1393,196 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
   return { success: true, cashbackEarned: cashbackSar, newBalance: +((balRow?.balance_sar ?? 0) + cashbackSar).toFixed(2) };
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   ORDER-REVERSAL HELPERS — called by server/routes/orders.ts when an
+   order is cancelled/refused. Each restores one loyalty source back to
+   the customer (cashback balance or stamps + redemption rows) so the
+   net effect of placing-then-cancelling is zero. Idempotent on
+   (customer, merchant, order_id, source='refund') via a marker
+   transaction; safe to call multiple times if the cancel flow retries.
+   ═══════════════════════════════════════════════════════════════════ */
+
+export async function restoreCashbackForRefund(params: {
+  customerId: string;
+  merchantId: string;
+  amountSar: number;
+  orderId: string;
+}): Promise<{ restoredSar: number; alreadyRestored: boolean }> {
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  const amount = +Number(params.amountSar).toFixed(2);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { restoredSar: 0, alreadyRestored: false };
+  }
+
+  // Idempotency marker — a prior reversal row blocks the re-run. We
+  // key on (order_id, type='earn', loyalty_type='cashback',
+  // source='refund') which is unique to this exact reversal action.
+  const { data: priorReverse } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id, amount_sar')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .eq('order_id', params.orderId)
+    .eq('type', 'earn')
+    .eq('loyalty_type', 'cashback')
+    .eq('source', 'refund')
+    .maybeSingle();
+  if (priorReverse) {
+    return { restoredSar: Math.abs(Number(priorReverse.amount_sar ?? 0)), alreadyRestored: true };
+  }
+
+  // Find the latest balance row (highest config_version) and add back.
+  const { data: balRow } = await supabaseAdmin
+    .from('loyalty_cashback_balances')
+    .select('balance_sar, config_version')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .order('config_version', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const configVersion = balRow?.config_version ?? 1;
+  const newBalance = +(((balRow?.balance_sar ?? 0) as number) + amount).toFixed(2);
+
+  if (balRow) {
+    await supabaseAdmin
+      .from('loyalty_cashback_balances')
+      .update({ balance_sar: newBalance, updated_at: new Date().toISOString() })
+      .eq('customer_id', params.customerId)
+      .eq('merchant_id', params.merchantId)
+      .eq('config_version', configVersion);
+  } else {
+    await supabaseAdmin.from('loyalty_cashback_balances').insert({
+      customer_id: params.customerId,
+      merchant_id: params.merchantId,
+      balance_sar: amount,
+      config_version: 1,
+    });
+  }
+
+  await supabaseAdmin.from('loyalty_transactions').insert({
+    customer_id: params.customerId,
+    merchant_id: params.merchantId,
+    order_id: params.orderId,
+    type: 'earn',
+    loyalty_type: 'cashback',
+    amount_sar: amount,
+    points: 0,
+    description: `Refunded cashback from cancelled order ${params.orderId.slice(-8)}`,
+    source: 'refund',
+    config_version: configVersion,
+  });
+
+  notifyPassUpdate(params.customerId, params.merchantId).catch((err) =>
+    console.warn('[Loyalty] notifyPassUpdate failed after cashback refund:', err instanceof Error ? err.message : err),
+  );
+  return { restoredSar: amount, alreadyRestored: false };
+}
+
+export async function restoreStampMilestonesForRefund(params: {
+  customerId: string;
+  merchantId: string;
+  milestoneIds: string[];
+  stampsConsumed: number;
+  orderId: string;
+}): Promise<{ stampsRestored: number; milestonesCleared: string[]; alreadyRestored: boolean }> {
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  if (params.milestoneIds.length === 0 || params.stampsConsumed <= 0) {
+    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
+  }
+
+  // Idempotency marker — same pattern as cashback.
+  const { data: priorReverse } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id, points')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .eq('order_id', params.orderId)
+    .eq('type', 'earn')
+    .eq('loyalty_type', 'stamps')
+    .eq('source', 'refund')
+    .maybeSingle();
+  if (priorReverse) {
+    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: true };
+  }
+
+  // Add stamps back. We use a non-atomic read+write because nobody
+  // else is racing to modify stamps at refund time (the order is in
+  // 'Cancelled' transition; no concurrent earn/redeem expected).
+  const { data: stampRow } = await supabaseAdmin
+    .from('loyalty_stamps')
+    .select('stamps')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .maybeSingle();
+  const newStamps = (stampRow?.stamps ?? 0) + params.stampsConsumed;
+  if (stampRow) {
+    await supabaseAdmin
+      .from('loyalty_stamps')
+      .update({ stamps: newStamps, updated_at: new Date().toISOString() })
+      .eq('customer_id', params.customerId)
+      .eq('merchant_id', params.merchantId);
+  } else {
+    await supabaseAdmin.from('loyalty_stamps').insert({
+      customer_id: params.customerId,
+      merchant_id: params.merchantId,
+      stamps: params.stampsConsumed,
+    });
+  }
+
+  // Clear redemption rows so the milestone is available again. The
+  // checkout redeem step either flips an existing unredeemed row's
+  // redeemed_at to NOT-NULL OR inserts a fresh row — either way the
+  // row now has redeemed_at set. Setting it back to NULL makes the
+  // milestone re-eligible for redemption next checkout. We don't
+  // DELETE the row because keeping the history is useful for ops.
+  const { data: clearedRows } = await supabaseAdmin
+    .from('loyalty_stamp_redemptions')
+    .update({ redeemed_at: null, redeemed_via: null })
+    .in('milestone_id', params.milestoneIds)
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .not('redeemed_at', 'is', null)
+    .select('milestone_id');
+
+  // Refund the internal points (1 stamp = 10 internal points, mirrors
+  // the deduct in redeem-stamp-milestone).
+  const pointsToRestore = params.stampsConsumed * 10;
+  const { data: ptsBal } = await supabaseAdmin
+    .from('loyalty_points')
+    .select('points')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .maybeSingle();
+  if (ptsBal) {
+    await supabaseAdmin
+      .from('loyalty_points')
+      .update({ points: Number(ptsBal.points ?? 0) + pointsToRestore, updated_at: new Date().toISOString() })
+      .eq('customer_id', params.customerId)
+      .eq('merchant_id', params.merchantId);
+  }
+
+  await supabaseAdmin.from('loyalty_transactions').insert({
+    customer_id: params.customerId,
+    merchant_id: params.merchantId,
+    order_id: params.orderId,
+    type: 'earn',
+    loyalty_type: 'stamps',
+    points: pointsToRestore,
+    description: `Restored ${params.stampsConsumed} stamps from cancelled order ${params.orderId.slice(-8)}`,
+    source: 'refund',
+  });
+
+  notifyPassUpdate(params.customerId, params.merchantId).catch((err) =>
+    console.warn('[Loyalty] notifyPassUpdate failed after stamp refund:', err instanceof Error ? err.message : err),
+  );
+  return {
+    stampsRestored: params.stampsConsumed,
+    milestonesCleared: (clearedRows ?? []).map((r) => String((r as { milestone_id: string }).milestone_id)),
+    alreadyRestored: false,
+  };
+}
+
 /** POST /api/loyalty/redeem-cashback — redeem cashback SAR at checkout or via Foodics adapter */
 loyaltyRouter.post('/redeem-cashback', async (req, res) => {
   try {

@@ -74,6 +74,69 @@ export type CancelPaymentResult = {
   paymentStatus?: string;
 };
 
+export type VerifyPaymentResult =
+  | { ok: true; status: 'paid' | 'captured'; amountHalals: number; moyasarId: string }
+  | { ok: false; status: string; amountHalals: number; moyasarId: string; reason: string };
+
+/**
+ * Server-side verification that a Moyasar payment really cleared before
+ * we persist an order. The customer app fires commitOrder on
+ * PaymentStatus.paid (a client-side signal from the SDK) — without a
+ * server-side recheck a tampered client could call /commit with any
+ * paymentId, or a slow Moyasar webhook could leave the payment in
+ * `initiated` while our DB row claims it's paid.
+ *
+ * Resolves invoice→payment IDs first (clients sometimes send the
+ * invoice id), then fetches the payment and rejects unless status is
+ * paid/captured. Optionally cross-checks the amount so a tampered
+ * totalSar can't smuggle a smaller-amount paid payment as proof of a
+ * larger order's payment.
+ */
+export async function verifyPaidPayment(
+  paymentId: string,
+  expectedAmountHalals: number,
+  merchantId?: string | null,
+): Promise<VerifyPaymentResult> {
+  const scopedMerchantId = normalizeMerchantId(merchantId);
+  const config = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
+  const secretKey = scopedMerchantId ? config.secretKey : (config.secretKey || MOYASAR_SECRET_KEY);
+  if (!secretKey) {
+    return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: paymentId, reason: 'Moyasar secret key not configured' };
+  }
+  const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
+  const realPaymentId = await resolvePaymentId(paymentId, authHeader, expectedAmountHalals);
+
+  try {
+    const res = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
+      headers: { Authorization: authHeader },
+    });
+    if (!res.ok) {
+      return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: realPaymentId, reason: `Moyasar HTTP ${res.status}` };
+    }
+    const payment = await res.json();
+    const status = String(payment?.status ?? '').toLowerCase();
+    const amountHalals = Number(payment?.amount ?? 0);
+    if (status !== 'paid' && status !== 'captured') {
+      return { ok: false, status, amountHalals, moyasarId: realPaymentId, reason: `payment status is "${status}"` };
+    }
+    // Amount mismatch defense: allow a 1-halala (0.01 SAR) drift for
+    // rounding but reject anything larger. This blocks a tampered client
+    // from passing a 5 SAR paid payment as proof of a 200 SAR order.
+    if (Math.abs(amountHalals - expectedAmountHalals) > 1) {
+      return {
+        ok: false,
+        status,
+        amountHalals,
+        moyasarId: realPaymentId,
+        reason: `amount mismatch: paid ${amountHalals} halals, order expects ${expectedAmountHalals}`,
+      };
+    }
+    return { ok: true, status: status as 'paid' | 'captured', amountHalals, moyasarId: realPaymentId };
+  } catch (e: any) {
+    return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: realPaymentId, reason: e?.message || 'network error' };
+  }
+}
+
 /**
  * Void-first cancel: tries void (free) then refund (1 SAR).
  * `amountHalals` is optional — omit for full refund/void.
