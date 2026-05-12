@@ -907,11 +907,34 @@ export default function OffersScreen() {
                 )}
               </View>
             )}
+            {/* Already-added state — but with an escape hatch. We can't
+                ask PKPassLibrary if the pass is still installed (the
+                expo-wallet bridge doesn't expose containsPass), so if the
+                customer deleted the pass from Apple Wallet our local
+                "already added" flag would otherwise trap them with no way
+                to re-add. The secondary text is tappable and triggers the
+                same handler — re-adding via PKAddPassesViewController is
+                safe because iOS dedupes by passTypeId+serialNumber. */}
             {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && appleWalletAdded && (
               <View style={{ marginTop: 20, alignItems: 'center' }}>
-                <Text style={{ color: textColor, opacity: 0.6, fontSize: 12 }}>
-                  {isArabic ? 'بطاقة الولاء موجودة في Apple Wallet' : 'Loyalty card already in Apple Wallet'}
-                </Text>
+                {walletLoading ? (
+                  <ActivityIndicator size="small" color={primaryColor} />
+                ) : (
+                  <>
+                    <Text style={{ color: textColor, opacity: 0.6, fontSize: 12 }}>
+                      {isArabic ? 'بطاقة الولاء موجودة في Apple Wallet' : 'Loyalty card already in Apple Wallet'}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => { void handleAddToAppleWallet(); }}
+                      hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
+                      style={{ marginTop: 6 }}
+                    >
+                      <Text style={{ color: primaryColor, opacity: 0.85, fontSize: 12, textDecorationLine: 'underline' }}>
+                        {isArabic ? 'أزلتها؟ أضفها مرة أخرى' : 'Removed it? Add again'}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
               </View>
             )}
 
