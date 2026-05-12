@@ -1,0 +1,75 @@
+# Defense-in-depth sweep for abandoned Moyasar payments.
+#
+# P1 (commit-time payment verification) already blocks new orphan
+# customer_orders rows from being created when Moyasar reports the
+# payment isn't paid. This cron is the safety net for the edge cases:
+#   - Moyasar said `paid` at commit time but reverted to `initiated`
+#     (extremely rare but possible during issuer-side disputes)
+#   - Future SDK quirk slips a row past P1's check
+#   - Anything that drifted in pre-P1 deploys
+#
+# Runs every 5 min (GitHub Actions cron floor). Calls the Express
+# /api/orders/internal/sweep-abandoned-payments endpoint, which finds
+# orders stuck in 'Placed' older than 10 min with non-wallet payment_id,
+# verifies status against Moyasar, and reverses (system-cancel) any
+# that aren't paid/captured. Wallet / cashback / stamps that were
+# applied at commit get restored automatically via the existing
+# reversal helpers — no card refund because no money moved.
+#
+# Required GitHub repo secrets:
+#   - API_URL (already set, used by nooks-update.yml)
+#   - NOOKS_INTERNAL_SECRET (must match Railway env var of the same
+#     name; if missing, add it to repo Settings → Secrets and
+#     variables → Actions)
+name: Sweep abandoned payments
+on:
+  schedule:
+    # Every 5 minutes. GitHub may delay this under load — that's fine,
+    # the sweep is idempotent and 10 min is the orphan-eligibility
+    # floor anyway.
+    - cron: "*/5 * * * *"
+  # Allow manual triggering from the Actions tab for debugging.
+  workflow_dispatch: {}
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate secrets
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          NOOKS_INTERNAL_SECRET: ${{ secrets.NOOKS_INTERNAL_SECRET }}
+        run: |
+          if [ -z "$API_URL" ]; then
+            echo "::error::API_URL secret not set."
+            exit 1
+          fi
+          if [ -z "$NOOKS_INTERNAL_SECRET" ]; then
+            echo "::error::NOOKS_INTERNAL_SECRET secret not set. Add the value that matches the Railway env var of the same name."
+            exit 1
+          fi
+
+      - name: POST sweep
+        env:
+          API_URL: ${{ secrets.API_URL }}
+          NOOKS_INTERNAL_SECRET: ${{ secrets.NOOKS_INTERNAL_SECRET }}
+        run: |
+          set -e
+          response=$(curl -sS -w "\n%{http_code}" \
+            -X POST "$API_URL/api/orders/internal/sweep-abandoned-payments" \
+            -H "Content-Type: application/json" \
+            -H "x-nooks-internal-secret: $NOOKS_INTERNAL_SECRET" \
+            -d '{}')
+          body=$(echo "$response" | head -n -1)
+          status=$(echo "$response" | tail -n 1)
+          echo "Status: $status"
+          echo "Body: $body"
+          if [ "$status" != "200" ]; then
+            echo "::error::Sweep returned non-200 status: $status"
+            exit 1
+          fi
+          # Surface counts in the run summary
+          echo "## Sweep result" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          echo "$body" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

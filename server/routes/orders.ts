@@ -954,6 +954,89 @@ ordersRouter.post('/:id/system-cancel', async (req, res) => {
   }
 });
 
+/* ═══════════════════════════════════════════════════════════════════
+   SWEEP ABANDONED PAYMENTS — defense-in-depth cron target. P1's
+   commit-time Moyasar verification already blocks new orphan rows in
+   the normal path; this sweep covers the edge cases where (a) the
+   server's verification saw 'paid' but Moyasar later reverted, (b) a
+   future SDK quirk slips a row past P1, or (c) anything pre-P1 that
+   exists in the wild post-deploy. Looks for orders stuck in 'Placed'
+   older than 10 min with a non-wallet payment_id; for each, asks
+   Moyasar for the current payment status and reverses the order
+   if Moyasar isn't paid/captured.
+
+   refundOrderToWallet already handles the not_required case (no card
+   refund, but DOES restore wallet/cashback/stamps that were applied
+   pre-payment) — so we just call it like any other system cancel.
+
+   Schedule from outside (GitHub Actions / Vercel cron / external cron)
+   every 5 min with the internal secret header.
+   ═══════════════════════════════════════════════════════════════════ */
+ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    // 10-minute floor — payments usually clear in <60s. Anything older
+    // and still in 'Placed' without a confirmed payment is abandoned.
+    const cutoffIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { data: candidates, error: queryErr } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, payment_id, merchant_id, total_sar, card_paid_sar, created_at')
+      .eq('status', 'Placed')
+      .lt('created_at', cutoffIso)
+      .not('payment_id', 'is', null)
+      .limit(100);
+    if (queryErr) return res.status(500).json({ error: queryErr.message });
+
+    let swept = 0;
+    let skipped = 0;
+    const results: Array<{ orderId: string; action: 'swept' | 'kept' | 'error'; reason: string }> = [];
+
+    for (const order of candidates ?? []) {
+      const paymentId = String(order.payment_id ?? '');
+      // Skip wallet-only orders — their payment_id is a wallet:* sentinel
+      // and the wallet debit IS the payment. Nothing to sweep.
+      if (!paymentId || paymentId.startsWith('wallet:')) {
+        skipped += 1;
+        results.push({ orderId: order.id, action: 'kept', reason: 'wallet-only' });
+        continue;
+      }
+      // Use the card-portion amount for verification (matches what was
+      // actually charged to Moyasar). If breakdown columns are zero
+      // (legacy row), fall back to total_sar.
+      const expectedHalals = Math.round(Number(order.card_paid_sar ?? order.total_sar ?? 0) * 100);
+      const verification = await verifyPaidPayment(paymentId, expectedHalals, order.merchant_id);
+      if (verification.ok) {
+        // Payment cleared — leave the order alone. Probably the Foodics
+        // relay was just slow; another path will pick it up.
+        skipped += 1;
+        results.push({ orderId: order.id, action: 'kept', reason: `paid (status: ${verification.status})` });
+        continue;
+      }
+      // Moyasar says payment didn't clear. Reverse the order — this
+      // refunds wallet/cashback/stamps if applied, no card refund
+      // because no money moved.
+      try {
+        const result = await refundOrderToWallet(order.id, 'system', `Abandoned payment (Moyasar: ${verification.status})`);
+        if (result.ok) {
+          swept += 1;
+          results.push({ orderId: order.id, action: 'swept', reason: verification.status });
+        } else {
+          results.push({ orderId: order.id, action: 'error', reason: result.error });
+        }
+      } catch (e: any) {
+        results.push({ orderId: order.id, action: 'error', reason: e?.message || 'reverse threw' });
+      }
+    }
+
+    res.json({ swept, skipped, total: (candidates ?? []).length, results });
+  } catch (err: any) {
+    console.error('[Orders] sweep-abandoned-payments error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Sweep failed' });
+  }
+});
+
 /* ── Hold / Resume (edit window) ── */
 ordersRouter.post('/:id/hold', async (req, res) => {
   try {
