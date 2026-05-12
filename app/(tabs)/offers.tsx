@@ -539,7 +539,15 @@ export default function OffersScreen() {
     } finally {
       setWalletLoading(false);
     }
-  }, [user?.id, merchantId]);
+    // balance.configUpdatedAt MUST be in deps — without it the
+    // useCallback closure freezes on the initial balance (null at
+    // mount) and the cache key comparison gets `currentVersion = ''`
+    // every press. Result: every Add-to-Wallet press fetches fresh
+    // from the server (~5-10s) regardless of whether anything
+    // changed. Including it here lets the callback re-bind once
+    // balance loads so subsequent presses see the real version
+    // string and hit the cache.
+  }, [user?.id, merchantId, balance?.configUpdatedAt]);
 
   const handleRedeemReward = async (reward: LoyaltyReward) => {
     if (!user?.id || !merchantId) return;
