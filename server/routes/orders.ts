@@ -488,26 +488,27 @@ ordersRouter.post('/commit', async (req, res) => {
 });
 
 /**
- * Refund the order's full Moyasar charge into the customer's wallet, then
- * mark the order Cancelled with refund_method='wallet'. Used by both
- * merchant-refuse and system-cancel paths since the user-side policy is
- * "all refunds go to the wallet, no card refunds." Idempotent on
- * (order_id, payment_id, refund_method='wallet') via the wallet
- * transaction's complaint_id-style dedupe key (we reuse the order_id as
- * the dedupe key here since there is no complaint).
+ * Refund the order's full charge to the customer. Money goes back to the
+ * card when Moyasar can void/refund the original payment (free void
+ * within ~2h of capture, or 1-3-day refund afterwards). Only when that
+ * fails — Moyasar 4xx, no payment_id (wallet-only payment), missing
+ * config — do we fall back to crediting the in-app wallet.
  *
- * If the order had a Moyasar payment_id we ALSO call cancelPayment to
- * void the authorization on Moyasar's side — this stops the customer's
- * card statement from carrying a stale "pending" charge they'd otherwise
- * see for days. The cancelPayment failure mode is non-blocking: we still
- * credit the wallet so the customer is whole even if the Moyasar void
- * call 4xxs.
+ * Previous behavior credited the wallet AND voided on Moyasar, which
+ * double-refunded the customer (money back to card + wallet credit for
+ * the same order). The new rule: exactly one refund destination per
+ * order. Returned `refundMethod` is the source of truth for callers and
+ * is persisted to customer_orders.refund_method.
  */
+type RefundDestination = 'card' | 'wallet';
 async function refundOrderToWallet(
   orderId: string,
   cancelledBy: 'merchant' | 'system',
   reason: string,
-): Promise<{ ok: true; orderId: string; refundedSar: number } | { ok: false; error: string; status: number }> {
+): Promise<
+  | { ok: true; orderId: string; refundedSar: number; refundMethod: RefundDestination }
+  | { ok: false; error: string; status: number }
+> {
   if (!supabaseAdmin) return { ok: false, error: 'Database not configured', status: 500 };
 
   const { data: order, error: fetchErr } = await supabaseAdmin
@@ -523,23 +524,29 @@ async function refundOrderToWallet(
     return { ok: false, error: 'Order is missing customer_id or merchant_id', status: 500 };
   }
 
-  // Best-effort void on Moyasar so the customer's card statement clears
-  // the pending auth quickly. Failure here doesn't block the wallet
-  // credit — the customer always becomes whole via the wallet path.
+  // Try Moyasar void/refund first. If it succeeds the money goes back to
+  // the card (~2h for void, 1-3d for refund) and we MUST NOT also credit
+  // the wallet — that's a double refund. Wallet credit is the fallback
+  // for when Moyasar can't return the money to the card.
+  let moyasarMethod: 'void' | 'refund' | 'failed' | 'skipped' = 'skipped';
   if (order.payment_id) {
     try {
       const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
-      console.log('[Orders] Moyasar void result for', order.payment_id, ':', result.method);
+      moyasarMethod = result.method;
+      console.log('[Orders] Moyasar cancel result for', order.payment_id, ':', result.method);
     } catch (e: any) {
-      console.warn('[Orders] Moyasar void failed (non-blocking):', e?.message);
+      moyasarMethod = 'failed';
+      console.warn('[Orders] Moyasar cancel threw:', e?.message);
     }
   }
 
-  // Wallet credit is the canonical refund. Idempotent on (order_id,
-  // entry_type='topup', note prefix) via the wallet's internal dedupe;
-  // a retried call returns the same transaction without double-crediting.
+  const refundedToCard = moyasarMethod === 'void' || moyasarMethod === 'refund';
+  const refundMethod: RefundDestination = refundedToCard ? 'card' : 'wallet';
   const refundSar = Number(order.total_sar ?? 0);
-  if (refundSar > 0) {
+
+  // Wallet credit only fires when card refund was NOT possible. Idempotent
+  // on the wallet RPC side via (customer_id, order_id, entry_type='refund').
+  if (!refundedToCard && refundSar > 0) {
     try {
       await creditWalletForRefund({
         customerId: order.customer_id,
@@ -564,7 +571,7 @@ async function refundOrderToWallet(
       refund_status: 'refunded',
       refund_amount: refundSar,
       refund_fee: 0,
-      refund_method: 'wallet',
+      refund_method: refundMethod,
       commission_status: 'cancelled',
       updated_at: new Date().toISOString(),
     })
@@ -572,11 +579,11 @@ async function refundOrderToWallet(
   if (updateErr) return { ok: false, error: updateErr.message, status: 500 };
 
   // Tell Foodics the order is cancelled so the kitchen stops cooking.
-  // Best-effort — a Foodics outage must NOT roll back the wallet credit
-  // we just made. The customer is already whole; if Foodics drops the
-  // call, the merchant can void manually in the Foodics console (which
-  // already triggers the inverse webhook). audit_log on the nooksweb
-  // side records every attempt so ops can spot drift.
+  // Best-effort — a Foodics outage must NOT roll back the refund we just
+  // issued. The customer is already whole; if Foodics drops the call, the
+  // merchant can void manually in the Foodics console (which already
+  // triggers the inverse webhook). audit_log on the nooksweb side
+  // records every attempt so ops can spot drift.
   if (NOOKS_API_BASE_URL && NOOKS_INTERNAL_SECRET) {
     fetch(`${NOOKS_API_BASE_URL}/api/public/orders/cancel-foodics`, {
       method: 'POST',
@@ -596,13 +603,19 @@ async function refundOrderToWallet(
       });
   }
 
-  const message =
+  const lead =
     cancelledBy === 'merchant'
-      ? `Your order has been refused by the store. ${refundSar} SAR has been credited to your wallet — use it on your next order.`
-      : `We couldn't dispatch a driver for your order. ${refundSar} SAR has been credited to your wallet.`;
-  sendPushToCustomer(order.customer_id, 'Order Cancelled', message, order.merchant_id);
+      ? 'Your order has been refused by the store.'
+      : "We couldn't dispatch a driver for your order.";
+  const refundLine =
+    refundMethod === 'card'
+      ? moyasarMethod === 'void'
+        ? `${refundSar} SAR will be returned to your card within a few hours.`
+        : `${refundSar} SAR is being returned to your card and will arrive within 1-3 business days.`
+      : `${refundSar} SAR has been credited to your wallet — use it on your next order.`;
+  sendPushToCustomer(order.customer_id, 'Order Cancelled', `${lead} ${refundLine}`, order.merchant_id);
 
-  return { ok: true, orderId, refundedSar: refundSar };
+  return { ok: true, orderId, refundedSar: refundSar, refundMethod };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -620,7 +633,7 @@ ordersRouter.post('/:id/merchant-refuse', async (req, res) => {
     if (!reason) return res.status(400).json({ error: 'reason is required' });
     const result = await refundOrderToWallet(orderId, 'merchant', reason);
     if (!result.ok) return res.status(result.status).json({ error: result.error });
-    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: 'wallet' });
+    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: result.refundMethod });
   } catch (err: any) {
     console.error('[Orders] merchant-refuse error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to refuse order' });
@@ -643,7 +656,7 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
     if (!reason) return res.status(400).json({ error: 'reason is required' });
     const result = await refundOrderToWallet(orderId, 'merchant', reason);
     if (!result.ok) return res.status(result.status).json({ error: result.error });
-    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: 'wallet' });
+    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: result.refundMethod });
   } catch (err: any) {
     console.error('[Orders] merchant-cancel (alias) error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to cancel order' });
@@ -670,7 +683,7 @@ ordersRouter.post('/:id/system-cancel', async (req, res) => {
     const reason = (req.body?.reason as string) || 'No delivery driver found within time limit';
     const result = await refundOrderToWallet(orderId, 'system', reason);
     if (!result.ok) return res.status(result.status).json({ error: result.error });
-    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: 'wallet' });
+    res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: result.refundMethod });
   } catch (err: any) {
     console.error('[Orders] system-cancel error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to cancel order' });
