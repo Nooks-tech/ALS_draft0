@@ -45,7 +45,7 @@ import {
   type LoyaltyBalance,
   type LoyaltyReward,
   type LoyaltyTransaction } from '../../src/api/loyalty';
-import { readCache, writeCache, fetchWithTimeout } from '../../src/lib/persistentCache';
+import { readCache, writeCache, clearCache, fetchWithTimeout } from '../../src/lib/persistentCache';
 import { OfferCard } from '../../src/components/common/OfferCard';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
@@ -449,18 +449,34 @@ export default function OffersScreen() {
       // Cache the base64 .pkpass per (merchant, customer) so the
       // SECOND press is instant — generating a pass server-side is
       // expensive (cert signing + zip + ~10s on first hit). The cache
-      // key includes the merchant's loyalty_config.updated_at so any
-      // save in the dashboard (type switch, color change, milestone
-      // edit, anything that bumps updated_at on the row) automatically
-      // invalidates the cache and the next press fetches a fresh pass.
-      // Pre-install preview therefore always reflects what's currently
-      // configured. Stale entries become orphans in AsyncStorage —
-      // small enough to ignore until we add a cleanup pass.
-      const cacheBust = balance?.configUpdatedAt
-        ? String(balance.configUpdatedAt).replace(/[^0-9]/g, '')
-        : '0';
-      const passCacheKey = `@als_apple_pass_${merchantId}_${user.id}_v${cacheBust}`;
-      let base64: string | null = await readCache<string>(passCacheKey);
+      // entry stores the base64 pass alongside the merchant's
+      // loyalty_config.updated_at as a version stamp. On read we
+      // compare versions; mismatch → explicit clearCache + fresh
+      // fetch. This guarantees the merchant's dashboard saves
+      // invalidate the customer-app cache deterministically, instead
+      // of leaving orphan entries to bite us later.
+      const passCacheKey = `@als_apple_pass_${merchantId}_${user.id}`;
+      const currentVersion = balance?.configUpdatedAt ? String(balance.configUpdatedAt) : '';
+      type CachedPass = { base64: string; version: string };
+      const cached = await readCache<CachedPass>(passCacheKey);
+      let base64: string | null = null;
+      if (
+        cached &&
+        typeof cached === 'object' &&
+        typeof cached.base64 === 'string' &&
+        cached.base64.length > 0 &&
+        cached.version === currentVersion &&
+        currentVersion !== ''
+      ) {
+        base64 = cached.base64;
+        console.log('[AppleWallet] cache hit, version:', cached.version);
+      } else if (cached) {
+        // Stale (version mismatch) or wrong shape (legacy plain-string
+        // cache from before this change). Explicitly delete so we
+        // never see this entry again.
+        console.log('[AppleWallet] cache stale or wrong shape — clearing');
+        await clearCache(passCacheKey);
+      }
 
       if (!base64) {
         const authToken = await getAuthToken();
@@ -492,7 +508,9 @@ export default function OffersScreen() {
         }
         console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
         // Persist for instant re-add.
-        writeCache<string>(passCacheKey, base64);
+        // Persist for instant re-add — store the version alongside so
+        // we can detect dashboard changes deterministically.
+        writeCache<CachedPass>(passCacheKey, { base64, version: currentVersion });
       } else {
         console.log('[AppleWallet] reusing cached pass, length:', base64.length);
       }
