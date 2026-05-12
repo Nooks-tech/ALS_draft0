@@ -448,13 +448,18 @@ export default function OffersScreen() {
     try {
       // Cache the base64 .pkpass per (merchant, customer) so the
       // SECOND press is instant — generating a pass server-side is
-      // expensive (cert signing + zip + ~10s on first hit). The
-      // pass content rarely changes (logo + member code), and PassKit
-      // dedupes by passTypeId+serialNumber anyway, so reusing a cached
-      // copy is safe. If something changes we'd have to bust this
-      // cache; for now the pass survives for the install lifetime,
-      // which is the right tradeoff for the latency we're saving.
-      const passCacheKey = `@als_apple_pass_${merchantId}_${user.id}`;
+      // expensive (cert signing + zip + ~10s on first hit). The cache
+      // key includes the merchant's loyalty_config.updated_at so any
+      // save in the dashboard (type switch, color change, milestone
+      // edit, anything that bumps updated_at on the row) automatically
+      // invalidates the cache and the next press fetches a fresh pass.
+      // Pre-install preview therefore always reflects what's currently
+      // configured. Stale entries become orphans in AsyncStorage —
+      // small enough to ignore until we add a cleanup pass.
+      const cacheBust = balance?.configUpdatedAt
+        ? String(balance.configUpdatedAt).replace(/[^0-9]/g, '')
+        : '0';
+      const passCacheKey = `@als_apple_pass_${merchantId}_${user.id}_v${cacheBust}`;
       let base64: string | null = await readCache<string>(passCacheKey);
 
       if (!base64) {

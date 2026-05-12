@@ -45,6 +45,13 @@ export interface LoyaltyBalance {
   walletStampIconUrl: string | null;
   walletStampIconScale: number | null;
   businessType: string;
+  /**
+   * ISO timestamp of the last update to the merchant's loyalty_config row.
+   * Used as a cache-bust signal for the local .pkpass cache: any save in
+   * the dashboard bumps this, so the next Add-to-Wallet press fetches a
+   * fresh pass instead of serving a stale cached one.
+   */
+  configUpdatedAt?: string | null;
 }
 
 export interface LoyaltyTransaction {

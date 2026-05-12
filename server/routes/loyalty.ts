@@ -620,6 +620,13 @@ loyaltyRouter.get('/balance', async (req, res) => {
         config.wallet_card_logo_scale != null ? Number(config.wallet_card_logo_scale) : null,
       walletStampIconScale:
         config.wallet_stamp_icon_scale != null ? Number(config.wallet_stamp_icon_scale) : null,
+      // Cache-bust signal for the customer app's local .pkpass cache.
+      // The customer app keys its AsyncStorage pass cache by this value
+      // so any save in the merchant's Loyalty dashboard (which bumps
+      // updated_at on the loyalty_config row) automatically invalidates
+      // the cached pass on the next Add-to-Wallet press. Pre-install
+      // preview always reflects the latest design.
+      configUpdatedAt: config.updated_at ?? null,
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get loyalty balance' });
