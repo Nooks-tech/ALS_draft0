@@ -35,7 +35,6 @@ import {
   Text,
   TouchableOpacity,
   View } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../../src/api/config';
 import { getAuthToken } from '../../src/api/client';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
@@ -267,28 +266,6 @@ export default function OffersScreen() {
   const [appleWalletAvailable, setAppleWalletAvailable] = useState(false);
   const [googleWalletAvailable, setGoogleWalletAvailable] = useState(false);
   const [walletLoading, setWalletLoading] = useState(false);
-  // Track whether the user has already added the loyalty pass to their
-  // device's Wallet. iOS PassKit deduplicates by passTypeId+serialNumber
-  // — re-adding the same pass just opens the existing one — but the
-  // "Add to Apple Wallet" button still showed every time, which made
-  // customers think they could (or needed to) add it again. Once the
-  // first add succeeds we persist a per-(merchant, customer) flag in
-  // AsyncStorage and swap the button for an "Already in your Wallet"
-  // confirmation.
-  const [appleWalletAddedKey, setAppleWalletAddedKey] = useState<string | null>(null);
-  const [appleWalletAdded, setAppleWalletAdded] = useState(false);
-  useEffect(() => {
-    if (!merchantId || !user?.id) {
-      setAppleWalletAddedKey(null);
-      setAppleWalletAdded(false);
-      return;
-    }
-    const key = `apple_pass_added::${merchantId}::${user.id}`;
-    setAppleWalletAddedKey(key);
-    AsyncStorage.getItem(key)
-      .then((val) => setAppleWalletAdded(val === '1'))
-      .catch(() => setAppleWalletAdded(false));
-  }, [merchantId, user?.id]);
   const isArabic = i18n.language === 'ar';
 
   const offersPulse = useRef(new Animated.Value(0.4)).current;
@@ -516,12 +493,6 @@ export default function OffersScreen() {
       }
 
       await addPassToAppleWallet(base64);
-      // Mark the pass as added so the button flips to the
-      // "already in your wallet" state and prevents repeat attempts.
-      if (appleWalletAddedKey) {
-        await AsyncStorage.setItem(appleWalletAddedKey, '1').catch(() => {});
-        setAppleWalletAdded(true);
-      }
     } catch (err: unknown) {
       const e = err as { message?: string; code?: string };
       const msg = e?.message || String(err);
@@ -888,12 +859,11 @@ export default function OffersScreen() {
             })()}
 
             {/* Add to Apple Wallet — native PKAddPassButton (Apple HIG).
-                Hidden once the customer has added the pass once; iOS
-                deduplicates by passTypeId+serialNumber so the button
-                tapping it again would just re-open the existing pass,
-                but customers were getting confused into thinking they
-                needed to add it multiple times. */}
-            {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && !appleWalletAdded && (
+                Always shown when the bridge is available. iOS dedupes by
+                passTypeId+serialNumber so tapping when the pass is
+                already in Wallet just re-opens it; tapping after the
+                customer deleted the pass adds it back. */}
+            {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && (
               <View style={{ marginTop: 20, alignItems: 'center', minHeight: 48, justifyContent: 'center' }}>
                 {walletLoading ? (
                   <ActivityIndicator size="small" color={primaryColor} />
@@ -904,36 +874,6 @@ export default function OffersScreen() {
                       void handleAddToAppleWallet();
                     }}
                   />
-                )}
-              </View>
-            )}
-            {/* Already-added state — but with an escape hatch. We can't
-                ask PKPassLibrary if the pass is still installed (the
-                expo-wallet bridge doesn't expose containsPass), so if the
-                customer deleted the pass from Apple Wallet our local
-                "already added" flag would otherwise trap them with no way
-                to re-add. The secondary text is tappable and triggers the
-                same handler — re-adding via PKAddPassesViewController is
-                safe because iOS dedupes by passTypeId+serialNumber. */}
-            {appleWalletAvailable && user?.id && merchantId && Platform.OS === 'ios' && appleWalletAdded && (
-              <View style={{ marginTop: 20, alignItems: 'center' }}>
-                {walletLoading ? (
-                  <ActivityIndicator size="small" color={primaryColor} />
-                ) : (
-                  <>
-                    <Text style={{ color: textColor, opacity: 0.6, fontSize: 12 }}>
-                      {isArabic ? 'بطاقة الولاء موجودة في Apple Wallet' : 'Loyalty card already in Apple Wallet'}
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() => { void handleAddToAppleWallet(); }}
-                      hitSlop={{ top: 8, bottom: 8, left: 12, right: 12 }}
-                      style={{ marginTop: 6 }}
-                    >
-                      <Text style={{ color: primaryColor, opacity: 0.85, fontSize: 12, textDecorationLine: 'underline' }}>
-                        {isArabic ? 'أزلتها؟ أضفها مرة أخرى' : 'Removed it? Add again'}
-                      </Text>
-                    </TouchableOpacity>
-                  </>
                 )}
               </View>
             )}
