@@ -3,7 +3,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
-import { notifyPassUpdate, notifyMerchantPassesUpdate } from './walletPass';
+import { notifyPassUpdate } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -498,19 +498,6 @@ loyaltyRouter.put('/config', async (req, res) => {
       return res.status(500).json({ error: error.message, code: error.code, hint: error.hint });
     }
     console.log('[loyalty] upsert success:', JSON.stringify(data));
-
-    // Fan out an APNs pass-refresh push to every customer of this
-    // merchant so their already-installed Apple Wallet passes refetch
-    // and pick up the new colors / labels / loyalty type / milestones
-    // without having to do an earn/redeem action first. Best-effort —
-    // any failure here doesn't block the config save response.
-    notifyMerchantPassesUpdate(merchantId).catch((err) =>
-      console.warn(
-        '[loyalty] notifyMerchantPassesUpdate failed:',
-        err instanceof Error ? err.message : err,
-      ),
-    );
-
     res.json({ success: true });
   } catch (err: any) {
     const cause = (err as any)?.cause;
@@ -534,22 +521,6 @@ loyaltyRouter.get('/balance', async (req, res) => {
     const member = await ensureLoyaltyMemberProfile(merchantId, customerId);
 
     const config = await getMerchantConfig(merchantId);
-
-    // Pull brand-name fallbacks so the title we surface to the app matches
-    // the same priority order as the Apple Wallet pass: explicit
-    // wallet_card_label > merchant cafe_name > app_config app_name >
-    // "Loyalty Card". Otherwise the customer app fell back to a generic
-    // "Stamp Card" / "بطاقة الأختام" while the wallet pass header showed
-    // the merchant name — three surfaces, three different strings.
-    const [{ data: merchantRow }, { data: appConfigRow }] = await Promise.all([
-      supabaseAdmin.from('merchants').select('cafe_name').eq('id', merchantId).maybeSingle(),
-      supabaseAdmin.from('app_config').select('app_name').eq('merchant_id', merchantId).maybeSingle(),
-    ]);
-    const resolvedCardLabel =
-      (typeof config.wallet_card_label === 'string' && config.wallet_card_label.trim()) ||
-      (typeof merchantRow?.cafe_name === 'string' && merchantRow.cafe_name.trim()) ||
-      (typeof appConfigRow?.app_name === 'string' && appConfigRow.app_name.trim()) ||
-      'Loyalty Card';
 
     const { data } = await supabaseAdmin
       .from('loyalty_points')
@@ -626,12 +597,9 @@ loyaltyRouter.get('/balance', async (req, res) => {
       cashbackBalance: +cashbackBalance.toFixed(2),
       cashbackPercent: config.cashback_percent ?? 5,
       maxCashbackPerOrderSar: config.max_cashback_per_order_sar ?? null,
-      // Stamps. stamp_target is a platform invariant — always 8 regardless
-      // of what's in the DB. Old merchant rows with 5/6/7/10 etc. would
-      // otherwise mismatch the wallet pass + dashboard preview which both
-      // assume 8.
+      // Stamps
       stampEnabled: loyaltyType === 'stamps' || config.stamp_enabled,
-      stampTarget: 8,
+      stampTarget: config.stamp_target,
       stampRewardDescription: config.stamp_reward_description,
       stamps,
       completedCards,
@@ -641,10 +609,7 @@ loyaltyRouter.get('/balance', async (req, res) => {
       walletCardBgColor: config.wallet_card_bg_color || null,
       walletCardTextColor: config.wallet_card_text_color || null,
       walletCardLogoUrl: config.wallet_card_logo_url || null,
-      // Resolved label — the customer app + wallet pass now show the same
-      // string by default (cafe_name → app_name → "Loyalty Card") instead
-      // of falling through to a generic per-surface placeholder.
-      walletCardLabel: resolvedCardLabel,
+      walletCardLabel: config.wallet_card_label || null,
       walletCardSecondaryLabel: config.wallet_card_secondary_label || null,
       walletCardBannerUrl: config.wallet_card_banner_url || null,
       walletStampBoxColor: config.wallet_stamp_box_color || null,

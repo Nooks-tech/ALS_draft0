@@ -239,13 +239,6 @@ async function buildStampGridStripPng(opts: {
    * Clamped to [20, 200] — anything beyond starts to overflow the stamp box.
    */
   iconScalePercent?: number | null;
-  /**
-   * 1-based stamp numbers that have an active milestone reward. Each
-   * matching box gets a small gift-icon badge in the top-right corner
-   * so the customer can see at a glance which stamps trigger a reward
-   * without scanning the secondary-fields text rows below.
-   */
-  milestoneStamps?: number[];
 }): Promise<Buffer | null> {
   let sharpMod: typeof import('sharp');
   try {
@@ -337,12 +330,7 @@ async function buildStampGridStripPng(opts: {
     // icon can't overflow the box or shrink to nothing.
     const rawScale = typeof opts.iconScalePercent === 'number' ? opts.iconScalePercent : 100;
     const scale = Math.max(20, Math.min(200, rawScale)) / 100;
-    // Unified baseline: icon = 60% of cell shorter dimension at 100%
-    // scale, for both uploaded images and built-in glyphs. Matches the
-    // dashboard preview (Wstamp) and the customer app's StampGrid
-    // (Fstamp) so the merchant's slider has the same visual effect on
-    // all three surfaces.
-    const baseRatio = 0.6;
+    const baseRatio = customDataUrl ? 0.72 : 0.66;
     // Cap effective ratio at 0.92 so even at 200% the icon keeps a small
     // bezel inside the box instead of touching the edge.
     const effectiveRatio = Math.min(0.92, baseRatio * scale);
@@ -359,40 +347,6 @@ async function buildStampGridStripPng(opts: {
       const viewBoxScale = iconSize / 24;
       parts.push(
         `<g transform="translate(${iconX} ${iconY}) scale(${viewBoxScale})" opacity="${iconOpacity}"><path d="${iconPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
-      );
-    }
-
-    // Milestone badge — small gift icon overlaid in the top-right of the
-    // cell when this stamp number triggers a reward. Earned milestones
-    // (i < filled) glow at full opacity, unearned ones sit at 55% so the
-    // customer sees "this is where the reward lives" while it's still
-    // ahead of them. Matches the Fstamp + Wstamp surfaces.
-    const stampNumber = i + 1;
-    const isMilestone = (opts.milestoneStamps ?? []).includes(stampNumber);
-    if (isMilestone) {
-      // Badge sized small enough to read as a corner accent rather than
-      // a competing icon: radius is 12% of the cell's shorter dimension
-      // (~24% of the cell width). The gift glyph inside fills the disc
-      // 1:1 so it's tight against the edge of the circle.
-      const badgeRadius = Math.max(6, Math.round(Math.min(boxW, boxH) * 0.12));
-      const badgePadding = Math.max(3, Math.round(Math.min(boxW, boxH) * 0.05));
-      const badgeCx = x + boxW - badgeRadius - badgePadding;
-      const badgeCy = y + badgeRadius + badgePadding;
-      const badgeOpacity = isFilled ? 1 : 0.55;
-      // Background circle for contrast — uses the strip's bg color (not
-      // the stamp box) so the badge always reads against either filled
-      // or unfilled state.
-      parts.push(
-        `<circle cx="${badgeCx}" cy="${badgeCy}" r="${badgeRadius}" fill="${opts.bgColor}" opacity="${badgeOpacity}"/>`,
-      );
-      // Inline gift glyph path (Lucide gift, 24×24 viewBox).
-      const giftPath = 'M20 12v10H4V12 M2 7h20v5H2z M12 22V7 M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z';
-      const giftSize = Math.round(badgeRadius * 1.1);
-      const giftScale = giftSize / 24;
-      const giftX = badgeCx - giftSize / 2;
-      const giftY = badgeCy - giftSize / 2;
-      parts.push(
-        `<g transform="translate(${giftX} ${giftY}) scale(${giftScale})" opacity="${badgeOpacity}"><path d="${giftPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
       );
     }
   }
@@ -1126,7 +1080,7 @@ walletPassRouter.get(
       if (loyaltyType === 'stamps') {
         const stampGrid = await buildStampGridStripPng({
           stamps: stampRow?.stamps ?? 0,
-          stampTarget: 8,
+          stampTarget: config?.stamp_target ?? 8,
           bgColor,
           stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
           // Stamp icon color follows the card's text color — the
@@ -1142,9 +1096,6 @@ walletPassRouter.get(
             config?.wallet_stamp_icon_scale != null
               ? Number(config.wallet_stamp_icon_scale)
               : null,
-          milestoneStamps: activeMilestones
-            .filter((m) => (m.reward_name || '').trim().length > 0)
-            .map((m) => m.stamp_number),
         });
         if (stampGrid) {
           files['strip.png'] = stampGrid;
@@ -1176,7 +1127,7 @@ walletPassRouter.get(
         cashbackPercent: config?.cashback_percent ?? 5,
         businessType: config?.business_type ?? 'cafe',
         stamps: stampRow?.stamps ?? 0,
-        stampTarget: 8,
+        stampTarget: config?.stamp_target ?? 8,
         stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
         nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
         nextRewardCost: cheapestReward?.points_cost ?? undefined,
@@ -1267,60 +1218,6 @@ export async function notifyPassUpdate(customerId: string, merchantId: string): 
   for (const token of uniqueTokens) {
     const ok = await sendApnsPush(token);
     console.log(`[WalletPass] APNs push to ${token.substring(0, 8)}…: ${ok ? 'OK' : 'FAIL'}`);
-  }
-}
-
-/**
- * Bumps last_updated + sends APNs to EVERY customer's wallet pass for a
- * given merchant. Used when the merchant saves loyalty config (colors,
- * type switch stamps↔cashback, logo, milestone rewards, etc.) so every
- * already-installed pass refetches and shows the new design without
- * waiting for the customer to earn or redeem something first.
- *
- * Best-effort: any DB or APNs failure logs a warning and continues so a
- * single bad pushToken can't block the rest of the fanout.
- */
-export async function notifyMerchantPassesUpdate(merchantId: string): Promise<void> {
-  if (!supabaseAdmin || !isConfigured()) return;
-  if (!merchantId) return;
-
-  const prefix = `loyalty-${merchantId}-`;
-  const { data: regs, error } = await supabaseAdmin
-    .from('wallet_pass_registrations')
-    .select('serial_number, push_token')
-    .like('serial_number', `${prefix}%`);
-
-  if (error) {
-    console.warn('[WalletPass] notifyMerchantPassesUpdate select failed:', error.message);
-    return;
-  }
-  if (!regs || regs.length === 0) return;
-
-  const now = Math.floor(Date.now() / 1000);
-  const serials = [...new Set(regs.map((r: any) => r.serial_number as string))];
-
-  // Bump last_updated for every affected serial so any device polling
-  // /v1/devices/{id}/registrations/.../?passesUpdatedSince=… learns the
-  // pass changed and refetches the .pkpass.
-  if (serials.length > 0) {
-    const rows = serials.map((s) => ({ serial_number: s, last_updated: now }));
-    const { error: upErr } = await supabaseAdmin
-      .from('wallet_pass_updates')
-      .upsert(rows, { onConflict: 'serial_number' });
-    if (upErr) {
-      console.warn('[WalletPass] notifyMerchantPassesUpdate upsert failed:', upErr.message);
-    }
-  }
-
-  const uniqueTokens = [...new Set(regs.map((r: any) => r.push_token as string))].filter(Boolean);
-  console.log(`[WalletPass] Pushing pass-refresh APNs to ${uniqueTokens.length} device(s) for merchant ${merchantId}`);
-  for (const token of uniqueTokens) {
-    try {
-      const ok = await sendApnsPush(token);
-      console.log(`[WalletPass] APNs to ${token.substring(0, 8)}…: ${ok ? 'OK' : 'FAIL'}`);
-    } catch (err) {
-      console.warn('[WalletPass] APNs push threw:', err instanceof Error ? err.message : err);
-    }
   }
 }
 
@@ -1703,7 +1600,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     if (loyaltyType === 'stamps') {
       const stampGrid = await buildStampGridStripPng({
         stamps: stampRow?.stamps ?? 0,
-        stampTarget: 8,
+        stampTarget: config?.stamp_target ?? 8,
         bgColor,
         stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
         stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
@@ -1713,9 +1610,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
           config?.wallet_stamp_icon_scale != null
             ? Number(config.wallet_stamp_icon_scale)
             : null,
-        milestoneStamps: activeMilestones
-          .filter((m) => (m.reward_name || '').trim().length > 0)
-          .map((m) => m.stamp_number),
       });
       if (stampGrid) {
         files['strip.png'] = stampGrid;
@@ -1746,7 +1640,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       cashbackPercent: config?.cashback_percent ?? 5,
       businessType: config?.business_type ?? 'cafe',
       stamps: stampRow?.stamps ?? 0,
-      stampTarget: 8,
+      stampTarget: config?.stamp_target ?? 8,
       stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
       nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
       nextRewardCost: cheapestReward?.points_cost ?? undefined,
