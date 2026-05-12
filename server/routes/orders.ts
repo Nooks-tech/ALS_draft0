@@ -213,9 +213,19 @@ ordersRouter.post('/commit', async (req, res) => {
     // total can claim a 0.01 SAR order with 50 items in cart).
     const MIN_ITEM_PRICE_SAR = 0.5;
     let computedItemFloor = 0;
-    for (const it of items as Array<{ price?: unknown; quantity?: unknown; basePrice?: unknown }>) {
+    for (const it of items as Array<{ price?: unknown; quantity?: unknown; basePrice?: unknown; uniqueId?: unknown }>) {
       const unitPrice = Number(it.basePrice ?? it.price ?? 0);
       const qty = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
+      // Free stamp-milestone rewards have price=0 by design — the
+      // customer pays nothing for them because they're redeeming
+      // stamps. Identified by uniqueId='reward-<milestoneId>-<foodicsId>'.
+      // Skip the per-item floor check for these; the floor only
+      // protects against tampered REGULAR items.
+      const isFreeReward =
+        typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-');
+      if (isFreeReward) {
+        continue;
+      }
       if (!Number.isFinite(unitPrice) || unitPrice < MIN_ITEM_PRICE_SAR) {
         return res.status(400).json({
           error: `Item price below the ${MIN_ITEM_PRICE_SAR} SAR per-unit floor; refusing to commit a likely-tampered order.`,
