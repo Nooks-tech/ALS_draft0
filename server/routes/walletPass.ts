@@ -1012,12 +1012,20 @@ walletPassRouter.get(
       const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
       const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
 
-      // Foodics Loyalty Adapter QR format: compact JSON with mobile number + country code
+      // Foodics Loyalty Adapter QR format: compact JSON with mobile number + country code.
       // See: https://developers.foodics.com/guides/loyalty.html#qr-code-content
+      //
+      // customer_name is intentionally omitted: Apple Wallet's barcode
+      // messageEncoding is iso-8859-1, which can't represent Arabic
+      // characters. Including an Arabic display_name in the JSON makes
+      // the encoded byte stream invalid and Apple silently fails to
+      // render the QR matrix (showing only the altText). Foodics uses
+      // mobile number for lookup, so the name field is decorative —
+      // dropping it keeps the QR ASCII-clean and renders reliably for
+      // every merchant regardless of language.
       const customerPhone = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
       const barcodeMessage = customerPhone
         ? JSON.stringify({
-            customer_name: memberProfile.display_name || 'Customer',
             customer_mobile_number: customerPhone,
             mobile_country_code: 966,
           })
@@ -1559,11 +1567,13 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const currentStampsForNext = stampRow?.stamps ?? 0;
     const nextMilestone = activeMilestones.find((m) => m.stamp_number > currentStampsForNext) ?? activeMilestones[0] ?? null;
 
-    // Foodics Loyalty Adapter QR format
+    // Foodics Loyalty Adapter QR format. customer_name omitted because
+    // iso-8859-1 messageEncoding can't represent Arabic chars and
+    // Apple silently fails to render the QR. See the duplicate logic
+    // above for the full explanation.
     const customerPhone2 = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
     const barcodeMessage = customerPhone2
       ? JSON.stringify({
-          customer_name: memberProfile.display_name || 'Customer',
           customer_mobile_number: customerPhone2,
           mobile_country_code: 966,
         })
