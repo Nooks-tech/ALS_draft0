@@ -157,11 +157,18 @@ export async function fetchOrdersForCustomer(
     console.warn('[Orders] fetchOrdersForCustomer called without merchantId — refusing to query (would leak across merchants)');
     return [];
   }
+  // Visibility filter: orders without payment_confirmed_at are orphans
+  // (commit ran before P1's payment verification shipped, or the
+  // customer's card was charged but we never confirmed it). They never
+  // appear in the customer's orders tab. The pg_cron sweep eventually
+  // cancels them; this filter just makes sure they're invisible
+  // regardless of sweep timing.
   const primary = await supabase
     .from('customer_orders')
     .select('*')
     .eq('customer_id', customerId)
     .eq('merchant_id', merchantId)
+    .not('payment_confirmed_at', 'is', null)
     .order('created_at', { ascending: false });
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
     console.warn('[Orders] Fetch error:', primary.error.message);

@@ -463,6 +463,13 @@ ordersRouter.post('/commit', async (req, res) => {
       commission_amount: 1,
       commission_rate: 0,
       commission_status: 'pending',
+      // Visibility gate: only orders with this column set appear in
+      // the customer app's orders tab and the merchant dashboard.
+      // We reach this line only after P1's Moyasar verification has
+      // passed (or it's a wallet-only order whose wallet debit
+      // succeeded above), so by definition the customer has paid.
+      // Legacy orphans where commit never ran have this NULL.
+      payment_confirmed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
