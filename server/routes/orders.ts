@@ -500,7 +500,7 @@ ordersRouter.post('/commit', async (req, res) => {
  * order. Returned `refundMethod` is the source of truth for callers and
  * is persisted to customer_orders.refund_method.
  */
-type RefundDestination = 'card' | 'wallet';
+type RefundDestination = 'card' | 'wallet' | 'none';
 async function refundOrderToWallet(
   orderId: string,
   cancelledBy: 'merchant' | 'system',
@@ -524,11 +524,17 @@ async function refundOrderToWallet(
     return { ok: false, error: 'Order is missing customer_id or merchant_id', status: 500 };
   }
 
-  // Try Moyasar void/refund first. If it succeeds the money goes back to
-  // the card (~2h for void, 1-3d for refund) and we MUST NOT also credit
-  // the wallet — that's a double refund. Wallet credit is the fallback
-  // for when Moyasar can't return the money to the card.
-  let moyasarMethod: 'void' | 'refund' | 'failed' | 'skipped' = 'skipped';
+  // Try Moyasar void/refund first. Three buckets of outcomes:
+  //   - 'void' / 'refund'  → money is going back to the CARD (~2h or 1-3d).
+  //                          Skip wallet credit — that would double-refund.
+  //   - 'not_required'     → Moyasar says nothing was actually charged
+  //                          (status: initiated / failed / already voided /
+  //                          already refunded). No refund needed AT ALL —
+  //                          do not credit wallet because no money moved.
+  //   - 'failed' / skipped → wallet credit as fallback.
+  // The 'skipped' branch covers orders with no payment_id (wallet-only
+  // payments) where wallet credit is the correct destination.
+  let moyasarMethod: 'void' | 'refund' | 'failed' | 'not_required' | 'skipped' = 'skipped';
   if (order.payment_id) {
     try {
       const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
@@ -541,12 +547,16 @@ async function refundOrderToWallet(
   }
 
   const refundedToCard = moyasarMethod === 'void' || moyasarMethod === 'refund';
-  const refundMethod: RefundDestination = refundedToCard ? 'card' : 'wallet';
+  const noChargeMade = moyasarMethod === 'not_required';
+  const refundMethod: RefundDestination = refundedToCard ? 'card' : noChargeMade ? 'none' : 'wallet';
   const refundSar = Number(order.total_sar ?? 0);
 
-  // Wallet credit only fires when card refund was NOT possible. Idempotent
-  // on the wallet RPC side via (customer_id, order_id, entry_type='refund').
-  if (!refundedToCard && refundSar > 0) {
+  // Wallet credit only fires when (a) the card was charged but Moyasar
+  // can't reverse it, OR (b) the order has no Moyasar payment_id at all
+  // (wallet-only payment). When refundMethod is 'card' the customer
+  // already gets the money back via card; when it's 'none' the customer
+  // was never charged so they don't get anything.
+  if (refundMethod === 'wallet' && refundSar > 0) {
     try {
       await creditWalletForRefund({
         customerId: order.customer_id,
@@ -568,8 +578,8 @@ async function refundOrderToWallet(
       status: 'Cancelled',
       cancellation_reason: reason,
       cancelled_by: cancelledBy,
-      refund_status: 'refunded',
-      refund_amount: refundSar,
+      refund_status: refundMethod === 'none' ? 'not_required' : 'refunded',
+      refund_amount: refundMethod === 'none' ? 0 : refundSar,
       refund_fee: 0,
       refund_method: refundMethod,
       commission_status: 'cancelled',
@@ -612,10 +622,17 @@ async function refundOrderToWallet(
       ? moyasarMethod === 'void'
         ? `${refundSar} SAR will be returned to your card within a few hours.`
         : `${refundSar} SAR is being returned to your card and will arrive within 1-3 business days.`
-      : `${refundSar} SAR has been credited to your wallet — use it on your next order.`;
+      : refundMethod === 'none'
+        ? 'No charge was made to your card, so nothing needs to be refunded.'
+        : `${refundSar} SAR has been credited to your wallet — use it on your next order.`;
   sendPushToCustomer(order.customer_id, 'Order Cancelled', `${lead} ${refundLine}`, order.merchant_id);
 
-  return { ok: true, orderId, refundedSar: refundSar, refundMethod };
+  return {
+    ok: true,
+    orderId,
+    refundedSar: refundMethod === 'none' ? 0 : refundSar,
+    refundMethod,
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════════

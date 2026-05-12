@@ -66,10 +66,12 @@ export function calculateMoyasarFee(amountSAR: number, paymentMethod?: string): 
 }
 
 export type CancelPaymentResult = {
-  method: 'void' | 'refund' | 'failed';
+  method: 'void' | 'refund' | 'failed' | 'not_required';
   fee: number;
   moyasarId?: string;
   error?: string;
+  /** Moyasar payment status snapshot at the time of cancel attempt. */
+  paymentStatus?: string;
 };
 
 /**
@@ -152,6 +154,38 @@ export async function cancelPayment(
   // Resolve invoice ID -> payment ID if needed. Pass the expected amount
   // so we pick the right payment when an invoice has multiple attempts.
   const realPaymentId = await resolvePaymentId(paymentId, authHeader, amountHalals);
+
+  // Fetch the current Moyasar payment so we can short-circuit refund/void
+  // calls for payments that never charged the card. Without this check:
+  //   - `initiated` (customer never completed 3DS) → no money charged, but
+  //     a /void call returns 4xx and the caller's fallback would
+  //     incorrectly credit the wallet for funds that never moved.
+  //   - `failed` → same shape as initiated.
+  //   - `voided` / fully `refunded` → already returned to the customer;
+  //     a second refund attempt would 4xx and risk a double-credit on
+  //     the fallback path.
+  // Returning `not_required` lets the caller skip BOTH the card refund
+  // AND the wallet credit, since nothing is owed back.
+  try {
+    const statusRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
+      headers: { Authorization: authHeader },
+    });
+    if (statusRes.ok) {
+      const payment = await statusRes.json();
+      const status = String(payment?.status ?? '').toLowerCase();
+      const refundedHalals = Number(payment?.refunded ?? 0);
+      const amountHalalsCharged = Number(payment?.amount ?? 0);
+      const fullyRefunded = status === 'refunded' && refundedHalals >= amountHalalsCharged && amountHalalsCharged > 0;
+      if (status === 'initiated' || status === 'failed' || status === 'voided' || fullyRefunded) {
+        console.log('[Payment] Cancel not required for', realPaymentId, '— status:', status);
+        return { method: 'not_required', fee: 0, moyasarId: realPaymentId, paymentStatus: status };
+      }
+    } else {
+      console.warn('[Payment] Status fetch non-ok:', statusRes.status, '— proceeding to attempt void/refund');
+    }
+  } catch (e: any) {
+    console.warn('[Payment] Status fetch threw, proceeding to attempt void/refund:', e?.message);
+  }
 
   // 1) Try void (free — works only if not yet settled).
   //    Skip void for partial refunds because void always reverses the FULL amount.
