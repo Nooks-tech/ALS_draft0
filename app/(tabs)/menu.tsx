@@ -33,6 +33,7 @@ import {
 } from 'react-native';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
 import { PriceWithSymbol } from '../../src/components/common/PriceWithSymbol';
+import { useAuth } from '../../src/context/AuthContext';
 import { useCart } from '../../src/context/CartContext';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
@@ -44,6 +45,8 @@ export default function MenuScreen() {
   const { i18n } = useTranslation();
   const { totalItems, totalPrice, orderType, selectedBranch, deliveryAddress } = useCart();
   const { merchantId } = useMerchant();
+  const { user } = useAuth();
+  const customerId = user?.id ?? null;
   const { products, categories, loading, error } = useMenuContext();
   const { primaryColor, logoUrl, inAppLogoScale, backgroundColor, menuCardColor, textColor, tabTextColor } = useMerchantBranding();
   const router = useRouter();
@@ -114,95 +117,47 @@ export default function MenuScreen() {
   // - when multiple popup banners exist, show first unseen in upload order
   // - after user closes app and opens a new session, show next unseen popup
   //
-  // The "seen" id is persisted at DISPLAY time, not Close-press time. If
-  // we waited for Close, a force-close of the app while the popup was
-  // visible would never persist the seen state — the same popup would
-  // re-show on every cold launch indefinitely.
+  // Image-safety guarantee: by the time popupItems reaches this effect,
+  // every banner has already been prefetched + validated by warmup.ts
+  // (Image.prefetch with an 8s timeout). Banners that failed prefetch
+  // are filtered out of the offers cache, so they never reach the
+  // popup queue. The Modal therefore renders an already-cached image
+  // with no decode-driven freeze.
   //
-  // PRE-FLIGHT HEAD CHECK: before triggering the Modal, fetch the image
-  // URL with a HEAD request and reject if Content-Length > 3 MB or the
-  // response isn't 200. Marketing-banner uploads BEFORE the nooksweb
-  // normalization fix (shipped 2026-05-13) allowed merchants to upload
-  // 30 MB photos; decoding those blocks the JS thread and freezes the
-  // UI until the OS kills the app. The pre-flight check spends one
-  // round-trip per popup but guarantees no decode-driven freeze
-  // regardless of when the banner was uploaded.
+  // The "seen" id is persisted at DISPLAY time, not Close-press time.
+  // A force-close of the app while the popup is visible still advances
+  // to the next popup on the next cold launch.
+  //
+  // Seen-ids are scoped per (merchant, user) so two accounts on the
+  // same device don't share popup-seen state — one customer closing
+  // a popup must NOT close it for any other customer.
   useEffect(() => {
-    if (!merchantId || popupItems.length === 0 || popupSessionConsumedRef.current) return;
+    if (!merchantId || !customerId || popupItems.length === 0 || popupSessionConsumedRef.current) return;
     let cancelled = false;
-    const seenKey = `popup_seen_ids_${merchantId}`;
-
-    const markSeen = async (id: string) => {
-      try {
-        const raw = await AsyncStorage.getItem(seenKey);
-        const seenIds: string[] = raw ? (JSON.parse(raw) as string[]) : [];
-        if (!seenIds.includes(id)) {
-          seenIds.push(id);
-          await AsyncStorage.setItem(seenKey, JSON.stringify(seenIds));
-        }
-      } catch {
-        // best effort
-      }
-    };
-
-    const pickAndShowPopup = async () => {
-      let raw: string | null = null;
-      try {
-        raw = await AsyncStorage.getItem(seenKey);
-      } catch {
-        // best effort
-      }
+    const seenKey = `popup_seen_ids_${merchantId}_${customerId}`;
+    AsyncStorage.getItem(seenKey).then((raw) => {
+      if (cancelled) return;
       let seenIds: string[] = [];
       try {
         seenIds = raw ? (JSON.parse(raw) as string[]) : [];
       } catch {
         seenIds = [];
       }
-      // Iterate through unseen popups in order. If a popup's image is
-      // too large / 404s, mark it seen and try the next one in the
-      // queue. Skip any popup whose URL is suspicious before we even
-      // dispatch the Modal.
-      const MAX_IMAGE_BYTES = 3 * 1024 * 1024; // 3 MB
-      for (const popup of popupItems) {
-        if (cancelled) return;
-        if (seenIds.includes(popup.id)) continue;
-        try {
-          const head = await fetch(popup.image, { method: 'HEAD' });
-          if (!head.ok) {
-            console.warn('[Menu] Popup image HEAD non-ok:', head.status, popup.id);
-            await markSeen(popup.id);
-            seenIds.push(popup.id);
-            continue;
-          }
-          const lenStr = head.headers.get('content-length');
-          const len = lenStr ? Number(lenStr) : null;
-          if (len !== null && Number.isFinite(len) && len > MAX_IMAGE_BYTES) {
-            console.warn('[Menu] Popup image too large, skipping:', len, 'bytes, id:', popup.id);
-            await markSeen(popup.id);
-            seenIds.push(popup.id);
-            continue;
-          }
-        } catch (e) {
-          console.warn('[Menu] Popup HEAD failed, skipping:', popup.id, (e as Error)?.message);
-          await markSeen(popup.id);
-          seenIds.push(popup.id);
-          continue;
-        }
-        if (cancelled) return;
-        // This popup passed pre-flight — show it and mark seen.
-        setActivePopup(popup);
+      const nextPopup = popupItems.find((p) => !seenIds.includes(p.id));
+      if (nextPopup) {
+        setActivePopup(nextPopup);
         setPromoPopupVisible(true);
         popupSessionConsumedRef.current = true;
-        await markSeen(popup.id);
-        return;
+        if (!seenIds.includes(nextPopup.id)) {
+          seenIds.push(nextPopup.id);
+          AsyncStorage.setItem(seenKey, JSON.stringify(seenIds)).catch(() => {});
+        }
       }
-    };
-
-    void pickAndShowPopup();
+    });
     return () => {
       cancelled = true;
     };
-  }, [popupItems, merchantId]);
+  }, [popupItems, merchantId, customerId]);
 
   const closePromoPopup = useCallback(() => {
     setPromoPopupVisible(false);

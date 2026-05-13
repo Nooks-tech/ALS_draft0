@@ -22,7 +22,7 @@
  * Fire-and-forget: callers use `void runWarmup(...)` from a useEffect.
  * No blocking, no UI dependency, no Promise propagation.
  */
-import { Platform } from 'react-native';
+import { Image, Platform } from 'react-native';
 import { fetchNooksBanners, type NooksBanner } from '../api/nooksBanners';
 import { fetchNooksPromos, type NooksPromo } from '../api/nooksPromos';
 import { loyaltyApi, type LoyaltyBalance, type LoyaltyReward, type LoyaltyTransaction } from '../api/loyalty';
@@ -43,6 +43,40 @@ export type WarmupContext = {
 
 /* ─── Offers tab (banners + promos) ──────────────────────────────── */
 
+/**
+ * Prefetch + validate a banner image. Returns true when the OS image
+ * cache successfully fetched and decoded the bytes within `timeoutMs`,
+ * false otherwise (404, network error, decode failure, or slow).
+ *
+ * Used to filter banners during splash warmup so the menu/offers/popup
+ * surfaces only see images that are known-good. The customer never
+ * has to wait for a banner image to load on the hot path — by the
+ * time menu mounts, every banner is already in the OS image cache and
+ * renders instantly.
+ *
+ * This also prevents the popup-freeze bug: if a merchant uploaded a
+ * 30 MB image before nooksweb's normalization fix shipped, that image
+ * will fail prefetch (timeout) here and get filtered out — the popup
+ * never tries to render it, no JS-thread block, no freeze.
+ */
+async function prefetchBannerImage(url: string, timeoutMs: number): Promise<boolean> {
+  if (!url || typeof url !== 'string') return false;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const result = await Promise.race<boolean>([
+      Image.prefetch(url),
+      new Promise<boolean>((resolve) => {
+        timeoutId = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+    return Boolean(result);
+  } catch {
+    return false;
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  }
+}
+
 async function warmupOffers(merchantId: string): Promise<void> {
   if (!merchantId) return;
   const cacheKey = `@als_offers_${merchantId}`;
@@ -52,7 +86,28 @@ async function warmupOffers(merchantId: string): Promise<void> {
       fetchNooksBanners(merchantId),
       fetchNooksPromos(merchantId),
     ]);
-    await writeCache<OffersCache>(cacheKey, { banners, promos });
+
+    // Prefetch every banner image with an 8-second per-image timeout.
+    // Images that succeed are cached in the OS image cache so the
+    // menu's slider and the popup modal render instantly without a
+    // visible network round-trip. Images that fail prefetch (404,
+    // timeout, decode error) are filtered OUT of the returned banner
+    // list — the consumer code (menu.tsx popup queue, PromoSlider)
+    // sees only known-good banners.
+    //
+    // Banners run in parallel since prefetches don't share network
+    // contention meaningfully and the splash window is short. 8s is
+    // generous for slow rural LTE while still bounding worst-case.
+    const prefetchResults = await Promise.all(
+      banners.map(async (banner) => {
+        const ok = await prefetchBannerImage(banner.image_url, 8000);
+        if (!ok) console.warn('[Warmup] Banner prefetch failed, filtering out:', banner.id);
+        return { banner, ok };
+      }),
+    );
+    const validBanners = prefetchResults.filter((r) => r.ok).map((r) => r.banner);
+
+    await writeCache<OffersCache>(cacheKey, { banners: validBanners, promos });
   } catch {
     // best effort
   }
