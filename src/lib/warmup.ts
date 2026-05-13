@@ -22,7 +22,7 @@
  * Fire-and-forget: callers use `void runWarmup(...)` from a useEffect.
  * No blocking, no UI dependency, no Promise propagation.
  */
-import { Image, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import { fetchNooksBanners, type NooksBanner } from '../api/nooksBanners';
 import { fetchNooksPromos, type NooksPromo } from '../api/nooksPromos';
 import { loyaltyApi, type LoyaltyBalance, type LoyaltyReward, type LoyaltyTransaction } from '../api/loyalty';
@@ -43,112 +43,19 @@ export type WarmupContext = {
 
 /* ─── Offers tab (banners + promos) ──────────────────────────────── */
 
-/**
- * Prefetch + validate a banner image. Returns true ONLY when:
- *   1. Image.prefetch succeeds within timeoutMs (downloaded + cached)
- *   2. Image.getSize reports dimensions within a safe envelope
- *      (≤ 2000 px on the long side)
- *
- * The dimensions check is the critical one. Image.prefetch returns
- * `true` for a 30 MB / 4000 × 3000 image — it just measures download
- * success, not whether the image is safe to decode on a phone. Without
- * the dimension check, a huge image got into the cache, the consumer
- * rendered <ImageBackground>, and the decode blocked the JS thread
- * for 5–10s. That's the freeze users reported.
- *
- * 2000 px is generous: nooksweb's normalization caps new uploads at
- * 1200 px, so this check is purely defensive against pre-normalization
- * legacy uploads that are still in storage. Any new banner uploaded
- * via /api/dashboard/marketing/upload-banner is ≤ 1200 px on the long
- * side and sails through.
- */
-const BANNER_MAX_DIMENSION = 2000;
-
-async function prefetchBannerImage(url: string, timeoutMs: number): Promise<boolean> {
-  if (!url || typeof url !== 'string') return false;
-
-  // Step 1: prefetch (warm OS cache + validate the URL is reachable).
-  let prefetchTimeoutId: ReturnType<typeof setTimeout> | null = null;
-  let prefetchOk = false;
-  try {
-    prefetchOk = await Promise.race<boolean>([
-      Image.prefetch(url).then(Boolean),
-      new Promise<boolean>((resolve) => {
-        prefetchTimeoutId = setTimeout(() => resolve(false), timeoutMs);
-      }),
-    ]);
-  } catch {
-    prefetchOk = false;
-  } finally {
-    if (prefetchTimeoutId !== null) clearTimeout(prefetchTimeoutId);
-  }
-  if (!prefetchOk) return false;
-
-  // Step 2: dimension check. getSize uses the prefetched cache so
-  // this is a fast disk read, not another network round-trip.
-  let sizeTimeoutId: ReturnType<typeof setTimeout> | null = null;
-  try {
-    const dims = await Promise.race<{ width: number; height: number } | null>([
-      new Promise<{ width: number; height: number } | null>((resolve) => {
-        Image.getSize(
-          url,
-          (width, height) => resolve({ width, height }),
-          () => resolve(null),
-        );
-      }),
-      new Promise<null>((resolve) => {
-        sizeTimeoutId = setTimeout(() => resolve(null), 4000);
-      }),
-    ]);
-    if (!dims) return false;
-    const longSide = Math.max(dims.width, dims.height);
-    if (longSide > BANNER_MAX_DIMENSION) {
-      console.warn(
-        '[Warmup] Banner dimensions exceed safe envelope, filtering:',
-        url,
-        `${dims.width}x${dims.height}`,
-      );
-      return false;
-    }
-    return true;
-  } catch {
-    return false;
-  } finally {
-    if (sizeTimeoutId !== null) clearTimeout(sizeTimeoutId);
-  }
-}
-
 async function warmupOffers(merchantId: string): Promise<void> {
   if (!merchantId) return;
   const cacheKey = `@als_offers_${merchantId}`;
   type OffersCache = { banners: NooksBanner[]; promos: NooksPromo[] };
   try {
+    // fetchNooksBanners now filters internally (prefetch + Image.getSize
+    // dimension check) — see src/api/nooksBanners.ts. Returns only
+    // banners that are safe to render on the customer's phone.
     const [banners, promos] = await Promise.all([
       fetchNooksBanners(merchantId),
       fetchNooksPromos(merchantId),
     ]);
-
-    // Prefetch every banner image with an 8-second per-image timeout.
-    // Images that succeed are cached in the OS image cache so the
-    // menu's slider and the popup modal render instantly without a
-    // visible network round-trip. Images that fail prefetch (404,
-    // timeout, decode error) are filtered OUT of the returned banner
-    // list — the consumer code (menu.tsx popup queue, PromoSlider)
-    // sees only known-good banners.
-    //
-    // Banners run in parallel since prefetches don't share network
-    // contention meaningfully and the splash window is short. 8s is
-    // generous for slow rural LTE while still bounding worst-case.
-    const prefetchResults = await Promise.all(
-      banners.map(async (banner) => {
-        const ok = await prefetchBannerImage(banner.image_url, 8000);
-        if (!ok) console.warn('[Warmup] Banner prefetch failed, filtering out:', banner.id);
-        return { banner, ok };
-      }),
-    );
-    const validBanners = prefetchResults.filter((r) => r.ok).map((r) => r.banner);
-
-    await writeCache<OffersCache>(cacheKey, { banners: validBanners, promos });
+    await writeCache<OffersCache>(cacheKey, { banners, promos });
   } catch {
     // best effort
   }
