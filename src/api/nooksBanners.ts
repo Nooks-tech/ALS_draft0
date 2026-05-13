@@ -41,11 +41,43 @@ export type NooksBanner = {
  * validation and could still freeze the app.
  */
 const BANNER_MAX_DIMENSION = 2000;
+const BANNER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
 
 async function isBannerImageSafe(url: string): Promise<boolean> {
   if (!url || typeof url !== 'string') return false;
 
-  // Step 1: prefetch (warm OS cache + reachability check).
+  // Step 0: HEAD check for file size BEFORE downloading. Pre-empts the
+  // download of huge images entirely — they never enter the OS cache,
+  // never get decoded, can't freeze the JS thread. The HEAD request is
+  // cheap (one round-trip, no body). If the server doesn't return
+  // Content-Length (some CDNs strip it), we fall through to the
+  // prefetch + getSize checks below as a backstop.
+  try {
+    const headController = new AbortController();
+    const headTimeout = setTimeout(() => headController.abort(), 4000);
+    try {
+      const head = await fetch(url, { method: 'HEAD', signal: headController.signal });
+      if (!head.ok) {
+        console.warn('[Banners] HEAD non-ok, filtering:', head.status, url);
+        return false;
+      }
+      const lenStr = head.headers.get('content-length');
+      if (lenStr) {
+        const len = Number(lenStr);
+        if (Number.isFinite(len) && len > BANNER_MAX_BYTES) {
+          console.warn('[Banners] File too large, filtering:', len, 'bytes:', url);
+          return false;
+        }
+      }
+    } finally {
+      clearTimeout(headTimeout);
+    }
+  } catch (e) {
+    console.warn('[Banners] HEAD failed, filtering:', (e as Error)?.message, url);
+    return false;
+  }
+
+  // Step 1: prefetch (warm OS cache + verify decodability).
   let prefetchTimeoutId: ReturnType<typeof setTimeout> | null = null;
   let prefetchOk = false;
   try {
@@ -60,9 +92,13 @@ async function isBannerImageSafe(url: string): Promise<boolean> {
   } finally {
     if (prefetchTimeoutId !== null) clearTimeout(prefetchTimeoutId);
   }
-  if (!prefetchOk) return false;
+  if (!prefetchOk) {
+    console.warn('[Banners] Prefetch failed/timeout, filtering:', url);
+    return false;
+  }
 
-  // Step 2: dimensions. getSize uses the cached file.
+  // Step 2: dimensions. getSize uses the cached file. Defensive against
+  // small file size but huge pixel dimensions (highly-compressed PNG).
   let sizeTimeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const dims = await Promise.race<{ width: number; height: number } | null>([
@@ -77,10 +113,13 @@ async function isBannerImageSafe(url: string): Promise<boolean> {
         sizeTimeoutId = setTimeout(() => resolve(null), 4000);
       }),
     ]);
-    if (!dims) return false;
+    if (!dims) {
+      console.warn('[Banners] getSize failed, filtering:', url);
+      return false;
+    }
     const longSide = Math.max(dims.width, dims.height);
     if (longSide > BANNER_MAX_DIMENSION) {
-      console.warn('[Banners] Filtered oversized image:', url, `${dims.width}x${dims.height}`);
+      console.warn('[Banners] Dimensions too large, filtering:', url, `${dims.width}x${dims.height}`);
       return false;
     }
     return true;

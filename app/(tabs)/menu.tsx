@@ -618,36 +618,34 @@ export default function MenuScreen() {
       )}
 
       {/* Promo popup: once per uploaded popup banner version.
-          The X button on the top-right corner is the always-visible
-          dismiss affordance — even if the image fails to load or the
-          card overflows the viewport on a small phone, the user can
-          still close. The bottom "Close" bar is a secondary affordance
-          for the happy path. */}
-      {activePopup && (
-        <Modal
-          visible={promoPopupVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={closePromoPopup}
-        >
+          Modal is ALWAYS mounted (no conditional `activePopup && ...`)
+          to avoid the iOS native-modal-layer race: if the Modal
+          component unmounts while its fade-out animation is still
+          running, the native layer can be orphaned and intercept
+          touches to the menu beneath — that's "menu can't be tapped
+          but other tabs work." Toggling `visible` instead lets the
+          native side animate out cleanly before the next interaction.
+
+          We also use `animationType="none"` so there's no fade window
+          where the layer could trap touches. Custom backdrop opacity
+          gives the fade-in look without the underlying race. */}
+      <Modal
+        visible={promoPopupVisible && !!activePopup}
+        transparent
+        animationType="none"
+        onRequestClose={closePromoPopup}
+      >
+        {activePopup ? (
           <TouchableOpacity activeOpacity={1} onPress={closePromoPopup} className="flex-1 bg-black/60 justify-center items-center px-6">
             <TouchableOpacity
               activeOpacity={1}
               onPress={(e) => e.stopPropagation()}
               className="w-[92%] max-w-xl rounded-2xl overflow-hidden bg-white shadow-2xl"
-              // 75% screen-height cap so the bottom Close bar stays
-              // on-screen on small phones (iPhone SE etc).
               style={{ maxHeight: Dimensions.get('window').height * 0.75 }}
             >
               <View>
                 <ImageBackground
                   source={{ uri: activePopup.image }}
-                  // Render at the image's natural aspect — popups can
-                  // now be portrait (phone screenshots) or landscape.
-                  // Fallback aspect 16:9 only used briefly before
-                  // Image.getSize resolves. The card's 75 vh maxHeight
-                  // clamps tall portrait images so the bottom Close
-                  // bar stays visible.
                   style={{ width: '100%', aspectRatio: popupAspect ?? 16 / 9 }}
                   resizeMode="cover"
                   imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}
@@ -674,8 +672,6 @@ export default function MenuScreen() {
                     </View>
                   )}
                 </ImageBackground>
-                {/* Always-visible × dismiss button. Absolute-positioned so
-                    it sits above the image regardless of image load state. */}
                 <TouchableOpacity
                   onPress={closePromoPopup}
                   hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -690,8 +686,8 @@ export default function MenuScreen() {
               </TouchableOpacity>
             </TouchableOpacity>
           </TouchableOpacity>
-        </Modal>
-      )}
+        ) : null}
+      </Modal>
 
       {/* FLOATING CART — browsing isn't gated by branch status. Checkout
           is where we validate the customer's selected / nearest branch. */}
