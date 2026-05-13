@@ -44,36 +44,77 @@ export type WarmupContext = {
 /* ─── Offers tab (banners + promos) ──────────────────────────────── */
 
 /**
- * Prefetch + validate a banner image. Returns true when the OS image
- * cache successfully fetched and decoded the bytes within `timeoutMs`,
- * false otherwise (404, network error, decode failure, or slow).
+ * Prefetch + validate a banner image. Returns true ONLY when:
+ *   1. Image.prefetch succeeds within timeoutMs (downloaded + cached)
+ *   2. Image.getSize reports dimensions within a safe envelope
+ *      (≤ 2000 px on the long side)
  *
- * Used to filter banners during splash warmup so the menu/offers/popup
- * surfaces only see images that are known-good. The customer never
- * has to wait for a banner image to load on the hot path — by the
- * time menu mounts, every banner is already in the OS image cache and
- * renders instantly.
+ * The dimensions check is the critical one. Image.prefetch returns
+ * `true` for a 30 MB / 4000 × 3000 image — it just measures download
+ * success, not whether the image is safe to decode on a phone. Without
+ * the dimension check, a huge image got into the cache, the consumer
+ * rendered <ImageBackground>, and the decode blocked the JS thread
+ * for 5–10s. That's the freeze users reported.
  *
- * This also prevents the popup-freeze bug: if a merchant uploaded a
- * 30 MB image before nooksweb's normalization fix shipped, that image
- * will fail prefetch (timeout) here and get filtered out — the popup
- * never tries to render it, no JS-thread block, no freeze.
+ * 2000 px is generous: nooksweb's normalization caps new uploads at
+ * 1200 px, so this check is purely defensive against pre-normalization
+ * legacy uploads that are still in storage. Any new banner uploaded
+ * via /api/dashboard/marketing/upload-banner is ≤ 1200 px on the long
+ * side and sails through.
  */
+const BANNER_MAX_DIMENSION = 2000;
+
 async function prefetchBannerImage(url: string, timeoutMs: number): Promise<boolean> {
   if (!url || typeof url !== 'string') return false;
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  // Step 1: prefetch (warm OS cache + validate the URL is reachable).
+  let prefetchTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  let prefetchOk = false;
   try {
-    const result = await Promise.race<boolean>([
-      Image.prefetch(url),
+    prefetchOk = await Promise.race<boolean>([
+      Image.prefetch(url).then(Boolean),
       new Promise<boolean>((resolve) => {
-        timeoutId = setTimeout(() => resolve(false), timeoutMs);
+        prefetchTimeoutId = setTimeout(() => resolve(false), timeoutMs);
       }),
     ]);
-    return Boolean(result);
+  } catch {
+    prefetchOk = false;
+  } finally {
+    if (prefetchTimeoutId !== null) clearTimeout(prefetchTimeoutId);
+  }
+  if (!prefetchOk) return false;
+
+  // Step 2: dimension check. getSize uses the prefetched cache so
+  // this is a fast disk read, not another network round-trip.
+  let sizeTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const dims = await Promise.race<{ width: number; height: number } | null>([
+      new Promise<{ width: number; height: number } | null>((resolve) => {
+        Image.getSize(
+          url,
+          (width, height) => resolve({ width, height }),
+          () => resolve(null),
+        );
+      }),
+      new Promise<null>((resolve) => {
+        sizeTimeoutId = setTimeout(() => resolve(null), 4000);
+      }),
+    ]);
+    if (!dims) return false;
+    const longSide = Math.max(dims.width, dims.height);
+    if (longSide > BANNER_MAX_DIMENSION) {
+      console.warn(
+        '[Warmup] Banner dimensions exceed safe envelope, filtering:',
+        url,
+        `${dims.width}x${dims.height}`,
+      );
+      return false;
+    }
+    return true;
   } catch {
     return false;
   } finally {
-    if (timeoutId !== null) clearTimeout(timeoutId);
+    if (sizeTimeoutId !== null) clearTimeout(sizeTimeoutId);
   }
 }
 
