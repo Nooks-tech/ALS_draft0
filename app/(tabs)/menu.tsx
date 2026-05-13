@@ -8,7 +8,8 @@ import {
   ChevronRight,
   Plus,
   Search,
-  Store
+  Store,
+  X
 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -112,6 +113,13 @@ export default function MenuScreen() {
   // - show at most one popup per app session
   // - when multiple popup banners exist, show first unseen in upload order
   // - after user closes app and opens a new session, show next unseen popup
+  //
+  // The "seen" id is persisted at DISPLAY time, not Close-press time. If
+  // we waited for Close, a force-close of the app while the popup was
+  // visible would never persist the seen state — the same popup would
+  // re-show on every cold launch indefinitely, with no way for the user
+  // to advance past it if the popup happened to render in a stuck state
+  // (image not loaded, close button below the fold, etc.).
   useEffect(() => {
     if (!merchantId || popupItems.length === 0 || popupSessionConsumedRef.current) return;
     let cancelled = false;
@@ -129,6 +137,13 @@ export default function MenuScreen() {
         setActivePopup(nextPopup);
         setPromoPopupVisible(true);
         popupSessionConsumedRef.current = true;
+        // Persist the seen id immediately. Force-close-during-popup
+        // is now safe — next cold launch advances to the next
+        // unseen popup (or none).
+        if (!seenIds.includes(nextPopup.id)) {
+          seenIds.push(nextPopup.id);
+          AsyncStorage.setItem(seenKey, JSON.stringify(seenIds)).catch(() => {});
+        }
       }
     });
     return () => {
@@ -138,23 +153,34 @@ export default function MenuScreen() {
 
   const closePromoPopup = useCallback(() => {
     setPromoPopupVisible(false);
-    if (merchantId && activePopup) {
-      const seenKey = `popup_seen_ids_${merchantId}`;
-      AsyncStorage.getItem(seenKey).then((raw) => {
-        let seenIds: string[] = [];
-        try {
-          seenIds = raw ? (JSON.parse(raw) as string[]) : [];
-        } catch {
-          seenIds = [];
-        }
-        if (!seenIds.includes(activePopup.id)) {
-          seenIds.push(activePopup.id);
-          AsyncStorage.setItem(seenKey, JSON.stringify(seenIds));
-        }
-      });
-    }
     setActivePopup(null);
-  }, [merchantId, activePopup]);
+  }, []);
+
+  // Image-load safety net: if the popup banner image hasn't loaded
+  // within 5 seconds, auto-dismiss the popup. Prevents the "invisible
+  // overlay blocks menu" state where a slow/broken image leaves the
+  // user staring at a transparent backdrop with no visible close
+  // affordance. Cleared as soon as onLoad fires.
+  const popupLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!promoPopupVisible) {
+      if (popupLoadTimerRef.current) {
+        clearTimeout(popupLoadTimerRef.current);
+        popupLoadTimerRef.current = null;
+      }
+      return;
+    }
+    popupLoadTimerRef.current = setTimeout(() => {
+      console.warn('[Menu] Popup image load timeout — auto-dismissing');
+      closePromoPopup();
+    }, 5000);
+    return () => {
+      if (popupLoadTimerRef.current) {
+        clearTimeout(popupLoadTimerRef.current);
+        popupLoadTimerRef.current = null;
+      }
+    };
+  }, [promoPopupVisible, closePromoPopup]);
 
   const screenWidth = Dimensions.get('window').width;
   const searchTranslateX = useSharedValue(0);
@@ -557,16 +583,59 @@ export default function MenuScreen() {
         </GestureDetector>
       )}
 
-      {/* Promo popup: once per uploaded popup banner version */}
+      {/* Promo popup: once per uploaded popup banner version.
+          The X button on the top-right corner is the always-visible
+          dismiss affordance — even if the image fails to load or the
+          card overflows the viewport on a small phone, the user can
+          still close. The bottom "Close" bar is a secondary affordance
+          for the happy path. */}
       {activePopup && (
-        <Modal visible={promoPopupVisible} transparent animationType="fade">
+        <Modal
+          visible={promoPopupVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={closePromoPopup}
+        >
           <TouchableOpacity activeOpacity={1} onPress={closePromoPopup} className="flex-1 bg-black/60 justify-center items-center px-6">
-            <TouchableOpacity activeOpacity={1} onPress={(e) => e.stopPropagation()} className="w-[92%] max-w-xl rounded-2xl overflow-hidden bg-white shadow-2xl">
-              <ImageBackground source={{ uri: activePopup.image }} className="h-[420px] justify-end p-4" imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
-                <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
-                <Text className="text-white font-bold text-2xl z-10">{activePopup.subtitle}</Text>
-                <Text className="text-gray-200 z-10">{activePopup.title}</Text>
-              </ImageBackground>
+            <TouchableOpacity
+              activeOpacity={1}
+              onPress={(e) => e.stopPropagation()}
+              className="w-[92%] max-w-xl rounded-2xl overflow-hidden bg-white shadow-2xl"
+              // 75% screen-height cap so the bottom Close bar stays
+              // on-screen on small phones (iPhone SE etc).
+              style={{ maxHeight: Dimensions.get('window').height * 0.75 }}
+            >
+              <View>
+                <ImageBackground
+                  source={{ uri: activePopup.image }}
+                  className="h-[360px] justify-end p-4"
+                  imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}
+                  onLoad={() => {
+                    if (popupLoadTimerRef.current) {
+                      clearTimeout(popupLoadTimerRef.current);
+                      popupLoadTimerRef.current = null;
+                    }
+                  }}
+                  onError={() => {
+                    console.warn('[Menu] Popup image failed to load — auto-dismissing');
+                    closePromoPopup();
+                  }}
+                >
+                  <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
+                  <Text className="text-white font-bold text-2xl z-10">{activePopup.subtitle}</Text>
+                  <Text className="text-gray-200 z-10">{activePopup.title}</Text>
+                </ImageBackground>
+                {/* Always-visible × dismiss button. Absolute-positioned so
+                    it sits above the image regardless of image load state. */}
+                <TouchableOpacity
+                  onPress={closePromoPopup}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  className="absolute top-3 end-3 w-9 h-9 rounded-full items-center justify-center"
+                  style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
+                >
+                  <X size={20} color="#ffffff" />
+                </TouchableOpacity>
+              </View>
               <TouchableOpacity onPress={closePromoPopup} className="py-4 items-center border-t border-slate-100" style={{ backgroundColor: accent }}>
                 <Text className="text-white font-bold">{isArabic ? 'إغلاق' : 'Close'}</Text>
               </TouchableOpacity>
