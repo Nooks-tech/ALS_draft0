@@ -117,35 +117,88 @@ export default function MenuScreen() {
   // The "seen" id is persisted at DISPLAY time, not Close-press time. If
   // we waited for Close, a force-close of the app while the popup was
   // visible would never persist the seen state — the same popup would
-  // re-show on every cold launch indefinitely, with no way for the user
-  // to advance past it if the popup happened to render in a stuck state
-  // (image not loaded, close button below the fold, etc.).
+  // re-show on every cold launch indefinitely.
+  //
+  // PRE-FLIGHT HEAD CHECK: before triggering the Modal, fetch the image
+  // URL with a HEAD request and reject if Content-Length > 3 MB or the
+  // response isn't 200. Marketing-banner uploads BEFORE the nooksweb
+  // normalization fix (shipped 2026-05-13) allowed merchants to upload
+  // 30 MB photos; decoding those blocks the JS thread and freezes the
+  // UI until the OS kills the app. The pre-flight check spends one
+  // round-trip per popup but guarantees no decode-driven freeze
+  // regardless of when the banner was uploaded.
   useEffect(() => {
     if (!merchantId || popupItems.length === 0 || popupSessionConsumedRef.current) return;
     let cancelled = false;
     const seenKey = `popup_seen_ids_${merchantId}`;
-    AsyncStorage.getItem(seenKey).then((raw) => {
-      if (cancelled) return;
+
+    const markSeen = async (id: string) => {
+      try {
+        const raw = await AsyncStorage.getItem(seenKey);
+        const seenIds: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+        if (!seenIds.includes(id)) {
+          seenIds.push(id);
+          await AsyncStorage.setItem(seenKey, JSON.stringify(seenIds));
+        }
+      } catch {
+        // best effort
+      }
+    };
+
+    const pickAndShowPopup = async () => {
+      let raw: string | null = null;
+      try {
+        raw = await AsyncStorage.getItem(seenKey);
+      } catch {
+        // best effort
+      }
       let seenIds: string[] = [];
       try {
         seenIds = raw ? (JSON.parse(raw) as string[]) : [];
       } catch {
         seenIds = [];
       }
-      const nextPopup = popupItems.find((p) => !seenIds.includes(p.id));
-      if (nextPopup) {
-        setActivePopup(nextPopup);
+      // Iterate through unseen popups in order. If a popup's image is
+      // too large / 404s, mark it seen and try the next one in the
+      // queue. Skip any popup whose URL is suspicious before we even
+      // dispatch the Modal.
+      const MAX_IMAGE_BYTES = 3 * 1024 * 1024; // 3 MB
+      for (const popup of popupItems) {
+        if (cancelled) return;
+        if (seenIds.includes(popup.id)) continue;
+        try {
+          const head = await fetch(popup.image, { method: 'HEAD' });
+          if (!head.ok) {
+            console.warn('[Menu] Popup image HEAD non-ok:', head.status, popup.id);
+            await markSeen(popup.id);
+            seenIds.push(popup.id);
+            continue;
+          }
+          const lenStr = head.headers.get('content-length');
+          const len = lenStr ? Number(lenStr) : null;
+          if (len !== null && Number.isFinite(len) && len > MAX_IMAGE_BYTES) {
+            console.warn('[Menu] Popup image too large, skipping:', len, 'bytes, id:', popup.id);
+            await markSeen(popup.id);
+            seenIds.push(popup.id);
+            continue;
+          }
+        } catch (e) {
+          console.warn('[Menu] Popup HEAD failed, skipping:', popup.id, (e as Error)?.message);
+          await markSeen(popup.id);
+          seenIds.push(popup.id);
+          continue;
+        }
+        if (cancelled) return;
+        // This popup passed pre-flight — show it and mark seen.
+        setActivePopup(popup);
         setPromoPopupVisible(true);
         popupSessionConsumedRef.current = true;
-        // Persist the seen id immediately. Force-close-during-popup
-        // is now safe — next cold launch advances to the next
-        // unseen popup (or none).
-        if (!seenIds.includes(nextPopup.id)) {
-          seenIds.push(nextPopup.id);
-          AsyncStorage.setItem(seenKey, JSON.stringify(seenIds)).catch(() => {});
-        }
+        await markSeen(popup.id);
+        return;
       }
-    });
+    };
+
+    void pickAndShowPopup();
     return () => {
       cancelled = true;
     };
@@ -157,10 +210,13 @@ export default function MenuScreen() {
   }, []);
 
   // Image-load safety net: if the popup banner image hasn't loaded
-  // within 5 seconds, auto-dismiss the popup. Prevents the "invisible
-  // overlay blocks menu" state where a slow/broken image leaves the
-  // user staring at a transparent backdrop with no visible close
-  // affordance. Cleared as soon as onLoad fires.
+  // within 12 seconds, auto-dismiss the popup. The pre-flight HEAD
+  // check above already rejects oversized / 404 images, so the
+  // expected onLoad latency is ≤ 2s. 12s is a generous backstop for
+  // legitimate slow networks (rural / spotty LTE in KSA) without
+  // letting a stuck modal block the menu indefinitely. The
+  // always-visible X button means users can dismiss manually before
+  // this fires anyway.
   const popupLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!promoPopupVisible) {
@@ -173,7 +229,7 @@ export default function MenuScreen() {
     popupLoadTimerRef.current = setTimeout(() => {
       console.warn('[Menu] Popup image load timeout — auto-dismissing');
       closePromoPopup();
-    }, 5000);
+    }, 12000);
     return () => {
       if (popupLoadTimerRef.current) {
         clearTimeout(popupLoadTimerRef.current);
