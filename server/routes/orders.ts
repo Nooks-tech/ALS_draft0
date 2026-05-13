@@ -302,6 +302,49 @@ ordersRouter.post('/commit', async (req, res) => {
     // payment) or null (COD pays cash on delivery). For partial-wallet
     // orders the card still pays the remainder and Moyasar verifies
     // that portion below; we round the expected halalas to match.
+    // ─── Atomic promo redemption ───
+    // If the customer applied a promo code, redeem it via the
+    // redeem_promo RPC BEFORE we touch the wallet or the order row.
+    // The RPC is atomic and idempotent:
+    //   - rejects expired codes (real expiry enforcement, not just
+    //     client-side validate)
+    //   - rejects codes whose usage_count >= usage_limit
+    //   - inserts a promo_redemptions row tied to (merchant, code,
+    //     order_id) so a retried commit doesn't double-count
+    //   - increments usage_count atomically with the limit check
+    // The cancel path (refundOrderToWallet) calls unredeem_promo which
+    // rolls back the row + decrements usage_count, so cancelled orders
+    // give the slot back to the merchant's quota.
+    const trimmedPromoCode =
+      typeof promoCode === 'string' && promoCode.trim() ? promoCode.trim().toUpperCase() : null;
+    const promoScopeNormalized =
+      promoScope === 'delivery' || promoScope === 'total' ? promoScope : null;
+    const promoDiscountValue =
+      typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
+        ? promoDiscountSar
+        : 0;
+    if (trimmedPromoCode && promoDiscountValue > 0 && promoScopeNormalized && existing?.id !== id) {
+      const { data: redeemRows, error: redeemErr } = await supabaseAdmin.rpc('redeem_promo', {
+        p_merchant_id: merchantId,
+        p_code: trimmedPromoCode,
+        p_order_id: id,
+        p_customer_id: user.id,
+        p_discount_sar: promoDiscountValue,
+        p_scope: promoScopeNormalized,
+      });
+      if (redeemErr) {
+        console.error('[Orders] redeem_promo RPC error:', redeemErr.message);
+        return res.status(500).json({ error: 'Promo redemption failed' });
+      }
+      const redeemResult = Array.isArray(redeemRows) ? redeemRows[0] : redeemRows;
+      const ok = redeemResult?.ok ?? false;
+      if (!ok) {
+        const reason = redeemResult?.reason ?? 'Promo code redemption failed';
+        console.warn('[Orders] Rejecting commit — promo redeem failed:', trimmedPromoCode, reason);
+        return res.status(400).json({ error: reason, code: 'PROMO_REJECTED' });
+      }
+    }
+
     const trimmedPaymentId = typeof paymentId === 'string' ? paymentId.trim() : '';
     const isMoyasarPaymentId = trimmedPaymentId && !trimmedPaymentId.startsWith('wallet:');
     if (isMoyasarPaymentId && existing?.id !== id) {
@@ -802,6 +845,22 @@ async function refundOrderToWallet(
     })
     .eq('id', orderId);
   if (updateErr) return { ok: false, error: updateErr.message, status: 500 };
+
+  // Give the promo slot back to the merchant's quota. unredeem_promo
+  // deletes the promo_redemptions row tied to this order_id and
+  // decrements promo_codes.usage_count by 1. Idempotent — re-running
+  // a cancel on an already-unredeemed order is a no-op (returns 0).
+  // Non-blocking: a failure here doesn't roll back the refund.
+  if (order.merchant_id) {
+    try {
+      await supabaseAdmin.rpc('unredeem_promo', {
+        p_merchant_id: order.merchant_id,
+        p_order_id: orderId,
+      });
+    } catch (e: any) {
+      console.warn('[Orders] unredeem_promo failed (non-blocking):', e?.message);
+    }
+  }
 
   // Tell Foodics the order is cancelled so the kitchen stops cooking.
   // Best-effort — a Foodics outage must NOT roll back the refund we just

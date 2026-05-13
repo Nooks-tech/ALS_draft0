@@ -41,7 +41,7 @@ import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from
 import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
-import { calculateNooksPromoDiscount, consumeNooksPromo, fetchNooksPromos } from '../src/api/nooksPromos';
+import { calculateNooksPromoDiscount, fetchNooksPromos } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
 
 /** Haversine distance in km. Used when city is missing to detect cross-city delivery. */
@@ -794,11 +794,12 @@ export default function CheckoutScreen() {
       // user doesn't need to wait for these before seeing their order
       // confirmed. Idempotency is enforced server-side so retries are
       // safe. Failures only log; the order is already placed.
-      if (promoApplied && promoCode) {
-        void consumeNooksPromo(merchantId, promoCode).catch((e) =>
-          console.warn('[Checkout] Promo consume failed:', e?.message),
-        );
-      }
+      //
+      // Promo redemption is NO LONGER done here — Express /commit now
+      // calls the atomic redeem_promo RPC before INSERT. The RPC
+      // enforces expiry + usage_limit and writes the
+      // promo_redemptions row idempotently. Calling consumeNooksPromo
+      // here would double-increment the usage_count.
       if (usePoints && user?.id && merchantId) {
         if (loyaltyType === 'cashback' && pointsDiscount > 0) {
           void loyaltyApi
