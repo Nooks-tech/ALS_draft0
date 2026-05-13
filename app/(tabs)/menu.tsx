@@ -164,6 +164,29 @@ export default function MenuScreen() {
     setActivePopup(null);
   }, []);
 
+  // Aspect ratio of the active popup image, so the modal can adapt
+  // to portrait phone-screenshot popups (allowed via the popupBanner
+  // normalize profile) as well as landscape promos. The card's
+  // 75 vh maxHeight clamps tall portrait images.
+  const [popupAspect, setPopupAspect] = useState<number | null>(null);
+  useEffect(() => {
+    if (!activePopup) {
+      setPopupAspect(null);
+      return;
+    }
+    let cancelled = false;
+    Image.getSize(
+      activePopup.image,
+      (w, h) => {
+        if (!cancelled && h > 0) setPopupAspect(w / h);
+      },
+      () => {
+        if (!cancelled) setPopupAspect(null);
+      },
+    );
+    return () => { cancelled = true; };
+  }, [activePopup]);
+
   // Image-load safety net: if the popup banner image hasn't loaded
   // within 12 seconds, auto-dismiss the popup. The pre-flight HEAD
   // check above already rejects oversized / 404 images, so the
@@ -619,7 +642,14 @@ export default function MenuScreen() {
               <View>
                 <ImageBackground
                   source={{ uri: activePopup.image }}
-                  className="h-[360px] justify-end p-4"
+                  // Render at the image's natural aspect — popups can
+                  // now be portrait (phone screenshots) or landscape.
+                  // Fallback aspect 16:9 only used briefly before
+                  // Image.getSize resolves. The card's 75 vh maxHeight
+                  // clamps tall portrait images so the bottom Close
+                  // bar stays visible.
+                  style={{ width: '100%', aspectRatio: popupAspect ?? 16 / 9 }}
+                  resizeMode="cover"
                   imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}
                   onLoad={() => {
                     if (popupLoadTimerRef.current) {
@@ -632,9 +662,17 @@ export default function MenuScreen() {
                     closePromoPopup();
                   }}
                 >
-                  <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
-                  <Text className="text-white font-bold text-2xl z-10">{activePopup.subtitle}</Text>
-                  <Text className="text-gray-200 z-10">{activePopup.title}</Text>
+                  {(activePopup.subtitle || activePopup.title) && (
+                    <View className="absolute inset-x-0 bottom-0 p-4">
+                      <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
+                      {activePopup.subtitle ? (
+                        <Text className="text-white font-bold text-2xl z-10">{activePopup.subtitle}</Text>
+                      ) : null}
+                      {activePopup.title ? (
+                        <Text className="text-gray-200 z-10">{activePopup.title}</Text>
+                      ) : null}
+                    </View>
+                  )}
                 </ImageBackground>
                 {/* Always-visible × dismiss button. Absolute-positioned so
                     it sits above the image regardless of image load state. */}
