@@ -566,7 +566,10 @@ export default function LoyaltyModal() {
                       className="font-bold"
                       style={{ color: tx.type === 'earn' ? '#16a34a' : '#d97706' }}
                     >
-                      {tx.type === 'earn' ? '+' : ''}{tx.points}
+                      {tx.type === 'earn' ? '+' : ''}
+                      {tx.loyalty_type === 'cashback' && tx.amount_sar != null
+                        ? `${tx.amount_sar} ${isArabic ? 'ر.س' : 'SAR'}`
+                        : tx.points}
                     </Text>
                   </View>
                 ))
