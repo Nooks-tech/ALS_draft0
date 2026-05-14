@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Clock,
   CreditCard,
+  Gift,
   MapPin,
   Percent,
   Pencil,
@@ -1033,15 +1034,14 @@ export default function CheckoutScreen() {
       return;
     }
 
-    // Free-order short-circuit: cart total is 0 AND at least one
+    // Free-order short-circuit: order total is 0 AND at least one
     // stamp-milestone reward is selected → there's nothing to charge
     // and nothing for the wallet to cover. Skip Moyasar entirely,
-    // commit with paymentMethod='reward', send to Foodics. Falls
-    // through to the wallet path below which handles the no-card
-    // flow correctly (just with a 'reward' payment id sentinel
-    // instead of 'wallet:').
+    // commit with paymentMethod='reward', send to Foodics. Cart
+    // items will all be reward items (since regular items have
+    // price ≥ 0.5 SAR floor) so totalSar is 0.
     const isFreeRewardOrder =
-      finalTotal === 0 && selectedMilestoneIds.size > 0 && cartItems.length === 0;
+      finalTotal === 0 && selectedMilestoneIds.size > 0;
 
     // Wallet covers the FULL order total — short-circuit to the
     // wallet-only path regardless of whatever method the customer
@@ -1869,7 +1869,7 @@ export default function CheckoutScreen() {
               </Text>
               <PriceWithSymbol amount={chargeAmount} iconSize={24} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }} />
             </View>
-          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig ? (
+          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 ? (
             <View style={{ width: 180, height: 50 }}>
               <ApplePayButton
                 paymentConfig={paymentConfig}
@@ -1886,6 +1886,16 @@ export default function CheckoutScreen() {
             >
               {submitting ? (
                 <ActivityIndicator size="small" color="white" />
+              ) : chargeAmount === 0 && selectedMilestoneIds.size > 0 ? (
+                // Free-reward order: total is 0 + at least one
+                // milestone selected. No card, no wallet — just
+                // complete and ship the rewards to Foodics.
+                <View className="flex-row items-center">
+                  <Gift size={18} color="white" />
+                  <Text className="text-white font-bold text-base ms-2">
+                    {isArabic ? 'إتمام الطلب' : 'Complete order'}
+                  </Text>
+                </View>
               ) : walletCoversAll ? (
                 <View className="flex-row items-center">
                   <Wallet size={18} color="white" />
