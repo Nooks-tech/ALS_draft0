@@ -500,17 +500,6 @@ export default function MenuScreen() {
         >
           <Search size={22} color={tabTextColor} />
         </TouchableOpacity>
-        {customerId && (
-          <TouchableOpacity
-            onPress={() => router.push('/rewards' as never)}
-            className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0"
-            style={{ marginEnd: 8 }}
-            accessibilityLabel={isArabic ? 'مكافآت الأختام' : 'Stamp rewards'}
-            accessibilityRole="button"
-          >
-            <Gift size={22} color={tabTextColor} />
-          </TouchableOpacity>
-        )}
         <View
           className=""
           style={{ width: LOGO_SLOT, height: LOGO_SLOT, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
@@ -748,6 +737,43 @@ export default function MenuScreen() {
           </View>
         </View>
       ) : null}
+
+      {/* FLOATING REWARDS FAB — bottom-right of the menu, above the
+          cart bar when cart is non-empty. Only shown to signed-in
+          customers (rewards are user-scoped). Tap routes to the
+          rewards screen where the customer can redeem stamp
+          milestones into the cart as 0-priced items.
+          The vertical offset matches the cart bar's height so the
+          FAB doesn't collide with it when cart is non-empty. */}
+      {customerId && (
+        <TouchableOpacity
+          onPress={() => router.push('/rewards' as never)}
+          accessibilityLabel={isArabic ? 'مكافآت الأختام' : 'Stamp rewards'}
+          accessibilityRole="button"
+          activeOpacity={0.85}
+          style={{
+            position: 'absolute',
+            end: 20,
+            bottom: totalItems > 0
+              ? (Platform.OS === 'ios' ? 196 : 180)
+              : (Platform.OS === 'ios' ? 104 : 88),
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            backgroundColor: accent,
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 6 },
+            shadowOpacity: 0.25,
+            shadowRadius: 12,
+            elevation: 8,
+            zIndex: 110,
+          }}
+        >
+          <Gift size={26} color="#ffffff" />
+        </TouchableOpacity>
+      )}
 
       {/* FLOATING CART — browsing isn't gated by branch status. Checkout
           is where we validate the customer's selected / nearest branch. */}
