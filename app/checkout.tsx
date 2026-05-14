@@ -1009,39 +1009,44 @@ export default function CheckoutScreen() {
       return;
     }
 
-    if (!paymentConfig || !resolvedPublishableKey || !customerPaymentsEnabled) {
-      Alert.alert(
-        'Payment Not Configured',
-        'Merchant checkout is not configured yet. Please contact the store.'
-      );
-      return;
-    }
-    if (paymentMethod === 'apple_pay' && Platform.OS !== 'ios') {
-      Alert.alert(
-        'Apple Pay',
-        isArabic ? 'آبل باي متاح على أجهزة iOS فقط.' : 'Apple Pay is only available on iOS.',
-      );
-      return;
-    }
-    if (paymentMethod === 'apple_pay' && !resolvedApplePayEnabled) {
-      Alert.alert(
-        'Apple Pay',
-        isArabic ? 'آبل باي لسه ما جاهز لهذا المتجر. استخدم البطاقة.' : 'Apple Pay is not ready for this merchant yet. Please use card payment.',
-      );
-      return;
-    }
-    if (paymentMethod === 'apple_pay') {
-      return;
-    }
-
     // Free-order short-circuit: order total is 0 AND at least one
     // stamp-milestone reward is selected → there's nothing to charge
     // and nothing for the wallet to cover. Skip Moyasar entirely,
-    // commit with paymentMethod='reward', send to Foodics. Cart
-    // items will all be reward items (since regular items have
-    // price ≥ 0.5 SAR floor) so totalSar is 0.
+    // commit with paymentMethod='reward', send to Foodics. Computed
+    // BEFORE the apple_pay / payment-config guards below because for
+    // a free order none of those apply — paymentMethod might still
+    // be 'apple_pay' (the customer hadn't changed it since prior
+    // orders) but we don't actually need Apple Pay for a 0 SAR
+    // order, so we should bypass that handler.
     const isFreeRewardOrder =
       finalTotal === 0 && selectedMilestoneIds.size > 0;
+
+    if (!isFreeRewardOrder) {
+      if (!paymentConfig || !resolvedPublishableKey || !customerPaymentsEnabled) {
+        Alert.alert(
+          'Payment Not Configured',
+          'Merchant checkout is not configured yet. Please contact the store.'
+        );
+        return;
+      }
+      if (paymentMethod === 'apple_pay' && Platform.OS !== 'ios') {
+        Alert.alert(
+          'Apple Pay',
+          isArabic ? 'آبل باي متاح على أجهزة iOS فقط.' : 'Apple Pay is only available on iOS.',
+        );
+        return;
+      }
+      if (paymentMethod === 'apple_pay' && !resolvedApplePayEnabled) {
+        Alert.alert(
+          'Apple Pay',
+          isArabic ? 'آبل باي لسه ما جاهز لهذا المتجر. استخدم البطاقة.' : 'Apple Pay is not ready for this merchant yet. Please use card payment.',
+        );
+        return;
+      }
+      if (paymentMethod === 'apple_pay') {
+        return;
+      }
+    }
 
     // Wallet covers the FULL order total — short-circuit to the
     // wallet-only path regardless of whatever method the customer
