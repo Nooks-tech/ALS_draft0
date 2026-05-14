@@ -42,7 +42,6 @@ import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
 import { validateNooksPromo } from '../src/api/nooksPromos';
-import { useRewardSelection } from '../src/context/RewardSelectionContext';
 import { validatePromoCode } from '../src/api/promo';
 
 /** Haversine distance in km. Used when city is missing to detect cross-city delivery. */
@@ -87,6 +86,8 @@ export default function CheckoutScreen() {
     deliveryAddress,
     deliveryFee: cartDeliveryFee,
     deliveryOptionId,
+    addToCart,
+    removeFromCart,
     clearCart } = useCart();
   const { merchantId } = useMerchant();
   const { addOrder } = useOrders();
@@ -196,14 +197,20 @@ export default function CheckoutScreen() {
   const [pointsLoading, setPointsLoading] = useState(false);
   const loyaltyType = loyaltyBalance?.loyaltyType ?? 'points';
 
-  // Stamp milestone redemptions selected by the customer. Shared
-  // with the /rewards screen via RewardSelectionContext so selections
-  // made there are visible here, and vice versa.
-  const {
-    selectedMilestoneIds,
-    toggleMilestone,
-    clearMilestones,
-  } = useRewardSelection();
+  // Stamp milestone redemptions selected by the customer. Source of
+  // truth is now the cart itself — reward items in cartItems carry
+  // a rewardMilestoneId tag, and the unique values of that tag form
+  // the selected-milestones set. /rewards adds/removes the cart
+  // items; checkout's milestone toggle below does the same via
+  // toggleMilestone(). Cross-screen sync is automatic because the
+  // cart is shared context.
+  const selectedMilestoneIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const ci of cartItems) {
+      if (ci.rewardMilestoneId) s.add(ci.rewardMilestoneId);
+    }
+    return s;
+  }, [cartItems]);
 
   // Delivery fee quote from Foodics. Re-runs whenever the branch or
   // delivery coordinates change. `withinServiceArea === false` blocks
@@ -221,6 +228,35 @@ export default function CheckoutScreen() {
   const [deliveryQuoteReason, setDeliveryQuoteReason] = useState<'out_of_zone' | 'error' | null>(null);
   // Menu products — used to look up Foodics reward items and add them as free line items
   const { products: menuProducts } = useMenu();
+
+  // Toggle a milestone selection by adding or removing its reward
+  // items from the cart. The /rewards screen and the checkout
+  // milestone-toggle UI both call this; the cart is the single
+  // source of truth for what's been selected.
+  const toggleMilestone = useCallback((milestoneId: string) => {
+    const milestone = loyaltyBalance?.stampMilestones.find((m) => m.id === milestoneId);
+    if (!milestone) return;
+    if (selectedMilestoneIds.has(milestoneId)) {
+      for (const foodicsId of milestone.foodics_product_ids ?? []) {
+        removeFromCart({ uniqueId: `reward-${milestoneId}-${foodicsId}` });
+      }
+    } else {
+      for (const foodicsId of milestone.foodics_product_ids ?? []) {
+        const product = menuProducts.find((p) => p.foodicsProductId === foodicsId);
+        if (!product) continue;
+        addToCart({
+          id: product.id,
+          name: `🎁 ${product.name}`,
+          price: 0,
+          basePrice: 0,
+          image: product.image ?? '',
+          customizations: null,
+          uniqueId: `reward-${milestoneId}-${foodicsId}`,
+          rewardMilestoneId: milestoneId,
+        });
+      }
+    }
+  }, [loyaltyBalance, menuProducts, selectedMilestoneIds, addToCart, removeFromCart]);
 
   /**
    * The merchant's defined milestones, ordered by stamp_number. We
@@ -269,40 +305,13 @@ export default function CheckoutScreen() {
     return used;
   }, [loyaltyBalance, selectedMilestoneIds]);
 
-  /**
-   * Free line items to attach to the order for each selected stamp milestone.
-   * Skips milestones the customer can no longer afford — defense in depth
-   * against a stale UI letting them select something the eligibleRedemptions
-   * filter would have hidden.
-   */
-  const rewardItemsForOrder = useMemo(() => {
-    if (!loyaltyBalance || selectedMilestoneIds.size === 0) return [];
-    const out: Array<{ id: string; name: string; price: number; quantity: number; image: string; customizations: null; uniqueId: string }> = [];
-    // Aggregate stamps required across every selected milestone so a
-    // customer with 5 stamps can't claim milestone-2 + milestone-4
-    // simultaneously (sum = 6, exceeds balance) — server-side atomic
-    // deduction would catch the second one but we'd rather refuse here.
-    let stampsBudget = loyaltyBalance.stamps;
-    for (const milestoneId of selectedMilestoneIds) {
-      const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === milestoneId);
-      if (!milestone) continue;
-      if (stampsBudget < milestone.stamp_number) continue;
-      stampsBudget -= milestone.stamp_number;
-      for (const foodicsId of milestone.foodics_product_ids ?? []) {
-        const product = menuProducts.find((p) => p.foodicsProductId === foodicsId);
-        if (!product) continue;
-        out.push({
-          id: product.id,
-          name: `🎁 ${product.name}`,
-          price: 0,
-          quantity: 1,
-          image: product.image ?? '',
-          customizations: null,
-          uniqueId: `reward-${milestone.id}-${foodicsId}` });
-      }
-    }
-    return out;
-  }, [loyaltyBalance, selectedMilestoneIds, menuProducts]);
+  // Items are now in the cart directly with rewardMilestoneId tags
+  // (via /rewards or the checkout milestone-toggle helper above).
+  // Kept as an empty array so the legacy `[...cartItems,
+  // ...rewardItemsForOrder]` spreads below don't change shape during
+  // the refactor; the no-longer-needed reward computation lived
+  // here previously.
+  const rewardItemsForOrder: Array<{ id: string; name: string; price: number; quantity: number; image: string; customizations: null; uniqueId: string }> = [];
 
   useEffect(() => {
     if (!user?.id || !merchantId) return;
@@ -709,7 +718,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: [...cartItems, ...redeemedRewardItems].map((item) => ({
+          items: cartItems.filter((it) => !it.rewardMilestoneId || !failedRedemptionIds.includes(it.rewardMilestoneId)).map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -759,7 +768,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: [...cartItems, ...redeemedRewardItems].map((item) => ({
+          items: cartItems.filter((it) => !it.rewardMilestoneId || !failedRedemptionIds.includes(it.rewardMilestoneId)).map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -853,7 +862,9 @@ export default function CheckoutScreen() {
       // commitOrderWithRedemptions before the Foodics order shipped —
       // see the redeem-then-commit block above this callback. Nothing
       // more to do here; just clear the selection from the UI.
-      clearMilestones();
+      // Cart clear below also removes any reward items, which
+      // automatically empties the milestone-selected set since
+      // selection is now derived from cart contents.
       clearCart();
       setShowPaymentModal(false);
       setMoyasarWebUrl(null);
@@ -1079,7 +1090,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: [...cartItems, ...redeemedRewardItems].map((item) => ({
+          items: cartItems.filter((it) => !it.rewardMilestoneId || !failedRedemptionIds.includes(it.rewardMilestoneId)).map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -1144,7 +1155,9 @@ export default function CheckoutScreen() {
           walletOrderId,
         );
 
-        clearMilestones();
+        // Cart clear below also removes any reward items, which
+      // automatically empties the milestone-selected set since
+      // selection is now derived from cart contents.
         clearCart();
         orderIdRef.current = `order-${Date.now()}`;
         if (merchantId) {
@@ -1191,7 +1204,7 @@ export default function CheckoutScreen() {
             branchName: selectedBranch.name ?? null,
             totalSar: Number(finalTotal.toFixed(2)),
             status: 'Placed',
-            items: [...cartItems, ...rewardItemsForOrder].map((item) => ({
+            items: cartItems.map((item) => ({
               id: item.id,
               name: item.name,
               price: item.price, basePrice: item.basePrice ?? item.price,

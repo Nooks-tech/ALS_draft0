@@ -23,6 +23,15 @@ export type CartItem = {
   image: string;
   customizations?: { [key: string]: any };
   uniqueId: string;
+  /**
+   * Set when this cart line is a stamp-milestone reward (free item).
+   * The /rewards screen and the checkout milestone toggle both write
+   * these reward items into the cart so the cart screen shows them
+   * naturally as 0-priced lines. Checkout derives the selected
+   * milestone IDs by collecting unique values of this field across
+   * cart items.
+   */
+  rewardMilestoneId?: string;
 };
 
 // 2. Define the Context Type (Updated with new functions)

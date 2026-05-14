@@ -34,7 +34,6 @@ import { useCart } from '../src/context/CartContext';
 import { useMenuContext } from '../src/context/MenuContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
-import { useRewardSelection } from '../src/context/RewardSelectionContext';
 import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
 
 function hexWithAlpha(hex: string, alpha: number): string {
@@ -120,8 +119,7 @@ export default function RewardsScreen() {
   const { user } = useAuth();
   const { primaryColor, backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const { products: menuProducts } = useMenuContext();
-  const { totalItems } = useCart();
-  const { selectedMilestoneIds, addMilestone, removeMilestone } = useRewardSelection();
+  const { cartItems, addToCart, removeFromCart, totalItems } = useCart();
   const isArabic = i18n.language === 'ar';
 
   const [balance, setBalance] = useState<LoyaltyBalance | null>(null);
@@ -149,6 +147,17 @@ export default function RewardsScreen() {
       cancelled = true;
     };
   }, [user?.id, merchantId]);
+
+  // Derive which milestones are currently selected from cart items.
+  // Reward items in the cart carry a rewardMilestoneId tag; the set
+  // of those tag values IS the selected-milestones set.
+  const selectedMilestoneIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const ci of cartItems) {
+      if (ci.rewardMilestoneId) s.add(ci.rewardMilestoneId);
+    }
+    return s;
+  }, [cartItems]);
 
   // Stamps committed to already-selected milestones — used to disable
   // additional selections that would exceed the balance.
@@ -188,12 +197,30 @@ export default function RewardsScreen() {
 
   const handleRedeem = (row: (typeof milestoneRows)[number]) => {
     if (!row.redeemable || row.budgetBlocked) return;
-    addMilestone(row.id);
+    // Add the milestone's product(s) to the cart as zero-priced
+    // line items, tagged with rewardMilestoneId so checkout + cart
+    // know they're rewards, not regular paid items.
+    for (const product of row.products) {
+      if (!product.foodicsProductId) continue;
+      addToCart({
+        id: product.id,
+        name: `🎁 ${product.name}`,
+        price: 0,
+        basePrice: 0,
+        image: product.image ?? '',
+        customizations: null,
+        uniqueId: `reward-${row.id}-${product.foodicsProductId}`,
+        rewardMilestoneId: row.id,
+      });
+    }
   };
 
   const handleUnredeem = (row: (typeof milestoneRows)[number]) => {
     if (!row.selected) return;
-    removeMilestone(row.id);
+    for (const product of row.products) {
+      if (!product.foodicsProductId) continue;
+      removeFromCart({ uniqueId: `reward-${row.id}-${product.foodicsProductId}` });
+    }
   };
 
   // Stamp-card styling — read from loyalty balance with sensible defaults.
