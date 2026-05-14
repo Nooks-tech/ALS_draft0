@@ -144,13 +144,51 @@ export default function MenuScreen() {
         seenIds = [];
       }
       const nextPopup = popupItems.find((p) => !seenIds.includes(p.id));
+      // Debug: emit everything the popup queue saw on this run so we
+      // can verify seen_ids actually persists across cold starts.
+      // Tagged [POPUP_QUEUE] on the server side. Fire-and-forget.
+      const debugUrl = process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL?.replace(/\/$/, '');
+      if (debugUrl) {
+        fetch(`${debugUrl}/api/public/debug/banner-check`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            merchantId,
+            url: '_popup_queue',
+            customerId,
+            seenIds,
+            popupOrder: popupItems.map((p) => p.id),
+            pickedId: nextPopup?.id ?? null,
+            refConsumed: popupSessionConsumedRef.current,
+            seenKey,
+            ts: Date.now(),
+          }),
+        }).catch(() => {});
+      }
       if (nextPopup) {
         setActivePopup(nextPopup);
         setPromoPopupVisible(true);
         popupSessionConsumedRef.current = true;
         if (!seenIds.includes(nextPopup.id)) {
           seenIds.push(nextPopup.id);
-          AsyncStorage.setItem(seenKey, JSON.stringify(seenIds)).catch(() => {});
+          AsyncStorage.setItem(seenKey, JSON.stringify(seenIds))
+            .then(() => {
+              if (debugUrl) {
+                fetch(`${debugUrl}/api/public/debug/banner-check`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    merchantId,
+                    url: '_popup_seen_persisted',
+                    customerId,
+                    persistedId: nextPopup.id,
+                    seenIdsAfter: seenIds,
+                    ts: Date.now(),
+                  }),
+                }).catch(() => {});
+              }
+            })
+            .catch(() => {});
         }
       }
     });
