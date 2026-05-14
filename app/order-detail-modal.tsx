@@ -598,10 +598,63 @@ export default function OrderDetailModal() {
             </View>
           ))}
 
-          <View className="border-t border-slate-200 mt-4 pt-4 flex-row justify-between">
-            <Text className="font-bold text-slate-800">{isArabic ? 'الإجمالي' : 'Total'}</Text>
-            <PriceWithSymbol amount={order.total} iconSize={18} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 18 }} />
-          </View>
+          {(() => {
+            // Payment breakdown — only render if at least one
+            // non-card payment source was used. Otherwise the Total
+            // line below is sufficient. The math: subtotal − promo
+            // − cashback − wallet = card portion, where subtotal is
+            // reconstructed from items × price + delivery fee since
+            // the row doesn't store pre-discount subtotal directly.
+            const itemsSubtotal = order.items.reduce(
+              (sum, it) => sum + Number(it.price ?? 0) * Number(it.quantity ?? 0),
+              0,
+            );
+            const deliveryFee = Number(order.deliveryFee ?? 0);
+            const promo = Number(order.promoDiscountSar ?? 0);
+            const cashback = Number(order.cashbackPaidSar ?? 0);
+            const wallet = Number(order.walletPaidSar ?? 0);
+            const card = Number(order.cardPaidSar ?? 0);
+            const hasBreakdown = promo > 0 || cashback > 0 || wallet > 0;
+            if (!hasBreakdown) {
+              return (
+                <View className="border-t border-slate-200 mt-4 pt-4 flex-row justify-between">
+                  <Text className="font-bold text-slate-800">{isArabic ? 'الإجمالي' : 'Total'}</Text>
+                  <PriceWithSymbol amount={order.total} iconSize={18} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700', fontSize: 18 }} />
+                </View>
+              );
+            }
+            const Row = ({ label, amount, negative = false, bold = false }: { label: string; amount: number; negative?: boolean; bold?: boolean }) => (
+              <View className="flex-row justify-between items-center py-1">
+                <Text className={bold ? 'font-bold text-slate-800' : 'text-slate-600 text-sm'}>{label}</Text>
+                <View className="flex-row items-center">
+                  {negative ? <Text className={bold ? 'font-bold text-emerald-600' : 'text-emerald-600 text-sm'}>−</Text> : null}
+                  <PriceWithSymbol
+                    amount={amount}
+                    iconSize={bold ? 16 : 14}
+                    iconColor={negative ? '#059669' : bold ? primaryColor : '#475569'}
+                    textStyle={{
+                      color: negative ? '#059669' : bold ? primaryColor : '#475569',
+                      fontWeight: bold ? '700' : '500',
+                      fontSize: bold ? 16 : 14,
+                    }}
+                  />
+                </View>
+              </View>
+            );
+            return (
+              <View className="border-t border-slate-200 mt-4 pt-4">
+                <Text className="font-bold text-slate-800 mb-2">{isArabic ? 'تفاصيل الدفع' : 'Payment details'}</Text>
+                <Row label={isArabic ? 'الإجمالي الفرعي' : 'Subtotal'} amount={itemsSubtotal} />
+                {deliveryFee > 0 ? <Row label={isArabic ? 'رسوم التوصيل' : 'Delivery fee'} amount={deliveryFee} /> : null}
+                {promo > 0 ? <Row label={isArabic ? `الخصم${order.promoCode ? ` (${order.promoCode})` : ''}` : `Promo${order.promoCode ? ` (${order.promoCode})` : ''}`} amount={promo} negative /> : null}
+                {cashback > 0 ? <Row label={isArabic ? 'كاش باك' : 'Cashback'} amount={cashback} negative /> : null}
+                {wallet > 0 ? <Row label={isArabic ? 'المحفظة' : 'Wallet'} amount={wallet} negative /> : null}
+                {card > 0 ? <Row label={isArabic ? 'البطاقة' : 'Card'} amount={card} /> : null}
+                <View className="h-2" />
+                <Row label={isArabic ? 'الإجمالي المدفوع' : 'Total paid'} amount={order.total} bold />
+              </View>
+            );
+          })()}
 
           {/* Report Issue (delivered orders, 24h window) */}
           {canReportIssue && !loadingComplaint && (

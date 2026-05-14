@@ -48,6 +48,14 @@ export type PlacedOrder = {
   driver_phone?: string;
   otoDispatchStatus?: 'success' | 'failed';
   otoDispatchError?: string;
+  // Payment breakdown — used by the order detail modal to show
+  // customer where the total came from (subtotal − cashback − wallet
+  // − promo = card portion). Optional because legacy orders pre-
+  // 2026-05-12 don't have these columns populated.
+  walletPaidSar?: number;
+  cashbackPaidSar?: number;
+  cardPaidSar?: number;
+  promoDiscountSar?: number;
 };
 
 export type OrdersContextType = {
@@ -129,6 +137,11 @@ function rowToOrder(row: OrderRow): PlacedOrder {
     paymentMethod: row.payment_method ?? undefined,
     driver_name: row.driver_name ?? undefined,
     driver_phone: row.driver_phone ?? undefined,
+    walletPaidSar: row.wallet_paid_sar != null ? Number(row.wallet_paid_sar) : undefined,
+    cashbackPaidSar: row.cashback_paid_sar != null ? Number(row.cashback_paid_sar) : undefined,
+    cardPaidSar: row.card_paid_sar != null ? Number(row.card_paid_sar) : undefined,
+    promoDiscountSar: row.promo_discount_sar != null ? Number(row.promo_discount_sar) : undefined,
+    promoCode: row.promo_code ?? undefined,
   };
 }
 

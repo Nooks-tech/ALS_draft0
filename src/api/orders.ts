@@ -63,6 +63,16 @@ export type OrderRow = {
   driver_phone: string | null;
   created_at: string;
   updated_at: string;
+  // Payment breakdown columns (added 2026-05-12 in migration
+  // 20260512000000_order_payment_composition.sql). Populated by the
+  // /commit endpoint from the client's walletAmountSar / cashbackAmountSar
+  // / loyaltyDiscountSar fields. Optional because legacy rows from
+  // before that migration may be null.
+  wallet_paid_sar?: number | null;
+  cashback_paid_sar?: number | null;
+  card_paid_sar?: number | null;
+  promo_discount_sar?: number | null;
+  promo_code?: string | null;
 };
 
 export type OrderInsert = {
