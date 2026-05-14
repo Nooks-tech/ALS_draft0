@@ -671,46 +671,15 @@ export default function CheckoutScreen() {
     try {
       const resolvedPaymentId = moyasarPaymentId || orderId;
 
-      // Lock in stamp-milestone redemptions BEFORE the order ships, so
-      // the customer can't get free reward items for a milestone they
-      // haven't actually paid the stamps for. Server-side atomic
-      // deduction will reject (409 / 400) if the balance moved
-      // underneath us — we drop the corresponding reward items from
-      // the order body when that happens. The customer still pays for
-      // their cart but doesn't get the un-redeemable freebie.
-      //
-      // This used to be a fire-and-forget call AFTER the order shipped
-      // (`void loyaltyApi.redeemStampMilestone(...).catch(...)`) — that
-      // pattern let the order ship with the freebie even when the
-      // server rejected the redeem, and the unredeemed redemption row
-      // stayed available so the customer could repeat the trick on
-      // the next order indefinitely.
-      const redeemedRewardItems: typeof rewardItemsForOrder = [];
-      const failedRedemptionIds: string[] = [];
-      if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
-        for (const milestoneId of selectedMilestoneIds) {
-          try {
-            await loyaltyApi.redeemStampMilestone(user.id, merchantId, milestoneId);
-            for (const item of rewardItemsForOrder) {
-              if (item.uniqueId.startsWith(`reward-${milestoneId}-`)) {
-                redeemedRewardItems.push(item);
-              }
-            }
-          } catch (err: any) {
-            console.warn('[Checkout] Stamp milestone redeem failed:', milestoneId, err?.message);
-            failedRedemptionIds.push(milestoneId);
-          }
-        }
-      }
-      if (failedRedemptionIds.length > 0) {
-        Alert.alert(
-          isArabic ? 'بعض المكافآت غير متاحة' : 'Some rewards unavailable',
-          isArabic
-            ? 'تعذّر استبدال بعض المكافآت — تم إرسال طلبك بدون المكافآت غير المتاحة.'
-            : "Couldn't redeem one or more rewards — your order was placed without the unavailable freebies.",
-        );
-      }
-
+      // Commit FIRST, then redeem stamps. If we redeemed before the
+      // commit and the commit failed (server validation, network, etc.)
+      // the stamps were burned with no order to show for it — exactly
+      // the bug a customer hit on 2026-05-14. Inverting the order
+      // means a commit failure leaves the stamp balance untouched and
+      // the customer can retry. If the redeem fails AFTER a successful
+      // commit, the customer keeps the freebie without paying stamps
+      // (rare, low-cost, server-side reconciliation can clear
+      // stamp_milestone_ids on the order row in a follow-up).
       if (user?.id) {
         await commitOrder({
           id: orderId,
@@ -719,7 +688,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: cartItems.filter((it) => !it.rewardMilestoneId || !failedRedemptionIds.includes(it.rewardMilestoneId)).map((item) => ({
+          items: cartItems.map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -769,7 +738,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: cartItems.filter((it) => !it.rewardMilestoneId || !failedRedemptionIds.includes(it.rewardMilestoneId)).map((item) => ({
+          items: cartItems.map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -859,10 +828,21 @@ export default function CheckoutScreen() {
             .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
         }
       }
-      // Stamp-milestone redemptions were already locked server-side in
-      // commitOrderWithRedemptions before the Foodics order shipped —
-      // see the redeem-then-commit block above this callback. Nothing
-      // more to do here; just clear the selection from the UI.
+      // Stamp-milestone redemption runs AFTER the await commitOrder
+      // above. If commit failed it threw and we never got here, so
+      // stamps stay intact. If the redeem call itself fails post-
+      // commit, log it — the order already shipped with the freebie,
+      // server-side reconciliation can clean up stamp_milestone_ids
+      // if needed.
+      if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
+        for (const milestoneId of selectedMilestoneIds) {
+          void loyaltyApi
+            .redeemStampMilestone(user.id, merchantId, milestoneId)
+            .catch((err: any) =>
+              console.warn('[Checkout] Post-commit stamp redeem failed:', milestoneId, err?.message)
+            );
+        }
+      }
       // Cart clear below also removes any reward items, which
       // automatically empties the milestone-selected set since
       // selection is now derived from cart contents.
@@ -1065,29 +1045,11 @@ export default function CheckoutScreen() {
       setSubmitting(true);
       const walletOrderId = orderIdRef.current;
       try {
-        const redeemedRewardItems: typeof rewardItemsForOrder = [];
-        const failedRedemptionIds: string[] = [];
-        if (selectedMilestoneIds.size > 0 && merchantId) {
-          for (const milestoneId of selectedMilestoneIds) {
-            try {
-              await loyaltyApi.redeemStampMilestone(user.id, merchantId, milestoneId);
-              for (const item of rewardItemsForOrder) {
-                if (item.uniqueId.startsWith(`reward-${milestoneId}-`)) redeemedRewardItems.push(item);
-              }
-            } catch {
-              failedRedemptionIds.push(milestoneId);
-            }
-          }
-        }
-        if (failedRedemptionIds.length > 0) {
-          Alert.alert(
-            isArabic ? 'بعض المكافآت غير متاحة' : 'Some rewards unavailable',
-            isArabic
-              ? 'تعذّر استبدال بعض المكافآت — تم إرسال طلبك بدون المكافآت غير المتاحة.'
-              : "Couldn't redeem one or more rewards — your order was placed without the unavailable freebies.",
-          );
-        }
-
+        // Commit FIRST; redeem stamps AFTER. Reasoning at the equivalent
+        // block in createOrderAfterPayment above. A commit failure here
+        // (e.g. server validation, per-item floor) used to burn the
+        // customer's stamps before the order existed — see incident
+        // 2026-05-14 where 4 stamps vanished on a كوكيز freebie.
         await commitOrder({
           id: walletOrderId,
           merchantId,
@@ -1095,7 +1057,7 @@ export default function CheckoutScreen() {
           branchName: selectedBranch.name ?? null,
           totalSar: Number(finalTotal.toFixed(2)),
           status: 'Placed',
-          items: cartItems.filter((it) => !it.rewardMilestoneId || !failedRedemptionIds.includes(it.rewardMilestoneId)).map((item) => ({
+          items: cartItems.map((item) => ({
             id: item.id,
             name: item.name,
             price: item.price, basePrice: item.basePrice ?? item.price,
@@ -1131,6 +1093,18 @@ export default function CheckoutScreen() {
           stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true });
+
+        // Stamp redemption AFTER commit succeeded. If commit threw we
+        // never get here and the stamps stay intact.
+        if (selectedMilestoneIds.size > 0 && merchantId) {
+          for (const milestoneId of selectedMilestoneIds) {
+            void loyaltyApi
+              .redeemStampMilestone(user.id, merchantId, milestoneId)
+              .catch((err: any) =>
+                console.warn('[Checkout] Post-commit stamp redeem failed:', milestoneId, err?.message)
+              );
+          }
+        }
 
         addOrder(
           {
