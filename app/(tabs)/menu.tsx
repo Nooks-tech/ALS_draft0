@@ -6,6 +6,7 @@ import {
   Bike,
   ChevronDown,
   ChevronRight,
+  Gift,
   Plus,
   Search,
   Store,
@@ -499,6 +500,17 @@ export default function MenuScreen() {
         >
           <Search size={22} color={tabTextColor} />
         </TouchableOpacity>
+        {customerId && (
+          <TouchableOpacity
+            onPress={() => router.push('/rewards' as never)}
+            className="bg-white/20 p-3 rounded-2xl border border-white/30 shadow-sm shrink-0"
+            style={{ marginEnd: 8 }}
+            accessibilityLabel={isArabic ? 'مكافآت الأختام' : 'Stamp rewards'}
+            accessibilityRole="button"
+          >
+            <Gift size={22} color={tabTextColor} />
+          </TouchableOpacity>
+        )}
         <View
           className=""
           style={{ width: LOGO_SLOT, height: LOGO_SLOT, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}

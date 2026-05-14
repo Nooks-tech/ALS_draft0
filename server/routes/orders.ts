@@ -346,7 +346,15 @@ ordersRouter.post('/commit', async (req, res) => {
     }
 
     const trimmedPaymentId = typeof paymentId === 'string' ? paymentId.trim() : '';
-    const isMoyasarPaymentId = trimmedPaymentId && !trimmedPaymentId.startsWith('wallet:');
+    // 'wallet:<txn>' is the wallet-only sentinel. 'reward:<orderId>'
+    // is the free-order sentinel for rewards-only orders where no
+    // money is being charged at all (only stamp-milestone freebies).
+    // Both skip Moyasar verification — there's no card payment to
+    // verify against.
+    const isMoyasarPaymentId =
+      trimmedPaymentId
+      && !trimmedPaymentId.startsWith('wallet:')
+      && !trimmedPaymentId.startsWith('reward:');
     if (isMoyasarPaymentId && existing?.id !== id) {
       // Compute expected card portion (totalSar minus wallet portion).
       // Cashback / loyalty discounts are NOT subtracted here — the

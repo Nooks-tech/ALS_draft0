@@ -79,6 +79,7 @@ async function requestNotificationPermissions() {
 }
 import { AuthProvider } from '../src/context/AuthContext';
 import { CartProvider } from '../src/context/CartContext';
+import { RewardSelectionProvider } from '../src/context/RewardSelectionContext';
 import { MerchantBrandingWrapper } from '../src/context/MerchantBrandingContext';
 import { MerchantProvider } from '../src/context/MerchantContext';
 import { OperationsProvider } from '../src/context/OperationsContext';
@@ -304,6 +305,7 @@ export default function RootLayout() {
             bundle's AppSplash cold-start mode takes over. */}
         <LanguageSwitchOverlay />
         <CartProvider>
+        <RewardSelectionProvider>
         <OperationsProvider>
           <FavoritesProvider>
           <OrdersProvider>
@@ -314,7 +316,7 @@ export default function RootLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="+not-found" />
-            
+
             <Stack.Screen name="cart" options={{ presentation: 'modal' }} />
             <Stack.Screen name="checkout" options={{ presentation: 'modal' }} />
             <Stack.Screen name="order-type" options={{ presentation: 'transparentModal' }} />
@@ -332,6 +334,7 @@ export default function RootLayout() {
             <Stack.Screen name="privacy-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="terms-modal" options={{ presentation: 'transparentModal' }} />
             <Stack.Screen name="loyalty-modal" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="rewards" options={{ presentation: 'modal' }} />
             <Stack.Screen name="order-confirmed" options={{ presentation: 'modal', gestureEnabled: false }} />
           </Stack>
           </SavedAddressesProvider>
@@ -339,6 +342,7 @@ export default function RootLayout() {
           </OrdersProvider>
           </FavoritesProvider>
         </OperationsProvider>
+        </RewardSelectionProvider>
         </CartProvider>
         </MenuProvider>
         </LanguageSwitchProvider>

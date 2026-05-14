@@ -42,6 +42,7 @@ import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
 import { validateNooksPromo } from '../src/api/nooksPromos';
+import { useRewardSelection } from '../src/context/RewardSelectionContext';
 import { validatePromoCode } from '../src/api/promo';
 
 /** Haversine distance in km. Used when city is missing to detect cross-city delivery. */
@@ -195,8 +196,14 @@ export default function CheckoutScreen() {
   const [pointsLoading, setPointsLoading] = useState(false);
   const loyaltyType = loyaltyBalance?.loyaltyType ?? 'points';
 
-  // Stamp milestone redemptions selected by the customer (free reward items added to the order)
-  const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<Set<string>>(new Set());
+  // Stamp milestone redemptions selected by the customer. Shared
+  // with the /rewards screen via RewardSelectionContext so selections
+  // made there are visible here, and vice versa.
+  const {
+    selectedMilestoneIds,
+    toggleMilestone,
+    clearMilestones,
+  } = useRewardSelection();
 
   // Delivery fee quote from Foodics. Re-runs whenever the branch or
   // delivery coordinates change. `withinServiceArea === false` blocks
@@ -212,36 +219,55 @@ export default function CheckoutScreen() {
   // resolved sailed past the Pay-disabled check.
   const [deliveryQuoteWithin, setDeliveryQuoteWithin] = useState<boolean>(false);
   const [deliveryQuoteReason, setDeliveryQuoteReason] = useState<'out_of_zone' | 'error' | null>(null);
-  const toggleMilestone = useCallback((milestoneId: string) => {
-    setSelectedMilestoneIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(milestoneId)) next.delete(milestoneId);
-      else next.add(milestoneId);
-      return next;
-    });
-  }, []);
-
   // Menu products — used to look up Foodics reward items and add them as free line items
   const { products: menuProducts } = useMenu();
 
   /**
-   * Filtered list of redemptions the customer can ACTUALLY use in this
-   * order. The server pre-creates a redemption row whenever stamps cross
-   * a milestone, but doesn't delete the row when stamps drop back below
-   * (e.g. after redeeming a higher-tier milestone first). Without this
-   * filter the UI shows "stamp 2 reward available" to a customer who
-   * only has 1 stamp left and lets them try to redeem — server then
-   * rejects but the order goes through with the free item. We close
-   * that path by hiding any redemption whose milestone the customer
-   * can't currently afford.
+   * The merchant's defined milestones, ordered by stamp_number. We
+   * intentionally derive from stampMilestones (the definition) NOT
+   * availableRedemptions (the ticket queue). The ticket model created
+   * duplicate "stamp 2 reward available" rows when the customer's
+   * stamp count crossed the milestone repeatedly across card cycles,
+   * even though the merchant only defined one stamp-2 reward.
+   *
+   * Each row carries `redeemable` (has the stamp count) + a computed
+   * budget flag from the currently-selected set, so the UI can show
+   * locked vs available vs budget-exceeded states cleanly.
    */
-  const eligibleRedemptions = useMemo(() => {
-    if (!loyaltyBalance) return [];
-    return loyaltyBalance.availableRedemptions.filter((r) => {
-      const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === r.milestone_id);
-      return milestone != null && loyaltyBalance.stamps >= milestone.stamp_number;
-    });
+  const allMilestonesForUI = useMemo(() => {
+    if (!loyaltyBalance) return [] as Array<{
+      id: string;
+      stamp_number: number;
+      reward_name: string;
+      foodics_product_ids: string[];
+      redeemable: boolean;
+    }>;
+    return [...loyaltyBalance.stampMilestones]
+      .sort((a, b) => a.stamp_number - b.stamp_number)
+      .map((m) => ({
+        id: m.id,
+        stamp_number: m.stamp_number,
+        reward_name: m.reward_name,
+        foodics_product_ids: m.foodics_product_ids ?? [],
+        redeemable: loyaltyBalance.stamps >= m.stamp_number,
+      }));
   }, [loyaltyBalance]);
+
+  /**
+   * Stamps already committed to the currently-selected milestones.
+   * Used to disable additional selections that would exceed the
+   * customer's balance — e.g. with 4 stamps, picking the stamp-4
+   * milestone leaves 0 budget, so stamp-2 must lock out.
+   */
+  const selectedStampsBudget = useMemo(() => {
+    if (!loyaltyBalance) return 0;
+    let used = 0;
+    for (const id of selectedMilestoneIds) {
+      const m = loyaltyBalance.stampMilestones.find((x) => x.id === id);
+      if (m) used += m.stamp_number;
+    }
+    return used;
+  }, [loyaltyBalance, selectedMilestoneIds]);
 
   /**
    * Free line items to attach to the order for each selected stamp milestone.
@@ -827,7 +853,7 @@ export default function CheckoutScreen() {
       // commitOrderWithRedemptions before the Foodics order shipped —
       // see the redeem-then-commit block above this callback. Nothing
       // more to do here; just clear the selection from the UI.
-      setSelectedMilestoneIds(new Set());
+      clearMilestones();
       clearCart();
       setShowPaymentModal(false);
       setMoyasarWebUrl(null);
@@ -996,13 +1022,23 @@ export default function CheckoutScreen() {
       return;
     }
 
+    // Free-order short-circuit: cart total is 0 AND at least one
+    // stamp-milestone reward is selected → there's nothing to charge
+    // and nothing for the wallet to cover. Skip Moyasar entirely,
+    // commit with paymentMethod='reward', send to Foodics. Falls
+    // through to the wallet path below which handles the no-card
+    // flow correctly (just with a 'reward' payment id sentinel
+    // instead of 'wallet:').
+    const isFreeRewardOrder =
+      finalTotal === 0 && selectedMilestoneIds.size > 0 && cartItems.length === 0;
+
     // Wallet covers the FULL order total — short-circuit to the
     // wallet-only path regardless of whatever method the customer
     // had selected before flipping the toggle, since there's nothing
     // left to charge a card for. The legacy 'wallet' paymentMethod
     // case (from the old picker shape) also routes here so old code
     // paths still resolve cleanly.
-    if (walletCoversAll || (paymentMethod as any) === 'wallet') {
+    if (isFreeRewardOrder || walletCoversAll || (paymentMethod as any) === 'wallet') {
       if (!user?.id) {
         Alert.alert(
           isArabic ? 'سجّل الدخول' : 'Sign in',
@@ -1057,7 +1093,12 @@ export default function CheckoutScreen() {
           deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
           deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
           deliveryFee,
-          paymentMethod: 'wallet',
+          // Free-reward orders use 'reward' paymentMethod + a
+          // reward:<id> sentinel payment_id. Server allow-lists both
+          // and skips Moyasar verification + wallet debit. Wallet-only
+          // orders keep 'wallet' + walletAmountSar = full total.
+          paymentMethod: isFreeRewardOrder ? 'reward' : 'wallet',
+          paymentId: isFreeRewardOrder ? `reward:${walletOrderId}` : null,
           customerName: profile.fullName || null,
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
@@ -1065,11 +1106,10 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
-          // Server reads paymentMethod === 'wallet' and debits the
-          // full totalSar via the wallet legacy path. We send the
-          // explicit walletAmountSar too so the new code path is
-          // also satisfied — defence in depth.
-          walletAmountSar: Number(finalTotal.toFixed(2)),
+          // No wallet debit for free-reward orders. Wallet-only
+          // orders debit the full total via the legacy 'wallet'
+          // paymentMethod path the server still understands.
+          walletAmountSar: isFreeRewardOrder ? null : Number(finalTotal.toFixed(2)),
           cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
           stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
           stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
@@ -1091,8 +1131,8 @@ export default function CheckoutScreen() {
             otoDispatchStatus: undefined,
             otoDispatchError: undefined,
             deliveryFee,
-            paymentId: walletOrderId,
-            paymentMethod: 'wallet',
+            paymentId: isFreeRewardOrder ? `reward:${walletOrderId}` : walletOrderId,
+            paymentMethod: isFreeRewardOrder ? 'reward' : 'wallet',
             promoCode: promoApplied ? promoCode : undefined,
             promoDiscountSar: promoApplied ? promoDiscount : undefined,
             promoScope: promoApplied ? promoScope : undefined,
@@ -1104,7 +1144,7 @@ export default function CheckoutScreen() {
           walletOrderId,
         );
 
-        setSelectedMilestoneIds(new Set());
+        clearMilestones();
         clearCart();
         orderIdRef.current = `order-${Date.now()}`;
         if (merchantId) {
@@ -1602,8 +1642,14 @@ export default function CheckoutScreen() {
             </TouchableOpacity>
           )}
 
-          {/* Stamp Rewards Redemption — customer has hit one or more milestones and can add the reward items free to this order */}
-          {user?.id && loyaltyBalance && loyaltyType === 'stamps' && eligibleRedemptions.length > 0 && (
+          {/* Stamp Rewards Redemption — list ALL of the merchant's
+              defined milestones, marking each as redeemable / locked /
+              budget-exceeded based on the customer's stamp count and
+              currently-selected set. Sourced from stampMilestones not
+              availableRedemptions to avoid the duplicate-row bug where
+              a customer who crossed stamp-2 multiple times saw
+              "stamp 2 reward" listed N times. */}
+          {user?.id && loyaltyBalance && loyaltyType === 'stamps' && allMilestonesForUI.length > 0 && (
             <View className="mt-5 rounded-[28px] p-4" style={{ borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc' }}>
               <View className="flex-row items-center mb-2">
                 <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center' }}>
@@ -1611,26 +1657,35 @@ export default function CheckoutScreen() {
                 </View>
                 <View className="ms-3 flex-1">
                   <Text className="font-bold text-slate-900">
-                    {isArabic ? 'مكافآت الختم المتاحة' : 'Available stamp rewards'}
+                    {isArabic ? 'مكافآت الختم' : 'Stamp rewards'}
                   </Text>
                   <Text className="text-slate-500 text-xs mt-0.5">
-                    {isArabic ? 'اختر المكافأة لإضافتها مجانًا إلى طلبك' : 'Tap to add the reward free to your order'}
+                    {isArabic
+                      ? `لديك ${loyaltyBalance.stamps} ختم — اختر المكافأة لإضافتها مجانًا`
+                      : `You have ${loyaltyBalance.stamps} stamp${loyaltyBalance.stamps === 1 ? '' : 's'} — tap to redeem free`}
                   </Text>
                 </View>
               </View>
-              {eligibleRedemptions.map((redemption) => {
-                const milestone = loyaltyBalance.stampMilestones.find((m) => m.id === redemption.milestone_id);
-                if (!milestone) return null;
+              {allMilestonesForUI.map((milestone) => {
                 const selected = selectedMilestoneIds.has(milestone.id);
+                const remainingBudget = loyaltyBalance.stamps - selectedStampsBudget;
+                // Budget exceeded only if NOT already selected and
+                // remaining budget can't cover this milestone.
+                const budgetBlocked = !selected && milestone.stamp_number > remainingBudget;
+                const locked = !milestone.redeemable;
+                const disabled = locked || budgetBlocked;
+                const stampsShort = milestone.stamp_number - loyaltyBalance.stamps;
                 return (
                   <TouchableOpacity
-                    key={redemption.id}
-                    onPress={() => toggleMilestone(milestone.id)}
+                    key={milestone.id}
+                    onPress={() => { if (!disabled) toggleMilestone(milestone.id); }}
+                    disabled={disabled}
                     className="flex-row items-center justify-between rounded-2xl px-3 py-3 mt-2"
                     style={{
                       borderWidth: 1,
                       borderColor: selected ? primaryColor : '#e2e8f0',
-                      backgroundColor: selected ? `${primaryColor}10` : '#fff' }}
+                      backgroundColor: selected ? `${primaryColor}10` : '#fff',
+                      opacity: disabled ? 0.45 : 1 }}
                     activeOpacity={0.7}
                   >
                     <View className="flex-1 pe-3">
@@ -1638,7 +1693,17 @@ export default function CheckoutScreen() {
                         {milestone.reward_name || (isArabic ? 'مكافأة' : 'Reward')}
                       </Text>
                       <Text className="text-xs text-slate-500 mt-0.5">
-                        {isArabic ? `عند الختم رقم ${milestone.stamp_number}` : `At stamp ${milestone.stamp_number}`}
+                        {locked
+                          ? (isArabic
+                              ? `يلزم ${stampsShort} ختم إضافي`
+                              : `Need ${stampsShort} more stamp${stampsShort === 1 ? '' : 's'}`)
+                          : budgetBlocked
+                            ? (isArabic
+                                ? 'الرصيد المتبقي غير كافٍ مع المكافآت الأخرى المختارة'
+                                : 'Not enough stamps left with other rewards selected')
+                            : (isArabic
+                                ? `يستهلك ${milestone.stamp_number} ختم`
+                                : `Uses ${milestone.stamp_number} stamp${milestone.stamp_number === 1 ? '' : 's'}`)}
                       </Text>
                     </View>
                     <View
