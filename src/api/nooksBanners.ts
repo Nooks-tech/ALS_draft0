@@ -6,6 +6,7 @@
  */
 import Constants from 'expo-constants';
 import { Image } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchWithTimeout } from '../lib/persistentCache';
 
 const BASE_URL =
@@ -42,16 +43,42 @@ export type NooksBanner = {
  */
 const BANNER_MAX_DIMENSION = 2000;
 const BANNER_MAX_BYTES = 2 * 1024 * 1024; // 2 MB
+const BANNER_SAFE_CACHE_PREFIX = '@als_banner_ok::';
 
+/**
+ * Per-URL validation cache. Once a banner URL has been verified safe
+ * for this device, we never re-validate it. This is critical for
+ * deterministic popup ordering: previously, validation ran on every
+ * cold launch, and a flaky network on one launch could cause banner
+ * #2 to fail (timeout) while banner #3 passed — the popup queue then
+ * showed #3 first, then #2 on the next launch when network was fine.
+ * User saw popups in random order instead of sort_order.
+ *
+ * Caching only SUCCESS (not failure) means a banner that failed once
+ * gets retried on the next launch. If it consistently fails, it
+ * continues to be filtered. If it intermittently fails, it eventually
+ * passes and gets cached as safe. After 1-2 cold starts, all banners
+ * are typically cached and the queue is fully deterministic.
+ *
+ * Cache key is the full URL string. Supabase Storage paths include
+ * `${merchantId}/banner-${Date.now()}.png` so a re-upload changes the
+ * URL automatically — no stale-cache risk after the merchant
+ * re-normalizes.
+ */
 async function isBannerImageSafe(url: string): Promise<boolean> {
   if (!url || typeof url !== 'string') return false;
 
+  // Cache hit? Trust the previous validation.
+  try {
+    const cached = await AsyncStorage.getItem(BANNER_SAFE_CACHE_PREFIX + url);
+    if (cached === '1') return true;
+  } catch {
+    // Cache read failure is non-fatal; fall through to live validation.
+  }
+
   // Step 0: HEAD check for file size BEFORE downloading. Pre-empts the
-  // download of huge images entirely — they never enter the OS cache,
-  // never get decoded, can't freeze the JS thread. The HEAD request is
-  // cheap (one round-trip, no body). If the server doesn't return
-  // Content-Length (some CDNs strip it), we fall through to the
-  // prefetch + getSize checks below as a backstop.
+  // download of huge images entirely. If the CDN strips Content-Length
+  // we fall through to prefetch + getSize as a backstop.
   try {
     const headController = new AbortController();
     const headTimeout = setTimeout(() => headController.abort(), 4000);
@@ -77,14 +104,15 @@ async function isBannerImageSafe(url: string): Promise<boolean> {
     return false;
   }
 
-  // Step 1: prefetch (warm OS cache + verify decodability).
+  // Step 1: prefetch (warm OS cache + verify decodability). 15s timeout
+  // (up from 8s) for slow rural KSA LTE — was too aggressive before.
   let prefetchTimeoutId: ReturnType<typeof setTimeout> | null = null;
   let prefetchOk = false;
   try {
     prefetchOk = await Promise.race<boolean>([
       Image.prefetch(url).then(Boolean),
       new Promise<boolean>((resolve) => {
-        prefetchTimeoutId = setTimeout(() => resolve(false), 8000);
+        prefetchTimeoutId = setTimeout(() => resolve(false), 15000);
       }),
     ]);
   } catch {
@@ -97,9 +125,10 @@ async function isBannerImageSafe(url: string): Promise<boolean> {
     return false;
   }
 
-  // Step 2: dimensions. getSize uses the cached file. Defensive against
-  // small file size but huge pixel dimensions (highly-compressed PNG).
+  // Step 2: dimensions check (defensive against small-file, huge-pixel
+  // images that prefetch wouldn't catch).
   let sizeTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  let dimsOk = false;
   try {
     const dims = await Promise.race<{ width: number; height: number } | null>([
       new Promise<{ width: number; height: number } | null>((resolve) => {
@@ -110,7 +139,7 @@ async function isBannerImageSafe(url: string): Promise<boolean> {
         );
       }),
       new Promise<null>((resolve) => {
-        sizeTimeoutId = setTimeout(() => resolve(null), 4000);
+        sizeTimeoutId = setTimeout(() => resolve(null), 5000);
       }),
     ]);
     if (!dims) {
@@ -122,12 +151,24 @@ async function isBannerImageSafe(url: string): Promise<boolean> {
       console.warn('[Banners] Dimensions too large, filtering:', url, `${dims.width}x${dims.height}`);
       return false;
     }
-    return true;
+    dimsOk = true;
   } catch {
     return false;
   } finally {
     if (sizeTimeoutId !== null) clearTimeout(sizeTimeoutId);
   }
+
+  // Cache success so we never re-validate this URL on this device.
+  // Failures are intentionally NOT cached — a network blip shouldn't
+  // permanently filter out a valid banner.
+  if (dimsOk) {
+    try {
+      await AsyncStorage.setItem(BANNER_SAFE_CACHE_PREFIX + url, '1');
+    } catch {
+      // best effort
+    }
+  }
+  return dimsOk;
 }
 
 export async function fetchNooksBanners(merchantId: string): Promise<NooksBanner[]> {
