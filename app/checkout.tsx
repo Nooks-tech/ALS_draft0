@@ -41,7 +41,7 @@ import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from
 import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
-import { calculateNooksPromoDiscount, fetchNooksPromos } from '../src/api/nooksPromos';
+import { validateNooksPromo } from '../src/api/nooksPromos';
 import { validatePromoCode } from '../src/api/promo';
 
 /** Haversine distance in km. Used when city is missing to detect cross-city delivery. */
@@ -527,23 +527,26 @@ export default function CheckoutScreen() {
     setPromoValidating(true);
     try {
       if (merchantId) {
-        const promos = await fetchNooksPromos(merchantId);
-        const matched = promos.find((p) => p.code?.toUpperCase() === code.toUpperCase());
-        if (matched) {
-          // Check expiry date
-          if (matched.valid_until) {
-            const expiry = new Date(matched.valid_until);
-            if (!isNaN(expiry.getTime()) && expiry < new Date()) {
-              Alert.alert(
-                isArabic ? 'انتهى الكود' : 'Expired Code',
-                isArabic ? 'صلاحية هذا الكود انتهت.' : 'This promo code has expired.',
-              );
-              setPromoValidating(false);
-              return;
-            }
-          }
-          // Scope-aware: 'delivery' applies to deliveryFee only; 'total' (default) to items only.
-          if (matched.scope === 'delivery' && deliveryFee <= 0) {
+        // PRIMARY path: hit the nooksweb /promos/validate endpoint
+        // with the customer_id. The endpoint enforces:
+        //   - expiry
+        //   - global usage_limit (across all customers)
+        //   - per-customer usage_limit_per_customer
+        // so the customer gets immediate feedback at apply-time
+        // when they've already used the code, when the merchant's
+        // total cap is hit, or when the code expired. Without this
+        // they'd see "WELCOME applied" + discount, only to get
+        // rejected at the Pay step — false-hopes UX the user
+        // explicitly called out.
+        const validation = await validateNooksPromo({
+          merchantId,
+          code,
+          subtotal: totalPrice,
+          deliveryFee,
+          customerId: user?.id ?? null,
+        });
+        if (validation.valid) {
+          if (validation.scope === 'delivery' && deliveryFee <= 0) {
             Alert.alert(
               isArabic ? 'كود توصيل فقط' : 'Delivery-only code',
               isArabic
@@ -553,25 +556,34 @@ export default function CheckoutScreen() {
             setPromoValidating(false);
             return;
           }
-          const discountAmount = calculateNooksPromoDiscount(matched, totalPrice, deliveryFee);
-          if (discountAmount > 0) {
-            setPromoDiscount(discountAmount);
+          if (validation.discountAmount > 0) {
+            setPromoDiscount(validation.discountAmount);
             setPromoApplied(true);
-            setPromoCode(matched.code);
-            setPromoScope(matched.scope === 'delivery' ? 'delivery' : 'total');
+            setPromoCode(validation.code);
+            setPromoScope(validation.scope);
             setShowCouponInput(false);
             setCouponInput('');
             return;
           }
+        } else {
+          // Server said no. Surface the actual reason so the customer
+          // knows whether it's expired, limit reached, already used, etc.
+          Alert.alert(
+            isArabic ? 'كود غير صالح' : 'Invalid Code',
+            validation.error || (isArabic ? 'هذا الكود غير صالح أو منتهي.' : 'This promo code is not valid or has expired.'),
+          );
+          setPromoValidating(false);
+          return;
         }
       }
+      // Fallback: legacy als_promo_codes table (different namespace
+      // from the nooksweb merchant promos). Only reached if no
+      // merchantId or the nooks endpoint is unreachable.
       const result = await validatePromoCode(code, totalPrice);
       if (result.valid) {
         setPromoDiscount(result.discountAmount);
         setPromoApplied(true);
         setPromoCode(result.code);
-        // Server-validated promos default to subtotal scope — the
-        // /api/promo/validate response doesn't expose scope today.
         setPromoScope('total');
         setShowCouponInput(false);
         setCouponInput('');

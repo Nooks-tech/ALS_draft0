@@ -44,6 +44,73 @@ export async function fetchNooksPromos(merchantId: string): Promise<NooksPromo[]
   }
 }
 
+export type NooksPromoValidationResult =
+  | {
+      valid: true;
+      code: string;
+      type: 'percent' | 'fixed';
+      value: number;
+      scope: 'total' | 'delivery';
+      discountAmount: number;
+      newTotal: number;
+    }
+  | { valid: false; error: string };
+
+/**
+ * Hits the nooksweb /promos/validate endpoint with customer_id so
+ * the per-customer usage cap is enforced AT APPLY-TIME (not just
+ * commit-time). This is the customer's first feedback when entering
+ * a code — if they've already used it, they see the error inline
+ * instead of after pressing Pay.
+ *
+ * Server-side redeem_promo at commit-time is the FINAL gate; this
+ * function gives the merchant good UX by catching invalid codes
+ * before the payment sheet opens.
+ */
+export async function validateNooksPromo(params: {
+  merchantId: string;
+  code: string;
+  subtotal: number;
+  deliveryFee?: number;
+  customerId?: string | null;
+}): Promise<NooksPromoValidationResult> {
+  const { merchantId, code, subtotal, deliveryFee = 0, customerId } = params;
+  if (!BASE_URL.trim() || !merchantId.trim() || !code.trim()) {
+    return { valid: false, error: 'invalid input' };
+  }
+  const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/promos/validate`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        subtotal,
+        delivery_fee: deliveryFee,
+        ...(customerId ? { customer_id: customerId } : {}),
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      return { valid: false, error: typeof data.error === 'string' ? data.error : `HTTP ${res.status}` };
+    }
+    if (data.valid !== true) {
+      return { valid: false, error: typeof data.error === 'string' ? data.error : 'Invalid code' };
+    }
+    return {
+      valid: true,
+      code: String(data.code ?? code),
+      type: (data.type as 'percent' | 'fixed') ?? 'fixed',
+      value: Number(data.value ?? 0),
+      scope: (data.scope as 'total' | 'delivery') ?? 'total',
+      discountAmount: Number(data.discount_amount ?? 0),
+      newTotal: Number(data.new_total ?? 0),
+    };
+  } catch (e) {
+    return { valid: false, error: e instanceof Error ? e.message : 'Network error' };
+  }
+}
+
 export async function consumeNooksPromo(merchantId: string, code: string): Promise<void> {
   if (!BASE_URL.trim() || !merchantId.trim() || !code.trim()) return;
   const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/promos/use`;
