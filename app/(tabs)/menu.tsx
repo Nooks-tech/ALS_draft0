@@ -22,7 +22,6 @@ import {
   Image,
   ImageBackground,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   ScrollView,
   StatusBar,
@@ -655,77 +654,88 @@ export default function MenuScreen() {
         </GestureDetector>
       )}
 
-      {/* Promo popup: once per uploaded popup banner version.
-          Modal is ALWAYS mounted (no conditional `activePopup && ...`)
-          to avoid the iOS native-modal-layer race: if the Modal
-          component unmounts while its fade-out animation is still
-          running, the native layer can be orphaned and intercept
-          touches to the menu beneath — that's "menu can't be tapped
-          but other tabs work." Toggling `visible` instead lets the
-          native side animate out cleanly before the next interaction.
-
-          We also use `animationType="none"` so there's no fade window
-          where the layer could trap touches. Custom backdrop opacity
-          gives the fade-in look without the underlying race. */}
-      <Modal
-        visible={promoPopupVisible && !!activePopup}
-        transparent
-        animationType="none"
-        onRequestClose={closePromoPopup}
-      >
-        {activePopup ? (
-          <TouchableOpacity activeOpacity={1} onPress={closePromoPopup} className="flex-1 bg-black/60 justify-center items-center px-6">
-            <TouchableOpacity
-              activeOpacity={1}
-              onPress={(e) => e.stopPropagation()}
-              className="w-[92%] max-w-xl rounded-2xl overflow-hidden bg-white shadow-2xl"
-              style={{ maxHeight: Dimensions.get('window').height * 0.75 }}
-            >
-              <View>
-                <ImageBackground
-                  source={{ uri: activePopup.image }}
-                  style={{ width: '100%', aspectRatio: popupAspect ?? 16 / 9 }}
-                  resizeMode="cover"
-                  imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}
-                  onLoad={() => {
-                    if (popupLoadTimerRef.current) {
-                      clearTimeout(popupLoadTimerRef.current);
-                      popupLoadTimerRef.current = null;
-                    }
-                  }}
-                  onError={() => {
-                    console.warn('[Menu] Popup image failed to load — auto-dismissing');
-                    closePromoPopup();
-                  }}
-                >
-                  {(activePopup.subtitle || activePopup.title) && (
-                    <View className="absolute inset-x-0 bottom-0 p-4">
-                      <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
-                      {activePopup.subtitle ? (
-                        <Text className="text-white font-bold text-2xl z-10">{activePopup.subtitle}</Text>
-                      ) : null}
-                      {activePopup.title ? (
-                        <Text className="text-gray-200 z-10">{activePopup.title}</Text>
-                      ) : null}
-                    </View>
-                  )}
-                </ImageBackground>
-                <TouchableOpacity
-                  onPress={closePromoPopup}
-                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                  className="absolute top-3 end-3 w-9 h-9 rounded-full items-center justify-center"
-                  style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
-                >
-                  <X size={20} color="#ffffff" />
-                </TouchableOpacity>
-              </View>
-              <TouchableOpacity onPress={closePromoPopup} className="py-4 items-center border-t border-slate-100" style={{ backgroundColor: accent }}>
-                <Text className="text-white font-bold">{isArabic ? 'إغلاق' : 'Close'}</Text>
+      {/* Promo popup — implemented as an absolute-positioned View
+          overlay instead of <Modal>. The native RN Modal on iOS keeps
+          a UIWindow around even when visible toggles, and that window
+          can intercept touches even when the Modal is technically
+          "hidden" — that's the "menu unresponsive, tabs still work,
+          slider still animates" symptom (the tab bar and the
+          high-zIndex cart button are outside this screen's render
+          tree so they escape the trap).
+          With a plain View overlay there's no native window — when
+          we want the popup gone, we don't render. The overlay is
+          inside the menu screen's React tree, so it can't outlive
+          the conditional render. */}
+      {promoPopupVisible && activePopup ? (
+        <View
+          pointerEvents="auto"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 9999,
+            elevation: 9999,
+            backgroundColor: 'rgba(0,0,0,0.6)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            paddingHorizontal: 24,
+          }}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={closePromoPopup}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          />
+          <View
+            className="w-[92%] max-w-xl rounded-2xl overflow-hidden bg-white shadow-2xl"
+            style={{ maxHeight: Dimensions.get('window').height * 0.75 }}
+          >
+            <View>
+              <ImageBackground
+                source={{ uri: activePopup.image }}
+                style={{ width: '100%', aspectRatio: popupAspect ?? 16 / 9 }}
+                resizeMode="cover"
+                imageStyle={{ borderTopLeftRadius: 16, borderTopRightRadius: 16 }}
+                onLoad={() => {
+                  if (popupLoadTimerRef.current) {
+                    clearTimeout(popupLoadTimerRef.current);
+                    popupLoadTimerRef.current = null;
+                  }
+                }}
+                onError={() => {
+                  console.warn('[Menu] Popup image failed to load — auto-dismissing');
+                  closePromoPopup();
+                }}
+              >
+                {(activePopup.subtitle || activePopup.title) && (
+                  <View className="absolute inset-x-0 bottom-0 p-4">
+                    <View className="absolute inset-0 bg-black/50 rounded-t-2xl" />
+                    {activePopup.subtitle ? (
+                      <Text className="text-white font-bold text-2xl z-10">{activePopup.subtitle}</Text>
+                    ) : null}
+                    {activePopup.title ? (
+                      <Text className="text-gray-200 z-10">{activePopup.title}</Text>
+                    ) : null}
+                  </View>
+                )}
+              </ImageBackground>
+              <TouchableOpacity
+                onPress={closePromoPopup}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                className="absolute top-3 end-3 w-9 h-9 rounded-full items-center justify-center"
+                style={{ backgroundColor: 'rgba(0,0,0,0.55)' }}
+              >
+                <X size={20} color="#ffffff" />
               </TouchableOpacity>
+            </View>
+            <TouchableOpacity onPress={closePromoPopup} className="py-4 items-center border-t border-slate-100" style={{ backgroundColor: accent }}>
+              <Text className="text-white font-bold">{isArabic ? 'إغلاق' : 'Close'}</Text>
             </TouchableOpacity>
-          </TouchableOpacity>
-        ) : null}
-      </Modal>
+          </View>
+        </View>
+      ) : null}
 
       {/* FLOATING CART — browsing isn't gated by branch status. Checkout
           is where we validate the customer's selected / nearest branch. */}
