@@ -255,7 +255,14 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     const qty = Math.max(1, Math.floor(quantity));
     touchCart();
     setCartItems((prevItems) => {
-      const uniqueId = generateUniqueId(product);
+      // Respect a caller-supplied uniqueId when present. Reward items
+      // from the /rewards screen pass uniqueId='reward-<milestoneId>-
+      // <foodicsId>'. Without this, the auto-generated id would override
+      // the prefix and the server's reward-item floor exemption would
+      // miss it, rejecting the 0-priced line as "tampered".
+      const uniqueId = typeof product?.uniqueId === 'string' && product.uniqueId
+        ? product.uniqueId
+        : generateUniqueId(product);
       const existingItem = prevItems.find((item) => item.uniqueId === uniqueId);
 
       if (existingItem) {
