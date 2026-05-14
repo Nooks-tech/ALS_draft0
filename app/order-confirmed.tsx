@@ -24,7 +24,18 @@ export default function OrderConfirmedScreen() {
       </View>
 
       <TouchableOpacity
-        onPress={() => router.replace('/(tabs)/orders')}
+        onPress={() => {
+          // /order-confirmed is itself a modal stack screen (see
+          // app/_layout.tsx presentation: 'modal'). A plain replace
+          // to /(tabs)/orders from inside the modal stack just
+          // swaps the modal's content, which renders the Orders
+          // tab AS a modal sheet (back arrow on top, swipe-down
+          // handle, doesn't switch the bottom-tab selection).
+          // Dismiss the modal first, then switch tabs from the
+          // root context.
+          router.dismissAll();
+          router.replace('/(tabs)/orders');
+        }}
         className="mt-8 py-4 px-8 rounded-2xl"
         style={{ backgroundColor: primaryColor }}
       >

@@ -526,6 +526,13 @@ export default function CheckoutScreen() {
     : 0;
   const chargeAmount = Math.max(0, +(finalTotal - walletApplied).toFixed(2));
   const walletCoversAll = useWallet && walletApplied > 0 && chargeAmount === 0;
+  // True whenever there's nothing for the card / Apple Pay to charge —
+  // covers every combination of wallet / cashback / stamp-milestone
+  // freebies that lands at 0 SAR. We use it both to skip the Moyasar
+  // / Apple Pay early-return guards (otherwise a stale 'apple_pay'
+  // selection from a prior order silently no-ops the Pay button) and
+  // to route the order through the zero-charge commit branch.
+  const nothingToCharge = chargeAmount === 0;
   const amountHalals = Math.round(chargeAmount * 100);
 
   const paymentConfig = useMemo(() => {
@@ -989,19 +996,18 @@ export default function CheckoutScreen() {
       return;
     }
 
-    // Free-order short-circuit: order total is 0 AND at least one
-    // stamp-milestone reward is selected → there's nothing to charge
-    // and nothing for the wallet to cover. Skip Moyasar entirely,
-    // commit with paymentMethod='reward', send to Foodics. Computed
-    // BEFORE the apple_pay / payment-config guards below because for
-    // a free order none of those apply — paymentMethod might still
-    // be 'apple_pay' (the customer hadn't changed it since prior
-    // orders) but we don't actually need Apple Pay for a 0 SAR
-    // order, so we should bypass that handler.
+    // Free-reward subset of nothingToCharge — still needed to pick
+    // the right paymentMethod label / paymentId sentinel inside the
+    // zero-charge branch below.
     const isFreeRewardOrder =
       finalTotal === 0 && selectedMilestoneIds.size > 0;
 
-    if (!isFreeRewardOrder) {
+    // Apple Pay / Moyasar guards only apply when there IS actually a
+    // card portion to charge. Without this `nothingToCharge` short-
+    // circuit, a stale 'apple_pay' selection silently no-ops the Pay
+    // button for any 0-SAR order (free reward, cashback-covers-all,
+    // wallet-covers-all, or any combination).
+    if (!nothingToCharge) {
       if (!paymentConfig || !resolvedPublishableKey || !customerPaymentsEnabled) {
         Alert.alert(
           'Payment Not Configured',
@@ -1028,13 +1034,12 @@ export default function CheckoutScreen() {
       }
     }
 
-    // Wallet covers the FULL order total — short-circuit to the
-    // wallet-only path regardless of whatever method the customer
-    // had selected before flipping the toggle, since there's nothing
-    // left to charge a card for. The legacy 'wallet' paymentMethod
-    // case (from the old picker shape) also routes here so old code
-    // paths still resolve cleanly.
-    if (isFreeRewardOrder || walletCoversAll || (paymentMethod as any) === 'wallet') {
+    // Zero-charge commit branch. Captures every shape of order where
+    // the card has nothing to charge: free reward, cashback covers
+    // all, wallet covers all, or any combination. The legacy
+    // 'wallet' paymentMethod case (from the old picker shape) also
+    // routes here so old code paths still resolve cleanly.
+    if (nothingToCharge || (paymentMethod as any) === 'wallet') {
       if (!user?.id) {
         Alert.alert(
           isArabic ? 'سجّل الدخول' : 'Sign in',
@@ -1094,8 +1099,24 @@ export default function CheckoutScreen() {
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true });
 
-        // Stamp redemption AFTER commit succeeded. If commit threw we
-        // never get here and the stamps stay intact.
+        // All loyalty deductions run AFTER commit succeeded — if the
+        // commit threw, we never get here and balances stay intact.
+        // Cashback / points were previously only deducted in the card
+        // path (createOrderAfterPayment), so a wallet+cashback or
+        // cashback-covers-all order skipped the deduction entirely and
+        // any refund would have re-credited cashback the customer
+        // never actually paid.
+        if (usePoints && merchantId) {
+          if (loyaltyType === 'cashback' && pointsDiscount > 0) {
+            void loyaltyApi
+              .redeemCashback(user.id, pointsDiscount, walletOrderId, merchantId)
+              .catch((e) => console.warn('[Checkout] Cashback redeem failed:', e?.message));
+          } else if (pointsToRedeem > 0) {
+            void loyaltyApi
+              .redeem(user.id, pointsToRedeem, walletOrderId, merchantId)
+              .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
+          }
+        }
         if (selectedMilestoneIds.size > 0 && merchantId) {
           for (const milestoneId of selectedMilestoneIds) {
             void loyaltyApi
@@ -1147,6 +1168,13 @@ export default function CheckoutScreen() {
             cartTotalSar: finalTotal,
           });
         }
+        // Pop the checkout modal stack before navigating to the
+        // confirmation screen. Without this the (tabs) bottom-nav
+        // still routes through the checkout modal, so tapping "View
+        // Orders" stacks the Orders screen on top of checkout
+        // instead of switching to the Orders tab — same fix the card
+        // path already has at the equivalent spot.
+        router.dismissAll();
         router.replace({ pathname: '/order-confirmed', params: { orderId: walletOrderId } });
       } catch (err: any) {
         const msg = err?.message ?? '';

@@ -1236,6 +1236,27 @@ walletPassRouter.get('/wallet-pass/check', (_req, res) => {
   res.json({ available: true });
 });
 
+// Diagnostic endpoint to force-refresh a customer's Apple Wallet pass.
+// Used when stamps / cashback / balances were updated outside the
+// normal loyalty endpoints (e.g. direct SQL UPDATE during manual
+// reconciliation) — those edits don't fire notifyPassUpdate, so iOS
+// keeps showing the stale pass until the next time the customer
+// earns or redeems through the API.
+walletPassRouter.post('/wallet-pass/force-refresh', async (req, res) => {
+  if (!requireDiagnosticAccess(req, res)) return;
+  const customerId = typeof req.body?.customerId === 'string' ? req.body.customerId.trim() : '';
+  const merchantId = typeof req.body?.merchantId === 'string' ? req.body.merchantId.trim() : '';
+  if (!customerId || !merchantId) {
+    return res.status(400).json({ error: 'customerId and merchantId are required' });
+  }
+  try {
+    await notifyPassUpdate(customerId, merchantId);
+    res.json({ success: true, customerId, merchantId });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'force-refresh failed' });
+  }
+});
+
 walletPassRouter.post('/wallet-pass/setup', async (req, res) => {
   if (!requireDiagnosticAccess(req, res)) return;
   const dbUrl = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
