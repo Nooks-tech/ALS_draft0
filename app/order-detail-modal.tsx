@@ -651,7 +651,17 @@ export default function OrderDetailModal() {
                 {wallet > 0 ? <Row label={isArabic ? 'المحفظة' : 'Wallet'} amount={wallet} negative /> : null}
                 {card > 0 ? <Row label={isArabic ? 'البطاقة' : 'Card'} amount={card} /> : null}
                 <View className="h-2" />
-                <Row label={isArabic ? 'الإجمالي المدفوع' : 'Total paid'} amount={order.total} bold />
+                {/* Total paid = the gross bill the customer cleared
+                    through all sources combined (subtotal + delivery
+                    − promo). order.total is post-cashback so using it
+                    here understated the real outlay — the 2026-05-15
+                    'Total paid: 117.40' on a 256 SAR cart bug. The
+                    sum of card+wallet+cashback also equals this. */}
+                <Row
+                  label={isArabic ? 'الإجمالي المدفوع' : 'Total paid'}
+                  amount={Math.max(0, +(itemsSubtotal + deliveryFee - promo).toFixed(2))}
+                  bold
+                />
               </View>
             );
           })()}

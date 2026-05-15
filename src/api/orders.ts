@@ -185,7 +185,11 @@ export async function fetchOrdersForCustomer(
     // These never reached Foodics — the commit's relay-time re-check
     // catches them. Showing them in the Orders tab would surface a
     // ghost "Cancelled" entry the customer never knew existed.
-    .not('cancellation_reason', 'eq', 'Payment failed')
+    //
+    // PostgREST gotcha: `.not(col, 'eq', val)` filters out rows
+    // where col IS NULL too (NULL != val is unknown, not true).
+    // .or() with .is.null explicitly lets paid-success rows through.
+    .or('cancellation_reason.is.null,cancellation_reason.neq.Payment failed')
     .order('created_at', { ascending: false });
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
     console.warn('[Orders] Fetch error:', primary.error.message);
