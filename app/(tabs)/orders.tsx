@@ -42,18 +42,30 @@ export default function OrdersScreen() {
         <FlatList
           data={orders}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <OrderCard
-              id={item.id.replace('order-', '')}
-              status={item.status}
-              orderType={item.orderType}
-              price={item.total}
-              date={item.date}
-              items={orderItemsSummary(item)}
-              refundStatus={item.refundStatus}
-              onPress={() => router.push({ pathname: '/order-detail-modal', params: { orderId: item.id } })}
-            />
-          )}
+          renderItem={({ item }) => {
+            // Show the gross bill the customer cleared — item.total
+            // is post-cashback (= what the card+wallet had to cover)
+            // which understates the real outlay for cashback orders.
+            // Adding cashbackPaidSar back gets the pre-discount total
+            // the customer was committed to, matching the detail
+            // modal's "Total paid" line and what they actually see
+            // billed across all payment sources.
+            const grossTotal =
+              (typeof item.total === 'number' ? item.total : 0) +
+              (typeof item.cashbackPaidSar === 'number' ? item.cashbackPaidSar : 0);
+            return (
+              <OrderCard
+                id={item.id.replace('order-', '')}
+                status={item.status}
+                orderType={item.orderType}
+                price={grossTotal}
+                date={item.date}
+                items={orderItemsSummary(item)}
+                refundStatus={item.refundStatus}
+                onPress={() => router.push({ pathname: '/order-detail-modal', params: { orderId: item.id } })}
+              />
+            );
+          }}
           contentContainerStyle={orders.length === 0 ? { flexGrow: 1, padding: 16 } : { padding: 16 }}
           ListEmptyComponent={
             <View className="flex-1 items-center justify-center px-8">
