@@ -37,6 +37,7 @@ import { supportRouter } from './routes/support';
 import { analyticsRouter } from './routes/analytics';
 import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
 import { startComplaintEscalationCron } from './cron/complaintEscalation';
+import { startSavedCardSweepCron } from './cron/savedCardSweep';
 
 const app = express();
 // Railway terminates TLS at its edge and sets X-Forwarded-For before the
@@ -128,4 +129,5 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`ALS API running on port ${PORT}`);
   startLoyaltyExpirationCron();
   startComplaintEscalationCron();
+  startSavedCardSweepCron();
 });

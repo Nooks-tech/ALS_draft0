@@ -6,6 +6,7 @@ import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
 import { paymentRateLimit, webhookRateLimit } from '../utils/rateLimit';
+import { requireDiagnosticAccess } from '../utils/nooksInternal';
 
 /** Constant-time string comparison; safe to call with strings of any length. */
 function safeEqual(a: string, b: string): boolean {
@@ -394,6 +395,46 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
  * Idempotent on (customer_id, merchant_id, token) — re-attaching the
  * same token returns the existing card row instead of duplicating.
  */
+/**
+ * POST /api/payment/debug/token-status
+ * body: { merchantId, token }
+ *
+ * Diagnostic endpoint to inspect a Moyasar token's current state.
+ * Useful when a saved card mysteriously goes "invalid" — we can see
+ * if Moyasar lists it as `inactive` (expired / failed verification)
+ * vs returns 404 (deleted on their side) vs still `active` (in which
+ * case the bug is elsewhere). Used 2026-05-15 to diagnose the
+ * test-environment token TTL behavior.
+ */
+paymentRouter.post('/debug/token-status', async (req, res) => {
+  if (!requireDiagnosticAccess(req, res)) return;
+  const merchantId = typeof req.body?.merchantId === 'string' ? req.body.merchantId.trim() : '';
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  if (!merchantId || !token) {
+    return res.status(400).json({ error: 'merchantId and token are required' });
+  }
+  try {
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
+    const secretKey = runtimeConfig.secretKey;
+    if (!secretKey) {
+      return res.status(503).json({ error: 'Moyasar secret key not configured for this merchant' });
+    }
+    const tokenRes = await fetch(`https://api.moyasar.com/v1/tokens/${encodeURIComponent(token)}`, {
+      headers: { Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}` },
+    });
+    const text = await tokenRes.text().catch(() => '');
+    let body: unknown;
+    try { body = JSON.parse(text); } catch { body = text; }
+    res.json({
+      moyasar_status_code: tokenRes.status,
+      moyasar_response: body,
+      key_prefix: secretKey.startsWith('sk_test_') ? 'sk_test_' : secretKey.startsWith('sk_live_') ? 'sk_live_' : 'unknown',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? 'token-status probe failed' });
+  }
+});
+
 paymentRouter.post('/saved-cards/attach', async (req, res) => {
   try {
     const user = await requireAuthenticatedAppUser(req, res);

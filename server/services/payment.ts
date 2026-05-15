@@ -566,6 +566,14 @@ export const paymentService = {
         type: 'token',
         token: req.token,
       },
+      // Tell Moyasar to keep this token alive for future charges.
+      // Without save_card:true, Moyasar's test environment was
+      // invalidating tokens ~22h after creation even after successful
+      // charges (see 2026-05-15 incident: token_nkZv8… worked 3×
+      // then went 'invalid' overnight). Per Moyasar's tokenization
+      // guide the canonical card-on-file pattern is to flag every
+      // re-use with save_card so the token's lifetime is extended.
+      save_card: true,
       ...(req.orderId ? { given_id: orderIdToUuid(req.orderId) } : {}),
       callback_url: successUrl,
     };

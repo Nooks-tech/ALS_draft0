@@ -332,22 +332,54 @@ walletRouter.post('/topup-with-saved-card', async (req: Request, res: Response) 
     // Moyasar). 'wallet-' prefix makes the row obvious in the dash.
     const topupOrderId = `wallet-${user.id}-${Date.now()}`;
 
-    const session = await paymentService.initiateMoyasarTokenPayment({
-      amount: amountSar,
-      currency: 'SAR',
-      orderId: topupOrderId,
-      token: card.token,
-      merchantId,
-      // The metadata.type === 'wallet_topup' marker is what
-      // /topup-finalize uses to tell wallet payments apart from
-      // regular orders, AND what defends against another customer
-      // replaying this payment id to credit their own wallet.
-      metadata: {
-        type: 'wallet_topup',
-        merchant_id: merchantId,
-        customer_id: user.id,
-      },
-    });
+    let session;
+    try {
+      session = await paymentService.initiateMoyasarTokenPayment({
+        amount: amountSar,
+        currency: 'SAR',
+        orderId: topupOrderId,
+        token: card.token,
+        merchantId,
+        // The metadata.type === 'wallet_topup' marker is what
+        // /topup-finalize uses to tell wallet payments apart from
+        // regular orders, AND what defends against another customer
+        // replaying this payment id to credit their own wallet.
+        metadata: {
+          type: 'wallet_topup',
+          merchant_id: merchantId,
+          customer_id: user.id,
+        },
+      });
+    } catch (chargeErr: any) {
+      // Mirror /token-pay's dead-token cleanup so a stale saved card
+      // can't keep haunting the wallet topup picker. Same regex
+      // catches Moyasar's 'invalid'/'not found'/'expired' surface
+      // for tokens that were deleted, expired, or never tokenised
+      // under the merchant's current keys (e.g. test→live rotation).
+      const msg = String(chargeErr?.message ?? '').toLowerCase();
+      const looksLikeBadToken =
+        msg.includes('token') &&
+        (msg.includes('invalid') || msg.includes('not found') || msg.includes('expired'));
+      if (looksLikeBadToken) {
+        await supabaseAdmin
+          .from('customer_saved_cards')
+          .delete()
+          .eq('id', savedCardId)
+          .eq('customer_id', user.id);
+        console.warn(
+          '[Wallet] Auto-removed bad saved-card row',
+          savedCardId,
+          '— Moyasar error:',
+          chargeErr?.message,
+        );
+        return res.status(409).json({
+          error: 'SAVED_CARD_INVALID',
+          message:
+            'Your saved card is no longer accepted by the payment processor. Please add it again.',
+        });
+      }
+      throw chargeErr;
+    }
 
     // Issuer required 3DS — return the verification URL and let the
     // client load it in a WebView, then call /topup-finalize.

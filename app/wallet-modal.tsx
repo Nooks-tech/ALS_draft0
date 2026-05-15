@@ -471,10 +471,26 @@ function TopupSheet({
         res.status ? `Status: ${res.status}` : (isArabic ? 'حاول مرة أخرى.' : 'Please try again.'),
       );
     } catch (e: any) {
-      Alert.alert(
-        isArabic ? 'فشل الدفع' : 'Payment failed',
-        e?.message || (isArabic ? 'حاول مرة أخرى.' : 'Please try again.'),
-      );
+      const msg = String(e?.message ?? '');
+      // Server returned 409 SAVED_CARD_INVALID — the bad row is
+      // already deleted server-side. Drop the local choice so the
+      // user isn't pointed back at a dead card, and surface a
+      // plain-language prompt to re-add the card. This is the same
+      // shape checkout.tsx uses for the equivalent /token-pay error.
+      if (msg.includes('SAVED_CARD_INVALID') || msg.toLowerCase().includes('no longer accepted')) {
+        setChoice(null);
+        Alert.alert(
+          isArabic ? 'البطاقة لم تعد صالحة' : 'Card no longer valid',
+          isArabic
+            ? 'بطاقتك المحفوظة لم تعد مقبولة لدى مزود الدفع. أضف بطاقة جديدة وأعد المحاولة.'
+            : 'Your saved card is no longer accepted by the payment processor. Please add it again.',
+        );
+      } else {
+        Alert.alert(
+          isArabic ? 'فشل الدفع' : 'Payment failed',
+          msg || (isArabic ? 'حاول مرة أخرى.' : 'Please try again.'),
+        );
+      }
     } finally {
       setSubmitting(false);
     }
