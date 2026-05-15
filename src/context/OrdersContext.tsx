@@ -268,14 +268,38 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     channelRef.current = subscribeToOrders(
       customerId,
       merchantId,
-      (row) => setOrders((prev) => [rowToOrder(row), ...prev.filter((o) => o.id !== row.id)]),
-      // Update list only — do NOT fire a local notification here. The
+      (row) => {
+        // Suppress realtime INSERTs where the order hasn't reached
+        // Foodics yet. The local addOrder still surfaces the order
+        // for the customer who placed it; this only stops orphans
+        // (failed-payment / abandoned-3DS rows) from showing up on
+        // a second device of the same customer. Once the relay
+        // succeeds, the UPDATE event below brings the row in.
+        if (!(row as { foodics_order_id?: string | null }).foodics_order_id) return;
+        setOrders((prev) => [rowToOrder(row), ...prev.filter((o) => o.id !== row.id)]);
+      },
+      // Update list — do NOT fire a local notification here. The
       // server (Foodics webhook → sendLocalizedPushToCustomer) already
       // sends a properly-localized push for every status transition.
       // The previous local-notification call was bypassing the language
       // pick and pushing a hardcoded English "Order update — Your order
       // is being prepared" duplicate on top of the Arabic server push.
-      (row) => setOrders((prev) => prev.map((o) => (o.id === row.id ? rowToOrder(row) : o)))
+      //
+      // If the row was previously suppressed by the INSERT guard and
+      // the relay just succeeded (foodics_order_id transitioning
+      // null→set), insert it now. If foodics_order_id is still null
+      // even on UPDATE (sweep cancelled it), drop the row from view.
+      (row) => setOrders((prev) => {
+        const foodicsId = (row as { foodics_order_id?: string | null }).foodics_order_id;
+        const existing = prev.find((o) => o.id === row.id);
+        if (!foodicsId) {
+          return existing ? prev.filter((o) => o.id !== row.id) : prev;
+        }
+        if (existing) {
+          return prev.map((o) => (o.id === row.id ? rowToOrder(row) : o));
+        }
+        return [rowToOrder(row), ...prev];
+      })
     );
     return () => {
       channelRef.current?.unsubscribe();

@@ -167,29 +167,25 @@ export async function fetchOrdersForCustomer(
     console.warn('[Orders] fetchOrdersForCustomer called without merchantId — refusing to query (would leak across merchants)');
     return [];
   }
-  // Visibility filter: orders without payment_confirmed_at are orphans
-  // (commit ran before P1's payment verification shipped, or the
-  // customer's card was charged but we never confirmed it). They never
-  // appear in the customer's orders tab. The pg_cron sweep eventually
-  // cancels them; this filter just makes sure they're invisible
-  // regardless of sweep timing.
+  // Visibility filter: orders without foodics_order_id never made it
+  // to the merchant's POS. Surface them in the customer Orders tab
+  // and the user sees a "Placed" record for an order the cashier
+  // has no idea about. Causes:
+  //   - Moyasar payment ended in `initiated` (customer abandoned 3DS)
+  //   - Card was authorised but settled as failed post-auth
+  //   - Foodics relay errored (bad modifier, branch closed) and the
+  //     manual retry hasn't been run
+  //   - Sweep cancelled it as "Abandoned payment"
+  // All paths leave foodics_order_id NULL, so one filter covers them.
+  // The optimistic local addOrder in OrdersContext still surfaces the
+  // order the moment the customer places it; this filter only affects
+  // server-fed refreshes / cold loads.
   const primary = await supabase
     .from('customer_orders')
     .select('*')
     .eq('customer_id', customerId)
     .eq('merchant_id', merchantId)
-    .not('payment_confirmed_at', 'is', null)
-    // Hide rows the payment webhook cancelled because the charge
-    // ultimately failed after our initial verification (3DS returned
-    // paid then settled as failed, bank reversal post-auth, etc.).
-    // These never reached Foodics — the commit's relay-time re-check
-    // catches them. Showing them in the Orders tab would surface a
-    // ghost "Cancelled" entry the customer never knew existed.
-    //
-    // PostgREST gotcha: `.not(col, 'eq', val)` filters out rows
-    // where col IS NULL too (NULL != val is unknown, not true).
-    // .or() with .is.null explicitly lets paid-success rows through.
-    .or('cancellation_reason.is.null,cancellation_reason.neq.Payment failed')
+    .not('foodics_order_id', 'is', null)
     .order('created_at', { ascending: false });
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
     console.warn('[Orders] Fetch error:', primary.error.message);

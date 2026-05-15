@@ -1111,9 +1111,13 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
     if (!requireNooksInternalRequest(req, res)) return;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
-    // 10-minute floor — payments usually clear in <60s. Anything older
-    // and still in 'Placed' without a confirmed payment is abandoned.
-    const cutoffIso = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    // 3-minute floor — Moyasar 3DS typically clears in <60s, and the
+    // user-facing complaint is that abandoned orders sat as "Placed"
+    // on both customer + merchant screens for the whole 10-min window
+    // before the previous cutoff fired. Dropping to 3 min keeps a
+    // small safety buffer for genuinely-slow 3DS settles while wiping
+    // the dashboard clutter within a single sweep cycle.
+    const cutoffIso = new Date(Date.now() - 3 * 60 * 1000).toISOString();
     const { data: candidates, error: queryErr } = await supabaseAdmin
       .from('customer_orders')
       .select('id, payment_id, merchant_id, total_sar, card_paid_sar, created_at')
