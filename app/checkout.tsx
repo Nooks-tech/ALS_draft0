@@ -445,7 +445,12 @@ export default function CheckoutScreen() {
   const discount = promoApplied ? promoDiscount : 0;
   const subtotalAfterPromo = Math.max(0, subtotalBeforePromo - discount);
 
-  // Loyalty discount: applies to items only (not delivery), after promo
+  // Loyalty discount: caps at the entire post-promo total (items +
+  // delivery) so cashback can absorb the same amount of bill that
+  // wallet can. Previously this was `totalPrice - discount` (items
+  // only) which silently capped cashback below the order total and
+  // left the customer wondering why "Save up to X" was lower than
+  // wallet's "Save up to Y" on the same cart.
   const itemsAfterPromo = Math.max(0, totalPrice - discount);
   const maxCashbackCap = loyaltyBalance?.maxCashbackPerOrderSar ?? null;
   const maxPointsDiscountSar = loyaltyBalance
@@ -456,7 +461,7 @@ export default function CheckoutScreen() {
         )
       : +(loyaltyBalance.points * loyaltyBalance.pointValueSar).toFixed(2)
     : 0;
-  const pointsDiscount = usePoints ? Math.min(maxPointsDiscountSar, itemsAfterPromo) : 0;
+  const pointsDiscount = usePoints ? Math.min(maxPointsDiscountSar, subtotalAfterPromo) : 0;
   const pointsToRedeem = usePoints && loyaltyBalance
     ? loyaltyType === 'cashback'
       ? 0 // cashback is SAR-based, no points to redeem
