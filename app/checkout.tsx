@@ -1803,31 +1803,36 @@ export default function CheckoutScreen() {
                 receipt: it doesn't change the order amount, just what
                 the customer pays now). */}
             {useWallet && walletApplied > 0 && (
-              <>
-                <View className="flex-row justify-between mt-2">
-                  <Text className="text-slate-900 font-medium">
-                    {isArabic ? 'رصيد المحفظة' : 'Wallet credit'}
-                  </Text>
-                  <PriceWithSymbol
-                    amount={walletApplied}
-                    prefix="- "
-                    iconSize={16}
-                    iconColor="#059669"
-                    textStyle={{ color: '#059669', fontWeight: '700' }}
-                  />
-                </View>
-                <View className="flex-row justify-between mt-2 pt-2 border-t border-dashed border-slate-200">
-                  <Text className="text-slate-900 font-bold">
-                    {isArabic ? 'المتبقي على البطاقة' : 'Charged to card'}
-                  </Text>
-                  <PriceWithSymbol
-                    amount={chargeAmount}
-                    iconSize={16}
-                    iconColor={primaryColor}
-                    textStyle={{ color: primaryColor, fontWeight: '700' }}
-                  />
-                </View>
-              </>
+              <View className="flex-row justify-between mt-2">
+                <Text className="text-slate-900 font-medium">
+                  {isArabic ? 'رصيد المحفظة' : 'Wallet credit'}
+                </Text>
+                <PriceWithSymbol
+                  amount={walletApplied}
+                  prefix="- "
+                  iconSize={16}
+                  iconColor="#059669"
+                  textStyle={{ color: '#059669', fontWeight: '700' }}
+                />
+              </View>
+            )}
+            {/* "Charged to card" final line — shown whenever any
+                credit (cashback OR wallet) reduces what the customer
+                actually pays via card / Apple Pay. Without this the
+                cashback-only flow ended at "Cashback credit −52" and
+                the customer had to mentally compute the remainder. */}
+            {((usePoints && pointsDiscount > 0) || (useWallet && walletApplied > 0)) && (
+              <View className="flex-row justify-between mt-2 pt-2 border-t border-dashed border-slate-200">
+                <Text className="text-slate-900 font-bold">
+                  {isArabic ? 'المتبقي على البطاقة' : 'Charged to card'}
+                </Text>
+                <PriceWithSymbol
+                  amount={chargeAmount}
+                  iconSize={16}
+                  iconColor={primaryColor}
+                  textStyle={{ color: primaryColor, fontWeight: '700' }}
+                />
+              </View>
             )}
           </View>
 
