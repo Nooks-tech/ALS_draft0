@@ -729,7 +729,46 @@ loyaltyRouter.post('/earn', async (req, res) => {
         });
       }
 
-      // Increment stamp count
+      // INTERNAL ACCOUNTING ONLY: 1 stamp = 10 internal points.
+      const pointsForStamp = 10;
+
+      // Per-purchase expiry: each stamp earn gets its own expiry date.
+      const stampExpiresAt = config.expiry_months
+        ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
+        : null;
+
+      // Insert the earn transaction FIRST. The partial unique index
+      // on (merchant_id, customer_id, order_id, loyalty_type) WHERE
+      // type='earn' protects against the Foodics double-webhook
+      // race (see earnCashback for the same pattern + the incident
+      // notes). If we lose the race, short-circuit before bumping
+      // any balances.
+      const txInsert = await supabaseAdmin.from('loyalty_transactions').insert({
+        customer_id: customerId, merchant_id: merchantId || '', order_id: orderId,
+        type: 'earn', loyalty_type: 'stamps', points: pointsForStamp,
+        description: `Earned 1 stamp (order completed)`, source: 'app',
+        expires_at: stampExpiresAt,
+      });
+      if (txInsert.error) {
+        if ((txInsert.error as { code?: string }).code === '23505') {
+          console.warn('[earn stamps] Race-loser insert skipped for order', orderId);
+          const { data: stampRow } = await supabaseAdmin
+            .from('loyalty_stamps')
+            .select('stamps, completed_cards')
+            .eq('customer_id', customerId)
+            .eq('merchant_id', merchantId || '')
+            .maybeSingle();
+          return res.json({
+            success: true,
+            alreadyEarned: true,
+            stamps: stampRow?.stamps ?? 0,
+            milestoneReached: false,
+          });
+        }
+        return res.status(500).json({ error: txInsert.error.message });
+      }
+
+      // Insert won — increment stamp count + internal points balance.
       const { data: stampRow } = await supabaseAdmin.from('loyalty_stamps')
         .select('stamps, completed_cards')
         .eq('customer_id', customerId).eq('merchant_id', merchantId || '').maybeSingle();
@@ -746,13 +785,6 @@ loyaltyRouter.post('/earn', async (req, res) => {
         });
       }
 
-      // INTERNAL ACCOUNTING ONLY: 1 stamp = 10 internal points.
-      // These points are stored in our loyalty_points table for balance tracking.
-      // Foodics does NOT receive these points — Foodics integration uses the adapter
-      // pattern (nooksweb /api/adapter/v1/reward + /redeem endpoints).
-      // The QR code on the Apple Wallet pass contains customer mobile + country code
-      // in Foodics-compatible JSON format for POS scanning.
-      const pointsForStamp = 10;
       const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
         .select('points, lifetime_points')
         .eq('customer_id', customerId).eq('merchant_id', merchantId || '').maybeSingle();
@@ -766,18 +798,6 @@ loyaltyRouter.post('/earn', async (req, res) => {
           points: pointsForStamp, lifetime_points: pointsForStamp,
         });
       }
-
-      // Per-purchase expiry: each stamp earn gets its own expiry date
-      const stampExpiresAt = config.expiry_months
-        ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
-        : null;
-
-      await supabaseAdmin.from('loyalty_transactions').insert({
-        customer_id: customerId, merchant_id: merchantId || '', order_id: orderId,
-        type: 'earn', loyalty_type: 'stamps', points: pointsForStamp,
-        description: `Earned 1 stamp (order completed)`, source: 'app',
-        expires_at: stampExpiresAt,
-      });
 
       // Check if any milestone was reached (highest milestone where stamp_number <= newStamps)
       const { data: milestones } = await supabaseAdmin.from('loyalty_stamp_milestones')
@@ -1360,13 +1380,44 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
     return { success: true, cashbackEarned: 0, newBalance: bal?.balance_sar ?? 0, alreadyEarned: true };
   }
 
-  // Upsert balance
   const { data: balRow } = await supabaseAdmin.from('loyalty_cashback_balances')
     .select('balance_sar, config_version')
     .eq('customer_id', customerId).eq('merchant_id', merchantId)
     .order('config_version', { ascending: false }).limit(1).maybeSingle();
 
   const currentVersion = config.config_version ?? 1;
+  const expiresAt = config.expiry_months
+    ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
+    : null;
+
+  // Insert the earn transaction BEFORE updating the balance. A
+  // partial unique index on (merchant_id, customer_id, order_id,
+  // loyalty_type) WHERE type='earn' AND description NOT LIKE
+  // 'Refunded%' protects against the Foodics double-webhook race
+  // (incident 2026-05-15 where order 1778827451486 got 15.1 SAR
+  // credited twice 100ms apart, slipping past the SELECT-then-
+  // INSERT idempotency check above). If we lose the race the
+  // INSERT fails with 23505 and we short-circuit — the winning
+  // caller already credited the balance, so we just return the
+  // current state.
+  const txInsert = await supabaseAdmin.from('loyalty_transactions').insert({
+    customer_id: customerId, merchant_id: merchantId, order_id: orderId,
+    type: 'earn', loyalty_type: 'cashback', amount_sar: cashbackSar,
+    points: 0, description: `Earned ${cashbackSar} SAR cashback`,
+    source: 'app', expires_at: expiresAt, config_version: currentVersion,
+  });
+  if (txInsert.error) {
+    if ((txInsert.error as { code?: string }).code === '23505') {
+      console.warn('[earnCashback] Race-loser insert skipped for order', orderId);
+      const { data: currentBal } = await supabaseAdmin.from('loyalty_cashback_balances')
+        .select('balance_sar').eq('customer_id', customerId).eq('merchant_id', merchantId)
+        .order('config_version', { ascending: false }).limit(1).maybeSingle();
+      return { success: true, cashbackEarned: 0, newBalance: currentBal?.balance_sar ?? 0, alreadyEarned: true };
+    }
+    throw new Error(txInsert.error.message);
+  }
+
+  // Insert won — now credit the balance.
   if (balRow) {
     await supabaseAdmin.from('loyalty_cashback_balances')
       .update({ balance_sar: +(balRow.balance_sar + cashbackSar).toFixed(2), updated_at: new Date().toISOString() })
@@ -1377,17 +1428,6 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
       balance_sar: cashbackSar, config_version: currentVersion,
     });
   }
-
-  const expiresAt = config.expiry_months
-    ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
-    : null;
-
-  await supabaseAdmin.from('loyalty_transactions').insert({
-    customer_id: customerId, merchant_id: merchantId, order_id: orderId,
-    type: 'earn', loyalty_type: 'cashback', amount_sar: cashbackSar,
-    points: 0, description: `Earned ${cashbackSar} SAR cashback`,
-    source: 'app', expires_at: expiresAt, config_version: currentVersion,
-  });
 
   notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
   return { success: true, cashbackEarned: cashbackSar, newBalance: +((balRow?.balance_sar ?? 0) + cashbackSar).toFixed(2) };
