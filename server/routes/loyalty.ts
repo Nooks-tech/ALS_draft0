@@ -146,6 +146,27 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
       .update({ active_loyalty_type: merchantType, loyalty_type_opted_in_at: now })
       .eq('customer_id', customerId).eq('merchant_id', merchantId);
 
+    // Zero out the DESTINATION system's balance. Without this,
+    // a customer who once accumulated balance in system X, was
+    // switched to system Y, exhausted Y, and is now flipping back
+    // to X sees their old X balance resurface (incident 2026-05-15
+    // 08:57 — customer had 2 stamps left over from yesterday and
+    // saw them reappear the moment the merchant flipped from
+    // cashback back to stamps). The auto-switch rule promises a
+    // clean slate in the new system, so we enforce it here.
+    if (merchantType === 'stamps') {
+      await supabaseAdmin.from('loyalty_stamps')
+        .update({ stamps: 0, completed_cards: 0, updated_at: now })
+        .eq('customer_id', customerId).eq('merchant_id', merchantId);
+      await supabaseAdmin.from('loyalty_points')
+        .update({ points: 0, updated_at: now })
+        .eq('customer_id', customerId).eq('merchant_id', merchantId);
+    } else if (merchantType === 'cashback') {
+      await supabaseAdmin.from('loyalty_cashback_balances')
+        .update({ balance_sar: 0, updated_at: now })
+        .eq('customer_id', customerId).eq('merchant_id', merchantId);
+    }
+
     // Mark the transition as complete in the tracking table
     await supabaseAdmin.from('loyalty_customer_transitions')
       .upsert({
@@ -160,7 +181,7 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
 
     // Trigger pass update so the design changes to the new loyalty type
     notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
-    console.log(`[loyalty] Auto-switched customer ${customerId.substring(0, 8)}… from ${customerType} to ${merchantType} (0 balance)`);
+    console.log(`[loyalty] Auto-switched customer ${customerId.substring(0, 8)}… from ${customerType} to ${merchantType} (0 balance) — destination balance reset`);
   }
   return { earn: merchantType, redeem: merchantType, transitioning: false, oldSystemType: customerType, oldBalance: 0 };
 }
