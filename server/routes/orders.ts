@@ -503,6 +503,17 @@ ordersRouter.post('/commit', async (req, res) => {
           : [],
       stamps_consumed:
         typeof stampsConsumed === 'number' && stampsConsumed > 0 ? Math.floor(stampsConsumed) : 0,
+      // Promo redemption info — also persisted on promo_redemptions
+      // for usage-counting, but stored here so the customer's order
+      // detail modal + merchant dashboard can show "Promo (CODE)
+      // −X SAR" without an extra join.
+      promo_code:
+        typeof promoCode === 'string' && promoCode.trim() ? promoCode.trim() : null,
+      promo_discount_sar:
+        typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
+          ? Number(promoDiscountSar.toFixed(2))
+          : null,
+      promo_scope: promoScope === 'delivery' || promoScope === 'total' ? promoScope : null,
       car_details: orderType === 'drivethru' && carDetails && typeof carDetails === 'object' ? carDetails : null,
       // Per-order processing fee billed to the merchant (NOT to the
       // end customer — the customer's total never includes it). Recorded
