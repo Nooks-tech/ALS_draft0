@@ -1777,16 +1777,27 @@ export default function CheckoutScreen() {
                 )}
               </View>
             )}
+            <View className="flex-row justify-between mt-4 pt-4 border-t border-slate-200">
+              <Text className="text-slate-900 font-bold">{isArabic ? 'الإجمالي شامل الضريبة' : 'Total VAT included'}</Text>
+              <PriceWithSymbol amount={subtotalAfterPromo} iconSize={18} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 18 }} />
+            </View>
+            {/* Cashback / points credit — shown BELOW the Total VAT
+                line so the row matches the wallet credit's layout
+                (the customer reads: "Total 80 SAR, cashback −69,
+                charged 11"). Previously the points line sat above
+                Total and Total reflected the post-cashback amount,
+                making cashback look like a discount on the subtotal
+                while wallet was a credit on the total. */}
             {usePoints && pointsDiscount > 0 && (
-              <View className="flex-row justify-between mt-1">
-                <Text className="text-slate-900 font-medium">{isArabic ? `النقاط (${pointsToRedeem} نقطة)` : `Points (${pointsToRedeem} pts)`}</Text>
+              <View className="flex-row justify-between mt-2">
+                <Text className="text-slate-900 font-medium">
+                  {loyaltyType === 'cashback'
+                    ? (isArabic ? 'رصيد الكاش باك' : 'Cashback credit')
+                    : (isArabic ? `النقاط (${pointsToRedeem} نقطة)` : `Points (${pointsToRedeem} pts)`)}
+                </Text>
                 <PriceWithSymbol amount={pointsDiscount} prefix="- " iconSize={16} iconColor="#059669" textStyle={{ color: '#059669', fontWeight: '700' }} />
               </View>
             )}
-            <View className="flex-row justify-between mt-4 pt-4 border-t border-slate-200">
-              <Text className="text-slate-900 font-bold">{isArabic ? 'الإجمالي شامل الضريبة' : 'Total VAT included'}</Text>
-              <PriceWithSymbol amount={finalTotal} iconSize={18} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 18 }} />
-            </View>
             {/* Wallet credit applied — shown as a separate line under
                 the total (mirrors how a deposit/credit shows on a
                 receipt: it doesn't change the order amount, just what

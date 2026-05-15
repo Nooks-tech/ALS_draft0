@@ -179,6 +179,13 @@ export async function fetchOrdersForCustomer(
     .eq('customer_id', customerId)
     .eq('merchant_id', merchantId)
     .not('payment_confirmed_at', 'is', null)
+    // Hide rows the payment webhook cancelled because the charge
+    // ultimately failed after our initial verification (3DS returned
+    // paid then settled as failed, bank reversal post-auth, etc.).
+    // These never reached Foodics — the commit's relay-time re-check
+    // catches them. Showing them in the Orders tab would surface a
+    // ghost "Cancelled" entry the customer never knew existed.
+    .not('cancellation_reason', 'eq', 'Payment failed')
     .order('created_at', { ascending: false });
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {
     console.warn('[Orders] Fetch error:', primary.error.message);

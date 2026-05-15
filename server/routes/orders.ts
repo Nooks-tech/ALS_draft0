@@ -355,20 +355,20 @@ ordersRouter.post('/commit', async (req, res) => {
       trimmedPaymentId
       && !trimmedPaymentId.startsWith('wallet:')
       && !trimmedPaymentId.startsWith('reward:');
+    // Compute expected card portion (totalSar minus wallet portion).
+    // Cashback / loyalty discounts are NOT subtracted here — the
+    // discount is applied as a Foodics line on the POS side and
+    // Moyasar charges the post-discount totalSar value the client
+    // sent us (which the per-item floor above already sanity-checked).
+    const cardPortionSar =
+      paymentMethod === 'wallet'
+        ? 0
+        : typeof walletAmountSar === 'number' && walletAmountSar > 0
+          ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
+          : Number(totalSar);
+    const expectedHalalsForVerify = Math.round(cardPortionSar * 100);
     if (isMoyasarPaymentId && existing?.id !== id) {
-      // Compute expected card portion (totalSar minus wallet portion).
-      // Cashback / loyalty discounts are NOT subtracted here — the
-      // discount is applied as a Foodics line on the POS side and
-      // Moyasar charges the post-discount totalSar value the client
-      // sent us (which the per-item floor above already sanity-checked).
-      const cardPortionSar =
-        paymentMethod === 'wallet'
-          ? 0
-          : typeof walletAmountSar === 'number' && walletAmountSar > 0
-            ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
-            : Number(totalSar);
-      const expectedHalals = Math.round(cardPortionSar * 100);
-      const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalals, merchantId);
+      const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
       if (!verification.ok) {
         console.warn(
           '[Orders] Rejecting commit — Moyasar payment not paid:',
@@ -536,6 +536,38 @@ ordersRouter.post('/commit', async (req, res) => {
 
     let relayResult: unknown = null;
     if (relayToNooks === true && payload.payment_id) {
+      // Re-verify the Moyasar payment IMMEDIATELY before relaying.
+      // The first /commit call (relayToNooks=false) verified the
+      // payment as paid, but Moyasar can flip a payment from paid →
+      // failed between the two commits — happens with 3DS that
+      // returned 'paid' optimistically then settled as failed, or
+      // bank declined post-auth. Without this re-check the order
+      // ships to Foodics with money that the webhook will later
+      // cancel — orphan POS row that the cashier still has to deal
+      // with. Skipping the relay here means the order sits in our
+      // DB but never reaches Foodics; the webhook will mark it
+      // Cancelled when it lands. Customer + dashboard query filters
+      // exclude these rows (cancellation_reason='Payment failed').
+      if (isMoyasarPaymentId) {
+        const relayVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
+        if (!relayVerify.ok) {
+          console.warn(
+            '[Orders] Skipping Foodics relay — payment no longer paid:',
+            trimmedPaymentId,
+            'status:',
+            relayVerify.status,
+            'reason:',
+            relayVerify.reason,
+          );
+          return res.json({
+            id: savedOrder.id,
+            status: savedOrder.status,
+            payment_id: savedOrder.payment_id,
+            foodics_skipped: 'payment_not_confirmed',
+            moyasar_status: relayVerify.status,
+          });
+        }
+      }
       relayResult = await relayOrderToNooks({
         id,
         merchant_id: merchantId,
