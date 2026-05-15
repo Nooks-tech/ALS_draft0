@@ -625,11 +625,28 @@ ordersRouter.post('/commit', async (req, res) => {
               Number(item.price ?? item.price_sar ?? 0) - Number(modifierSum || 0),
             );
           }
+          // Stamp-reward items: customer paid 0 in the cart, but
+          // rewardOriginalPriceSar carries the menu price so the
+          // relay can send the Foodics line at full price + a
+          // matching per-item discount (cleaner accounting than a
+          // $0 line that distorts item revenue).
+          const rewardOriginalPriceSar =
+            typeof item.rewardOriginalPriceSar === 'number' && item.rewardOriginalPriceSar > 0
+              ? item.rewardOriginalPriceSar
+              : null;
+          const isRewardItem =
+            typeof item.uniqueId === 'string' && item.uniqueId.startsWith('reward-');
           return {
             product_id: String(item.id ?? item.product_id ?? ''),
             name: String(item.name ?? 'Item'),
             quantity: Number(item.quantity ?? 1),
-            price_sar: basePrice,
+            // Send reward items at their real menu price so Foodics
+            // shows them at face value; the discount lives in the
+            // per-item discount field below.
+            price_sar: isRewardItem && rewardOriginalPriceSar !== null ? rewardOriginalPriceSar : basePrice,
+            ...(isRewardItem && rewardOriginalPriceSar !== null
+              ? { reward_discount_sar: rewardOriginalPriceSar }
+              : {}),
             ...(item.customizations ? { customizations: item.customizations } : {}),
           };
         }),

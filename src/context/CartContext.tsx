@@ -32,6 +32,14 @@ export type CartItem = {
    * cart items.
    */
   rewardMilestoneId?: string;
+  /**
+   * Original menu price of a reward item. Customer sees 0 SAR in the
+   * cart, but the Foodics relay sends the item at full price with a
+   * matching per-item discount so the merchant's reports show real
+   * item revenue + a clear "stamp reward" discount line. Undefined
+   * for non-reward items.
+   */
+  rewardOriginalPriceSar?: number;
 };
 
 // 2. Define the Context Type (Updated with new functions)

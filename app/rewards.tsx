@@ -199,7 +199,10 @@ export default function RewardsScreen() {
     if (!row.redeemable || row.budgetBlocked) return;
     // Add the milestone's product(s) to the cart as zero-priced
     // line items, tagged with rewardMilestoneId so checkout + cart
-    // know they're rewards, not regular paid items.
+    // know they're rewards. `rewardOriginalPriceSar` carries the
+    // real menu price through to the Foodics relay so the POS shows
+    // the item at full price + a matching per-item discount (rather
+    // than as a $0 line that distorts item revenue).
     for (const product of row.products) {
       if (!product.foodicsProductId) continue;
       addToCart({
@@ -211,6 +214,7 @@ export default function RewardsScreen() {
         customizations: null,
         uniqueId: `reward-${row.id}-${product.foodicsProductId}`,
         rewardMilestoneId: row.id,
+        rewardOriginalPriceSar: typeof product.price === 'number' ? product.price : 0,
       });
     }
   };
