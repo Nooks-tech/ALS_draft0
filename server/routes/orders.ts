@@ -877,36 +877,97 @@ async function refundOrderToWallet(
     return { ok: false, error: 'Order is missing customer_id or merchant_id', status: 500 };
   }
 
-  // ─── Read payment composition ───
-  // Prefer the new breakdown columns. Fall back to legacy single-total
-  // for orders placed before 20260512_order_payment_composition: those
-  // rows have card_paid_sar=0, wallet_paid_sar=0, cashback_paid_sar=0
-  // and no milestone IDs. For legacy rows we treat total_sar as the
-  // card portion (or wallet portion if paymentMethod is wallet) so the
-  // refund still works — just without per-source granularity.
+  // ─── Read payment composition (the intent on the order row) ───
+  // These are the AMOUNTS THE COMMIT INTENDED to deduct from each
+  // source. After the Option A refactor (final commit gates side
+  // effects) the row can record an intent without the actual
+  // deduction having fired — e.g., an abandoned-3DS order's first
+  // commit stamped wallet_paid_sar=100 but the wallet was never
+  // debited. We must NOT credit back what we never deducted; do
+  // that and a customer who toggles "use wallet" then abandons 3DS
+  // can mint free SAR every attempt (exploit reproduced
+  // 2026-05-16: test wallet showed +500 SAR phantom credit from
+  // five abandoned attempts that each charged the customer nothing).
   const totalSar = Number(order.total_sar ?? 0);
-  const cardPaidSar = Number((order as any).card_paid_sar ?? 0);
-  const walletPaidSar = Number((order as any).wallet_paid_sar ?? 0);
-  const cashbackPaidSar = Number((order as any).cashback_paid_sar ?? 0);
+  const intentCardPaidSar = Number((order as any).card_paid_sar ?? 0);
+  const intentWalletPaidSar = Number((order as any).wallet_paid_sar ?? 0);
+  const intentCashbackPaidSar = Number((order as any).cashback_paid_sar ?? 0);
   const milestoneIds: string[] = Array.isArray((order as any).stamp_milestone_ids)
     ? ((order as any).stamp_milestone_ids as unknown[]).filter((v): v is string => typeof v === 'string')
     : [];
   const stampsConsumed = Math.max(0, Math.floor(Number((order as any).stamps_consumed ?? 0)));
 
-  // Legacy-row inference: if all breakdown columns are zero (pre-migration
-  // row) AND total_sar > 0, assume the whole total was paid via the
-  // primary payment_method. This keeps cancellations working for
-  // orders placed before P2 shipped.
-  const hasBreakdown = cardPaidSar > 0 || walletPaidSar > 0 || cashbackPaidSar > 0 || milestoneIds.length > 0;
-  const effectiveCardPaid = hasBreakdown ? cardPaidSar : (order.payment_method === 'wallet' ? 0 : totalSar);
+  // ─── Read what ACTUALLY happened to each source ───
+  // Wallet: query the wallet ledger for a real spend row tied to
+  // this order. Without it, any wallet credit we hand back is
+  // phantom (= exploit).
+  const { data: actualWalletSpend } = await supabaseAdmin
+    .from('customer_wallet_transactions')
+    .select('id, amount_halalas')
+    .eq('order_id', orderId)
+    .eq('customer_id', order.customer_id)
+    .eq('merchant_id', order.merchant_id)
+    .eq('entry_type', 'spend')
+    .maybeSingle();
+  const actualWalletPaidSar = actualWalletSpend
+    ? Math.abs(Number(actualWalletSpend.amount_halalas)) / 100
+    : 0;
+
+  // Cashback: query loyalty_transactions for a real redeem row
+  // tied to this order. Same exploit class as the wallet — credit
+  // only what was actually deducted.
+  const { data: actualCashbackRedeem } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id, amount_sar')
+    .eq('order_id', orderId)
+    .eq('customer_id', order.customer_id)
+    .eq('merchant_id', order.merchant_id)
+    .eq('type', 'redeem')
+    .eq('loyalty_type', 'cashback')
+    .maybeSingle();
+  const actualCashbackPaidSar = actualCashbackRedeem
+    ? Math.abs(Number((actualCashbackRedeem as { amount_sar?: number }).amount_sar ?? 0))
+    : 0;
+
+  // Legacy-row inference: if all breakdown columns are zero (pre-
+  // migration row) AND total_sar > 0, assume the whole total was
+  // paid via the primary payment_method. This keeps cancellations
+  // working for orders placed before P2 shipped — those rows DID
+  // actually deduct because side effects fired in the first commit.
+  const hasBreakdown =
+    intentCardPaidSar > 0 ||
+    intentWalletPaidSar > 0 ||
+    intentCashbackPaidSar > 0 ||
+    milestoneIds.length > 0;
+  // Card reversal still uses the intent because Moyasar IS the
+  // source of truth — cancelPayment below queries Moyasar's actual
+  // amount and voids/refunds that, regardless of what we recorded.
+  // The intent here is the upper bound we'd void if Moyasar agrees.
+  const effectiveCardPaid = hasBreakdown
+    ? intentCardPaidSar
+    : (order.payment_method === 'wallet' ? 0 : totalSar);
+  // Wallet + cashback reversal: use the ACTUAL ledger entry. If
+  // commit recorded the intent but the ledger doesn't agree, the
+  // deduction never happened → credit nothing.
   const effectiveWalletPaid = hasBreakdown
-    ? walletPaidSar
-    : (order.payment_method === 'wallet' ? totalSar : 0);
-  const effectiveCashbackPaid = hasBreakdown ? cashbackPaidSar : 0;
+    ? actualWalletPaidSar
+    : (order.payment_method === 'wallet' ? actualWalletPaidSar : 0);
+  const effectiveCashbackPaid = hasBreakdown ? actualCashbackPaidSar : 0;
+
+  if (intentWalletPaidSar > 0 && actualWalletPaidSar === 0) {
+    console.log(
+      `[Orders] Order ${orderId} recorded wallet intent ${intentWalletPaidSar} but no actual debit — skipping wallet credit (would be phantom)`,
+    );
+  }
+  if (intentCashbackPaidSar > 0 && actualCashbackPaidSar === 0) {
+    console.log(
+      `[Orders] Order ${orderId} recorded cashback intent ${intentCashbackPaidSar} but no actual redeem — skipping cashback restore`,
+    );
+  }
 
   const breakdown: ReversalBreakdown = {};
 
-  // ─── Card reversal (existing logic, slightly trimmed) ───
+  // ─── Card reversal ───
   // Three Moyasar outcomes:
   //   - void / refund   → money is going back to the CARD. No wallet
   //                       fallback.
@@ -931,10 +992,13 @@ async function refundOrderToWallet(
   breakdown.card = { method: moyasarMethod, amountSar: effectiveCardPaid };
 
   // ─── Wallet reversal ───
-  // (a) Always re-credit the wallet portion the customer used at checkout.
-  // (b) If the card portion couldn't be reversed via Moyasar AND money
-  //     actually moved (not 'not_required'), credit the card portion to
-  //     the wallet too as a fallback.
+  // (a) Re-credit the wallet portion the customer ACTUALLY spent
+  //     (not the intent — see note above).
+  // (b) If the card portion couldn't be reversed via Moyasar AND
+  //     money actually moved (not 'not_required'), credit the card
+  //     portion to the wallet too as a fallback. This part uses
+  //     the intent because if Moyasar took the money, we still
+  //     owe it back even if the intent != actual.
   let walletCreditSar = effectiveWalletPaid;
   if (effectiveCardPaid > 0 && !cardReturnedToCustomer && !cardNothingOwed) {
     walletCreditSar = +(walletCreditSar + effectiveCardPaid).toFixed(2);
