@@ -541,6 +541,74 @@ ordersRouter.post('/commit', async (req, res) => {
       updated_at: new Date().toISOString(),
     };
 
+    // ─── Second Moyasar verify (defense in depth) ───
+    // Moyasar's status can transiently report 'paid' on a 3DS flow
+    // that's about to settle as 'initiated' (customer closed the 3DS
+    // modal after auth but before submit). The first verify a few
+    // hundred ms earlier passed, the side effects ran (wallet debit,
+    // promo redeem), but Moyasar's eventually-consistent settlement
+    // can roll the status back. Re-checking right before the upsert
+    // narrows the window dramatically — if Moyasar now disagrees,
+    // we reverse every side effect we just applied so the customer
+    // doesn't lose a promo slot, wallet credit, or stamp slot for an
+    // order that never happens. Wallet-only / reward orders bypass
+    // (no Moyasar payment to re-verify).
+    //
+    // Why this matters: a customer reported (2026-05-16) that closing
+    // the 3DS modal mid-payment still resulted in a Moyasar payment
+    // INITIATED row, a wallet debit, a burned one-per-user promo,
+    // and a stamp redemption — the order then sat invisibly until
+    // the abandoned-payment sweep nuked it minutes later. The sweep
+    // refunded the money correctly but the customer got a confusing
+    // push for an order they couldn't see. This re-verify stops that
+    // class of orphan at creation time.
+    if (isMoyasarPaymentId && existing?.id !== id) {
+      const finalVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
+      if (!finalVerify.ok) {
+        console.warn(
+          '[Orders] Final verify failed pre-insert — reversing side effects:',
+          trimmedPaymentId,
+          'status:',
+          finalVerify.status,
+          'reason:',
+          finalVerify.reason,
+        );
+        // Reverse wallet debit. Idempotent on (order_id) — the
+        // creditWalletForRefund function checks for a prior refund
+        // entry so a retried commit can't double-credit.
+        if (walletAppliedSar > 0) {
+          try {
+            await creditWalletForRefund({
+              customerId: user.id,
+              merchantId,
+              amountSar: walletAppliedSar,
+              orderId: id,
+              complaintId: null,
+              note: `Reversed pre-insert: payment status "${finalVerify.status}"`.slice(0, 200),
+            });
+          } catch (e: any) {
+            console.error('[Orders] Wallet reversal after failed final verify failed:', e?.message);
+          }
+        }
+        // Reverse promo redemption. unredeem_promo is idempotent —
+        // no-op if no promo was applied or already unredeemed.
+        if (trimmedPromoCode) {
+          try {
+            await supabaseAdmin.rpc('unredeem_promo', {
+              p_merchant_id: merchantId,
+              p_order_id: id,
+            });
+          } catch (e: any) {
+            console.warn('[Orders] Promo unredeem after failed final verify failed:', e?.message);
+          }
+        }
+        return res.status(402).json({
+          error: `Payment not confirmed (${finalVerify.reason}). The order was not created.`,
+          moyasarStatus: finalVerify.status,
+        });
+      }
+    }
+
     const { data: savedOrder, error: commitError } = await supabaseAdmin
       .from('customer_orders')
       .upsert(payload, { onConflict: 'id' })
