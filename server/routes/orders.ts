@@ -213,6 +213,7 @@ ordersRouter.post('/commit', async (req, res) => {
     // total can claim a 0.01 SAR order with 50 items in cart).
     const MIN_ITEM_PRICE_SAR = 0.5;
     let computedItemFloor = 0;
+    const rewardMilestoneIdsInCart: string[] = [];
     for (const it of items as Array<{ price?: unknown; quantity?: unknown; basePrice?: unknown; uniqueId?: unknown }>) {
       const unitPrice = Number(it.basePrice ?? it.price ?? 0);
       const qty = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
@@ -224,6 +225,32 @@ ordersRouter.post('/commit', async (req, res) => {
       const isFreeReward =
         typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-');
       if (isFreeReward) {
+        // Reward exploit defense: each redeemed milestone yields a
+        // SINGLE free item. A cart entry with quantity > 1 means a
+        // tampered client tried to multiply the freebie (or the
+        // pre-2026-05-16 cart UI let a user bump it). Reject.
+        if (qty !== 1) {
+          return res.status(400).json({
+            error: 'Reward items must be quantity 1. Each stamp milestone yields exactly one free item.',
+            code: 'REWARD_QTY_INVALID',
+          });
+        }
+        const uid = String(it.uniqueId ?? '');
+        // uniqueId format: 'reward-<milestoneId>-<foodicsProductId>'.
+        // Extract milestoneId so we can cross-check against the
+        // stampMilestoneIds the client says it redeemed. Mismatched
+        // counts = tampering (e.g., two reward items but only one
+        // milestone redemption claimed).
+        const milestoneMatch = uid.match(/^reward-([0-9a-f-]{36})-/i);
+        if (milestoneMatch?.[1]) {
+          if (rewardMilestoneIdsInCart.includes(milestoneMatch[1])) {
+            return res.status(400).json({
+              error: 'Duplicate reward for the same milestone in the cart.',
+              code: 'REWARD_DUPLICATE_MILESTONE',
+            });
+          }
+          rewardMilestoneIdsInCart.push(milestoneMatch[1]);
+        }
         continue;
       }
       if (!Number.isFinite(unitPrice) || unitPrice < MIN_ITEM_PRICE_SAR) {
@@ -232,6 +259,21 @@ ordersRouter.post('/commit', async (req, res) => {
         });
       }
       computedItemFloor += unitPrice * qty;
+    }
+    // Cross-check: every reward item in the cart must correspond to
+    // a milestone redemption the client claimed. The /commit body
+    // carries stamp_milestone_ids — if the cart has more reward items
+    // than the client says it redeemed, that's a free-item exploit
+    // attempt. (Fewer is fine — a customer can redeem and then remove
+    // the reward; the redemption stays usable for the next cart.)
+    const claimedMilestones = Array.isArray(stampMilestoneIds)
+      ? (stampMilestoneIds as unknown[]).filter((v) => typeof v === 'string')
+      : [];
+    if (rewardMilestoneIdsInCart.length > claimedMilestones.length) {
+      return res.status(400).json({
+        error: `Cart has ${rewardMilestoneIdsInCart.length} reward item(s) but only ${claimedMilestones.length} milestone redemption(s) claimed.`,
+        code: 'REWARD_MILESTONE_MISMATCH',
+      });
     }
     // The server's lower-bound computed floor ignores discounts (promo,
     // loyalty, wallet) so the comparison is "does the claimed total at

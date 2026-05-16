@@ -228,72 +228,134 @@ export default function CartScreen() {
                     </Text>
                   )}
 
-                  <PriceWithSymbol amount={item.price * item.quantity} iconSize={16} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700' }} className="mt-1" />
+                  {item.uniqueId.startsWith('reward-') ? (
+                    <View className="mt-1 flex-row items-center" style={{ gap: 8 }}>
+                      {typeof (item as { rewardOriginalPriceSar?: number }).rewardOriginalPriceSar === 'number' &&
+                        (item as { rewardOriginalPriceSar?: number }).rewardOriginalPriceSar! > 0 && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text style={{ textDecorationLine: 'line-through', color: '#94a3b8', fontSize: 13 }}>
+                              {(item as { rewardOriginalPriceSar?: number }).rewardOriginalPriceSar}
+                            </Text>
+                          </View>
+                        )}
+                      <Text style={{ color: primaryColor, fontWeight: '700', fontSize: 14 }}>
+                        {isArabic ? 'مجاناً 🎁' : 'FREE 🎁'}
+                      </Text>
+                    </View>
+                  ) : (
+                    <PriceWithSymbol amount={item.price * item.quantity} iconSize={16} iconColor={primaryColor} textStyle={{ color: primaryColor, fontWeight: '700' }} className="mt-1" />
+                  )}
                 </View>
 
                 <View className="items-center" style={{ minWidth: 120 }}>
-                  <TouchableOpacity
-                    onPress={() => handleEditItem(item)}
-                    className="mb-2 items-center p-2"
-                    style={{ flexDirection: 'row' }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Pencil size={18} color={primaryColor} />
-                    <Text
-                      className="font-bold text-sm"
-                      style={{
-                        color: primaryColor,
-                        marginStart: 6 }}
-                    >
-                      {isArabic ? 'تعديل' : 'Edit'}
-                    </Text>
-                  </TouchableOpacity>
-                  <View className="items-center bg-slate-100 rounded-2xl p-2" style={{ flexDirection: 'row' }}>
-                    <TouchableOpacity
-                      onPress={() => updateQuantity(item.uniqueId, -1)}
-                      className="p-2.5 bg-white rounded-xl shadow-sm"
-                      hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-                    >
-                      <Minus size={20} color="#64748b" />
-                    </TouchableOpacity>
+                  {item.uniqueId.startsWith('reward-') ? (
+                    // Stamp-reward items are locked: one per redemption,
+                    // no quantity editor, no modifier editor. The
+                    // exploit otherwise lets a customer add a single
+                    // free coffee and bump qty to 99 in cart for 99
+                    // free coffees. Server-side validation in /commit
+                    // also rejects reward-* with qty>1 as belt-and-
+                    // suspenders for tampered clients.
+                    <>
+                      <View
+                        className="rounded-full px-3 py-1.5 mb-2"
+                        style={{ backgroundColor: primaryColor + '20' }}
+                      >
+                        <Text
+                          className="text-xs font-bold"
+                          style={{ color: primaryColor }}
+                        >
+                          {isArabic ? '🎁 مكافأة · 1×' : '🎁 Reward · 1×'}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        onPress={() => {
+                          Alert.alert(
+                            isArabic ? 'حذف المكافأة' : 'Remove reward',
+                            isArabic
+                              ? `تبي تشيل "${item.name}" من السلة؟`
+                              : `Remove "${item.name}" from your cart?`,
+                            [
+                              { text: isArabic ? 'لا' : 'Cancel', style: 'cancel' },
+                              {
+                                text: isArabic ? 'احذفه' : 'Remove',
+                                style: 'destructive',
+                                onPress: () => removeFromCart(item) },
+                            ],
+                          );
+                        }}
+                        className="mt-1 p-2"
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Trash2 size={22} color="#f87171" />
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <>
+                      <TouchableOpacity
+                        onPress={() => handleEditItem(item)}
+                        className="mb-2 items-center p-2"
+                        style={{ flexDirection: 'row' }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Pencil size={18} color={primaryColor} />
+                        <Text
+                          className="font-bold text-sm"
+                          style={{
+                            color: primaryColor,
+                            marginStart: 6 }}
+                        >
+                          {isArabic ? 'تعديل' : 'Edit'}
+                        </Text>
+                      </TouchableOpacity>
+                      <View className="items-center bg-slate-100 rounded-2xl p-2" style={{ flexDirection: 'row' }}>
+                        <TouchableOpacity
+                          onPress={() => updateQuantity(item.uniqueId, -1)}
+                          className="p-2.5 bg-white rounded-xl shadow-sm"
+                          hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                        >
+                          <Minus size={20} color="#64748b" />
+                        </TouchableOpacity>
 
-                    <Text
-                      className="font-bold text-slate-800 text-base"
-                      style={{ marginHorizontal: 16 }}
-                    >
-                      {item.quantity}
-                    </Text>
+                        <Text
+                          className="font-bold text-slate-800 text-base"
+                          style={{ marginHorizontal: 16 }}
+                        >
+                          {item.quantity}
+                        </Text>
 
-                    <TouchableOpacity
-                      onPress={() => updateQuantity(item.uniqueId, 1)}
-                      className="p-2.5 bg-white rounded-xl shadow-sm"
-                      hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-                    >
-                      <Plus size={20} color={primaryColor} />
-                    </TouchableOpacity>
-                  </View>
+                        <TouchableOpacity
+                          onPress={() => updateQuantity(item.uniqueId, 1)}
+                          className="p-2.5 bg-white rounded-xl shadow-sm"
+                          hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                        >
+                          <Plus size={20} color={primaryColor} />
+                        </TouchableOpacity>
+                      </View>
 
-                  <TouchableOpacity
-                    onPress={() => {
-                      Alert.alert(
-                        isArabic ? 'حذف المنتج' : 'Remove item',
-                        isArabic
-                          ? `تبي تحذف "${item.name}" من السلة؟`
-                          : `Remove "${item.name}" from your cart?`,
-                        [
-                          { text: isArabic ? 'لا' : 'Cancel', style: 'cancel' },
-                          {
-                            text: isArabic ? 'احذفه' : 'Remove',
-                            style: 'destructive',
-                            onPress: () => removeFromCart(item) },
-                        ],
-                      );
-                    }}
-                    className="mt-2 p-2"
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Trash2 size={22} color="#f87171" />
-                  </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => {
+                          Alert.alert(
+                            isArabic ? 'حذف المنتج' : 'Remove item',
+                            isArabic
+                              ? `تبي تحذف "${item.name}" من السلة؟`
+                              : `Remove "${item.name}" from your cart?`,
+                            [
+                              { text: isArabic ? 'لا' : 'Cancel', style: 'cancel' },
+                              {
+                                text: isArabic ? 'احذفه' : 'Remove',
+                                style: 'destructive',
+                                onPress: () => removeFromCart(item) },
+                            ],
+                          );
+                        }}
+                        className="mt-2 p-2"
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Trash2 size={22} color="#f87171" />
+                      </TouchableOpacity>
+                    </>
+                  )}
                 </View>
               </View>
             ))
