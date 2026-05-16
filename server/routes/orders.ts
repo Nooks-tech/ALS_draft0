@@ -139,12 +139,57 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
   }
 });
 
+// ─── Customer-scoped /commit rate limit (Layer 3) ───
+// A single Express process can see far more than 10 /commit calls
+// per minute (multi-customer traffic), but per-customer 10/min is
+// generously above any legitimate flow. A normal user fires 2
+// commits per order (first + final) and orders 1 thing at a time;
+// a tester might fire 6-8 across multiple attempts in a minute.
+// This blocks a malicious or buggy client from rapid-firing 100s of
+// commits to probe for residual exploit surface after Layer 1/2.
+const COMMIT_RATE_LIMIT_PER_CUSTOMER_PER_MIN = 10;
+const commitRateBuckets = new Map<string, { count: number; resetAt: number }>();
+const commitRatePruneInterval: ReturnType<typeof setInterval> = setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of commitRateBuckets.entries()) {
+    if (b.resetAt < now) commitRateBuckets.delete(k);
+  }
+}, 5 * 60 * 1000);
+(commitRatePruneInterval as unknown as { unref?: () => void }).unref?.();
+
+function checkCommitRateLimit(customerId: string): { allowed: boolean; retryAfterSec?: number } {
+  const now = Date.now();
+  const bucket = commitRateBuckets.get(customerId);
+  if (!bucket || bucket.resetAt < now) {
+    commitRateBuckets.set(customerId, { count: 1, resetAt: now + 60_000 });
+    return { allowed: true };
+  }
+  if (bucket.count >= COMMIT_RATE_LIMIT_PER_CUSTOMER_PER_MIN) {
+    return { allowed: false, retryAfterSec: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)) };
+  }
+  bucket.count += 1;
+  return { allowed: true };
+}
+
 ordersRouter.post('/commit', async (req, res) => {
   try {
     const user = await requireAuthenticatedAppUser(req, res);
     if (!user) return;
     if (!supabaseAdmin) {
       return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    // Layer 3: customer-scoped rate limit (per-process). Multi-instance
+    // deployments should swap this for Redis, but Railway runs a
+    // single Express dyno today so the in-memory map is fine.
+    const rl = checkCommitRateLimit(user.id);
+    if (!rl.allowed) {
+      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 60));
+      return res.status(429).json({
+        error: 'Too many order attempts. Please wait a moment and try again.',
+        code: 'COMMIT_RATE_LIMIT',
+        retryAfterSec: rl.retryAfterSec,
+      });
     }
 
     const {
@@ -1323,7 +1368,7 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
     const cutoffIso = new Date(Date.now() - 3 * 60 * 1000).toISOString();
     const { data: candidates, error: queryErr } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, payment_id, merchant_id, total_sar, card_paid_sar, created_at')
+      .select('id, payment_id, merchant_id, customer_id, total_sar, card_paid_sar, created_at, payment_confirmed_at')
       .eq('status', 'Placed')
       .lt('created_at', cutoffIso)
       .not('payment_id', 'is', null)
@@ -1343,6 +1388,48 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
         results.push({ orderId: order.id, action: 'kept', reason: 'wallet-only' });
         continue;
       }
+
+      // ─── Layer 2: never-confirmed drafts skip the refund path ───
+      // payment_confirmed_at IS NULL means the final commit never ran
+      // (or its hardened verify rejected the payment). With the Option
+      // A refactor, no side effects fired on our side for this row —
+      // no wallet debit, no promo redeem, no cashback redeem, no
+      // stamp redeem. Calling refundOrderToWallet here would either
+      // be a no-op (after Layer 1's actual-ledger checks) or, worse,
+      // mint phantom credits if Layer 1 ever drifted. Skip the whole
+      // refund flow; just void Moyasar if money moved on the card
+      // side (token-pay charged before the second commit's verify
+      // rejected) and mark the row Cancelled. Customer is whole
+      // because: (a) Moyasar returns the card amount, (b) nothing
+      // else was deducted to begin with.
+      if (!order.payment_confirmed_at) {
+        let moyasarOutcome = 'skipped';
+        if (!paymentId.startsWith('reward:')) {
+          try {
+            const r = await cancelPayment(paymentId, undefined, order.merchant_id);
+            moyasarOutcome = r.method;
+          } catch (e: any) {
+            moyasarOutcome = `failed: ${e?.message || 'unknown'}`;
+          }
+        }
+        await supabaseAdmin
+          .from('customer_orders')
+          .update({
+            status: 'Cancelled',
+            cancelled_by: 'system',
+            cancellation_reason: `Abandoned payment (never confirmed; moyasar: ${moyasarOutcome})`,
+            refund_status: 'not_required',
+            refund_amount: 0,
+            refund_method: 'none',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', order.id);
+        swept += 1;
+        results.push({ orderId: order.id, action: 'swept', reason: `draft_never_confirmed (moyasar: ${moyasarOutcome})` });
+        continue;
+      }
+
+      // ─── Confirmed orders: existing flow ───
       // Use the card-portion amount for verification (matches what was
       // actually charged to Moyasar). If breakdown columns are zero
       // (legacy row), fall back to total_sar.
