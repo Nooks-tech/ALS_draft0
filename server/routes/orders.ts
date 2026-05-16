@@ -297,14 +297,59 @@ ordersRouter.post('/commit', async (req, res) => {
     // require status ∈ {paid, captured} AND amount matching the order
     // total. Reject otherwise — the row never gets created.
     //
-    // Wallet-only / COD paths skip this check: their paymentId is
-    // either a `wallet:<txn>` sentinel (the wallet debit IS the
+    // Wallet-only / COD paths skip the Moyasar check: their paymentId
+    // is either a `wallet:<txn>` sentinel (the wallet debit IS the
     // payment) or null (COD pays cash on delivery). For partial-wallet
     // orders the card still pays the remainder and Moyasar verifies
     // that portion below; we round the expected halalas to match.
+    const trimmedPaymentId = typeof paymentId === 'string' ? paymentId.trim() : '';
+    // 'wallet:<txn>' is the wallet-only sentinel. 'reward:<orderId>'
+    // is the free-order sentinel for rewards-only orders where no
+    // money is being charged at all (only stamp-milestone freebies).
+    // Both skip Moyasar verification — there's no card payment to
+    // verify against.
+    const isMoyasarPaymentId =
+      trimmedPaymentId
+      && !trimmedPaymentId.startsWith('wallet:')
+      && !trimmedPaymentId.startsWith('reward:');
+    // Compute expected card portion (totalSar minus wallet portion).
+    // Cashback / loyalty discounts are NOT subtracted here — the
+    // discount is applied as a Foodics line on the POS side and
+    // Moyasar charges the post-discount totalSar value the client
+    // sent us (which the per-item floor above already sanity-checked).
+    const cardPortionSar =
+      paymentMethod === 'wallet'
+        ? 0
+        : typeof walletAmountSar === 'number' && walletAmountSar > 0
+          ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
+          : Number(totalSar);
+    const expectedHalalsForVerify = Math.round(cardPortionSar * 100);
+    if (isMoyasarPaymentId && existing?.id !== id) {
+      const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
+      if (!verification.ok) {
+        console.warn(
+          '[Orders] Rejecting commit — Moyasar payment not paid:',
+          trimmedPaymentId,
+          verification.reason,
+          'status:',
+          verification.status,
+        );
+        return res.status(402).json({
+          error: `Payment not confirmed (${verification.reason}). The order was not created.`,
+          moyasarStatus: verification.status,
+        });
+      }
+    }
+
     // ─── Atomic promo redemption ───
-    // If the customer applied a promo code, redeem it via the
-    // redeem_promo RPC BEFORE we touch the wallet or the order row.
+    // Redeem the promo AFTER Moyasar said the payment is paid. The
+    // original ordering ran the RPC before verification, which meant
+    // a customer who closed the 3DS modal still consumed their
+    // one-per-user promo quota even though no money moved. Now the
+    // RPC only fires once payment is confirmed for credit-card orders
+    // (wallet-only / reward orders skip the verify and reach here
+    // directly, same as before — the wallet debit IS the payment).
+    //
     // The RPC is atomic and idempotent:
     //   - rejects expired codes (real expiry enforcement, not just
     //     client-side validate)
@@ -342,45 +387,6 @@ ordersRouter.post('/commit', async (req, res) => {
         const reason = redeemResult?.reason ?? 'Promo code redemption failed';
         console.warn('[Orders] Rejecting commit — promo redeem failed:', trimmedPromoCode, reason);
         return res.status(400).json({ error: reason, code: 'PROMO_REJECTED' });
-      }
-    }
-
-    const trimmedPaymentId = typeof paymentId === 'string' ? paymentId.trim() : '';
-    // 'wallet:<txn>' is the wallet-only sentinel. 'reward:<orderId>'
-    // is the free-order sentinel for rewards-only orders where no
-    // money is being charged at all (only stamp-milestone freebies).
-    // Both skip Moyasar verification — there's no card payment to
-    // verify against.
-    const isMoyasarPaymentId =
-      trimmedPaymentId
-      && !trimmedPaymentId.startsWith('wallet:')
-      && !trimmedPaymentId.startsWith('reward:');
-    // Compute expected card portion (totalSar minus wallet portion).
-    // Cashback / loyalty discounts are NOT subtracted here — the
-    // discount is applied as a Foodics line on the POS side and
-    // Moyasar charges the post-discount totalSar value the client
-    // sent us (which the per-item floor above already sanity-checked).
-    const cardPortionSar =
-      paymentMethod === 'wallet'
-        ? 0
-        : typeof walletAmountSar === 'number' && walletAmountSar > 0
-          ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
-          : Number(totalSar);
-    const expectedHalalsForVerify = Math.round(cardPortionSar * 100);
-    if (isMoyasarPaymentId && existing?.id !== id) {
-      const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
-      if (!verification.ok) {
-        console.warn(
-          '[Orders] Rejecting commit — Moyasar payment not paid:',
-          trimmedPaymentId,
-          verification.reason,
-          'status:',
-          verification.status,
-        );
-        return res.status(402).json({
-          error: `Payment not confirmed (${verification.reason}). The order was not created.`,
-          moyasarStatus: verification.status,
-        });
       }
     }
 
@@ -958,31 +964,54 @@ async function refundOrderToWallet(
   // Compose a multi-source push message that names each restored
   // source. Order: card → wallet → cashback → stamps. We skip the
   // "no charge" message unless literally nothing was reversed.
-  const lead =
-    cancelledBy === 'merchant'
-      ? 'Your order has been refused by the store.'
-      : "We couldn't dispatch a driver for your order.";
-  const pieces: string[] = [];
-  if (cardReturnedToCustomer && effectiveCardPaid > 0) {
-    pieces.push(
-      moyasarMethod === 'void'
-        ? `${effectiveCardPaid} SAR will be returned to your card within a few hours`
-        : `${effectiveCardPaid} SAR is being returned to your card (1-3 business days)`,
+  //
+  // Suppress the push entirely for abandoned-payment sweeps on orders
+  // that never reached Foodics. The customer in that scenario closed
+  // 3DS / abandoned card entry; the order never showed up on the
+  // merchant POS and the cart-side flow already gave them an inline
+  // payment error. Pushing "Order Cancelled — couldn't dispatch a
+  // driver" on top is misleading (no driver was ever in scope), and
+  // worse, the order is hidden from the customer's Orders tab by the
+  // foodics_order_id filter so they have no way to reconcile the
+  // notification with anything they can see. The wallet/cashback/
+  // stamp reversals still happen silently — the ledger is the
+  // source of truth.
+  const isAbandonedPaymentSweep =
+    cancelledBy === 'system' &&
+    typeof reason === 'string' &&
+    reason.toLowerCase().startsWith('abandoned payment') &&
+    !order.foodics_order_id;
+  if (!isAbandonedPaymentSweep) {
+    const lead =
+      cancelledBy === 'merchant'
+        ? 'Your order has been refused by the store.'
+        : "We couldn't dispatch a driver for your order.";
+    const pieces: string[] = [];
+    if (cardReturnedToCustomer && effectiveCardPaid > 0) {
+      pieces.push(
+        moyasarMethod === 'void'
+          ? `${effectiveCardPaid} SAR will be returned to your card within a few hours`
+          : `${effectiveCardPaid} SAR is being returned to your card (1-3 business days)`,
+      );
+    }
+    if (breakdown.wallet && breakdown.wallet.amountSar > 0) {
+      pieces.push(`${breakdown.wallet.amountSar} SAR credited to your wallet`);
+    }
+    if (breakdown.cashback && breakdown.cashback.amountSar > 0 && !breakdown.cashback.alreadyRestored) {
+      pieces.push(`${breakdown.cashback.amountSar} SAR cashback restored`);
+    }
+    if (breakdown.stamps && breakdown.stamps.count > 0 && !breakdown.stamps.alreadyRestored) {
+      pieces.push(`${breakdown.stamps.count} stamps restored`);
+    }
+    const refundLine = pieces.length
+      ? `${pieces.join(', ')}.`
+      : 'No charge was made to your card, so nothing needs to be refunded.';
+    sendPushToCustomer(order.customer_id, 'Order Cancelled', `${lead} ${refundLine}`, order.merchant_id);
+  } else {
+    console.log(
+      `[Orders] Suppressing cancellation push for abandoned-payment sweep on order ${orderId} (never reached Foodics)`,
     );
   }
-  if (breakdown.wallet && breakdown.wallet.amountSar > 0) {
-    pieces.push(`${breakdown.wallet.amountSar} SAR credited to your wallet`);
-  }
-  if (breakdown.cashback && breakdown.cashback.amountSar > 0 && !breakdown.cashback.alreadyRestored) {
-    pieces.push(`${breakdown.cashback.amountSar} SAR cashback restored`);
-  }
-  if (breakdown.stamps && breakdown.stamps.count > 0 && !breakdown.stamps.alreadyRestored) {
-    pieces.push(`${breakdown.stamps.count} stamps restored`);
-  }
-  const refundLine = pieces.length
-    ? `${pieces.join(', ')}.`
-    : 'No charge was made to your card, so nothing needs to be refunded.';
-  sendPushToCustomer(order.customer_id, 'Order Cancelled', `${lead} ${refundLine}`, order.merchant_id);
 
   // Audit row — one record per order_id. Replays UPSERT into the same
   // row so a retried cancel doesn't create duplicate audit entries

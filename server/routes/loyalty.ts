@@ -1567,6 +1567,42 @@ export async function restoreStampMilestonesForRefund(params: {
     return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: true };
   }
 
+  // Clear redemption rows so the milestone is available again. The
+  // checkout redeem step either flips an existing unredeemed row's
+  // redeemed_at to NOT-NULL OR inserts a fresh row — either way the
+  // row now has redeemed_at set. Setting it back to NULL makes the
+  // milestone re-eligible for redemption next checkout. We don't
+  // DELETE the row because keeping the history is useful for ops.
+  //
+  // DO THIS FIRST so we can check what was actually redeemed. The
+  // order row carries stamps_consumed from the commit payload, but
+  // that's just an intent declaration — if the customer's
+  // post-commit redeem-stamp-milestone call never landed (3DS
+  // abandoned, app crashed between the two calls), the redemption
+  // row never had redeemed_at set, so nothing to clear and nothing
+  // to credit. Crediting anyway hands the customer free stamps they
+  // never spent — observed 2026-05-16 with abandoned-payment
+  // orders 02340043 + 02680835 surfacing +2 stamp ledger entries
+  // each with no matching deduction.
+  const { data: clearedRows } = await supabaseAdmin
+    .from('loyalty_stamp_redemptions')
+    .update({ redeemed_at: null, redeemed_via: null })
+    .in('milestone_id', params.milestoneIds)
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .not('redeemed_at', 'is', null)
+    .select('milestone_id, stamp_number');
+  const actualStampsToRestore = (clearedRows ?? []).reduce(
+    (sum, r) => sum + Number((r as { stamp_number?: number }).stamp_number ?? 0),
+    0,
+  );
+  if (actualStampsToRestore === 0) {
+    console.log(
+      `[Loyalty] No redeemed milestones found for order ${params.orderId}; skipping stamp restoration to avoid phantom credit`,
+    );
+    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
+  }
+
   // Add stamps back. We use a non-atomic read+write because nobody
   // else is racing to modify stamps at refund time (the order is in
   // 'Cancelled' transition; no concurrent earn/redeem expected).
@@ -1576,7 +1612,7 @@ export async function restoreStampMilestonesForRefund(params: {
     .eq('customer_id', params.customerId)
     .eq('merchant_id', params.merchantId)
     .maybeSingle();
-  const newStamps = (stampRow?.stamps ?? 0) + params.stampsConsumed;
+  const newStamps = (stampRow?.stamps ?? 0) + actualStampsToRestore;
   if (stampRow) {
     await supabaseAdmin
       .from('loyalty_stamps')
@@ -1587,28 +1623,13 @@ export async function restoreStampMilestonesForRefund(params: {
     await supabaseAdmin.from('loyalty_stamps').insert({
       customer_id: params.customerId,
       merchant_id: params.merchantId,
-      stamps: params.stampsConsumed,
+      stamps: actualStampsToRestore,
     });
   }
 
-  // Clear redemption rows so the milestone is available again. The
-  // checkout redeem step either flips an existing unredeemed row's
-  // redeemed_at to NOT-NULL OR inserts a fresh row — either way the
-  // row now has redeemed_at set. Setting it back to NULL makes the
-  // milestone re-eligible for redemption next checkout. We don't
-  // DELETE the row because keeping the history is useful for ops.
-  const { data: clearedRows } = await supabaseAdmin
-    .from('loyalty_stamp_redemptions')
-    .update({ redeemed_at: null, redeemed_via: null })
-    .in('milestone_id', params.milestoneIds)
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .not('redeemed_at', 'is', null)
-    .select('milestone_id');
-
   // Refund the internal points (1 stamp = 10 internal points, mirrors
   // the deduct in redeem-stamp-milestone).
-  const pointsToRestore = params.stampsConsumed * 10;
+  const pointsToRestore = actualStampsToRestore * 10;
   const { data: ptsBal } = await supabaseAdmin
     .from('loyalty_points')
     .select('points')
@@ -1630,7 +1651,7 @@ export async function restoreStampMilestonesForRefund(params: {
     type: 'earn',
     loyalty_type: 'stamps',
     points: pointsToRestore,
-    description: `Restored ${params.stampsConsumed} stamps from cancelled order ${params.orderId.slice(-8)}`,
+    description: `Restored ${actualStampsToRestore} stamps from cancelled order ${params.orderId.slice(-8)}`,
     source: 'refund',
   });
 
@@ -1638,7 +1659,7 @@ export async function restoreStampMilestonesForRefund(params: {
     console.warn('[Loyalty] notifyPassUpdate failed after stamp refund:', err instanceof Error ? err.message : err),
   );
   return {
-    stampsRestored: params.stampsConsumed,
+    stampsRestored: actualStampsToRestore,
     milestonesCleared: (clearedRows ?? []).map((r) => String((r as { milestone_id: string }).milestone_id)),
     alreadyRestored: false,
   };
