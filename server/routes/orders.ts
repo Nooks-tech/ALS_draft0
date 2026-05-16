@@ -383,25 +383,26 @@ ordersRouter.post('/commit', async (req, res) => {
       }
     }
 
-    // ─── Atomic promo redemption ───
-    // Redeem the promo AFTER Moyasar said the payment is paid. The
-    // original ordering ran the RPC before verification, which meant
-    // a customer who closed the 3DS modal still consumed their
-    // one-per-user promo quota even though no money moved. Now the
-    // RPC only fires once payment is confirmed for credit-card orders
-    // (wallet-only / reward orders skip the verify and reach here
-    // directly, same as before — the wallet debit IS the payment).
+    // ─── Side-effect gating: only on the FINAL commit ───
+    // The customer app calls /commit twice:
+    //   1) relayToNooks=false — registers the order intent. We verify
+    //      Moyasar once but do NOT redeem the promo, debit the wallet,
+    //      or stamp payment_confirmed_at. The draft row is invisible
+    //      to both customer + merchant dashboards (foodics_order_id
+    //      filter).
+    //   2) relayToNooks=true — re-verifies Moyasar after a delay so
+    //      transient 'paid' status can resolve, runs all side effects,
+    //      relays to Foodics, and only then stamps the row as
+    //      confirmed. If anything in here fails we reverse the side
+    //      effects (refundOrderToWallet handles that path on Foodics
+    //      failure; the verify-failed path skips them entirely).
     //
-    // The RPC is atomic and idempotent:
-    //   - rejects expired codes (real expiry enforcement, not just
-    //     client-side validate)
-    //   - rejects codes whose usage_count >= usage_limit
-    //   - inserts a promo_redemptions row tied to (merchant, code,
-    //     order_id) so a retried commit doesn't double-count
-    //   - increments usage_count atomically with the limit check
-    // The cancel path (refundOrderToWallet) calls unredeem_promo which
-    // rolls back the row + decrements usage_count, so cancelled orders
-    // give the slot back to the merchant's quota.
+    // This is the structural fix for the abandoned-3DS leak the user
+    // reported on 2026-05-16: closing the 3DS modal could leave a
+    // Moyasar payment in 'initiated' but our verify caught a
+    // transient 'paid' window and burned the promo + wallet credit
+    // for an order that never reached Foodics.
+    const isFinalCommit = relayToNooks === true;
     const trimmedPromoCode =
       typeof promoCode === 'string' && promoCode.trim() ? promoCode.trim().toUpperCase() : null;
     const promoScopeNormalized =
@@ -410,84 +411,116 @@ ordersRouter.post('/commit', async (req, res) => {
       typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
         ? promoDiscountSar
         : 0;
-    if (trimmedPromoCode && promoDiscountValue > 0 && promoScopeNormalized && existing?.id !== id) {
-      const { data: redeemRows, error: redeemErr } = await supabaseAdmin.rpc('redeem_promo', {
-        p_merchant_id: merchantId,
-        p_code: trimmedPromoCode,
-        p_order_id: id,
-        p_customer_id: user.id,
-        p_discount_sar: promoDiscountValue,
-        p_scope: promoScopeNormalized,
-      });
-      if (redeemErr) {
-        console.error('[Orders] redeem_promo RPC error:', redeemErr.message);
-        return res.status(500).json({ error: 'Promo redemption failed' });
-      }
-      const redeemResult = Array.isArray(redeemRows) ? redeemRows[0] : redeemRows;
-      const ok = redeemResult?.ok ?? false;
-      if (!ok) {
-        const reason = redeemResult?.reason ?? 'Promo code redemption failed';
-        console.warn('[Orders] Rejecting commit — promo redeem failed:', trimmedPromoCode, reason);
-        return res.status(400).json({ error: reason, code: 'PROMO_REJECTED' });
-      }
-    }
 
-    // Wallet credit: applied to the order BEFORE saving it. Two
-    // shapes the client can send:
-    //   - paymentMethod === 'wallet'        → wallet covers the full
-    //                                         total (legacy shape from
-    //                                         when the wallet was a
-    //                                         payment-method choice).
-    //   - walletAmountSar > 0 (any method)  → wallet covers a portion
-    //                                         and the chosen card /
-    //                                         Apple Pay covers the
-    //                                         remainder. The wallet
-    //                                         debit lives in the
-    //                                         ledger keyed by order_id;
-    //                                         /token-pay reads it back
-    //                                         to subtract from the
-    //                                         card charge.
-    // Either way the SQL function throws 'INSUFFICIENT_WALLET_BALANCE'
-    // if the balance can't cover the requested amount, and the debit
-    // is idempotent on (order_id, customer, merchant) — a retry of
-    // this commit returns the same wallet transaction instead of
-    // double-debiting.
     let walletPaymentId: string | null = null;
     let walletAppliedSar = 0;
     if (paymentMethod === 'wallet') {
       walletAppliedSar = Number(totalSar);
     } else if (typeof walletAmountSar === 'number' && walletAmountSar > 0) {
-      // Cap to totalSar so a tampered client can't pull more wallet
-      // credit than the order is worth.
       walletAppliedSar = Math.min(Number(walletAmountSar), Number(totalSar));
     }
 
-    if (walletAppliedSar > 0) {
-      try {
-        const { data: priorDebit } = await supabaseAdmin
-          .from('customer_wallet_transactions')
-          .select('id')
-          .eq('customer_id', user.id)
-          .eq('merchant_id', merchantId)
-          .eq('order_id', id)
-          .eq('entry_type', 'spend')
-          .maybeSingle();
-        if (priorDebit) {
-          walletPaymentId = `wallet:${priorDebit.id}`;
-        } else {
-          const debit = await debitWalletForOrder({
-            customerId: user.id,
-            merchantId,
-            amountSar: walletAppliedSar,
-            orderId: id,
+    if (isFinalCommit) {
+      // ─── Hardened Moyasar re-verify with delay ───
+      // Wait 2 seconds before the side effects fire, then verify
+      // Moyasar AGAIN. The first verify at the top of /commit can
+      // see a transient 'paid' that's about to roll back to
+      // 'initiated' if the customer abandoned 3DS post-auth. The
+      // delay lets Moyasar's settlement settle; the second verify
+      // catches the rollback before we touch wallet / promo. We use
+      // the same expectedHalals as the first verify so amount
+      // tampering still gets caught.
+      if (isMoyasarPaymentId) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const hardenedVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
+        if (!hardenedVerify.ok) {
+          console.warn(
+            '[Orders] Hardened verify (post-delay) failed — refusing side effects:',
+            trimmedPaymentId,
+            'status:',
+            hardenedVerify.status,
+          );
+          return res.status(402).json({
+            error: `Payment not confirmed (${hardenedVerify.reason}). The order was not created.`,
+            moyasarStatus: hardenedVerify.status,
           });
-          walletPaymentId = `wallet:${debit.transactionId}`;
         }
-      } catch (e: any) {
-        if (e?.message === 'INSUFFICIENT_WALLET_BALANCE') {
-          return res.status(400).json({ error: 'INSUFFICIENT_WALLET_BALANCE' });
+      }
+
+      // ─── Atomic promo redemption ───
+      // Idempotent via the redeem_promo RPC (unique on order_id).
+      // The cancel path (refundOrderToWallet) calls unredeem_promo
+      // which rolls back the row + decrements usage_count.
+      if (trimmedPromoCode && promoDiscountValue > 0 && promoScopeNormalized && existing?.id !== id) {
+        const { data: redeemRows, error: redeemErr } = await supabaseAdmin.rpc('redeem_promo', {
+          p_merchant_id: merchantId,
+          p_code: trimmedPromoCode,
+          p_order_id: id,
+          p_customer_id: user.id,
+          p_discount_sar: promoDiscountValue,
+          p_scope: promoScopeNormalized,
+        });
+        if (redeemErr) {
+          console.error('[Orders] redeem_promo RPC error:', redeemErr.message);
+          return res.status(500).json({ error: 'Promo redemption failed' });
         }
-        return res.status(500).json({ error: e?.message || 'Wallet debit failed' });
+        const redeemResult = Array.isArray(redeemRows) ? redeemRows[0] : redeemRows;
+        const ok = redeemResult?.ok ?? false;
+        if (!ok) {
+          const reason = redeemResult?.reason ?? 'Promo code redemption failed';
+          console.warn('[Orders] Rejecting commit — promo redeem failed:', trimmedPromoCode, reason);
+          return res.status(400).json({ error: reason, code: 'PROMO_REJECTED' });
+        }
+      }
+
+      // ─── Wallet debit ───
+      // Idempotent on (order_id, customer, merchant) — a retried
+      // commit returns the same wallet transaction instead of
+      // double-debiting.
+      if (walletAppliedSar > 0) {
+        try {
+          const { data: priorDebit } = await supabaseAdmin
+            .from('customer_wallet_transactions')
+            .select('id')
+            .eq('customer_id', user.id)
+            .eq('merchant_id', merchantId)
+            .eq('order_id', id)
+            .eq('entry_type', 'spend')
+            .maybeSingle();
+          if (priorDebit) {
+            walletPaymentId = `wallet:${priorDebit.id}`;
+          } else {
+            const debit = await debitWalletForOrder({
+              customerId: user.id,
+              merchantId,
+              amountSar: walletAppliedSar,
+              orderId: id,
+            });
+            walletPaymentId = `wallet:${debit.transactionId}`;
+          }
+        } catch (e: any) {
+          // Reverse the promo redemption since the wallet debit was
+          // required for this order shape and we can't proceed.
+          if (trimmedPromoCode) {
+            try {
+              await supabaseAdmin.rpc('unredeem_promo', {
+                p_merchant_id: merchantId,
+                p_order_id: id,
+              });
+            } catch (_e) { /* non-fatal */ }
+          }
+          if (e?.message === 'INSUFFICIENT_WALLET_BALANCE') {
+            return res.status(400).json({ error: 'INSUFFICIENT_WALLET_BALANCE' });
+          }
+          return res.status(500).json({ error: e?.message || 'Wallet debit failed' });
+        }
+      }
+    } else {
+      // First commit: register the wallet payment id placeholder for
+      // wallet-only orders so payload.payment_id below stays sensible.
+      // No actual debit happens until the final commit.
+      if (paymentMethod === 'wallet') {
+        walletPaymentId = `wallet:pending-${id}`;
       }
     }
 
@@ -573,83 +606,15 @@ ordersRouter.post('/commit', async (req, res) => {
       commission_amount: 1,
       commission_rate: 0,
       commission_status: 'pending',
-      // Visibility gate: only orders with this column set appear in
-      // the customer app's orders tab and the merchant dashboard.
-      // We reach this line only after P1's Moyasar verification has
-      // passed (or it's a wallet-only order whose wallet debit
-      // succeeded above), so by definition the customer has paid.
-      // Legacy orphans where commit never ran have this NULL.
-      payment_confirmed_at: new Date().toISOString(),
+      // Visibility gate: only orders with payment_confirmed_at + a
+      // foodics_order_id appear in the customer app and merchant
+      // dashboard. Confirmed only on the FINAL commit, after the
+      // hardened post-delay re-verify passed and side effects fired.
+      // First-commit drafts have NULL here and stay invisible until
+      // the second commit promotes them.
+      payment_confirmed_at: isFinalCommit ? new Date().toISOString() : null,
       updated_at: new Date().toISOString(),
     };
-
-    // ─── Second Moyasar verify (defense in depth) ───
-    // Moyasar's status can transiently report 'paid' on a 3DS flow
-    // that's about to settle as 'initiated' (customer closed the 3DS
-    // modal after auth but before submit). The first verify a few
-    // hundred ms earlier passed, the side effects ran (wallet debit,
-    // promo redeem), but Moyasar's eventually-consistent settlement
-    // can roll the status back. Re-checking right before the upsert
-    // narrows the window dramatically — if Moyasar now disagrees,
-    // we reverse every side effect we just applied so the customer
-    // doesn't lose a promo slot, wallet credit, or stamp slot for an
-    // order that never happens. Wallet-only / reward orders bypass
-    // (no Moyasar payment to re-verify).
-    //
-    // Why this matters: a customer reported (2026-05-16) that closing
-    // the 3DS modal mid-payment still resulted in a Moyasar payment
-    // INITIATED row, a wallet debit, a burned one-per-user promo,
-    // and a stamp redemption — the order then sat invisibly until
-    // the abandoned-payment sweep nuked it minutes later. The sweep
-    // refunded the money correctly but the customer got a confusing
-    // push for an order they couldn't see. This re-verify stops that
-    // class of orphan at creation time.
-    if (isMoyasarPaymentId && existing?.id !== id) {
-      const finalVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
-      if (!finalVerify.ok) {
-        console.warn(
-          '[Orders] Final verify failed pre-insert — reversing side effects:',
-          trimmedPaymentId,
-          'status:',
-          finalVerify.status,
-          'reason:',
-          finalVerify.reason,
-        );
-        // Reverse wallet debit. Idempotent on (order_id) — the
-        // creditWalletForRefund function checks for a prior refund
-        // entry so a retried commit can't double-credit.
-        if (walletAppliedSar > 0) {
-          try {
-            await creditWalletForRefund({
-              customerId: user.id,
-              merchantId,
-              amountSar: walletAppliedSar,
-              orderId: id,
-              complaintId: null,
-              note: `Reversed pre-insert: payment status "${finalVerify.status}"`.slice(0, 200),
-            });
-          } catch (e: any) {
-            console.error('[Orders] Wallet reversal after failed final verify failed:', e?.message);
-          }
-        }
-        // Reverse promo redemption. unredeem_promo is idempotent —
-        // no-op if no promo was applied or already unredeemed.
-        if (trimmedPromoCode) {
-          try {
-            await supabaseAdmin.rpc('unredeem_promo', {
-              p_merchant_id: merchantId,
-              p_order_id: id,
-            });
-          } catch (e: any) {
-            console.warn('[Orders] Promo unredeem after failed final verify failed:', e?.message);
-          }
-        }
-        return res.status(402).json({
-          error: `Payment not confirmed (${finalVerify.reason}). The order was not created.`,
-          moyasarStatus: finalVerify.status,
-        });
-      }
-    }
 
     const { data: savedOrder, error: commitError } = await supabaseAdmin
       .from('customer_orders')
@@ -695,6 +660,14 @@ ordersRouter.post('/commit', async (req, res) => {
           });
         }
       }
+      // Wrap the Foodics relay in try/catch so that if it fails AFTER
+      // we've already debited the wallet + redeemed the promo, we can
+      // reverse those side effects + void the Moyasar charge instead
+      // of leaving the customer billed for an order the merchant
+      // never received. refundOrderToWallet handles all of that
+      // atomically — the row's stamps_consumed / promo_code /
+      // wallet_paid_sar columns drive the reversal.
+      try {
       relayResult = await relayOrderToNooks({
         id,
         merchant_id: merchantId,
@@ -779,17 +752,44 @@ ordersRouter.post('/commit', async (req, res) => {
         }),
       });
 
-      // Store Foodics order ID from relay response (fire-and-forget)
-      const relayData = relayResult as { foodics?: { ok?: boolean; foodicsOrderId?: string } } | null;
+      // Store Foodics order ID from relay response. Awaited so the
+      // foodics_order_id column is set before this endpoint responds
+      // — the customer-app order list filter requires it to be
+      // non-null, so a fire-and-forget update would mean the order
+      // briefly disappeared from the list right after creation.
+      const relayData = relayResult as { foodics?: { ok?: boolean; foodicsOrderId?: string; error?: string } } | null;
       if (relayData?.foodics?.ok && relayData.foodics.foodicsOrderId) {
-        Promise.resolve(
-          supabaseAdmin
-            .from('customer_orders')
-            .update({ foodics_order_id: relayData.foodics.foodicsOrderId })
-            .eq('id', id)
-        )
-          .then(() => console.log(`[Orders] Stored foodics_order_id for ${id}`))
-          .catch((e: any) => console.warn('[Orders] Failed to store foodics_order_id:', e?.message));
+        const { error: foodicsIdErr } = await supabaseAdmin
+          .from('customer_orders')
+          .update({ foodics_order_id: relayData.foodics.foodicsOrderId })
+          .eq('id', id);
+        if (foodicsIdErr) {
+          console.warn('[Orders] Failed to store foodics_order_id:', foodicsIdErr.message);
+        } else {
+          console.log(`[Orders] Stored foodics_order_id for ${id}`);
+        }
+      } else if (relayData?.foodics && relayData.foodics.ok === false) {
+        // Foodics relay returned a non-ok response (e.g., bad
+        // modifier mapping, branch closed). Throw so the outer
+        // catch reverses the side effects.
+        throw new Error(relayData.foodics.error || 'Foodics relay returned ok=false');
+      }
+      } catch (relayErr: any) {
+        console.error('[Orders] Foodics relay failed — reversing side effects:', relayErr?.message);
+        // refundOrderToWallet reverses everything: card via Moyasar
+        // void/refund, wallet credit back, cashback restore, stamp
+        // restore, promo unredeem. The row stays as Cancelled with
+        // refund_status set so the merchant dashboard's filter
+        // (foodics_order_id IS NOT NULL) still hides it.
+        try {
+          await refundOrderToWallet(id, 'system', 'Foodics relay failed');
+        } catch (refundErr: any) {
+          console.error('[Orders] Cleanup refund after Foodics failure also failed:', refundErr?.message);
+        }
+        return res.status(502).json({
+          error: 'Order could not be sent to the merchant POS. Your payment is being refunded.',
+          foodics_error: relayErr?.message,
+        });
       }
     }
 

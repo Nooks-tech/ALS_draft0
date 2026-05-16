@@ -735,61 +735,70 @@ export default function CheckoutScreen() {
           relayToNooks: false });
       }
 
-      // Server-side commit creates the Foodics order synchronously via
-      // the relay, which takes 2-5 seconds talking to Foodics. Firing
-      // it in the BACKGROUND so the customer sees the order-confirmed
-      // screen the moment their payment clears instead of staring at a
-      // spinner. If commit fails, the optimistic local order already
-      // rendered keeps the UX sane; we surface the error via Alert so
-      // the user can contact support and we can reconcile against the
-      // Moyasar payment id.
+      // Second commit — AWAITED. This is where the server runs the
+      // hardened post-delay Moyasar re-verify, fires the side effects
+      // (wallet debit, promo redeem), and relays to Foodics. If the
+      // hardened verify catches a 3DS-abandoned 'initiated' state or
+      // the Foodics relay fails, the server reverses everything and
+      // returns an error — and we must NOT redeem stamps / cashback /
+      // wallet on the client side either. Previously this was
+      // fire-and-forget which let stamps + cashback fire alongside a
+      // commit that ultimately failed.
+      let finalCommitOk = false;
       if (user?.id) {
-        void commitOrder({
-          id: orderId,
-          merchantId,
-          branchId: selectedBranch.id,
-          branchName: selectedBranch.name ?? null,
-          totalSar: Number(finalTotal.toFixed(2)),
-          status: 'Placed',
-          items: cartItems.map((item) => ({
-            id: item.id,
-            name: item.name,
-            price: item.price, basePrice: item.basePrice ?? item.price,
-            quantity: item.quantity,
-            image: item.image,
-            customizations: item.customizations ?? null,
-            uniqueId: item.uniqueId,
-            rewardOriginalPriceSar: item.rewardOriginalPriceSar })),
-          orderType,
-          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
-          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
-          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
-          deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
-          deliveryFee,
-          paymentId: resolvedPaymentId,
-          paymentMethod,
-          otoId: null, // Set later by Foodics webhook when cashier accepts
-          customerName: profile.fullName || null,
-          customerPhone: profile.phone || null,
-          customerEmail: profile.email || null,
-          promoCode: promoApplied ? promoCode : null,
-          promoDiscountSar: promoApplied ? promoDiscount : null,
-          promoScope: promoApplied ? promoScope : null,
-          customerNote: orderNote.trim() || null,
-          loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
-          walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
-          cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
-          stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
-          stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
-          relayToNooks: true }).catch((err) => {
-          console.warn('[Checkout] Background commit failed:', err?.message);
+        try {
+          await commitOrder({
+            id: orderId,
+            merchantId,
+            branchId: selectedBranch.id,
+            branchName: selectedBranch.name ?? null,
+            totalSar: Number(finalTotal.toFixed(2)),
+            status: 'Placed',
+            items: cartItems.map((item) => ({
+              id: item.id,
+              name: item.name,
+              price: item.price, basePrice: item.basePrice ?? item.price,
+              quantity: item.quantity,
+              image: item.image,
+              customizations: item.customizations ?? null,
+              uniqueId: item.uniqueId,
+              rewardOriginalPriceSar: item.rewardOriginalPriceSar })),
+            orderType,
+            deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
+            deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
+            deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
+            deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
+            deliveryFee,
+            paymentId: resolvedPaymentId,
+            paymentMethod,
+            otoId: null,
+            customerName: profile.fullName || null,
+            customerPhone: profile.phone || null,
+            customerEmail: profile.email || null,
+            promoCode: promoApplied ? promoCode : null,
+            promoDiscountSar: promoApplied ? promoDiscount : null,
+            promoScope: promoApplied ? promoScope : null,
+            customerNote: orderNote.trim() || null,
+            loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
+            walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
+            cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
+            stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
+            stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
+            relayToNooks: true });
+          finalCommitOk = true;
+        } catch (err: any) {
+          console.warn('[Checkout] Final commit failed:', err?.message);
           Alert.alert(
-            isArabic ? 'خطأ في المزامنة' : 'Sync issue',
+            isArabic ? 'فشل إنشاء الطلب' : 'Order failed',
             isArabic
-              ? `طلبك ${orderId.slice(-8)} مدفوع لكن ما قدرنا نرسله للمطعم. تواصل مع الدعم.`
-              : `Your order ${orderId.slice(-8)} is paid but couldn't reach the store. Please contact support.`,
+              ? `لم نقدر نأكد طلبك. لو خصمنا أي مبلغ راح يرجعك خلال دقائق.`
+              : `We couldn't finalize your order. Any amount charged will be refunded within minutes.`,
           );
-        });
+          return;
+        }
+      }
+      if (!finalCommitOk && user?.id) {
+        return;
       }
       addOrder(
         {
