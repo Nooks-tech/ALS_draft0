@@ -652,7 +652,7 @@ paymentRouter.post('/token-pay', async (req, res) => {
     // Look up the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status')
+      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, wallet_paid_sar')
       .eq('id', orderId)
       .eq('merchant_id', scopedMerchantId)
       .eq('customer_id', user.id)
@@ -667,25 +667,36 @@ paymentRouter.post('/token-pay', async (req, res) => {
       return res.status(400).json({ error: `Cannot pay for order status: ${order.status}` });
     }
 
-    // Wallet credit applied at commit time lives in the wallet
-    // ledger keyed by order_id. If any was applied, subtract from the
-    // amount we charge the card so the customer pays only the
-    // remainder. If the wallet covered the full total there's nothing
-    // left to charge — mark the order paid (off the wallet payment_id
-    // already on the row) and return without calling Moyasar.
+    // Wallet intent on the order row. The first /commit stores
+    // wallet_paid_sar (intent) but does NOT actually debit the
+    // wallet — debit moved to the final commit so an abandoned 3DS
+    // can't burn wallet credit. /token-pay reads the intent column
+    // and charges the card only for (total − wallet_intent). The
+    // final /commit later debits the wallet and reconciles.
+    //
+    // Previously this read the actual debit from
+    // customer_wallet_transactions, which after the side-effect
+    // refactor doesn't exist until AFTER the card is charged →
+    // /token-pay was charging the FULL total (e.g., 113.60 SAR for
+    // an order that should have charged 13.60 SAR with 100 SAR
+    // wallet credit). The customer was over-charged by the wallet
+    // amount and the order ended up with mismatched amounts vs
+    // Moyasar that the sweep then refused to reconcile.
     const fullAmountSar = Number(order.total_sar ?? 0);
+    const walletDebitSar = Math.max(0, Number((order as { wallet_paid_sar?: number }).wallet_paid_sar ?? 0));
+    const chargeAmount = Math.max(0, +(fullAmountSar - walletDebitSar).toFixed(2));
+    // Look up an existing wallet debit row (only present on retries
+    // of /token-pay after the final commit already ran) so the
+    // wallet-only short-circuit below can return the correct
+    // wallet:* payment id.
     const { data: walletDebitRow } = await supabaseAdmin
       .from('customer_wallet_transactions')
-      .select('amount_halalas, id')
+      .select('id')
       .eq('customer_id', user.id)
       .eq('merchant_id', scopedMerchantId)
       .eq('order_id', orderId)
       .eq('entry_type', 'spend')
       .maybeSingle();
-    const walletDebitSar = walletDebitRow
-      ? Math.abs(Number(walletDebitRow.amount_halalas)) / 100
-      : 0;
-    const chargeAmount = Math.max(0, +(fullAmountSar - walletDebitSar).toFixed(2));
 
     if (chargeAmount === 0) {
       // Wallet covered the whole order — set payment_id to the wallet
