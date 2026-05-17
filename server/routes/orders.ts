@@ -1366,12 +1366,30 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
     // small safety buffer for genuinely-slow 3DS settles while wiping
     // the dashboard clutter within a single sweep cycle.
     const cutoffIso = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    // CRITICAL: scope to orders that NEVER REACHED FOODICS. An order
+    // with foodics_order_id set is a real order on the merchant's
+    // POS — the cashier may have already prepared and handed it
+    // over. Cancelling + refunding it just because Moyasar's GET
+    // /payments returns a transient error (or test-mode payments
+    // age out) is a real revenue leak for the merchant. Observed
+    // 2026-05-17: order-1778735270146 (saved_card, 7 SAR, fulfilled
+    // 3 days earlier) was auto-refunded when the sweep got a
+    // Moyasar 'unknown' status on its verify — the merchant lost
+    // the 7 SAR and the customer got a confusing 'driver dispatch
+    // failed' push for an order they'd already received.
+    //
+    // The sweep's job is ABANDONED PAYMENTS only — orders where the
+    // payment intent never resolved AND nothing landed on the POS.
+    // For those, foodics_order_id is null by definition. Anything
+    // else is a real order whose lifecycle is owned by Foodics
+    // (Delivered webhook), not by us.
     const { data: candidates, error: queryErr } = await supabaseAdmin
       .from('customer_orders')
       .select('id, payment_id, merchant_id, customer_id, total_sar, card_paid_sar, created_at, payment_confirmed_at')
       .eq('status', 'Placed')
       .lt('created_at', cutoffIso)
       .not('payment_id', 'is', null)
+      .is('foodics_order_id', null)
       .limit(100);
     if (queryErr) return res.status(500).json({ error: queryErr.message });
 
