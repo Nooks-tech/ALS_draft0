@@ -1,9 +1,17 @@
 /**
- * Order management routes – merchant refuse (full void + wallet credit),
- * system cancel (no-driver, full wallet credit), edit-hold, commission,
- * status. End users CANNOT cancel orders directly — their only refund
- * path is the complaint flow (server/routes/complaints.ts), which always
- * credits the customer wallet and never issues a card refund.
+ * Order management routes — commit, merchant refuse (full void + wallet
+ * credit), system no-accept-timeout cancel (5 min after Foodics relay
+ * with cashier still hasn't tapped Accept → void Moyasar + restore all
+ * sources + cancel on Foodics POS), edit-hold, commission, status. End
+ * users CANNOT cancel orders directly — their only refund path is the
+ * complaint flow (server/routes/complaints.ts), which always credits
+ * the customer wallet and never issues a card refund.
+ *
+ * Delivery-side cancellation (driver unavailable, dispatch failure,
+ * out-for-delivery returns) was intentionally REMOVED here on
+ * 2026-05-17 and will be implemented separately when the delivery
+ * cancellation policy is designed. Any driver/dispatch wording in
+ * customer notifications is gone for now.
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
@@ -74,11 +82,6 @@ async function sendPushToCustomer(
     console.warn('[Push] Failed to send:', e?.message);
   }
 }
-
-// OTO dispatch was retired on 2026-04-19 in favour of Foodics DMS. Legacy
-// orders with a non-null oto_id still exist in the DB but the OTO service
-// itself is gone, so cancelling them there is a no-op — we just skip
-// dispatch-side cancellation and let the refund logic below run.
 
 import { debitWalletForOrder } from './wallet';
 
@@ -1184,17 +1187,18 @@ async function refundOrderToWallet(
   // source. Order: card → wallet → cashback → stamps. We skip the
   // "no charge" message unless literally nothing was reversed.
   //
-  // Suppress the push entirely for abandoned-payment sweeps on orders
-  // that never reached Foodics. The customer in that scenario closed
-  // 3DS / abandoned card entry; the order never showed up on the
-  // merchant POS and the cart-side flow already gave them an inline
-  // payment error. Pushing "Order Cancelled — couldn't dispatch a
-  // driver" on top is misleading (no driver was ever in scope), and
-  // worse, the order is hidden from the customer's Orders tab by the
-  // foodics_order_id filter so they have no way to reconcile the
-  // notification with anything they can see. The wallet/cashback/
-  // stamp reversals still happen silently — the ledger is the
-  // source of truth.
+  // Suppress the push entirely for abandoned-payment sweeps on
+  // orders that never reached Foodics. The customer never saw the
+  // order appear (the foodics_order_id filter hides drafts), so
+  // notifying them about a cancellation creates a notification for
+  // an order they didn't know existed. Wallet/cashback/stamp
+  // reversals still happen silently — the ledger is the source of
+  // truth.
+  //
+  // Lead lines are intentionally store-centric. All driver/delivery
+  // dispatch wording was removed 2026-05-17: delivery cancellation
+  // (driver unavailable, dispatch failure) will get its own
+  // separately-designed notification when that path is built out.
   const isAbandonedPaymentSweep =
     cancelledBy === 'system' &&
     typeof reason === 'string' &&
@@ -1204,7 +1208,7 @@ async function refundOrderToWallet(
     const lead =
       cancelledBy === 'merchant'
         ? 'Your order has been refused by the store.'
-        : "We couldn't dispatch a driver for your order.";
+        : 'Your order timed out — the store did not accept it in time.';
     const pieces: string[] = [];
     if (cardReturnedToCustomer && effectiveCardPaid > 0) {
       pieces.push(
@@ -1365,31 +1369,33 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
     // before the previous cutoff fired. Dropping to 3 min keeps a
     // small safety buffer for genuinely-slow 3DS settles while wiping
     // the dashboard clutter within a single sweep cycle.
-    const cutoffIso = new Date(Date.now() - 3 * 60 * 1000).toISOString();
-    // CRITICAL: scope to orders that NEVER REACHED FOODICS. An order
-    // with foodics_order_id set is a real order on the merchant's
-    // POS — the cashier may have already prepared and handed it
-    // over. Cancelling + refunding it just because Moyasar's GET
-    // /payments returns a transient error (or test-mode payments
-    // age out) is a real revenue leak for the merchant. Observed
-    // 2026-05-17: order-1778735270146 (saved_card, 7 SAR, fulfilled
-    // 3 days earlier) was auto-refunded when the sweep got a
-    // Moyasar 'unknown' status on its verify — the merchant lost
-    // the 7 SAR and the customer got a confusing 'driver dispatch
-    // failed' push for an order they'd already received.
+    // Two cases the sweep handles:
+    //   1) ABANDONED PAYMENT (foodics_order_id IS NULL) — the order
+    //      never reached the merchant's POS. Customer either closed
+    //      3DS mid-flow or the final commit's hardened verify
+    //      rejected. Just mark Cancelled, void Moyasar if needed.
+    //      No side effects fired on our side (Option A refactor) so
+    //      no refunds to issue.
+    //   2) NO-ACCEPT TIMEOUT (foodics_order_id IS NOT NULL but still
+    //      'Placed' after 5 min) — the cashier hasn't tapped Accept
+    //      within 5 min. Auto-cancel: void Moyasar, credit wallet,
+    //      restore cashback, restore stamps, unredeem promo, and
+    //      tell Foodics so the POS shows it as Void.
     //
-    // The sweep's job is ABANDONED PAYMENTS only — orders where the
-    // payment intent never resolved AND nothing landed on the POS.
-    // For those, foodics_order_id is null by definition. Anything
-    // else is a real order whose lifecycle is owned by Foodics
-    // (Delivered webhook), not by us.
+    // Bound: only sweep orders 5-30 min old. The lower bound is the
+    // grace window for the cashier to accept; the upper bound stops
+    // the sweep from retroactively nuking stale test rows from
+    // before the timeout policy existed (e.g., yesterday's
+    // 1778926829026 sitting at 24h shouldn't get auto-cancelled).
+    const minAgeIso = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const maxAgeIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const { data: candidates, error: queryErr } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, payment_id, merchant_id, customer_id, total_sar, card_paid_sar, created_at, payment_confirmed_at')
+      .select('id, payment_id, merchant_id, customer_id, total_sar, card_paid_sar, created_at, payment_confirmed_at, foodics_order_id')
       .eq('status', 'Placed')
-      .lt('created_at', cutoffIso)
+      .lt('created_at', minAgeIso)
+      .gte('created_at', maxAgeIso)
       .not('payment_id', 'is', null)
-      .is('foodics_order_id', null)
       .limit(100);
     if (queryErr) return res.status(500).json({ error: queryErr.message });
 
@@ -1447,27 +1453,33 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
         continue;
       }
 
-      // ─── Confirmed orders: existing flow ───
-      // Use the card-portion amount for verification (matches what was
-      // actually charged to Moyasar). If breakdown columns are zero
-      // (legacy row), fall back to total_sar.
-      const expectedHalals = Math.round(Number(order.card_paid_sar ?? order.total_sar ?? 0) * 100);
-      const verification = await verifyPaidPayment(paymentId, expectedHalals, order.merchant_id);
-      if (verification.ok) {
-        // Payment cleared — leave the order alone. Probably the Foodics
-        // relay was just slow; another path will pick it up.
-        skipped += 1;
-        results.push({ orderId: order.id, action: 'kept', reason: `paid (status: ${verification.status})` });
-        continue;
-      }
-      // Moyasar says payment didn't clear. Reverse the order — this
-      // refunds wallet/cashback/stamps if applied, no card refund
-      // because no money moved.
+      // ─── Confirmed + Foodics-relayed orders: no-accept timeout ───
+      // The order made it to the merchant's POS (foodics_order_id set,
+      // payment_confirmed_at set) but the cashier hasn't tapped
+      // Accept within 5 minutes. Reverse everything: void Moyasar,
+      // credit wallet back, restore cashback, restore stamps, give
+      // the promo slot back, and tell Foodics to mark the POS row as
+      // Void. Customer gets a single 'store didn't accept in time'
+      // push.
+      //
+      // Foodics-side race: if the cashier tapped Accept right around
+      // the 5-min mark and the webhook hasn't landed yet, our DB
+      // still says 'Placed'. The cancelFoodicsOrderForMerchant call
+      // inside refundOrderToWallet will hit Foodics and either
+      // succeed (still Pending → goes Void cleanly) or get the
+      // post-accept rejection (logged as cancel_post_accept). Either
+      // way we refund — the customer has waited 5 min and shouldn't
+      // be left in limbo. Merchants who routinely brush past 5 min
+      // can configure a longer threshold later.
       try {
-        const result = await refundOrderToWallet(order.id, 'system', `Abandoned payment (Moyasar: ${verification.status})`);
+        const result = await refundOrderToWallet(
+          order.id,
+          'system',
+          'Timeout — store did not accept order in time',
+        );
         if (result.ok) {
           swept += 1;
-          results.push({ orderId: order.id, action: 'swept', reason: verification.status });
+          results.push({ orderId: order.id, action: 'swept', reason: 'no_accept_timeout' });
         } else {
           results.push({ orderId: order.id, action: 'error', reason: result.error });
         }
