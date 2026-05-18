@@ -146,8 +146,21 @@ function rowToOrder(row: OrderRow): PlacedOrder {
 }
 
 function mergeOrderHistory(primary: PlacedOrder[], secondary: PlacedOrder[]): PlacedOrder[] {
+  // Merge primary INTO secondary: secondary entries fill in IDs the
+  // server doesn't have (optimistic addOrder rows that haven't synced
+  // yet), but primary wins on every overlap. Map.set overwrites, so
+  // iterating secondary FIRST and primary SECOND means primary keys
+  // land last and replace any secondary entry with the same id.
+  //
+  // The previous order ([...primary, ...secondary]) was backwards —
+  // secondary always overwrote primary, which meant a refresh() pulled
+  // fresh server data and then immediately discarded it under the
+  // local cached copy. Symptom (observed 2026-05-18 order-1779074527673):
+  // server-side sweep cancelled the order, customer app stayed on
+  // 'Placed' forever because every AppState 'active' transition
+  // re-merged stale prev over fresh mapped.
   const byId = new Map<string, PlacedOrder>();
-  for (const order of [...primary, ...secondary]) {
+  for (const order of [...secondary, ...primary]) {
     byId.set(order.id, order);
   }
   return [...byId.values()].sort((a, b) => {
