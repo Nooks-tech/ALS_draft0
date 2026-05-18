@@ -526,10 +526,23 @@ ordersRouter.post('/commit', async (req, res) => {
       }
 
       // ─── Atomic promo redemption ───
-      // Idempotent via the redeem_promo RPC (unique on order_id).
+      // Idempotent via the redeem_promo RPC's `on conflict (merchant,
+      // code, order_id) do nothing` — a retried final commit returns
+      // ok=true 'Already redeemed' without re-incrementing usage_count.
       // The cancel path (refundOrderToWallet) calls unredeem_promo
       // which rolls back the row + decrements usage_count.
-      if (trimmedPromoCode && promoDiscountValue > 0 && promoScopeNormalized && existing?.id !== id) {
+      //
+      // Note: we deliberately do NOT gate on `existing?.id !== id`.
+      // The first commit (relayToNooks=false) creates the order row,
+      // so by the time the final commit runs, `existing` ALWAYS
+      // matches `id`. The old gate skipped redeem_promo on every
+      // final commit, leaving promo_redemptions empty — which let
+      // the same customer reuse a "1 per user" code on a second
+      // order because neither the validate endpoint nor the next
+      // final commit's RPC could find a prior redemption to block
+      // against. The RPC's own idempotency is the right defense
+      // against retries; the `existing` check was the bug.
+      if (trimmedPromoCode && promoDiscountValue > 0 && promoScopeNormalized) {
         const { data: redeemRows, error: redeemErr } = await supabaseAdmin.rpc('redeem_promo', {
           p_merchant_id: merchantId,
           p_code: trimmedPromoCode,
