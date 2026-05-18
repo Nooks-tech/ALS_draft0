@@ -57,34 +57,101 @@ export async function sendOrderReceipt(input: ReceiptInput): Promise<void> {
   const rows = input.items
     .map(
       (i) => `
-    <tr>
-      <td style="padding:6px 0;color:#111">${escapeHtml(i.name)} × ${i.quantity}</td>
-      <td style="padding:6px 0;text-align:right;color:#111">${fmtSar(i.price_sar * i.quantity)}</td>
-    </tr>`,
+              <tr>
+                <td style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);color:#f2e8d0;font-size:14px;">${escapeHtml(i.name)} <span style="color:rgba(242,232,208,0.5);font-size:13px;">×${i.quantity}</span></td>
+                <td style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);text-align:right;color:#f2e8d0;font-size:14px;font-weight:600;">${fmtSar(i.price_sar * i.quantity)}</td>
+              </tr>`,
     )
     .join('');
 
-  const html = `
-  <!doctype html>
-  <html><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111">
-    <h2 style="margin:0 0 4px">Receipt for your order</h2>
-    <p style="margin:0 0 16px;color:#555">${escapeHtml(input.branchName ?? 'Nooks')} · ${new Date(issued).toLocaleString('en-GB')}</p>
-    <p style="margin:0 0 16px;color:#555">Order <code style="background:#f3f4f6;padding:2px 6px;border-radius:4px">${escapeHtml(input.orderId)}</code> · ${input.orderType === 'delivery' ? 'Delivery' : 'Pickup'}</p>
+  const deliveryRow = input.deliveryFeeSar && input.deliveryFeeSar > 0
+    ? `
+              <tr>
+                <td style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);color:rgba(242,232,208,0.7);font-size:14px;">Delivery</td>
+                <td style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);text-align:right;color:rgba(242,232,208,0.7);font-size:14px;">${fmtSar(input.deliveryFeeSar)}</td>
+              </tr>`
+    : '';
 
-    <table style="width:100%;border-collapse:collapse;margin-bottom:16px;border-top:1px solid #e5e7eb">
-      ${rows}
-      ${input.deliveryFeeSar && input.deliveryFeeSar > 0 ? `<tr><td style="padding:6px 0;color:#555">Delivery</td><td style="padding:6px 0;text-align:right;color:#555">${fmtSar(input.deliveryFeeSar)}</td></tr>` : ''}
-    </table>
+  const branchLabel = escapeHtml(input.branchName ?? 'Nooks');
+  const orderIdEscaped = escapeHtml(input.orderId);
+  const orderTypeLabel = input.orderType === 'delivery' ? 'Delivery' : 'Pickup';
+  const paymentMethodEscaped = escapeHtml(input.paymentMethod ?? 'Card');
+  const paymentRefEscaped = input.paymentId ? ` · ref ${escapeHtml(input.paymentId)}` : '';
 
-    <table style="width:100%;border-top:1px solid #e5e7eb;padding-top:8px">
-      <tr><td style="padding:4px 0;color:#555">Subtotal (excl. VAT)</td><td style="padding:4px 0;text-align:right;color:#555">${fmtSar(base)}</td></tr>
-      <tr><td style="padding:4px 0;color:#555">VAT (15%)</td><td style="padding:4px 0;text-align:right;color:#555">${fmtSar(vat)}</td></tr>
-      <tr><td style="padding:8px 0;font-weight:700;border-top:1px solid #e5e7eb">Total</td><td style="padding:8px 0;font-weight:700;text-align:right;border-top:1px solid #e5e7eb">${fmtSar(grand)}</td></tr>
-    </table>
+  const html = `<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Your Nooks receipt</title>
+</head>
+<body style="margin:0;padding:0;background:#0b0a08;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#f2e8d0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0b0a08;padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#15110a;border:1px solid rgba(255,255,255,0.08);border-radius:16px;overflow:hidden;">
+          <tr>
+            <td style="padding:28px 32px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <img src="https://nooks.space/nooks-mark.png" width="44" height="44" alt="Nooks" style="display:block;border-radius:10px;margin-bottom:14px;" />
+              <div style="font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:#c9a961;font-weight:600;">Nooks · Order receipt</div>
+              <h1 style="margin:8px 0 4px;font-size:24px;line-height:1.25;color:#f2e8d0;font-weight:700;">
+                Thanks for ordering
+              </h1>
+              <p style="margin:0 0 24px;font-size:14px;line-height:1.55;color:rgba(242,232,208,0.7);">
+                ${branchLabel} &middot; ${new Date(issued).toLocaleString('en-GB')}<br/>
+                Order <code style="background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:6px;color:#c9a961;font-size:12px;">${orderIdEscaped}</code> &middot; ${orderTypeLabel}
+              </p>
+            </td>
+          </tr>
 
-    <p style="margin:20px 0 0;color:#6b7280;font-size:12px">Payment: ${escapeHtml(input.paymentMethod ?? 'Card')}${input.paymentId ? ` · ref ${escapeHtml(input.paymentId)}` : ''}</p>
-    <p style="margin:4px 0 0;color:#6b7280;font-size:12px">Thank you for ordering with Nooks.</p>
-  </body></html>`;
+          <tr>
+            <td style="padding:24px 32px 8px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                ${rows}
+                ${deliveryRow}
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 32px 24px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding:4px 0;color:rgba(242,232,208,0.55);font-size:13px;">Subtotal (excl. VAT)</td>
+                  <td style="padding:4px 0;text-align:right;color:rgba(242,232,208,0.7);font-size:13px;">${fmtSar(base)}</td>
+                </tr>
+                <tr>
+                  <td style="padding:4px 0;color:rgba(242,232,208,0.55);font-size:13px;">VAT (15%)</td>
+                  <td style="padding:4px 0;text-align:right;color:rgba(242,232,208,0.7);font-size:13px;">${fmtSar(vat)}</td>
+                </tr>
+                <tr>
+                  <td style="padding:12px 0 0;border-top:1px solid rgba(255,255,255,0.1);color:#f2e8d0;font-size:15px;font-weight:700;">Total</td>
+                  <td style="padding:12px 0 0;border-top:1px solid rgba(255,255,255,0.1);text-align:right;color:#c9a961;font-size:18px;font-weight:700;">${fmtSar(grand)}</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:20px 32px 28px;border-top:1px solid rgba(255,255,255,0.06);">
+              <p style="margin:0 0 6px;font-size:12px;line-height:1.55;color:rgba(242,232,208,0.5);">
+                Payment: ${paymentMethodEscaped}${paymentRefEscaped}
+              </p>
+              <p style="margin:0;font-size:12px;line-height:1.55;color:rgba(242,232,208,0.4);">
+                Thank you for ordering with ${branchLabel}.
+              </p>
+            </td>
+          </tr>
+        </table>
+
+        <p style="max-width:560px;margin:16px auto 0;font-size:11px;color:rgba(242,232,208,0.3);text-align:center;">
+          Sent by Nooks &middot; <a href="https://nooks.space" style="color:rgba(242,232,208,0.5);text-decoration:none;">nooks.space</a>
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
 
   try {
     await fetch('https://api.resend.com/emails', {
