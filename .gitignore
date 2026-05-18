@@ -52,3 +52,4 @@ app-example
 # referenced by credentials.json. Could land here if a setup script is ever
 # run locally; the Distribution Cert password is in plaintext, do not commit.
 credentials.json
+.claude/
