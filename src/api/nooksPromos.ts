@@ -111,24 +111,6 @@ export async function validateNooksPromo(params: {
   }
 }
 
-export async function consumeNooksPromo(merchantId: string, code: string): Promise<void> {
-  if (!BASE_URL.trim() || !merchantId.trim() || !code.trim()) return;
-  const url = `${BASE_URL.replace(/\/$/, '')}/api/public/merchants/${encodeURIComponent(merchantId)}/promos/use`;
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    });
-    if (!res.ok) {
-      const msg = await res.text().catch(() => '');
-      console.warn('[Nooks] Promo usage increment failed:', res.status, msg);
-    }
-  } catch {
-    // Best-effort analytics counter; don't block checkout.
-  }
-}
-
 /**
  * Compute the discount amount for a Nooks promo.
  *
