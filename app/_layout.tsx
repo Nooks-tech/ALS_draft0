@@ -32,6 +32,7 @@ import { Platform } from 'react-native';
 import "../global.css";
 import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
 import { AppSplash } from '../src/components/splash/AppSplash';
+import SuspensionGate from '../src/components/common/SuspensionGate';
 import {
   LanguageSwitchProvider,
   useLanguageSwitch,
@@ -312,6 +313,7 @@ export default function RootLayout() {
           <ProfileProvider>
           <SavedAddressesProvider>
           <PushTokenRegistrar />
+          <SuspensionGate>
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="(auth)" />
@@ -337,6 +339,7 @@ export default function RootLayout() {
             <Stack.Screen name="rewards" options={{ presentation: 'modal' }} />
             <Stack.Screen name="order-confirmed" options={{ presentation: 'modal', gestureEnabled: false }} />
           </Stack>
+          </SuspensionGate>
           </SavedAddressesProvider>
           </ProfileProvider>
           </OrdersProvider>

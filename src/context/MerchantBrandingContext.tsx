@@ -265,6 +265,13 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
     });
   }, [branding.backgroundColor]);
 
+  // Stale-cache fail-closed window: if a cached branding response is
+  // older than this AND a fresh fetch can't complete, treat the
+  // merchant as suspended. Long enough not to fire on a 30-second
+  // Vercel hiccup; short enough to surface a real suspension within
+  // a day even if the customer never re-foregrounds the app.
+  const STALE_CACHE_MS = 24 * 60 * 60 * 1000;
+
   useEffect(() => {
     if (!merchantId) return;
     const key = `${BRANDING_CACHE_PREFIX}${merchantId}`;
@@ -272,16 +279,21 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
       .then((cached) => {
         if (cached && !cacheLoaded.current) {
           try {
-            const parsed = JSON.parse(cached) as Partial<MerchantBranding>;
-            if (parsed.primaryColor) {
+            const parsed = JSON.parse(cached) as Partial<MerchantBranding> & { _fetchedAt?: number };
+            const cacheAgeMs = parsed._fetchedAt ? Date.now() - parsed._fetchedAt : Number.POSITIVE_INFINITY;
+            if (parsed.primaryColor && cacheAgeMs < STALE_CACHE_MS) {
               setBranding({ ...DEFAULT_BRANDING, ...parsed });
             }
+            // If cache is stale (or has no timestamp from a pre-fix
+            // boot) we skip applying it and let the live fetch
+            // populate fresh data. Worst case the customer sees
+            // build-time branding for ~1 second.
           } catch { /* ignore corrupt cache */ }
         }
         cacheLoaded.current = true;
       })
       .catch(() => { cacheLoaded.current = true; });
-  }, [merchantId]);
+  }, [merchantId, STALE_CACHE_MS]);
 
   useEffect(() => {
     if (!BASE_URL || !merchantId) {
@@ -299,6 +311,7 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
       const res = await fetchWithTimeout(url, { headers: { 'Cache-Control': 'no-cache' } });
       if (!res.ok) {
         if (__DEV__) console.warn(TAG, 'HTTP', res.status, res.statusText);
+        await failClosedIfStale();
         return;
       }
       if (cancelled) return;
@@ -308,16 +321,45 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
       if (__DEV__) console.log(TAG, 'applied branding:', parsed.primaryColor, 'logoScale:', parsed.inAppLogoScale, 'iconBg:', parsed.appIconBgColor);
       setBranding(parsed);
       const key = `${BRANDING_CACHE_PREFIX}${merchantId}`;
-      AsyncStorage.setItem(key, JSON.stringify(parsed)).catch(() => {});
+      AsyncStorage.setItem(key, JSON.stringify({ ...parsed, _fetchedAt: Date.now() })).catch(() => {});
+    };
+
+    // Fail-closed helper: if we couldn't reach the branding endpoint
+    // AND the cached value (if any) is older than STALE_CACHE_MS,
+    // treat the merchant as suspended. Without this a Vercel outage
+    // during a suspension window would let customers keep ordering
+    // off the cached menu indefinitely. We don't trip on the first
+    // failed fetch — only when there's no recent ground-truth at all.
+    const failClosedIfStale = async () => {
+      const key = `${BRANDING_CACHE_PREFIX}${merchantId}`;
+      const cached = await AsyncStorage.getItem(key).catch(() => null);
+      if (!cached) {
+        if (__DEV__) console.warn(TAG, 'fetch failed + no cache — failing closed');
+        setBranding((b) => ({ ...b, subscriptionState: 'suspended', orderIntakeEnabled: false }));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(cached) as Partial<MerchantBranding> & { _fetchedAt?: number };
+        const cacheAgeMs = parsed._fetchedAt ? Date.now() - parsed._fetchedAt : Number.POSITIVE_INFINITY;
+        if (cacheAgeMs >= STALE_CACHE_MS) {
+          if (__DEV__) console.warn(TAG, 'fetch failed + cache stale — failing closed');
+          setBranding((b) => ({ ...b, subscriptionState: 'suspended', orderIntakeEnabled: false }));
+        }
+      } catch {
+        setBranding((b) => ({ ...b, subscriptionState: 'suspended', orderIntakeEnabled: false }));
+      }
     };
 
     setLoading(true);
     doFetch()
-      .catch((err) => { if (__DEV__) console.error(TAG, 'fetch error:', err); })
+      .catch(async (err) => {
+        if (__DEV__) console.error(TAG, 'fetch error:', err);
+        await failClosedIfStale();
+      })
       .finally(() => { if (id === runIdRef.current) setLoading(false); });
 
     return () => { cancelled = true; };
-  }, [merchantId]);
+  }, [merchantId, STALE_CACHE_MS]);
 
   useEffect(() => {
     if (!BASE_URL) return;
@@ -332,7 +374,7 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
           if (!data) return;
           const parsed = parseBrandingResponse(data as Record<string, unknown>);
           setBranding(parsed);
-          AsyncStorage.setItem(`${BRANDING_CACHE_PREFIX}${mid}`, JSON.stringify(parsed)).catch(() => {});
+          AsyncStorage.setItem(`${BRANDING_CACHE_PREFIX}${mid}`, JSON.stringify({ ...parsed, _fetchedAt: Date.now() })).catch(() => {});
         })
         .catch((err) => { if (__DEV__) console.error(TAG, 'bg refresh error:', err); });
     });
