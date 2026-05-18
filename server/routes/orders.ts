@@ -1181,7 +1181,12 @@ async function refundOrderToWallet(
       refund_amount: refundedSarHeadline,
       refund_fee: 0,
       refund_method: refundMethod,
-      commission_status: 'cancelled',
+      // Note: do NOT flip commission_status to 'cancelled' here.
+      // Moyasar still charged Nooks for the original payment
+      // attempt regardless of the refund, so the platform fee
+      // remains billable. Whatever the Moyasar webhook stamped
+      // (typically 'earned') stays as-is until the renewal cron
+      // marks it 'invoiced'.
       updated_at: new Date().toISOString(),
     })
     .eq('id', orderId);
