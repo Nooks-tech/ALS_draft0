@@ -470,11 +470,14 @@ loyaltyRouter.put('/config', async (req, res) => {
     const rateChanged = (fields.cashback_percent != null && fields.cashback_percent !== currentConfig.cashback_percent)
       || (fields.points_per_sar != null && fields.points_per_sar !== currentConfig.points_per_sar)
       || (fields.point_value_sar != null && fields.point_value_sar !== currentConfig.point_value_sar);
+    const previousConfigVersion = currentConfig.config_version ?? 1;
+    let bumpedToVersion: number | null = null;
     if (typeChanged || rateChanged) {
-      fields.config_version = (currentConfig.config_version ?? 1) + 1;
+      fields.config_version = previousConfigVersion + 1;
       fields.previous_loyalty_type = currentConfig.loyalty_type ?? 'stamps';
       fields.config_changed_at = new Date().toISOString();
       allowed.push('config_version', 'previous_loyalty_type', 'config_changed_at');
+      bumpedToVersion = fields.config_version;
     }
     const payload: Record<string, unknown> = { merchant_id: merchantId, updated_at: new Date().toISOString() };
     for (const k of allowed) {
@@ -519,6 +522,58 @@ loyaltyRouter.put('/config', async (req, res) => {
       return res.status(500).json({ error: error.message, code: error.code, hint: error.hint });
     }
     console.log('[loyalty] upsert success:', JSON.stringify(data));
+
+    // Cashback balance migration on config_version bump. When
+    // loyalty_type or rates change we bump config_version so the
+    // transaction audit trail can distinguish earns under the old
+    // vs new rules. Without a matching balance-row migration the
+    // bump leaves every customer's balance row stuck at the
+    // previous version, so reads (which look up the latest row
+    // via .order('config_version', { ascending: false }).limit(1))
+    // keep returning the v1 row even when the merchant has long
+    // since moved to v2. That's mostly harmless but it makes
+    // reconciliation against transactions noisy and would break
+    // any future code that filters strictly on currentVersion.
+    //
+    // We copy (not move) non-zero balances forward so the v1 row
+    // survives as a historical record. `ignoreDuplicates: true`
+    // makes this safe to retry — if a v2 row was already created
+    // by a concurrent earn (theoretically possible if a customer
+    // earned in the window between this endpoint's currentConfig
+    // SELECT and the migration write), the existing v2 balance
+    // wins instead of being clobbered by the older v1 amount.
+    if (bumpedToVersion !== null) {
+      const { data: oldBalances, error: balErr } = await supabaseAdmin
+        .from('loyalty_cashback_balances')
+        .select('customer_id, balance_sar')
+        .eq('merchant_id', merchantId)
+        .eq('config_version', previousConfigVersion)
+        .gt('balance_sar', 0);
+      if (balErr) {
+        console.warn('[loyalty] cashback balance migration query failed:', balErr.message);
+      } else if (oldBalances && oldBalances.length > 0) {
+        const now = new Date().toISOString();
+        const newRows = oldBalances.map((row) => ({
+          customer_id: row.customer_id,
+          merchant_id: merchantId,
+          config_version: bumpedToVersion,
+          balance_sar: row.balance_sar,
+          updated_at: now,
+        }));
+        const { error: migErr } = await supabaseAdmin
+          .from('loyalty_cashback_balances')
+          .upsert(newRows, {
+            onConflict: 'customer_id,merchant_id,config_version',
+            ignoreDuplicates: true,
+          });
+        if (migErr) {
+          console.warn('[loyalty] cashback balance migration upsert failed:', migErr.message);
+        } else {
+          console.log(`[loyalty] migrated ${newRows.length} cashback balances from v${previousConfigVersion} to v${bumpedToVersion} for merchant ${merchantId}`);
+        }
+      }
+    }
+
     res.json({ success: true });
   } catch (err: any) {
     const cause = (err as any)?.cause;
@@ -1586,14 +1641,39 @@ export async function restoreStampMilestonesForRefund(params: {
   // never spent — observed 2026-05-16 with abandoned-payment
   // orders 02340043 + 02680835 surfacing +2 stamp ledger entries
   // each with no matching deduction.
-  const { data: clearedRows } = await supabaseAdmin
+  // Two-tier restore:
+  //   1) Preferred: rows tagged with this exact order_id. New
+  //      redemptions store order_id (migration 20260518000002), so
+  //      a customer who used the same milestone on two consecutive
+  //      orders can have order A's refund clear ONLY order A's
+  //      redemption.
+  //   2) Legacy fallback: rows pre-dating the order_id column have
+  //      order_id IS NULL. For those, we fall back to clearing any
+  //      redeemed row that matches (customer, merchant, milestone)
+  //      — the old behaviour. Only takes effect when no order-tagged
+  //      rows are found, so it can't fire AFTER a successful tagged
+  //      clear.
+  let { data: clearedRows } = await supabaseAdmin
     .from('loyalty_stamp_redemptions')
     .update({ redeemed_at: null, redeemed_via: null })
+    .eq('order_id', params.orderId)
     .in('milestone_id', params.milestoneIds)
     .eq('customer_id', params.customerId)
     .eq('merchant_id', params.merchantId)
     .not('redeemed_at', 'is', null)
     .select('milestone_id, stamp_number');
+  if (!clearedRows || clearedRows.length === 0) {
+    const legacy = await supabaseAdmin
+      .from('loyalty_stamp_redemptions')
+      .update({ redeemed_at: null, redeemed_via: null })
+      .is('order_id', null)
+      .in('milestone_id', params.milestoneIds)
+      .eq('customer_id', params.customerId)
+      .eq('merchant_id', params.merchantId)
+      .not('redeemed_at', 'is', null)
+      .select('milestone_id, stamp_number');
+    clearedRows = legacy.data ?? [];
+  }
   const actualStampsToRestore = (clearedRows ?? []).reduce(
     (sum, r) => sum + Number((r as { stamp_number?: number }).stamp_number ?? 0),
     0,
@@ -1810,10 +1890,11 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
     }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
-    const { customerId, merchantId, milestoneId, via } = req.body;
+    const { customerId, merchantId, milestoneId, via, orderId } = req.body;
     if (!customerId || !merchantId || !milestoneId) {
       return res.status(400).json({ error: 'customerId, merchantId, milestoneId required' });
     }
+    const orderIdSafe = typeof orderId === 'string' && orderId.trim() ? orderId.trim() : null;
 
     // Get milestone
     const { data: milestone } = await supabaseAdmin.from('loyalty_stamp_milestones')
@@ -1891,12 +1972,17 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
 
     if (existingRedemption) {
       await supabaseAdmin.from('loyalty_stamp_redemptions')
-        .update({ redeemed_at: new Date().toISOString(), redeemed_via: via === 'branch' ? 'branch' : 'app' })
+        .update({
+          redeemed_at: new Date().toISOString(),
+          redeemed_via: via === 'branch' ? 'branch' : 'app',
+          ...(orderIdSafe ? { order_id: orderIdSafe } : {}),
+        })
         .eq('id', existingRedemption.id);
     } else {
       await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
         customer_id: customerId, merchant_id: merchantId,
         milestone_id: milestoneId, stamp_number: milestone.stamp_number,
+        ...(orderIdSafe ? { order_id: orderIdSafe } : {}),
         redeemed_at: new Date().toISOString(),
         redeemed_via: via === 'branch' ? 'branch' : 'app',
       });
@@ -1912,13 +1998,18 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
         .eq('customer_id', customerId).eq('merchant_id', merchantId);
     }
 
-    // Log transaction
+    // Log transaction. Stamping order_id lets the refund path filter
+    // restorations by the EXACT order that consumed these stamps,
+    // instead of clearing every redemption for this milestone (which
+    // previously could clear another order's still-active redemption
+    // and hand the customer a free reward at the second order).
     await supabaseAdmin.from('loyalty_transactions').insert({
       customer_id: customerId, merchant_id: merchantId,
       type: 'redeem', loyalty_type: 'stamps',
       points: -pointsToDeduct,
       description: `Redeemed milestone: ${milestone.reward_name} (-${milestone.stamp_number} stamps)`,
       source: via === 'branch' ? 'branch' : 'app',
+      ...(orderIdSafe ? { order_id: orderIdSafe } : {}),
     });
 
     notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
@@ -2034,5 +2125,122 @@ loyaltyRouter.post('/programs/retire-and-launch', async (req, res) => {
   } catch (err: any) {
     console.error('[Loyalty] Retire & Launch error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to retire and launch program' });
+  }
+});
+
+/**
+ * POST /api/loyalty/restore-pos-redemption
+ *
+ * Reverses any loyalty deductions tied to a Foodics POS order_id.
+ *
+ * Context: when a Foodics cashier scans a customer's QR and applies
+ * a reward at the POS, nooksweb's /api/adapter/v1/redeem deducts the
+ * customer's balance (stamps or cashback) immediately so the POS can
+ * apply the discount line. If that POS order is later voided in
+ * Foodics — cashier cancels, customer walks out, payment fails — the
+ * deduction is stranded: the customer lost their stamps/cashback but
+ * never got the reward.
+ *
+ * The Foodics webhook fires on void/refund and calls this endpoint
+ * for the affected POS order_id. We look up every redeem-type
+ * loyalty_transactions row tagged with that order_id and run the
+ * matching restore helper (cashback or stamps).
+ *
+ * Idempotent — restoreCashbackForRefund / restoreStampMilestonesForRefund
+ * each gate on a 'refund' marker transaction and skip if it exists,
+ * so re-firing on webhook retry is safe.
+ *
+ * Internal-only (NOOKS_INTERNAL_SECRET). Customer-app callers must use
+ * the existing per-order /merchant-cancel path which handles internal
+ * customer_orders rows; this endpoint is the matching gateway for
+ * POS-only orders that don't have a Nooks customer_orders row.
+ */
+loyaltyRouter.post('/restore-pos-redemption', async (req, res) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { orderId, merchantId } = req.body ?? {};
+    if (!orderId || !merchantId) {
+      return res.status(400).json({ error: 'orderId and merchantId required' });
+    }
+
+    const { data: redeemTxs, error: txErr } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('id, customer_id, loyalty_type, amount_sar, points')
+      .eq('merchant_id', merchantId)
+      .eq('order_id', orderId)
+      .eq('type', 'redeem');
+    if (txErr) {
+      return res.status(500).json({ error: txErr.message });
+    }
+    if (!redeemTxs || redeemTxs.length === 0) {
+      return res.json({ success: true, restored: { cashback: [], stamps: [] }, noOp: true });
+    }
+
+    const cashbackRestored: Array<{ customerId: string; amountSar: number; alreadyRestored: boolean }> = [];
+    const stampRestored: Array<{ customerId: string; stamps: number; milestonesCleared: string[]; alreadyRestored: boolean }> = [];
+
+    // Cashback reversals — one per customer that had cashback deducted
+    // on this POS order. We sum amounts within the same customer since
+    // /redeem-cashback only writes one transaction per (customer, order)
+    // but be defensive against legacy data with duplicate rows.
+    const cashbackByCustomer = new Map<string, number>();
+    const stampCustomers = new Set<string>();
+    for (const tx of redeemTxs) {
+      const amount = Math.abs(Number(tx.amount_sar ?? 0));
+      if (tx.loyalty_type === 'cashback' && amount > 0) {
+        cashbackByCustomer.set(tx.customer_id, (cashbackByCustomer.get(tx.customer_id) ?? 0) + amount);
+      } else if (tx.loyalty_type === 'stamps') {
+        stampCustomers.add(tx.customer_id);
+      }
+    }
+
+    for (const [customerId, amountSar] of cashbackByCustomer) {
+      const result = await restoreCashbackForRefund({
+        customerId,
+        merchantId,
+        amountSar,
+        orderId,
+      });
+      cashbackRestored.push({ customerId, amountSar: result.restoredSar, alreadyRestored: result.alreadyRestored });
+    }
+
+    // Stamp reversals — restoreStampMilestonesForRefund needs the
+    // milestone_ids and stamps_consumed declared by the original
+    // redemption. Look those up from loyalty_stamp_redemptions tagged
+    // with this order_id.
+    for (const customerId of stampCustomers) {
+      const { data: redemptionRows } = await supabaseAdmin
+        .from('loyalty_stamp_redemptions')
+        .select('milestone_id, stamp_number')
+        .eq('order_id', orderId)
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .not('redeemed_at', 'is', null);
+      const milestoneIds = (redemptionRows ?? []).map((r) => r.milestone_id).filter((v): v is string => typeof v === 'string');
+      const stampsConsumed = (redemptionRows ?? []).reduce(
+        (sum, r) => sum + Number((r as { stamp_number?: number }).stamp_number ?? 0),
+        0,
+      );
+      const result = await restoreStampMilestonesForRefund({
+        customerId,
+        merchantId,
+        milestoneIds,
+        stampsConsumed,
+        orderId,
+      });
+      stampRestored.push({
+        customerId,
+        stamps: result.stampsRestored,
+        milestonesCleared: result.milestonesCleared,
+        alreadyRestored: result.alreadyRestored,
+      });
+    }
+
+    res.json({ success: true, restored: { cashback: cashbackRestored, stamps: stampRestored } });
+  } catch (err: any) {
+    console.error('[loyalty] restore-pos-redemption error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to restore POS redemption' });
   }
 });

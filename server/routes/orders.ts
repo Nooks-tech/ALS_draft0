@@ -322,6 +322,20 @@ ordersRouter.post('/commit', async (req, res) => {
           error: `Item price below the ${MIN_ITEM_PRICE_SAR} SAR per-unit floor; refusing to commit a likely-tampered order.`,
         });
       }
+      // Absurdity ceiling — no single F&B item realistically lists at
+      // > 10,000 SAR. Without an upper bound, a tampered client could
+      // inflate basePrice (say 100,000 SAR for a 5 SAR item) so the
+      // 95%-discount floor passes for an absurd low totalSar — a
+      // 5%-of-100k=5,000 acceptance for what's actually a 5 SAR cart
+      // would let the customer order anything at 5 SAR. Matches the
+      // mirror ceiling on the nooksweb relay side
+      // (foodics-orders.ts).
+      if (unitPrice > 10000) {
+        return res.status(400).json({
+          error: 'Item price exceeds the 10,000 SAR per-unit ceiling; refusing to commit.',
+          code: 'ITEM_PRICE_CEILING',
+        });
+      }
       computedItemFloor += unitPrice * qty;
     }
     // Cross-check: every reward item in the cart must correspond to

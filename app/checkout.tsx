@@ -860,7 +860,7 @@ export default function CheckoutScreen() {
       if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
         for (const milestoneId of selectedMilestoneIds) {
           void loyaltyApi
-            .redeemStampMilestone(user.id, merchantId, milestoneId)
+            .redeemStampMilestone(user.id, merchantId, milestoneId, orderId)
             .catch((err: any) =>
               console.warn('[Checkout] Post-commit stamp redeem failed:', milestoneId, err?.message)
             );
@@ -1137,7 +1137,7 @@ export default function CheckoutScreen() {
         if (selectedMilestoneIds.size > 0 && merchantId) {
           for (const milestoneId of selectedMilestoneIds) {
             void loyaltyApi
-              .redeemStampMilestone(user.id, merchantId, milestoneId)
+              .redeemStampMilestone(user.id, merchantId, milestoneId, walletOrderId)
               .catch((err: any) =>
                 console.warn('[Checkout] Post-commit stamp redeem failed:', milestoneId, err?.message)
               );

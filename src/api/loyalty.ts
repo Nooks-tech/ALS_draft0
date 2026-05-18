@@ -122,10 +122,15 @@ export const loyaltyApi = {
       { customerId, amountSar, orderId, merchantId }
     ),
 
-  redeemStampMilestone: (customerId: string, merchantId: string, milestoneId: string) =>
+  redeemStampMilestone: (
+    customerId: string,
+    merchantId: string,
+    milestoneId: string,
+    orderId?: string,
+  ) =>
     api.post<{ success: boolean; rewardName: string; stampsDeducted: number; newStamps: number }>(
       '/api/loyalty/redeem-stamp-milestone',
-      { customerId, merchantId, milestoneId, via: 'app' }
+      { customerId, merchantId, milestoneId, via: 'app', orderId: orderId ?? null }
     ),
 
   getHistory: (customerId: string, merchantId?: string) =>
