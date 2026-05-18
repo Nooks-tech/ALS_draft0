@@ -3,12 +3,22 @@ import { Gift, LayoutGrid, MoreHorizontal, Package } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { Platform, Pressable, Text, View } from 'react-native';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
+import StoreUnavailableBlocker from '../../src/components/common/StoreUnavailableBlocker';
 
 export default function TabLayout() {
   const { t } = useTranslation();
-  const { primaryColor, tabTextColor } = useMerchantBranding();
+  const branding = useMerchantBranding();
+  const { primaryColor, tabTextColor, subscriptionState } = branding;
   const activeTint = tabTextColor;
   const inactiveTint = tabTextColor;
+
+  // When the merchant's bill is past grace, hide the entire tabbed
+  // surface and render a "store unavailable" blocker. Server-side
+  // gates (menu endpoint 503, order POST 403) are still in place as
+  // defence in depth — this is the visible-to-the-customer side.
+  if (subscriptionState === 'suspended') {
+    return <StoreUnavailableBlocker />;
+  }
 
   const renderTabIcon = (
     Icon: typeof LayoutGrid,

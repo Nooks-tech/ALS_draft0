@@ -56,6 +56,17 @@ export type MerchantBranding = {
   customerPaymentsEnabled: boolean;
   applePayEnabled: boolean;
   applePayMerchantId: string | null;
+  /**
+   * Subscription state from nooksweb's branding endpoint. When the
+   * merchant's bill is in grace_period the app still functions; when
+   * it flips to 'suspended' (grace expired without payment) the
+   * customer app should hide the menu and show a "store unavailable"
+   * blocker. Defaults to "active" so a missing field never blocks an
+   * otherwise-healthy merchant.
+   */
+  subscriptionState: 'setup' | 'active' | 'grace_period' | 'suspended';
+  orderIntakeEnabled: boolean;
+  billingReason: string | null;
 };
 
 const DEFAULT_BRANDING: MerchantBranding = {
@@ -80,6 +91,9 @@ const DEFAULT_BRANDING: MerchantBranding = {
   customerPaymentsEnabled: false,
   applePayEnabled: false,
   applePayMerchantId: null,
+  subscriptionState: 'active',
+  orderIntakeEnabled: true,
+  billingReason: null,
 };
 
 function normalizeColor(input: unknown): string | null {
@@ -140,6 +154,9 @@ function getBuildTimeBranding(): MerchantBranding {
     customerPaymentsEnabled: false,
     applePayEnabled: false,
     applePayMerchantId: null,
+    subscriptionState: 'active',
+    orderIntakeEnabled: true,
+    billingReason: null,
   };
 }
 
@@ -199,6 +216,17 @@ function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding 
     applePayMerchantId:
       typeof data.applePayMerchantId === 'string' && data.applePayMerchantId.trim()
         ? data.applePayMerchantId.trim()
+        : null,
+    subscriptionState: (() => {
+      const raw = typeof data.subscriptionState === 'string' ? data.subscriptionState : '';
+      return raw === 'setup' || raw === 'active' || raw === 'grace_period' || raw === 'suspended'
+        ? raw
+        : 'active';
+    })(),
+    orderIntakeEnabled: data.orderIntakeEnabled === false ? false : true,
+    billingReason:
+      typeof data.billingReason === 'string' && data.billingReason.trim()
+        ? data.billingReason.trim()
         : null,
   };
 }
