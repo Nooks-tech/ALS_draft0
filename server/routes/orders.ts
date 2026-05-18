@@ -85,7 +85,10 @@ async function sendPushToCustomer(
 
 import { debitWalletForOrder } from './wallet';
 
-async function relayOrderToNooks(payload: Record<string, unknown>) {
+async function relayOrderToNooks(
+  payload: Record<string, unknown>,
+  options: { customerJwt?: string | null } = {},
+) {
   if (!NOOKS_API_BASE_URL) {
     throw new Error('NOOKS_API_BASE_URL is not configured');
   }
@@ -93,12 +96,24 @@ async function relayOrderToNooks(payload: Record<string, unknown>) {
     throw new Error('NOOKS_INTERNAL_SECRET is not configured');
   }
 
+  // Forward the customer's access token in a separate header so
+  // nooksweb can re-verify that body.customer_id actually belongs to
+  // the authenticated user — a leaked NOOKS_INTERNAL_SECRET would
+  // otherwise let an attacker impersonate any customer at any
+  // merchant by posting a fake customer_id with the leaked header.
+  // Without this, internal-secret alone is the only auth, and one
+  // leak nukes tenant isolation across the platform.
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
+  };
+  if (options.customerJwt) {
+    headers['x-customer-jwt'] = options.customerJwt;
+  }
+
   const response = await fetch(`${NOOKS_API_BASE_URL}/api/public/orders`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
-    },
+    headers,
     body: JSON.stringify(payload),
   });
 
@@ -133,7 +148,8 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
       customer_id: user.id,
     };
 
-    const data = await relayOrderToNooks(relayPayload);
+    const customerJwt = (req.headers.authorization || '').toString().replace(/^Bearer\s+/i, '').trim() || null;
+    const data = await relayOrderToNooks(relayPayload, { customerJwt });
 
     res.json({ success: true, relayed: true, data });
   } catch (err: any) {
@@ -798,6 +814,8 @@ ordersRouter.post('/commit', async (req, res) => {
             ...(item.customizations ? { customizations: item.customizations } : {}),
           };
         }),
+      }, {
+        customerJwt: (req.headers.authorization || '').toString().replace(/^Bearer\s+/i, '').trim() || null,
       });
 
       // Store Foodics order ID from relay response. Awaited so the

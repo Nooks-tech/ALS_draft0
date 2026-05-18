@@ -278,10 +278,23 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     if (!customerId || !merchantId) return;
+    // Defense against the Supabase Realtime multi-merchant gap: the
+    // postgres_changes filter only supports single-column equality, so
+    // the wire filter is `customer_id=eq.<uid>` (the same auth.uid is
+    // shared across every white-label app). The merchant_id check
+    // therefore happens INSIDE this callback — but the realtime row
+    // is fully attacker-controllable for any client that opens its
+    // own channel with a spoofed filter. We re-verify the row's
+    // merchant_id matches our context BEFORE doing anything, and
+    // ignore rows that don't.
+    const safeMerchantMatch = (row: OrderRow): boolean =>
+      (row as { merchant_id?: string }).merchant_id === merchantId;
+
     channelRef.current = subscribeToOrders(
       customerId,
       merchantId,
       (row) => {
+        if (!safeMerchantMatch(row)) return;
         // Suppress realtime INSERTs where the order hasn't reached
         // Foodics yet. The local addOrder still surfaces the order
         // for the customer who placed it; this only stops orphans
@@ -302,17 +315,20 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
       // the relay just succeeded (foodics_order_id transitioning
       // null→set), insert it now. If foodics_order_id is still null
       // even on UPDATE (sweep cancelled it), drop the row from view.
-      (row) => setOrders((prev) => {
-        const foodicsId = (row as { foodics_order_id?: string | null }).foodics_order_id;
-        const existing = prev.find((o) => o.id === row.id);
-        if (!foodicsId) {
-          return existing ? prev.filter((o) => o.id !== row.id) : prev;
-        }
-        if (existing) {
-          return prev.map((o) => (o.id === row.id ? rowToOrder(row) : o));
-        }
-        return [rowToOrder(row), ...prev];
-      })
+      (row) => {
+        if (!safeMerchantMatch(row)) return;
+        setOrders((prev) => {
+          const foodicsId = (row as { foodics_order_id?: string | null }).foodics_order_id;
+          const existing = prev.find((o) => o.id === row.id);
+          if (!foodicsId) {
+            return existing ? prev.filter((o) => o.id !== row.id) : prev;
+          }
+          if (existing) {
+            return prev.map((o) => (o.id === row.id ? rowToOrder(row) : o));
+          }
+          return [rowToOrder(row), ...prev];
+        });
+      }
     );
     return () => {
       channelRef.current?.unsubscribe();
