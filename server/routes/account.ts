@@ -96,10 +96,30 @@ accountRouter.get('/export', async (req, res) => {
 /**
  * DELETE /api/account
  *
- * Permanent account erasure: anonymises order history (so merchant's
- * accounting stays intact) and removes personal data (profile, saved
- * addresses, push subscriptions). The Supabase auth user is deleted
- * last so the client immediately drops to the login screen.
+ * Per-merchant account erasure. The customer is initiating deletion
+ * from inside ONE merchant's white-label app, so by default we only
+ * touch that merchant's slice of their data — loyalty_stamps,
+ * loyalty_points, loyalty_cashback_balances, order_complaints, and
+ * loyalty_transactions filtered on (customer_id, merchant_id);
+ * customer_orders anonymised for that merchant only;
+ * push_subscriptions for that merchant only.
+ *
+ * The Supabase auth.uid is GLOBAL — same identity across every
+ * merchant's app — so we deliberately do NOT delete the auth user
+ * here. Doing so would silently log the customer out of every other
+ * merchant's app they have installed and wipe data they didn't ask
+ * to delete. A future ?scope=all path (or a Nooks-support-driven
+ * flow) can fan deletion across every merchant the customer has a
+ * profile with; until then, this endpoint is intentionally
+ * single-merchant.
+ *
+ * Required query param: ?merchantId=<uuid>. Without it we 400 — the
+ * pre-2026-05-18 behaviour was a multi-merchant nuke that wiped
+ * loyalty balances and complaints across every white-label app
+ * sharing the same auth.uid, which violates the customer's intent
+ * (they were standing in Mafasa's app and tapped Delete) and
+ * destroys other merchants' loyalty bookkeeping without their
+ * consent.
  */
 accountRouter.delete('/', async (req, res) => {
   try {
@@ -107,7 +127,18 @@ accountRouter.delete('/', async (req, res) => {
     if (!user) return;
     if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
 
-    // Anonymise orders so aggregate stats still work but PII is gone.
+    const merchantId = typeof req.query.merchantId === 'string' ? req.query.merchantId.trim() : '';
+    if (!merchantId) {
+      return res.status(400).json({
+        error: 'merchantId query parameter is required',
+        hint: 'Deletion is scoped to one merchant at a time. To delete data from another merchant, repeat the request from that merchant\'s app.',
+      });
+    }
+
+    // Anonymise this merchant's orders only — replaces the customer_id
+    // with a sentinel so the merchant's accounting + aggregates stay
+    // intact while PII (delivery address + lat/lng) is wiped. Other
+    // merchants' orders for the same auth.uid are untouched.
     await supabaseAdmin
       .from('customer_orders')
       .update({
@@ -116,34 +147,25 @@ accountRouter.delete('/', async (req, res) => {
         delivery_lat: null,
         delivery_lng: null,
       })
-      .eq('customer_id', user.id);
+      .eq('customer_id', user.id)
+      .eq('merchant_id', merchantId);
 
-    // saved_addresses lives in mobile-app AsyncStorage, not Supabase —
-    // the deletion of the Supabase auth user below means the next
-    // launch of any merchant app will sign the user out, but their
-    // device-local saved addresses survive locally and would be
-    // visible only if they re-sign in with the same phone (the same
-    // auth.uid is gone, so addresses keyed by the old uid are stale).
-    // The mobile app's account-deletion screen should also clear its
-    // own AsyncStorage to make the erasure complete.
+    // Per-merchant deletion of loyalty + complaint + push records.
+    // profiles stays — it's a single-row global identity (phone,
+    // name, email, photo) that the customer can keep using to sign
+    // in to other merchant apps. The mobile app's account-deletion
+    // screen should also clear its own AsyncStorage to wipe device-
+    // local saved addresses for this merchant.
     await Promise.all([
-      supabaseAdmin.from('profiles').delete().eq('user_id', user.id),
-      supabaseAdmin.from('push_subscriptions').delete().eq('user_id', user.id),
-      supabaseAdmin.from('loyalty_stamps').delete().eq('customer_id', user.id),
-      supabaseAdmin.from('loyalty_points').delete().eq('customer_id', user.id),
-      supabaseAdmin.from('loyalty_cashback_balances').delete().eq('customer_id', user.id),
-      supabaseAdmin.from('order_complaints').delete().eq('customer_id', user.id),
-      supabaseAdmin.from('loyalty_transactions').delete().eq('customer_id', user.id),
+      supabaseAdmin.from('push_subscriptions').delete().eq('user_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('loyalty_stamps').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('loyalty_points').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('loyalty_cashback_balances').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('order_complaints').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('loyalty_transactions').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
     ]);
 
-    // Finally kill the auth user. Once this returns the mobile app's
-    // next request 401s and the 401 interceptor signs out locally.
-    const { error: authErr } = await supabaseAdmin.auth.admin.deleteUser(user.id);
-    if (authErr) {
-      console.warn('[account/delete] auth.admin.deleteUser failed:', authErr.message);
-    }
-
-    res.json({ success: true });
+    res.json({ success: true, scope: 'merchant', merchantId });
   } catch (err: any) {
     console.error('[account/delete] error:', err?.message);
     res.status(500).json({ error: err?.message || 'Deletion failed' });

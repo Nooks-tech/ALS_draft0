@@ -49,9 +49,14 @@ export function isLocalOnlyRequest(req: Request) {
 }
 
 export function hasValidInternalSecret(req: Request) {
-  const headerToken =
-    safeHeaderValue(req.headers['x-nooks-internal-secret']) ||
-    safeHeaderValue(req.headers.authorization).replace(/^Bearer\s+/i, '');
+  // Internal secret ONLY travels in x-nooks-internal-secret.
+  // The Bearer-token fallback was removed 2026-05-18 — it widened
+  // the log-exposure surface (most middleware redacts Authorization
+  // but not arbitrary custom headers, so accepting the secret in
+  // either spot doubled the places it could show up in a log dump).
+  // If a caller is using Authorization: Bearer for this secret,
+  // update them to send x-nooks-internal-secret instead.
+  const headerToken = safeHeaderValue(req.headers['x-nooks-internal-secret']);
   if (!NOOKS_INTERNAL_SECRET || !headerToken) return false;
   return constantTimeEquals(headerToken, NOOKS_INTERNAL_SECRET);
 }

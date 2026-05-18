@@ -6,7 +6,7 @@ import { Router, type Request, type Response } from 'express';
 import { notifyPassUpdate } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
-import { requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
+import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
 import { sendLocalizedPushScoped } from '../utils/push';
 
 export const loyaltyRouter = Router();
@@ -1070,7 +1070,9 @@ loyaltyRouter.post('/redeem', async (req, res) => {
       return res.status(400).json({ error: 'customerId, points, and orderId required' });
     }
     // Accept either: user auth (app checkout) OR internal secret (Foodics adapter via nooksweb)
-    const hasInternalSecret = req.headers['x-nooks-internal-secret'] === (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+    // constant-time compare via shared helper — the previous inline
+    // === check was a microsecond-level timing oracle.
+    const hasInternalSecret = hasValidInternalSecret(req);
     if (!hasInternalSecret) {
       if (!await requireMatchingCustomer(req, res, customerId)) return;
     }
@@ -1669,7 +1671,9 @@ export async function restoreStampMilestonesForRefund(params: {
 loyaltyRouter.post('/redeem-cashback', async (req, res) => {
   try {
     // Accept either: user auth (app checkout) OR internal secret (Foodics adapter via nooksweb)
-    const hasInternalSecret = req.headers['x-nooks-internal-secret'] === (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+    // constant-time compare via shared helper — the previous inline
+    // === check was a microsecond-level timing oracle.
+    const hasInternalSecret = hasValidInternalSecret(req);
     if (!hasInternalSecret) {
       const { customerId } = req.body ?? {};
       if (!await requireMatchingCustomer(req, res, customerId)) return;
@@ -1797,7 +1801,9 @@ loyaltyRouter.get('/stamp-milestones', async (req, res) => {
 loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
   try {
     // Accept either: user auth (app checkout) OR internal secret (Foodics adapter via nooksweb)
-    const hasInternalSecret = req.headers['x-nooks-internal-secret'] === (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+    // constant-time compare via shared helper — the previous inline
+    // === check was a microsecond-level timing oracle.
+    const hasInternalSecret = hasValidInternalSecret(req);
     if (!hasInternalSecret) {
       const { customerId: bodyCustomerId } = req.body ?? {};
       if (!await requireMatchingCustomer(req, res, bodyCustomerId)) return;

@@ -181,8 +181,8 @@ export default function MoreScreen() {
     Alert.alert(
       isArabic ? 'حذف الحساب نهائياً؟' : 'Delete account permanently?',
       isArabic
-        ? 'بنمسح ملفك الشخصي، عناوينك، ونقاط الولاء. الطلبات السابقة بتنجهّل. ما في رجوع بعد التأكيد.'
-        : "We'll erase your profile, saved addresses, and loyalty balances. Past orders will be anonymised. This can't be undone.",
+        ? 'بنمسح بيانات هذا التطبيق فقط (الولاء، الشكاوى، الإشعارات). الطلبات السابقة بتنجهّل. حسابك في تطبيقات أخرى بنفس رقم الجوال يبقى.'
+        : "We'll erase your data for this app only (loyalty, complaints, notifications). Past orders will be anonymised. Your account in other apps using the same phone number stays intact.",
       [
         { text: isArabic ? 'لا' : 'Cancel', style: 'cancel' },
         {
@@ -193,9 +193,14 @@ export default function MoreScreen() {
             try {
               const session = (await supabase?.auth.getSession())?.data?.session;
               if (!session?.access_token) throw new Error('No session');
-              const res = await fetch(`${API_URL}/api/account`, {
-                method: 'DELETE',
-                headers: { Authorization: `Bearer ${session.access_token}` } });
+              if (!merchantId) throw new Error('Missing merchant context');
+              const res = await fetch(
+                `${API_URL}/api/account?merchantId=${encodeURIComponent(merchantId)}`,
+                {
+                  method: 'DELETE',
+                  headers: { Authorization: `Bearer ${session.access_token}` },
+                },
+              );
               if (!res.ok) throw new Error('Delete failed');
               await signOut();
               router.replace('/(auth)/login');
