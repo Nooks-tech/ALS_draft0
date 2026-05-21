@@ -55,7 +55,7 @@ export async function sendPushScoped(opts: {
     const { data: subs } = await sb
       .from('push_subscriptions')
       .select('expo_push_token')
-      .eq('user_id', customerId)
+      .eq('customer_id', customerId)
       .eq('merchant_id', merchantId);
     const tokens = (subs ?? [])
       .map((s: { expo_push_token?: string | null }) => (s.expo_push_token || '').trim())
@@ -84,9 +84,15 @@ export async function sendPushScoped(opts: {
 }
 
 /**
- * Localized variant — picks per-device language from
- * push_subscriptions.app_language. Falls back to English when null.
- * Same merchant scoping applies.
+ * Localized variant — picks language with this preference order:
+ *   1. customer_merchant_profiles.language (Phase F source of truth —
+ *      per-(merchant, customer), set when the customer changes their
+ *      app language in the profile screen)
+ *   2. push_subscriptions.app_language (per-device fallback, used
+ *      when the customer hasn't set a profile-level language yet)
+ *   3. English default
+ * Same merchant scoping applies — language never crosses merchant
+ * boundaries even on a phone the same human uses for two apps.
  */
 export async function sendLocalizedPushScoped(opts: {
   customerId: string;
@@ -99,20 +105,34 @@ export async function sendLocalizedPushScoped(opts: {
   const sb = getSupabase();
   if (!sb) return;
   try {
-    const { data } = await sb
-      .from('push_subscriptions')
-      .select('expo_push_token, app_language')
-      .eq('user_id', customerId)
-      .eq('merchant_id', merchantId);
-    const subs = (data ?? []) as Array<{
+    const [profileQuery, subsQuery] = await Promise.all([
+      sb
+        .from('customer_merchant_profiles')
+        .select('language')
+        .eq('merchant_id', merchantId)
+        .eq('customer_id', customerId)
+        .maybeSingle(),
+      sb
+        .from('push_subscriptions')
+        .select('expo_push_token, app_language')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId),
+    ]);
+
+    const profileLang = (profileQuery.data as { language?: string | null } | null)?.language ?? null;
+    const subs = (subsQuery.data ?? []) as Array<{
       expo_push_token: string;
       app_language: 'en' | 'ar' | null;
     }>;
+
     const messages = subs
       .map((s) => {
         const token = (s.expo_push_token || '').trim();
         if (!token) return null;
-        const lang = s.app_language === 'ar' ? 'ar' : 'en';
+        const lang =
+          profileLang === 'ar' || (profileLang !== 'en' && s.app_language === 'ar')
+            ? 'ar'
+            : 'en';
         const c = copy[lang];
         return {
           to: token,

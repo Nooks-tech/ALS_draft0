@@ -1,8 +1,16 @@
 /**
- * Profile from Supabase (source of truth) - not local storage
+ * Per-merchant customer profile context.
+ *
+ * Phase C: the customer's display name, email, language, and avatar
+ * now live in customer_merchant_profiles per (merchant, customer).
+ * Two merchant apps installed on the same phone show two independent
+ * profiles. Previously this context read from the global `profiles`
+ * Supabase table and the same name appeared in both apps — a leak
+ * the audit identified as the largest white-label hygiene gap.
  */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
+import { useMerchant } from './MerchantContext';
 import { getProfile, upsertProfile, type ProfileRow } from '../api/profile';
 
 export type ProfileData = {
@@ -10,6 +18,8 @@ export type ProfileData = {
   email: string;
   phone: string;
   dateOfBirth: string;
+  language: 'en' | 'ar' | '';
+  marketingOptIn: boolean;
 };
 
 export type ProfileContextType = {
@@ -26,39 +36,47 @@ const defaultProfile: ProfileData = {
   email: '',
   phone: '',
   dateOfBirth: '',
+  language: '',
+  marketingOptIn: false,
 };
 
 const ProfileContext = createContext<ProfileContextType | undefined>(undefined);
 
-function rowToProfile(row: ProfileRow | null, email: string): ProfileData {
+function rowToProfile(row: ProfileRow | null, phone: string): ProfileData {
   return {
     fullName: row?.full_name ?? '',
-    email: email ?? '',
-    phone: row?.phone_number ?? '',
-    dateOfBirth: (row as Record<string, unknown>)?.date_of_birth as string ?? '',
+    // Per-merchant email — the customer typed this at THIS merchant.
+    // Different from auth.users.email (synthetic phone@phone.nooks.app).
+    email: row?.email ?? '',
+    // Phone is identity — global. Comes from auth user, not per-merchant.
+    phone,
+    dateOfBirth: '',
+    language: row?.language ?? '',
+    marketingOptIn: row?.marketing_opt_in ?? false,
   };
 }
 
 export const ProfileProvider = ({ children }: { children: React.ReactNode }) => {
   const { user } = useAuth();
+  const { merchantId } = useMerchant();
   const [profile, setProfile] = useState<ProfileData>(defaultProfile);
   const [profileLoaded, setProfileLoaded] = useState(false);
 
   const fetchProfile = useCallback(async () => {
-    if (!user?.id) {
+    if (!user?.id || !merchantId) {
       setProfile(defaultProfile);
       setProfileLoaded(true);
       return;
     }
     try {
-      const row = await getProfile(user.id);
-      setProfile(rowToProfile(row, user.email ?? ''));
+      const row = await getProfile(merchantId);
+      setProfile(rowToProfile(row, user.phone ?? ''));
     } catch {
-      setProfile(rowToProfile(null, user.email ?? ''));
+      setProfile(rowToProfile(null, user.phone ?? ''));
     } finally {
       setProfileLoaded(true);
     }
-  }, [user?.id, user?.email]);
+  }, [user?.id, user?.phone, merchantId]);
 
   useEffect(() => {
     if (!user) {
@@ -68,7 +86,7 @@ export const ProfileProvider = ({ children }: { children: React.ReactNode }) => 
     }
     setProfileLoaded(false);
     fetchProfile();
-  }, [user?.id, fetchProfile]);
+  }, [user?.id, merchantId, fetchProfile]);
 
   const updateProfile = useCallback((data: Partial<ProfileData>) => {
     setProfile((prev) => ({ ...prev, ...data }));
@@ -77,14 +95,17 @@ export const ProfileProvider = ({ children }: { children: React.ReactNode }) => 
   const saveProfile = useCallback(
     async (data?: Partial<ProfileData>) => {
       if (!user?.id) throw new Error('Not logged in');
+      if (!merchantId) throw new Error('Merchant context missing');
       const toSave = data ? { ...profile, ...data } : profile;
       setProfile(toSave);
-      await upsertProfile(user.id, {
+      await upsertProfile(merchantId, {
         full_name: toSave.fullName || null,
-        phone_number: toSave.phone || null,
+        email: toSave.email || null,
+        language: toSave.language === 'en' || toSave.language === 'ar' ? toSave.language : null,
+        marketing_opt_in: toSave.marketingOptIn,
       });
     },
-    [user?.id, profile]
+    [user?.id, merchantId, profile]
   );
 
   const clearProfile = useCallback(async () => {
@@ -93,19 +114,19 @@ export const ProfileProvider = ({ children }: { children: React.ReactNode }) => 
 
   const refetchProfile = useCallback(async (): Promise<ProfileData | null> => {
     setProfileLoaded(false);
-    if (!user?.id) return null;
+    if (!user?.id || !merchantId) return null;
     try {
-      const row = await getProfile(user.id);
-      const p = rowToProfile(row, user.email ?? '');
+      const row = await getProfile(merchantId);
+      const p = rowToProfile(row, user.phone ?? '');
       setProfile(p);
       return p;
     } catch {
-      setProfile(rowToProfile(null, user.email ?? ''));
+      setProfile(rowToProfile(null, user.phone ?? ''));
       return null;
     } finally {
       setProfileLoaded(true);
     }
-  }, [user?.id, user?.email]);
+  }, [user?.id, user?.phone, merchantId]);
 
   return (
     <ProfileContext.Provider

@@ -47,9 +47,27 @@ accountRouter.get('/export', async (req, res) => {
     // mobile app should include its locally-stored addresses in any
     // PDPL data dump itself before uploading, since the server doesn't
     // have them.
-    const [profile, orders, complaints, loyaltyTx, stamps, points, cashback, subs] =
+    // Phase C: the customer's display data (name, email, language,
+    // avatar, marketing opt-in) now lives in customer_merchant_profiles
+    // per (merchant_id, customer_id). Reading from the legacy global
+    // `profiles` table would leak the name/email the customer typed
+    // at OTHER merchants into this export. We keep a `phone_number`
+    // pointer from the global identity row for context.
+    // Also: push_subscriptions uses `customer_id`, not `user_id` —
+    // the legacy `user_id` filter returned zero rows here too.
+    const [profile, identity, orders, complaints, loyaltyTx, stamps, points, cashback, subs] =
       await Promise.all([
-        supabaseAdmin.from('profiles').select('*').eq('user_id', user.id).maybeSingle(),
+        supabaseAdmin
+          .from('customer_merchant_profiles')
+          .select('*')
+          .eq('customer_id', user.id)
+          .eq('merchant_id', merchantId)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('profiles')
+          .select('phone_number')
+          .eq('id', user.id)
+          .maybeSingle(),
         supabaseAdmin
           .from('customer_orders')
           .select('id, merchant_id, branch_name, total_sar, status, order_type, created_at, delivered_at, items, delivery_address')
@@ -61,7 +79,7 @@ accountRouter.get('/export', async (req, res) => {
         supabaseAdmin.from('loyalty_stamps').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('loyalty_points').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('loyalty_cashback_balances').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
-        supabaseAdmin.from('push_subscriptions').select('merchant_id, platform, app_language, marketing_opt_in, last_seen_at').eq('user_id', user.id).eq('merchant_id', merchantId),
+        supabaseAdmin.from('push_subscriptions').select('merchant_id, platform, app_language, marketing_opt_in, last_seen_at').eq('customer_id', user.id).eq('merchant_id', merchantId),
       ]);
 
     await supabaseAdmin.from('data_export_requests').insert({
@@ -74,7 +92,14 @@ accountRouter.get('/export', async (req, res) => {
     const payload = {
       exported_at: new Date().toISOString(),
       user_id: user.id,
+      merchant_id: merchantId,
+      // Per-merchant profile (name, email, language, avatar, marketing
+      // opt-in) — this is the data the customer specifically gave to
+      // THIS merchant. Data they gave to other merchants is NOT here.
       profile: profile.data ?? null,
+      // Identity row — phone only, the cross-merchant Supabase auth.uid.
+      // Kept for completeness of the PDPL export.
+      identity: identity.data ?? null,
       orders: orders.data ?? [],
       complaints: complaints.data ?? [],
       loyalty_transactions: loyaltyTx.data ?? [],
@@ -150,19 +175,25 @@ accountRouter.delete('/', async (req, res) => {
       .eq('customer_id', user.id)
       .eq('merchant_id', merchantId);
 
-    // Per-merchant deletion of loyalty + complaint + push records.
-    // profiles stays — it's a single-row global identity (phone,
-    // name, email, photo) that the customer can keep using to sign
-    // in to other merchant apps. The mobile app's account-deletion
-    // screen should also clear its own AsyncStorage to wipe device-
-    // local saved addresses for this merchant.
+    // Per-merchant deletion of loyalty + complaint + push records,
+    // PLUS the per-merchant profile (name, email, language, avatar,
+    // marketing opt-in) and the merchant_customers enrollment row
+    // (so the customer is treated as never-enrolled on next visit
+    // and will OTP again from scratch). The global `profiles` row
+    // stays — it's pure identity (phone) and the customer keeps
+    // using it to sign in to other merchant apps.
+    // Also fixes the legacy push_subscriptions filter — the column
+    // is customer_id, not user_id (silent no-op before this fix).
     await Promise.all([
-      supabaseAdmin.from('push_subscriptions').delete().eq('user_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('push_subscriptions').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('loyalty_stamps').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('loyalty_points').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('loyalty_cashback_balances').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('order_complaints').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('loyalty_transactions').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('customer_merchant_profiles').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('customer_carts').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('merchant_customers').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
     ]);
 
     res.json({ success: true, scope: 'merchant', merchantId });

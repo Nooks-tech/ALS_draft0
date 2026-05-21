@@ -35,6 +35,9 @@ import { walletPassRouter } from './routes/walletPass';
 import { googleWalletRouter } from './routes/googleWallet';
 import { supportRouter } from './routes/support';
 import { analyticsRouter } from './routes/analytics';
+import { profileRouter } from './routes/profile';
+import { cartRouter } from './routes/cart';
+import { startCartAbandonmentCron } from './cron/cartAbandonment';
 import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
 import { startComplaintEscalationCron } from './cron/complaintEscalation';
 import { startSavedCardSweepCron } from './cron/savedCardSweep';
@@ -115,6 +118,8 @@ app.use('/api/complaints', complaintsRouter);
 app.use('/api/wallet', walletRouter);
 app.use('/api/support', supportRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/profile', profileRouter);
+app.use('/api/cart', cartRouter);
 
 // Sentry's Express error handler MUST be registered after all routes
 // but before any other custom error middleware. It catches every error
@@ -130,4 +135,5 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   startLoyaltyExpirationCron();
   startComplaintEscalationCron();
   startSavedCardSweepCron();
+  startCartAbandonmentCron();
 });

@@ -1,67 +1,39 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+/**
+ * Cart abandonment notifications — DEPRECATED on the device side.
+ *
+ * Phase D moved the abandonment flow to a server-side cron driven by
+ * the customer_carts table:
+ *   - 15 minutes of cart idle → server push "your cart is waiting"
+ *   - 1 hour of cart idle → row moved to abandoned_carts, cart cleared
+ *
+ * The previous device-local schedule fired only when the app went to
+ * background and the device kept it alive. Server-driven push reaches
+ * the customer even after they swipe-killed the app and works across
+ * devices the customer might pick up later.
+ *
+ * The exports below stay for back-compat with callers in CartContext
+ * that haven't been updated yet. They're harmless no-ops; eventually
+ * the call sites should be removed entirely.
+ *
+ * CART_TTL_MS is still used as the local-cache expiry guard — when
+ * the app rehydrates an old AsyncStorage cart payload, anything older
+ * than this gets wiped before the server sync reseeds.
+ */
 
 export const CART_TTL_MS = 12 * 60 * 60 * 1000;
 
-const CART_REMINDER_DELAY_SECONDS = 60 * 60;
+// No-op shims — kept so we don't have to fan out the rename across
+// CartContext today. Safe to delete once CartContext stops calling
+// them.
+export async function cancelAbandonedCartReminder(_reminderKey: string): Promise<void> {
+  return;
+}
 
-type ScheduleArgs = {
+export async function scheduleAbandonedCartReminder(_args: {
   reminderKey: string;
   brandName: string;
   itemCount: number;
   isArabic: boolean;
-};
-
-export async function cancelAbandonedCartReminder(reminderKey: string): Promise<void> {
-  try {
-    const id = await AsyncStorage.getItem(reminderKey);
-    if (id) {
-      await Notifications.cancelScheduledNotificationAsync(id);
-      await AsyncStorage.removeItem(reminderKey);
-    }
-  } catch {
-    // Best-effort only.
-  }
-}
-
-export async function scheduleAbandonedCartReminder({
-  reminderKey,
-  brandName,
-  itemCount,
-  isArabic,
-}: ScheduleArgs): Promise<void> {
-  try {
-    const { status } = await Notifications.getPermissionsAsync();
-    if (status !== 'granted') return;
-
-    await cancelAbandonedCartReminder(reminderKey);
-
-    const safeBrand = brandName.trim() || (isArabic ? 'متجرك' : 'your cart');
-    const title = isArabic ? 'سلتك تستناك' : `Still hungry?`;
-    const body = isArabic
-      ? `عندك ${itemCount} ${itemCount === 1 ? 'منتج' : 'منتجات'} من ${safeBrand} لسّا في السلة. كمّل الطلب قبل ما تروح عليك بعد 12 ساعة.`
-      : `${itemCount} item${itemCount === 1 ? '' : 's'} from ${safeBrand} ${itemCount === 1 ? "is" : "are"} still in your cart. Check out before it poofs in 12 hours.`;
-
-    const trigger = {
-      type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-      seconds: CART_REMINDER_DELAY_SECONDS,
-      repeats: false,
-      ...(Platform.OS === 'android' ? { channelId: 'marketing' } : {}),
-    } as Notifications.NotificationTriggerInput;
-
-    const id = await Notifications.scheduleNotificationAsync({
-      content: {
-        title,
-        body,
-        sound: 'default',
-        data: { kind: 'abandoned_cart' },
-      },
-      trigger,
-    });
-
-    await AsyncStorage.setItem(reminderKey, id);
-  } catch {
-    // Ignore if notifications are unavailable on this device/environment.
-  }
+}): Promise<void> {
+  return;
 }

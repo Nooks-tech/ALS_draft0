@@ -1,11 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
-import i18n from '../i18n';
-import { cancelAbandonedCartReminder, CART_TTL_MS, scheduleAbandonedCartReminder } from '../utils/cartNotifications';
+import { CART_TTL_MS } from '../utils/cartNotifications';
+import {
+  deleteServerCart,
+  fetchServerCart,
+  saveServerCart,
+  type ServerCartItem,
+} from '../api/cart';
 import { useAuth } from './AuthContext';
 import { useMerchant } from './MerchantContext';
-import { useMerchantBranding } from './MerchantBrandingContext';
 
 // 1. Define the item structure (Restored from your old code)
 export type CartItem = {
@@ -81,7 +84,6 @@ type PersistedCart = {
 export const CartProvider = ({ children }: { children: ReactNode }) => {
   const { user, initialized } = useAuth();
   const { merchantId } = useMerchant();
-  const { appName, cafeName } = useMerchantBranding();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [orderType, setOrderTypeState] = useState<'delivery' | 'pickup' | 'drivethru'>('pickup');
   const [selectedBranch, setSelectedBranchState] = useState<{ id: string; name: string; address: string; distance?: string; oto_warehouse_id?: string; latitude?: number; longitude?: number } | null>(null);
@@ -92,8 +94,11 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   const [hydrated, setHydrated] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number>(Date.now());
   // Tracks the previous (merchant, user) scope so we can clear cart
-  // state when EITHER axis changes — was previously just user.
-  const prevReminderKeyRef = useRef<string | null>(null);
+  // state when EITHER axis changes.
+  const prevScopeRef = useRef<string | null>(null);
+  // Phase D: debounce server sync writes so a flurry of "+ -" taps
+  // collapses into one PUT.
+  const serverSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const uid = user?.id ?? 'guest';
   const merchantScope = merchantId || 'default';
@@ -102,7 +107,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   // sandboxed AsyncStorage; in dev/preview where one app can switch
   // merchants via URL it actively prevents leaking cart contents.
   const CART_CACHE_KEY = `@als_cart_${merchantScope}_${uid}`;
-  const CART_REMINDER_KEY = `@als_cart_reminder_${merchantScope}_${uid}`;
+  const SCOPE_KEY = `${merchantScope}:${uid}`;
   const totalItems = cartItems.reduce((sum, item) => sum + item.quantity, 0);
   const totalPrice = cartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
 
@@ -111,13 +116,11 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   // Reset cart state when EITHER user or merchant scope changes.
-  // The reminder key carries both axes so it triggers on either flip.
   useEffect(() => {
     if (
-      prevReminderKeyRef.current !== null &&
-      prevReminderKeyRef.current !== CART_REMINDER_KEY
+      prevScopeRef.current !== null &&
+      prevScopeRef.current !== SCOPE_KEY
     ) {
-      void cancelAbandonedCartReminder(prevReminderKeyRef.current);
       setCartItems([]);
       setOrderTypeState('pickup');
       setSelectedBranchState(null);
@@ -125,13 +128,29 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       setHydrated(false);
       setLastUpdatedAt(Date.now());
     }
-    prevReminderKeyRef.current = CART_REMINDER_KEY;
-  }, [CART_REMINDER_KEY]);
+    prevScopeRef.current = SCOPE_KEY;
+  }, [SCOPE_KEY]);
 
   useEffect(() => {
     if (!initialized || hydrated) return;
     (async () => {
       try {
+        // Phase D: try the server first (source of truth across devices
+        // and reinstalls). Fall back to the AsyncStorage cache when
+        // offline or the customer isn't authenticated yet.
+        let seeded = false;
+        if (uid !== 'guest' && merchantId) {
+          const remote = await fetchServerCart(merchantId);
+          if (remote && Array.isArray(remote.items) && remote.items.length > 0) {
+            setCartItems(remote.items as CartItem[]);
+            if (remote.order_type === 'delivery' || remote.order_type === 'pickup' || remote.order_type === 'drivethru') {
+              setOrderTypeState(remote.order_type);
+            }
+            setLastUpdatedAt(remote.updated_at ? new Date(remote.updated_at).getTime() : Date.now());
+            seeded = true;
+          }
+        }
+
         let raw = await AsyncStorage.getItem(CART_CACHE_KEY);
         // One-time migration of legacy non-namespaced cart data so
         // existing customers don't lose their basket on the OTA
@@ -144,7 +163,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
             raw = legacy;
           }
         }
-        if (!raw) return;
+        if (!raw || seeded) return;
         const parsed = JSON.parse(raw) as PersistedCart;
         const now = Date.now();
         const expiresAt =
@@ -165,12 +184,12 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         if (parsed.deliveryAddress) setDeliveryAddressState(parsed.deliveryAddress);
         setLastUpdatedAt(typeof parsed.updatedAt === 'number' ? parsed.updatedAt : now);
       } catch {
-        // Corrupted JSON or AsyncStorage error — start fresh.
+        // Corrupted JSON, AsyncStorage error, or offline — start fresh.
       } finally {
         setHydrated(true);
       }
     })();
-  }, [CART_CACHE_KEY, hydrated, initialized, uid]);
+  }, [CART_CACHE_KEY, hydrated, initialized, uid, merchantId]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -185,45 +204,44 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
     AsyncStorage.setItem(CART_CACHE_KEY, payload).catch(() => {});
   }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress, CART_CACHE_KEY, lastUpdatedAt]);
 
+  // Phase D: debounced server-side sync. Every cart change schedules a
+  // PUT 300ms later; back-to-back changes collapse into one request.
+  // When the cart goes empty we DELETE so the abandonment cron has
+  // nothing to chase. Offline failures are silently ignored — the
+  // AsyncStorage mirror above keeps the UI responsive.
   useEffect(() => {
     if (!hydrated || !initialized) return;
-    if (cartItems.length === 0) {
-      void cancelAbandonedCartReminder(CART_REMINDER_KEY);
+    if (!merchantId || uid === 'guest') return;
+    if (serverSyncTimerRef.current) {
+      clearTimeout(serverSyncTimerRef.current);
     }
-  }, [hydrated, initialized, cartItems.length, CART_REMINDER_KEY]);
-
-  useEffect(() => {
-    if (!hydrated || !initialized) return;
-
-    const subscription = AppState.addEventListener('change', (state) => {
-      const expiresAt = lastUpdatedAt + CART_TTL_MS;
-
-      if (state === 'active') {
-        void cancelAbandonedCartReminder(CART_REMINDER_KEY);
-        if (cartItems.length > 0 && expiresAt <= Date.now()) {
-          setCartItems([]);
-        }
+    serverSyncTimerRef.current = setTimeout(() => {
+      if (cartItems.length === 0) {
+        void deleteServerCart(merchantId);
         return;
       }
-
-      if (state !== 'background') return;
-
-      if (cartItems.length === 0 || expiresAt <= Date.now()) {
-        void cancelAbandonedCartReminder(CART_REMINDER_KEY);
-        return;
-      }
-
-      const brandName = (appName?.trim() || cafeName?.trim() || '').trim();
-      void scheduleAbandonedCartReminder({
-        reminderKey: CART_REMINDER_KEY,
-        brandName,
-        itemCount: totalItems,
-        isArabic: i18n.language === 'ar',
+      void saveServerCart(merchantId, {
+        items: cartItems as ServerCartItem[],
+        subtotal_sar: Number(totalPrice.toFixed(2)),
+        branch_id: selectedBranch?.id ?? null,
+        order_type: orderType,
       });
-    });
-
-    return () => subscription.remove();
-  }, [hydrated, initialized, cartItems.length, totalItems, lastUpdatedAt, CART_REMINDER_KEY, appName, cafeName]);
+    }, 300);
+    return () => {
+      if (serverSyncTimerRef.current) {
+        clearTimeout(serverSyncTimerRef.current);
+      }
+    };
+  }, [
+    hydrated,
+    initialized,
+    merchantId,
+    uid,
+    cartItems,
+    totalPrice,
+    selectedBranch?.id,
+    orderType,
+  ]);
 
   const setOrderType = useCallback((type: 'delivery' | 'pickup' | 'drivethru') => {
     setOrderTypeState(type);

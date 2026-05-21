@@ -5,7 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
 import { notifyPassUpdate } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
-import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
 import { sendLocalizedPushScoped } from '../utils/push';
 
@@ -1807,6 +1807,15 @@ loyaltyRouter.post('/redeem-cashback', async (req, res) => {
     if (!customerId || !merchantId || !orderId) return res.status(400).json({ error: 'customerId, merchantId, orderId required' });
     const amount = +Number(amountSar).toFixed(2);
     if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+
+    // Phase B: when the caller is the customer's own app (not the
+    // internal Foodics adapter via nooksweb), enforce the per-merchant
+    // OTP gate. Internal-secret calls bypass — Foodics has its own
+    // authentication chain at the POS and isn't tied to an OTP session.
+    if (!hasInternalSecret) {
+      const verification = await requireVerifiedAtMerchant(res, customerId, merchantId);
+      if (!verification.ok) return;
+    }
 
     // ─── Idempotency guard (audit Tier 2 #14) ───
     // Reject a second redemption against the same orderId. The atomic

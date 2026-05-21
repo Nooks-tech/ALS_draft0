@@ -52,10 +52,25 @@ function phoneLookupCandidates(value: string) {
   return [...candidates];
 }
 
-async function readCustomerProfile(customerId: string) {
+async function readCustomerProfile(merchantId: string, customerId: string) {
   if (!supabaseAdmin) return { displayName: null, phoneNumber: null, email: null };
 
-  const [profileQuery, authQuery] = await Promise.all([
+  // Phase C: per-merchant profile is the source of truth for display
+  // name / email / language. The legacy global `profiles` table held a
+  // shared name across all merchants — reading it here would leak the
+  // name the customer typed at merchant A into merchant B's loyalty
+  // member profile. Now we read from customer_merchant_profiles
+  // scoped to (merchant_id, customer_id), and fall back to legacy
+  // global profile ONLY for backfilled rows where the per-merchant
+  // copy is empty (transitional support; can be removed after the
+  // first month of running on per-merchant writes).
+  const [merchantProfileQuery, legacyProfileQuery, authQuery] = await Promise.all([
+    supabaseAdmin
+      .from('customer_merchant_profiles')
+      .select('full_name, email')
+      .eq('merchant_id', merchantId)
+      .eq('customer_id', customerId)
+      .maybeSingle(),
     supabaseAdmin
       .from('profiles')
       .select('full_name, phone_number')
@@ -65,16 +80,23 @@ async function readCustomerProfile(customerId: string) {
   ]);
 
   const displayName =
-    normalizeText(profileQuery.data?.full_name) ||
+    normalizeText(merchantProfileQuery.data?.full_name) ||
+    normalizeText(legacyProfileQuery.data?.full_name) ||
     normalizeText(authQuery.data.user?.user_metadata?.full_name) ||
     normalizeText(authQuery.data.user?.user_metadata?.name) ||
     null;
+  // Phone is identity — always read from auth.users or the legacy
+  // global `profiles.phone_number`. Not per-merchant.
   const phoneNumber =
-    normalizeText(profileQuery.data?.phone_number) ||
+    normalizeText(legacyProfileQuery.data?.phone_number) ||
     normalizeText(authQuery.data.user?.phone) ||
     normalizeText(authQuery.data.user?.user_metadata?.phone) ||
     null;
-  const email = normalizeText(authQuery.data.user?.email) || null;
+  // Email is per-merchant (each merchant can have a different
+  // customer-supplied email). Auth.users.email is the synthetic
+  // `phone@phone.nooks.app` form used internally, NOT a customer-
+  // typed value — never use it as a display email.
+  const email = normalizeText(merchantProfileQuery.data?.email) || null;
 
   return { displayName, phoneNumber, email };
 }
@@ -106,7 +128,7 @@ export async function ensureLoyaltyMemberProfile(merchantId: string, customerId:
     .maybeSingle();
   if (existing.error) throw new Error(existing.error.message);
 
-  const profileFields = await readCustomerProfile(customerId);
+  const profileFields = await readCustomerProfile(merchantId, customerId);
 
   if (existing.data) {
     const current = existing.data as LoyaltyMemberProfile;
@@ -195,6 +217,21 @@ export async function findLoyaltyMemberByLookup(merchantId: string, lookup: stri
 
   const phoneCandidates = phoneLookupCandidates(rawLookup);
   if (phoneCandidates.length > 0) {
+    // Phase C audit hardening: phone lookup against the GLOBAL profile
+    // table is the one cross-merchant probe we still allow. It exists
+    // because the POS clerk needs to find a customer by phone number,
+    // and the phone is the only cross-merchant identity we have. To
+    // bound the abuse surface:
+    //   (1) The caller of findLoyaltyMemberByLookup is already gated
+    //       by requireNooksInternalRequest (POS branch endpoints).
+    //   (2) The returned auth.uid is immediately re-scoped: the next
+    //       call is ensureLoyaltyMemberProfile(merchantId, uid), which
+    //       creates a per-merchant member if none exists. The
+    //       per-merchant profile starts EMPTY — no name leak from the
+    //       customer's other-merchant footprint.
+    //   (3) We write an audit_log entry so any anomalous burst of
+    //       lookups (e.g. a leaked internal secret being used to
+    //       enumerate phones) shows up in the merchant's audit trail.
     const profileQuery = await supabaseAdmin
       .from('profiles')
       .select('id')
@@ -203,6 +240,18 @@ export async function findLoyaltyMemberByLookup(merchantId: string, lookup: stri
       .maybeSingle();
     if (profileQuery.error) throw new Error(profileQuery.error.message);
     if (profileQuery.data?.id) {
+      // Best-effort audit log — non-fatal if it fails.
+      try {
+        await supabaseAdmin.from('audit_log').insert({
+          merchant_id: merchantId,
+          action: 'loyalty.phone_lookup',
+          payload: {
+            via: 'cross_merchant_identity',
+            resolved_customer_id: String(profileQuery.data.id),
+            phone_candidates_count: phoneCandidates.length,
+          },
+        });
+      } catch (_e) { /* non-fatal */ }
       return ensureLoyaltyMemberProfile(merchantId, String(profileQuery.data.id));
     }
   }

@@ -5,7 +5,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { creditWalletForRefund } from './wallet';
-import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { sendPushScoped } from '../utils/push';
 
@@ -48,6 +48,15 @@ complaintsRouter.post('/:orderId', async (req, res) => {
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
+
+    // Phase B: customer must be OTP-verified at the order's merchant.
+    // The order itself carries merchant_id so the verification check
+    // here is against the merchant the order was placed at, not some
+    // request-body merchantId the client could spoof.
+    if (order.merchant_id) {
+      const verification = await requireVerifiedAtMerchant(res, user.id, order.merchant_id);
+      if (!verification.ok) return;
+    }
     if (order.status !== 'Delivered') {
       return res.status(400).json({ error: 'Complaints can only be filed for delivered orders' });
     }

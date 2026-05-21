@@ -19,7 +19,7 @@ import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { cancelPayment, verifyPaidPayment } from '../services/payment';
 import { sendOrderReceipt } from '../services/receipt';
 import { earnPoints, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
-import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { creditWalletForRefund } from './wallet';
 
@@ -53,7 +53,7 @@ async function sendPushToCustomer(
     //
     // merchantId is optional only because a few legacy callers haven't
     // been updated yet. Always pass it when you know it.
-    let q = supabaseAdmin.from('push_subscriptions').select('expo_push_token').eq('user_id', customerId);
+    let q = supabaseAdmin.from('push_subscriptions').select('expo_push_token').eq('customer_id', customerId);
     if (merchantId) q = q.eq('merchant_id', merchantId);
     const { data: subs } = await q;
     const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
@@ -258,6 +258,15 @@ ordersRouter.post('/commit', async (req, res) => {
     if (!branchId || typeof branchId !== 'string') {
       return res.status(400).json({ error: 'branchId is required' });
     }
+
+    // Phase B: customer must have OTP'd at THIS merchant within the
+    // verification TTL (6 months). The white-label model treats each
+    // merchant's app as independent; a Supabase session minted at
+    // merchant A doesn't grant access to merchant B without a fresh
+    // OTP. requireVerifiedAtMerchant sends the 401 itself; we just
+    // return early.
+    const verification = await requireVerifiedAtMerchant(res, user.id, merchantId);
+    if (!verification.ok) return;
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'items are required' });
     }

@@ -23,7 +23,7 @@
  */
 import { Router, Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
-import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { paymentService } from '../services/payment';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 
@@ -149,6 +149,9 @@ walletRouter.post('/topup-initiate', async (req: Request, res: Response) => {
     if (!merchantIdStr) {
       return res.status(400).json({ error: 'merchantId required' });
     }
+    // Phase B: per-merchant OTP gate. See orders.ts /commit for context.
+    const verification = await requireVerifiedAtMerchant(res, user.id, merchantIdStr);
+    if (!verification.ok) return;
     if (!Number.isFinite(amountNum) || amountNum < TOPUP_MIN_SAR || amountNum > TOPUP_MAX_SAR) {
       return res.status(400).json({
         error: `Top-up amount must be between ${TOPUP_MIN_SAR} and ${TOPUP_MAX_SAR} SAR`,
@@ -200,6 +203,9 @@ walletRouter.post('/topup-finalize', async (req: Request, res: Response) => {
     if (!paymentIdStr || !merchantIdStr) {
       return res.status(400).json({ error: 'paymentId + merchantId required' });
     }
+    // Phase B: per-merchant OTP gate.
+    const verification = await requireVerifiedAtMerchant(res, user.id, merchantIdStr);
+    if (!verification.ok) return;
 
     // Idempotency: bail out (and return current balance) if we already
     // credited this payment id.
@@ -320,6 +326,9 @@ walletRouter.post('/topup-with-saved-card', async (req: Request, res: Response) 
     const amountSar = Number(req.body?.amount_sar);
 
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+    // Phase B: per-merchant OTP gate.
+    const verification = await requireVerifiedAtMerchant(res, user.id, merchantId);
+    if (!verification.ok) return;
     if (!savedCardId) return res.status(400).json({ error: 'savedCardId required' });
     if (!Number.isFinite(amountSar) || amountSar < TOPUP_MIN_SAR || amountSar > TOPUP_MAX_SAR) {
       return res.status(400).json({

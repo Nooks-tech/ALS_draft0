@@ -89,9 +89,17 @@ export default function OtpScreen() {
       Alert.alert(copy.error, copy.phoneMissing);
       return;
     }
+    if (!merchantId) {
+      Alert.alert(copy.error, copy.configMissing);
+      return;
+    }
     setLoading(true);
     try {
-      const result = await authApi.verifyOtp(phone, c);
+      // Phase B: pass merchantId so the server stamps
+      // merchant_customers.verified_at for THIS merchant only. Other
+      // merchant apps installed on the same phone won't be treated as
+      // verified — the customer will OTP fresh at each merchant.
+      const result = await authApi.verifyOtp(phone, c, merchantId);
       const { error } = await setServerSession(
         result.session.access_token,
         result.session.refresh_token,

@@ -194,12 +194,17 @@ router.post('/send-otp', async (req, res) => {
       };
     }
 
+    // Phase B: persist merchant_id alongside the OTP so verify-otp can
+    // require the same merchant_id and stamp merchant_customers.verified_at
+    // for ONLY that merchant. Without this, the same OTP code worked
+    // for any merchant the same phone tried to sign into.
     const { data: insertedOtp, error: insertErr } = await adminClient
       .from('sms_otp')
       .insert({
         phone: normalised,
         code,
         expires_at: expiresAt,
+        merchant_id: merchantId,
       })
       .select('id')
       .single();
@@ -318,8 +323,20 @@ router.post('/send-otp', async (req, res) => {
 router.post('/verify-otp', async (req, res) => {
   try {
     const { phone, code } = req.body;
+    // Phase B: merchantId is now required on verify so we can both
+    // (a) scope the OTP lookup to the merchant that sent the SMS and
+    // (b) stamp merchant_customers.verified_at for that specific pair.
+    // Without this, a customer who OTP'd at merchant A could be
+    // treated as verified at merchant B by reusing the auth session.
+    const merchantId =
+      typeof req.body?.merchantId === 'string' ? req.body.merchantId.trim() : '';
+    const deviceId =
+      typeof req.body?.deviceId === 'string' ? req.body.deviceId.trim() : '';
     if (!phone || !code) {
       return res.status(400).json({ error: 'Phone and code are required' });
+    }
+    if (!merchantId) {
+      return res.status(400).json({ error: 'merchantId is required for OTP verification' });
     }
 
     const normalised = normalizePhone(String(phone).trim());
@@ -336,6 +353,7 @@ router.post('/verify-otp', async (req, res) => {
         .select('id')
         .eq('phone', normalised)
         .eq('code', codeStr)
+        .eq('merchant_id', merchantId)
         .gte('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false })
         .limit(1)
@@ -366,6 +384,7 @@ router.post('/verify-otp', async (req, res) => {
 
     if (signInData?.session) {
       await ensureProfile(normalised, signInData.session.user.id);
+      await stampMerchantVerification(signInData.session.user.id, merchantId, deviceId);
       return res.json({
         ok: true,
         session: {
@@ -401,6 +420,7 @@ router.post('/verify-otp', async (req, res) => {
     }
 
     await ensureProfile(normalised, newSession.session.user.id);
+    await stampMerchantVerification(newSession.session.user.id, merchantId, deviceId);
 
     res.json({
       ok: true,
@@ -419,12 +439,47 @@ router.post('/verify-otp', async (req, res) => {
 async function ensureProfile(phone: string, userId: string) {
   if (!adminClient) return;
   try {
+    // Phase C: the global `profiles` table now stores ONLY identity
+    // — phone_number, the auth.users link. Display name, email,
+    // language, avatar live in customer_merchant_profiles per merchant.
+    // We still upsert the phone here so legacy joins on profiles.phone
+    // keep working during the migration window.
     await adminClient.from('profiles').upsert(
       { id: userId, phone_number: `+${phone}`, updated_at: new Date().toISOString() },
       { onConflict: 'id' }
     );
   } catch (err) {
     console.warn('[Auth] ensureProfile error (non-fatal):', err);
+  }
+}
+
+// Phase B: stamp the (merchant, customer) pair as verified NOW. This
+// is the only place verified_at is written. The middleware compares
+// it against `now() - VERIFICATION_TTL` (defaults to 6 months) on every
+// customer-write route; when it expires, the app gets a 401 with
+// code MERCHANT_VERIFICATION_REQUIRED and routes the user to OTP.
+//
+// We also write verified_device_id so a future tightening can require
+// re-OTP on any unrecognised device, not just the time-based TTL.
+async function stampMerchantVerification(userId: string, merchantId: string, deviceId: string) {
+  if (!adminClient) return;
+  if (!userId || !merchantId) return;
+  try {
+    const now = new Date().toISOString();
+    await adminClient.from('merchant_customers').upsert(
+      {
+        merchant_id: merchantId,
+        customer_id: userId,
+        enrolled_via: 'otp_verify',
+        enrolled_at: now,
+        verified_at: now,
+        verified_device_id: deviceId || null,
+        last_seen_at: now,
+      },
+      { onConflict: 'merchant_id,customer_id' }
+    );
+  } catch (err) {
+    console.warn('[Auth] stampMerchantVerification error (non-fatal):', err);
   }
 }
 

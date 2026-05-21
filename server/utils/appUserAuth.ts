@@ -10,6 +10,14 @@ const authClient = SUPABASE_URL && SUPABASE_SERVICE_KEY
     })
   : null;
 
+// Re-OTP TTL — anything older than this on merchant_customers.verified_at
+// forces the customer to OTP again at that merchant. Configurable via
+// env var for testing; defaults to 6 months per product spec.
+const MERCHANT_VERIFICATION_TTL_DAYS = Number(
+  process.env.MERCHANT_VERIFICATION_TTL_DAYS ?? 180
+);
+const MERCHANT_VERIFICATION_TTL_MS = MERCHANT_VERIFICATION_TTL_DAYS * 24 * 60 * 60 * 1000;
+
 function getBearerToken(req: Request): string {
   const raw = typeof req.headers.authorization === 'string' ? req.headers.authorization.trim() : '';
   const match = raw.match(/^Bearer\s+(.+)$/i);
@@ -35,4 +43,84 @@ export async function requireAuthenticatedAppUser(req: Request, res: Response): 
   }
 
   return data.user;
+}
+
+/**
+ * Phase B helper: enforce that the authenticated customer has a
+ * recent OTP verification at THIS merchant. The shared auth.users
+ * row means a customer can sign in once (Supabase doesn't care which
+ * merchant they're using); without this gate, that single sign-in
+ * leaks into every other merchant the same phone has ever touched.
+ *
+ * Returns:
+ *   { ok: true, verifiedAt }  — customer is verified at this merchant
+ *                                within the TTL.
+ *   { ok: false, reason }      — caller should NOT proceed. The reason
+ *                                tells the client what to do:
+ *     'not_enrolled'    → never OTP'd here; show OTP screen.
+ *     'expired'         → 6+ months since last OTP; re-verify.
+ *     'lookup_failed'   → DB hiccup; safe to surface as 500.
+ *
+ * Sends the appropriate response on failure when `respond` is true
+ * (the default) — callers just `return` after a falsey result.
+ */
+export async function requireVerifiedAtMerchant(
+  res: Response,
+  customerId: string,
+  merchantId: string,
+  options: { respond?: boolean } = {},
+): Promise<{ ok: true; verifiedAt: Date } | { ok: false; reason: 'not_enrolled' | 'expired' | 'lookup_failed' }> {
+  const respond = options.respond !== false;
+  if (!authClient) {
+    if (respond) res.status(500).json({ error: 'Auth is not configured' });
+    return { ok: false, reason: 'lookup_failed' };
+  }
+  if (!customerId || !merchantId) {
+    if (respond) {
+      res.status(400).json({
+        error: 'customerId and merchantId are required',
+        code: 'MERCHANT_VERIFICATION_INPUT_MISSING',
+      });
+    }
+    return { ok: false, reason: 'lookup_failed' };
+  }
+
+  const { data, error } = await authClient
+    .from('merchant_customers')
+    .select('verified_at')
+    .eq('merchant_id', merchantId)
+    .eq('customer_id', customerId)
+    .maybeSingle();
+
+  if (error) {
+    if (respond) res.status(500).json({ error: 'Verification lookup failed' });
+    return { ok: false, reason: 'lookup_failed' };
+  }
+
+  if (!data || !data.verified_at) {
+    if (respond) {
+      res.status(401).json({
+        error: 'Please verify your phone to use this app.',
+        code: 'MERCHANT_VERIFICATION_REQUIRED',
+        reason: 'not_enrolled',
+      });
+    }
+    return { ok: false, reason: 'not_enrolled' };
+  }
+
+  const verifiedAt = new Date(data.verified_at);
+  const ageMs = Date.now() - verifiedAt.getTime();
+  if (ageMs > MERCHANT_VERIFICATION_TTL_MS) {
+    if (respond) {
+      res.status(401).json({
+        error: 'Please verify your phone again. It has been a while.',
+        code: 'MERCHANT_VERIFICATION_REQUIRED',
+        reason: 'expired',
+        verifiedAt: data.verified_at,
+      });
+    }
+    return { ok: false, reason: 'expired' };
+  }
+
+  return { ok: true, verifiedAt };
 }
