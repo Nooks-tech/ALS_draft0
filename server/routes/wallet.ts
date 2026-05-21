@@ -81,6 +81,19 @@ walletRouter.get('/balance', async (req: Request, res: Response) => {
     const merchantId = String(req.query.merchantId ?? '').trim();
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
 
+    // R11 invariant: this endpoint MUST always return the same shape
+    // regardless of whether the (customer, merchant) pair exists. The
+    // shapeBalance(null) call below substitutes zeros for a missing
+    // row; the entries fallback to []. A different response shape /
+    // status code would let an attacker holding a customer token
+    // enumerate which merchants the customer is registered at by
+    // probing the endpoint with various merchantId values.
+    //
+    // Also send `Cache-Control: no-store` so a proxy / CDN can't
+    // accidentally cache a per-merchant payload and serve it to a
+    // different merchant context later.
+    res.setHeader('Cache-Control', 'no-store');
+
     const [{ data: balance }, { data: entries }] = await Promise.all([
       supabaseAdmin
         .from('customer_wallet_balances')

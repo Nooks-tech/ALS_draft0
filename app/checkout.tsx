@@ -43,7 +43,6 @@ import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
 import { validateNooksPromo } from '../src/api/nooksPromos';
-import { validatePromoCode } from '../src/api/promo';
 
 /** Haversine distance in km. Used when city is missing to detect cross-city delivery. */
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -623,22 +622,10 @@ export default function CheckoutScreen() {
           setPromoValidating(false);
           return;
         }
-      }
-      // Fallback: legacy als_promo_codes table (different namespace
-      // from the nooksweb merchant promos). Only reached if no
-      // merchantId or the nooks endpoint is unreachable.
-      const result = await validatePromoCode(code, totalPrice);
-      if (result.valid) {
-        setPromoDiscount(result.discountAmount);
-        setPromoApplied(true);
-        setPromoCode(result.code);
-        setPromoScope('total');
-        setShowCouponInput(false);
-        setCouponInput('');
       } else {
         Alert.alert(
-          isArabic ? 'كود غير صالح' : 'Invalid Code',
-          isArabic ? 'هذا الكود غير صالح أو منتهي.' : 'This promo code is not valid or has expired.',
+          isArabic ? 'خطأ في الإعدادات' : 'Configuration Error',
+          isArabic ? 'إعدادات المتجر ناقصة.' : 'Merchant configuration is missing.',
         );
       }
     } catch {

@@ -498,7 +498,69 @@ ordersRouter.post('/commit', async (req, res) => {
       walletAppliedSar = Math.min(Number(walletAmountSar), Number(totalSar));
     }
 
+    // ─── Server-validated cashback amount (R2 fix) ───
+    // The client sends `cashbackAmountSar` / `loyaltyDiscountSar` on
+    // /commit and we'd previously relay it straight to Foodics. The
+    // actual cashback deduction lives in loyalty_transactions, written
+    // by /redeem-cashback BEFORE /commit. A tampered client could send
+    // loyaltyDiscountSar=1000 for a 100 SAR order even though only
+    // 5 SAR was actually redeemed — Foodics would mint a 900 SAR ghost
+    // "cashback payment" line on the receipt and the merchant POS
+    // reconciliation would be junk.
+    //
+    // Fix: read the actual redeem row, require the client claim to
+    // match within 0.01 SAR, and use the DB value (not the client
+    // value) downstream. The amount that hits Foodics is now always
+    // the value the customer actually paid from cashback.
+    const claimedCashbackSar = Math.max(
+      typeof cashbackAmountSar === 'number' && cashbackAmountSar > 0 ? Number(cashbackAmountSar) : 0,
+      typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0 ? Number(loyaltyDiscountSar) : 0,
+    );
+    let validatedCashbackSar = 0;
     if (isFinalCommit) {
+      const { data: redeemTxn } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .select('amount_sar')
+        .eq('customer_id', user.id)
+        .eq('merchant_id', merchantId)
+        .eq('order_id', id)
+        .eq('type', 'redeem')
+        .eq('loyalty_type', 'cashback')
+        .maybeSingle();
+      const actualRedeemedSar = redeemTxn ? Math.abs(Number(redeemTxn.amount_sar ?? 0)) : 0;
+      if (Math.abs(claimedCashbackSar - actualRedeemedSar) > 0.01) {
+        return res.status(400).json({
+          error:
+            actualRedeemedSar === 0
+              ? `Cashback amount mismatch: order claims ${claimedCashbackSar.toFixed(2)} SAR but no cashback was redeemed for this order. Call /redeem-cashback first.`
+              : `Cashback amount mismatch: order claims ${claimedCashbackSar.toFixed(2)} SAR but /redeem-cashback recorded ${actualRedeemedSar.toFixed(2)} SAR.`,
+          code: 'CASHBACK_MISMATCH',
+        });
+      }
+      validatedCashbackSar = actualRedeemedSar;
+    } else {
+      // First commit: no validation yet (the customer may call
+      // /redeem-cashback between the two commits). Trust the client
+      // claim for the payload only; the final commit will enforce.
+      validatedCashbackSar = claimedCashbackSar;
+    }
+
+    if (isFinalCommit) {
+      // ─── Phase 6: auto-enroll (customer, merchant) ───
+      // Establish a row in merchant_customers so future code can rely
+      // on a single source of truth for "is C enrolled at M". The
+      // RPC is idempotent on the primary key so retried commits are
+      // safe. Non-fatal — if it fails we still process the order.
+      try {
+        await supabaseAdmin.rpc('enroll_merchant_customer', {
+          p_merchant_id: merchantId,
+          p_customer_id: user.id,
+          p_via: 'order_commit',
+        });
+      } catch (e: any) {
+        console.warn('[Orders] enroll_merchant_customer failed (non-fatal):', e?.message);
+      }
+
       // ─── Hardened Moyasar re-verify with delay ───
       // Wait 2 seconds before the side effects fire, then verify
       // Moyasar AGAIN. The first verify at the top of /commit can
@@ -651,12 +713,9 @@ ordersRouter.post('/commit', async (req, res) => {
       // milestones the customer redeemed at checkout — used at refund time
       // to restore each milestone's stamps.
       wallet_paid_sar: walletAppliedSar > 0 ? walletAppliedSar : 0,
-      cashback_paid_sar:
-        typeof cashbackAmountSar === 'number' && cashbackAmountSar > 0
-          ? Number(cashbackAmountSar.toFixed(2))
-          : typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0
-            ? Number(loyaltyDiscountSar.toFixed(2))
-            : 0,
+      // Use validatedCashbackSar (DB-truth on final commit, client
+      // claim on first commit) instead of the raw client field — R2 fix.
+      cashback_paid_sar: validatedCashbackSar > 0 ? Number(validatedCashbackSar.toFixed(2)) : 0,
       card_paid_sar:
         paymentMethod === 'wallet'
           ? 0
@@ -781,7 +840,10 @@ ordersRouter.post('/commit', async (req, res) => {
             : null,
         promo_scope: promoScope === 'delivery' || promoScope === 'total' ? promoScope : null,
         customer_note: typeof customerNote === 'string' ? customerNote.trim() || null : null,
-        loyalty_discount_sar: typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0 ? loyaltyDiscountSar : null,
+        // R2 fix: send the server-validated cashback amount to Foodics,
+        // not the raw client claim. validatedCashbackSar == the actual
+        // loyalty_transactions redeem amount for this order.
+        loyalty_discount_sar: validatedCashbackSar > 0 ? validatedCashbackSar : null,
         // Wallet credit applied to this order (already debited from
         // the customer's wallet during commit). nooksweb shrinks
         // Foodics unit_prices proportionally so the POS total matches
@@ -952,7 +1014,7 @@ async function refundOrderToWallet(
   cancelledBy: 'merchant' | 'system',
   reason: string,
 ): Promise<
-  | { ok: true; orderId: string; refundedSar: number; refundMethod: RefundDestination; breakdown: ReversalBreakdown }
+  | { ok: true; orderId: string; refundedSar: number; refundMethod: RefundDestination; breakdown: ReversalBreakdown; deduplicated?: boolean }
   | { ok: false; error: string; status: number }
 > {
   if (!supabaseAdmin) return { ok: false, error: 'Database not configured', status: 500 };
@@ -963,7 +1025,22 @@ async function refundOrderToWallet(
     .eq('id', orderId)
     .single();
   if (fetchErr || !order) return { ok: false, error: 'Order not found', status: 404 };
-  if (order.status === 'Cancelled' || order.status === 'Delivered') {
+  // R12 fix: a re-cancellation of an already-cancelled order returns
+  // the prior refund info instead of a 4xx error. Lets the dashboard
+  // safely retry a 500-on-network without showing the merchant a
+  // misleading "already cancelled" error and without triggering a
+  // double refund. Delivered orders still block (no refund path).
+  if (order.status === 'Cancelled') {
+    return {
+      ok: true,
+      orderId,
+      refundedSar: Number(order.refund_amount ?? 0),
+      refundMethod: (order.refund_method ?? 'none') as RefundDestination,
+      breakdown: {},
+      deduplicated: true,
+    };
+  }
+  if (order.status === 'Delivered') {
     return { ok: false, error: `Cannot cancel order with status: ${order.status}`, status: 400 };
   }
   if (!order.customer_id || !order.merchant_id) {
@@ -1807,6 +1884,44 @@ ordersRouter.patch('/:id/status', async (req, res) => {
       .single();
 
     if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // ─── R4 fix: enforce lifecycle state machine ───
+    // Pre-fix, a malicious or buggy dashboard call (or insider with
+    // branch-manager access) could jump 'Ready' → 'Delivered' without
+    // a dispatch, marking goods delivered that never left the kitchen.
+    // That triggers earnPoints (line below) and closes the commission
+    // window on undelivered inventory. The transition map below is the
+    // canonical lifecycle; everything else is rejected.
+    //
+    // Idempotent self-transitions (same → same) are allowed so a
+    // dashboard retry doesn't 4xx; terminal states block all moves.
+    const ALLOWED_TRANSITIONS: Record<string, ReadonlyArray<string>> = {
+      Placed: ['Accepted', 'Preparing', 'Cancelled', 'On Hold', 'Pending'],
+      Pending: ['Placed', 'Accepted', 'Cancelled'],
+      'On Hold': ['Placed', 'Accepted', 'Cancelled'],
+      Accepted: ['Preparing', 'Ready', 'Cancelled'],
+      Preparing: ['Ready', 'Cancelled'],
+      // Pickup / drivethru orders skip 'Out for delivery' and go
+      // straight Ready → Delivered. Delivery orders need the dispatch.
+      Ready: ['Out for delivery', 'Delivered', 'Cancelled'],
+      'Out for delivery': ['Delivered', 'Cancelled'],
+      // Terminal — no further transitions.
+      Delivered: [],
+      Cancelled: [],
+    };
+    const currentStatus = String(order.status ?? '');
+    if (currentStatus !== status) {
+      const allowed = ALLOWED_TRANSITIONS[currentStatus] ?? [];
+      if (!allowed.includes(status)) {
+        return res.status(409).json({
+          error: `Invalid status transition: ${currentStatus} → ${status}. Allowed: ${
+            allowed.length > 0 ? allowed.join(', ') : '(terminal state, no transitions)'
+          }.`,
+          code: 'STATUS_TRANSITION_INVALID',
+          currentStatus,
+        });
+      }
+    }
 
     const updatePayload: Record<string, unknown> = {
       status,

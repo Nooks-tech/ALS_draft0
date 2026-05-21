@@ -2,8 +2,14 @@ import crypto from 'crypto';
 import type { Request, Response } from 'express';
 
 const NOOKS_INTERNAL_SECRET = (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+const NOOKS_INTERNAL_HMAC_KEY = (process.env.NOOKS_INTERNAL_HMAC_KEY || '').trim();
+// 5-minute window — long enough for legit network/clock skew, short
+// enough that a Sentry / log replay of an old signed request expires
+// before an attacker can resend it.
+const HMAC_FRESHNESS_MS = 5 * 60 * 1000;
 
 let warnedMissingSecret = false;
+let warnedHmacEnforcement = false;
 
 function safeHeaderValue(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
@@ -62,6 +68,88 @@ export function hasValidInternalSecret(req: Request) {
 }
 
 /**
+ * R3 fix: HMAC verification adds a second layer on top of the shared
+ * secret. The shared secret travels in a header on every internal
+ * request and ends up in many places that could leak (Sentry breadcrumbs,
+ * access logs, Railway/Vercel request logs). The HMAC key is used to
+ * SIGN each request but never travels over the wire, so it doesn't
+ * leak when the secret does.
+ *
+ * Soft rollout: enforcement only kicks in when NOOKS_INTERNAL_HMAC_KEY
+ * is configured on this side. nooksweb's helper sends signed headers
+ * when its NOOKS_INTERNAL_HMAC_KEY is configured. Set the env on both
+ * sides simultaneously to turn on enforcement; otherwise the system
+ * behaves exactly like before (secret-only).
+ *
+ * Header format:
+ *   x-nooks-internal-timestamp: <unix-ms>
+ *   x-nooks-internal-nonce:     <random>
+ *   x-nooks-internal-signature: hex(HMAC-SHA256(key,
+ *       `${method}\n${path}\n${timestamp}\n${nonce}\n${sha256(body)}`))
+ *
+ * Body hash includes the raw request body (or empty string for no-body
+ * GETs). 5-minute timestamp window blocks replay; nonce is purely
+ * decorative for now — we don't track them, but they widen the input
+ * surface so identical replayable signatures don't exist.
+ */
+export function isInternalHmacEnabled() {
+  return NOOKS_INTERNAL_HMAC_KEY.length > 0;
+}
+
+function getRawBodyString(req: Request): string {
+  // Express's json middleware sets req.body; we re-stringify it the
+  // same way the caller did. The caller MUST send the body as
+  // JSON.stringify(...) without extra whitespace for the hash to match.
+  // GET / no-body requests hash an empty string.
+  if (req.body === undefined || req.body === null || (typeof req.body === 'object' && Object.keys(req.body).length === 0 && !Array.isArray(req.body))) {
+    // empty body: hash the empty string. Body-less GETs land here.
+    if (req.method === 'GET' || req.method === 'DELETE' || req.method === 'HEAD') return '';
+    return '';
+  }
+  try {
+    return JSON.stringify(req.body);
+  } catch {
+    return '';
+  }
+}
+
+export function verifyInternalHmac(req: Request): { ok: true } | { ok: false; reason: string } {
+  if (!isInternalHmacEnabled()) {
+    // Soft rollout: HMAC not configured on this side, accept.
+    return { ok: true };
+  }
+  const timestampStr = safeHeaderValue(req.headers['x-nooks-internal-timestamp']);
+  const nonce = safeHeaderValue(req.headers['x-nooks-internal-nonce']);
+  const signature = safeHeaderValue(req.headers['x-nooks-internal-signature']);
+  if (!timestampStr || !nonce || !signature) {
+    return { ok: false, reason: 'missing signature headers' };
+  }
+  const timestamp = Number(timestampStr);
+  if (!Number.isFinite(timestamp)) {
+    return { ok: false, reason: 'invalid timestamp' };
+  }
+  const skew = Math.abs(Date.now() - timestamp);
+  if (skew > HMAC_FRESHNESS_MS) {
+    return { ok: false, reason: `stale signature (skew ${Math.round(skew / 1000)}s)` };
+  }
+  const bodyString = getRawBodyString(req);
+  const bodyHash = crypto.createHash('sha256').update(bodyString).digest('hex');
+  // We use originalUrl (path + querystring) because the signed path
+  // upstream is the request URL nooksweb fetched, which includes
+  // any query params.
+  const path = (req.originalUrl ?? req.url ?? '').toString();
+  const payload = `${req.method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n${bodyHash}`;
+  const expected = crypto
+    .createHmac('sha256', NOOKS_INTERNAL_HMAC_KEY)
+    .update(payload)
+    .digest('hex');
+  if (!constantTimeEquals(signature, expected)) {
+    return { ok: false, reason: 'signature mismatch' };
+  }
+  return { ok: true };
+}
+
+/**
  * Protect merchant-to-server actions that must only be triggered by nooksweb.
  * If the shared secret is missing we only allow loopback/private-network calls,
  * never remotely exposed requests.
@@ -79,12 +167,24 @@ export function requireNooksInternalRequest(req: Request, res: Response): boolea
     return false;
   }
 
-  if (hasValidInternalSecret(req)) {
-    return true;
+  if (!hasValidInternalSecret(req)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return false;
   }
 
-  res.status(401).json({ error: 'Unauthorized' });
-  return false;
+  // R3 fix: when HMAC enforcement is on, the secret alone is not
+  // enough. The HMAC key is the second factor; both must validate.
+  const hmacResult = verifyInternalHmac(req);
+  if (!hmacResult.ok) {
+    if (!warnedHmacEnforcement) {
+      warnedHmacEnforcement = true;
+      console.warn('[InternalAuth] HMAC verification enforced; rejecting request without valid signature:', hmacResult.reason);
+    }
+    res.status(401).json({ error: `Unauthorized: ${hmacResult.reason}` });
+    return false;
+  }
+
+  return true;
 }
 
 /**

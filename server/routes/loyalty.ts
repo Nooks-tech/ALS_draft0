@@ -1216,8 +1216,17 @@ loyaltyRouter.put('/rewards/:id', async (req, res) => {
   try {
     if (!requireNooksInternalRequest(req, res)) return;
 
-    const { name, description, image_url, points_cost, is_active } = req.body;
+    // R6 fix: require merchantId in the body and scope the update by
+    // (id, merchant_id). Pre-fix, the query was `.eq('id', ...)` only —
+    // a leaked internal-secret holder could enumerate reward UUIDs
+    // and modify any merchant's rewards. The merchant_id filter
+    // ensures even a leaked secret can only touch rewards for the
+    // merchant the caller explicitly named.
+    const { name, description, image_url, points_cost, is_active, merchantId } = req.body;
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+    if (!merchantId || typeof merchantId !== 'string') {
+      return res.status(400).json({ error: 'merchantId is required' });
+    }
 
     const updates: Record<string, unknown> = {};
     if (name !== undefined) updates.name = name;
@@ -1226,8 +1235,20 @@ loyaltyRouter.put('/rewards/:id', async (req, res) => {
     if (points_cost !== undefined) updates.points_cost = Number(points_cost);
     if (is_active !== undefined) updates.is_active = is_active;
 
-    const { error } = await supabaseAdmin.from('loyalty_rewards').update(updates).eq('id', req.params.id);
+    const { data: updated, error } = await supabaseAdmin
+      .from('loyalty_rewards')
+      .update(updates)
+      .eq('id', req.params.id)
+      .eq('merchant_id', merchantId)
+      .select('id')
+      .maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
+    if (!updated) {
+      return res.status(404).json({
+        error: 'Reward not found for the given merchant',
+        code: 'REWARD_NOT_FOUND',
+      });
+    }
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to update reward' });
@@ -1240,8 +1261,30 @@ loyaltyRouter.delete('/rewards/:id', async (req, res) => {
     if (!requireNooksInternalRequest(req, res)) return;
 
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-    const { error } = await supabaseAdmin.from('loyalty_rewards').update({ is_active: false }).eq('id', req.params.id);
+    // R6 fix: same merchant-id scoping as PUT. DELETE is a soft-delete
+    // (sets is_active=false) so we still require merchantId in body.
+    const merchantId = typeof req.body?.merchantId === 'string'
+      ? req.body.merchantId
+      : typeof req.query.merchantId === 'string'
+        ? req.query.merchantId
+        : '';
+    if (!merchantId) {
+      return res.status(400).json({ error: 'merchantId is required' });
+    }
+    const { data: updated, error } = await supabaseAdmin
+      .from('loyalty_rewards')
+      .update({ is_active: false })
+      .eq('id', req.params.id)
+      .eq('merchant_id', merchantId)
+      .select('id')
+      .maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
+    if (!updated) {
+      return res.status(404).json({
+        error: 'Reward not found for the given merchant',
+        code: 'REWARD_NOT_FOUND',
+      });
+    }
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to delete reward' });
