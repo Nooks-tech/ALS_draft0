@@ -52,20 +52,14 @@ export async function checkMigrationStatus(): Promise<MigrationStatus> {
     };
   }
   try {
-    const [latestQ, countQ] = await Promise.all([
-      supabaseAdmin
-        .schema('supabase_migrations')
-        .from('schema_migrations')
-        .select('version, name')
-        .order('version', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      supabaseAdmin
-        .schema('supabase_migrations')
-        .from('schema_migrations')
-        .select('version', { head: true, count: 'exact' }),
-    ]);
-    if (latestQ.error) {
+    // supabase-js's PostgREST proxy only sees the `public` schema by
+    // default, so we can't direct-query supabase_migrations.schema_migrations.
+    // The 20260522000001_migration_status_rpc.sql migration adds a
+    // SECURITY DEFINER function that exposes the summary; we call it
+    // here. If the RPC itself is missing (e.g. that migration hasn't
+    // been applied yet), we treat it as inconclusive — meta-drift.
+    const { data, error } = await supabaseAdmin.rpc('get_migration_status');
+    if (error) {
       return {
         ok: false,
         latestVersion: null,
@@ -73,11 +67,12 @@ export async function checkMigrationStatus(): Promise<MigrationStatus> {
         latestAppliedAgeDays: null,
         totalApplied: null,
         driftSuspected: false,
-        reason: `query-error: ${latestQ.error.message}`,
+        reason: `rpc-error: ${error.message}`,
       };
     }
-    const latest = latestQ.data as { version: string; name: string } | null;
-    if (!latest?.version) {
+    const row = Array.isArray(data) ? data[0] : data;
+    const latest = (row ?? null) as { latest_version?: string; latest_name?: string; total_applied?: number } | null;
+    if (!latest?.latest_version) {
       return {
         ok: false,
         latestVersion: null,
@@ -89,7 +84,7 @@ export async function checkMigrationStatus(): Promise<MigrationStatus> {
       };
     }
     // Parse YYYYMMDDhhmmss
-    const v = latest.version;
+    const v = latest.latest_version;
     let ageDays: number | null = null;
     if (v.length === 14 && /^\d+$/.test(v)) {
       const iso = `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T${v.slice(8, 10)}:${v.slice(10, 12)}:${v.slice(12, 14)}Z`;
@@ -101,10 +96,10 @@ export async function checkMigrationStatus(): Promise<MigrationStatus> {
     const drift = ageDays != null && ageDays > MIGRATION_DRIFT_WARN_DAYS;
     return {
       ok: !drift,
-      latestVersion: latest.version,
-      latestName: latest.name,
+      latestVersion: latest.latest_version,
+      latestName: latest.latest_name ?? null,
       latestAppliedAgeDays: ageDays != null ? Number(ageDays.toFixed(2)) : null,
-      totalApplied: countQ.count ?? null,
+      totalApplied: Number(latest.total_applied ?? 0),
       driftSuspected: drift,
       reason: drift ? `latest-applied-too-old (${ageDays?.toFixed(1)}d > ${MIGRATION_DRIFT_WARN_DAYS}d)` : null,
     };
