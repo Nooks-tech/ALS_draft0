@@ -91,9 +91,22 @@ async function escalateStaleComplaints() {
   }
 }
 
+async function heartbeatTick() {
+  const { runWithHeartbeat } = await import('../utils/cronHeartbeat');
+  await runWithHeartbeat('complaintEscalation', escalateStaleComplaints);
+}
+
 export function startComplaintEscalationCron() {
   console.log('[Cron] Complaint escalation cron started (every 30 min)');
-  setInterval(escalateStaleComplaints, POLL_INTERVAL_MS);
+  setInterval(() => {
+    heartbeatTick().catch((err) =>
+      console.error('[Complaint Cron] heartbeatTick rejected (captured):', err?.message),
+    );
+  }, POLL_INTERVAL_MS);
   // First run 60s after startup
-  setTimeout(escalateStaleComplaints, 60_000);
+  setTimeout(() => {
+    heartbeatTick().catch((err) =>
+      console.error('[Complaint Cron] startup heartbeatTick rejected:', err?.message),
+    );
+  }, 60_000);
 }

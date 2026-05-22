@@ -93,17 +93,22 @@ async function runSweep() {
   }
 }
 
+async function heartbeatTick() {
+  const { runWithHeartbeat } = await import('../utils/cronHeartbeat');
+  await runWithHeartbeat('savedCardSweep', runSweep);
+}
+
 export function startSavedCardSweepCron() {
   console.log('[Cron] Saved-card sweep started (every 6h)');
   setInterval(() => {
-    runSweep().catch((err) =>
-      console.error('[SavedCardSweep] runSweep rejected (should be impossible):', err),
+    heartbeatTick().catch((err) =>
+      console.error('[SavedCardSweep] heartbeatTick rejected (captured):', err?.message),
     );
   }, POLL_INTERVAL_MS);
   // First run 5 min after startup so we don't slow boot.
   setTimeout(() => {
-    runSweep().catch((err) =>
-      console.error('[SavedCardSweep] startup runSweep rejected:', err),
+    heartbeatTick().catch((err) =>
+      console.error('[SavedCardSweep] startup heartbeatTick rejected:', err?.message),
     );
   }, 5 * 60 * 1000);
 }

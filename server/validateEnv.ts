@@ -30,6 +30,18 @@ const RECOMMENDED_VARS = [
   'GITHUB_REPO',
   'RESEND_API_KEY',
   'MOYASAR_SECRET_KEY',
+  // Phase F: surface these so a deploy without them shows up in the
+  // startup logs instead of failing silently later.
+  // - MADAR_SMS_API_KEY: OTP delivery fails silently without it
+  //   (the OTP code only appears in console when ALLOW_OTP_FALLBACK=true).
+  // - SENTRY_DSN: errors still log to stdout, but cluster-wide
+  //   failures are easier to spot in Sentry than in Railway logs.
+  // - NOOKS_INTERNAL_HMAC_KEY: when unset, the HMAC second factor on
+  //   internal calls is in soft-rollout mode (secret-only). Setting
+  //   it on both sides activates enforcement.
+  'MADAR_SMS_API_KEY',
+  'SENTRY_DSN',
+  'NOOKS_INTERNAL_HMAC_KEY',
 ] as const;
 
 export function validateEnv(): void {

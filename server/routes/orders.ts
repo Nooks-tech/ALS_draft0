@@ -84,6 +84,7 @@ async function sendPushToCustomer(
 }
 
 import { debitWalletForOrder } from './wallet';
+import { captureError, tagSentry } from '../utils/sentryContext';
 
 async function relayOrderToNooks(
   payload: Record<string, unknown>,
@@ -674,6 +675,24 @@ ordersRouter.post('/commit', async (req, res) => {
           if (e?.message === 'INSUFFICIENT_WALLET_BALANCE') {
             return res.status(400).json({ error: 'INSUFFICIENT_WALLET_BALANCE' });
           }
+          // Phase A/E: wallet debit failures other than INSUFFICIENT_
+          // WALLET_BALANCE are DB/RPC errors that previously surfaced
+          // as a generic 500 with no tenant context. Ship to Sentry
+          // with full IDs so the right merchant pops in the dashboard.
+          console.error('[Orders] Wallet debit failed during /commit', {
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+            walletAppliedSar,
+            error: e?.message,
+          });
+          captureError(e, {
+            component: 'orders.commit.walletDebit',
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+            extra: { walletAppliedSar },
+          });
           return res.status(500).json({ error: e?.message || 'Wallet debit failed' });
         }
       }
@@ -939,7 +958,18 @@ ordersRouter.post('/commit', async (req, res) => {
         throw new Error(relayData.foodics.error || 'Foodics relay returned ok=false');
       }
       } catch (relayErr: any) {
-        console.error('[Orders] Foodics relay failed — reversing side effects:', relayErr?.message);
+        console.error('[Orders] Foodics relay failed — reversing side effects', {
+          merchantId,
+          customerId: user.id,
+          orderId: id,
+          error: relayErr?.message,
+        });
+        captureError(relayErr, {
+          component: 'orders.commit.foodicsRelay',
+          merchantId,
+          customerId: user.id,
+          orderId: id,
+        });
         // refundOrderToWallet reverses everything: card via Moyasar
         // void/refund, wallet credit back, cashback restore, stamp
         // restore, promo unredeem. The row stays as Cancelled with
@@ -948,7 +978,18 @@ ordersRouter.post('/commit', async (req, res) => {
         try {
           await refundOrderToWallet(id, 'system', 'Foodics relay failed');
         } catch (refundErr: any) {
-          console.error('[Orders] Cleanup refund after Foodics failure also failed:', refundErr?.message);
+          console.error('[Orders] Cleanup refund after Foodics failure also failed', {
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+            error: refundErr?.message,
+          });
+          captureError(refundErr, {
+            component: 'orders.commit.foodicsRelay.cleanupRefund',
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+          });
         }
         return res.status(502).json({
           error: 'Order could not be sent to the merchant POS. Your payment is being refunded.',
@@ -1210,7 +1251,24 @@ async function refundOrderToWallet(
       });
       breakdown.cashback = { amountSar: r.restoredSar, alreadyRestored: r.alreadyRestored };
     } catch (e: any) {
-      console.warn('[Orders] Cashback restore failed (non-blocking):', e?.message);
+      // Phase A/E: enrich the log with merchant/customer/order context
+      // AND ship to Sentry. Pre-fix this was a "non-blocking" warn
+      // with no IDs — a customer whose cashback never got restored
+      // had no traceable signal beyond a generic log line.
+      console.warn('[Orders] Cashback restore failed (non-blocking)', {
+        merchantId: order.merchant_id,
+        customerId: order.customer_id,
+        orderId,
+        amountSar: effectiveCashbackPaid,
+        error: e?.message,
+      });
+      captureError(e, {
+        component: 'refundOrderToWallet.cashbackRestore',
+        merchantId: order.merchant_id,
+        customerId: order.customer_id,
+        orderId,
+        extra: { amountSar: effectiveCashbackPaid },
+      });
     }
   }
 
@@ -1230,7 +1288,21 @@ async function refundOrderToWallet(
         alreadyRestored: r.alreadyRestored,
       };
     } catch (e: any) {
-      console.warn('[Orders] Stamp restore failed (non-blocking):', e?.message);
+      console.warn('[Orders] Stamp restore failed (non-blocking)', {
+        merchantId: order.merchant_id,
+        customerId: order.customer_id,
+        orderId,
+        stampsConsumed,
+        milestoneIds,
+        error: e?.message,
+      });
+      captureError(e, {
+        component: 'refundOrderToWallet.stampRestore',
+        merchantId: order.merchant_id,
+        customerId: order.customer_id,
+        orderId,
+        extra: { stampsConsumed, milestoneIds },
+      });
     }
   }
 

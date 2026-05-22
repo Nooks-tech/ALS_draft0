@@ -30,6 +30,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { sendLocalizedPushScoped } from '../utils/push';
+import { runWithHeartbeat } from '../utils/cronHeartbeat';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -106,7 +107,15 @@ async function processNotifyBatch() {
         },
       });
     } catch (err: any) {
-      console.warn('[cartAbandonment] push send failed:', err?.message);
+      // Phase E: enrich with (merchant, customer) so a sudden burst
+      // of push failures on one merchant (= APNS cert expired, FCM
+      // misconfigured) is queryable.
+      console.warn('[cartAbandonment] push send failed', {
+        merchantId: row.merchant_id,
+        customerId: row.customer_id,
+        itemCount,
+        error: err?.message,
+      });
       // Push failure shouldn't block stamping — we don't want an
       // infinite re-notify loop if Expo is down.
     }
@@ -179,15 +188,20 @@ async function processAbandonBatch() {
 async function tick() {
   if (!supabaseAdmin) return;
   try {
-    const [notified, abandoned] = await Promise.all([
-      processNotifyBatch(),
-      processAbandonBatch(),
-    ]);
-    if (notified > 0 || abandoned > 0) {
-      console.log(`[cartAbandonment] tick — notified=${notified} abandoned=${abandoned}`);
-    }
+    await runWithHeartbeat('cartAbandonment', async () => {
+      const [notified, abandoned] = await Promise.all([
+        processNotifyBatch(),
+        processAbandonBatch(),
+      ]);
+      if (notified > 0 || abandoned > 0) {
+        console.log(`[cartAbandonment] tick — notified=${notified} abandoned=${abandoned}`);
+      }
+      return { notified, abandoned };
+    });
   } catch (err: any) {
-    console.warn('[cartAbandonment] tick error:', err?.message);
+    // runWithHeartbeat already shipped to Sentry + audit-stamped the
+    // failure row. We swallow here so the setInterval keeps firing.
+    console.warn('[cartAbandonment] tick error (heartbeat captured):', err?.message);
   }
 }
 

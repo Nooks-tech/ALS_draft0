@@ -294,7 +294,15 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
 
       const { data: order, error: lookupError } = await lookup.maybeSingle();
       if (lookupError) {
-        console.error('[Payment Webhook] Order lookup failed:', lookupError.message);
+        // Phase E: enrich the log with merchantId / paymentId so a
+        // sudden spike of these on one merchant is queryable instead
+        // of hidden behind a generic "Order lookup failed".
+        console.error('[Payment Webhook] Order lookup failed', {
+          merchantId,
+          paymentId: id,
+          metaOrderId,
+          error: lookupError.message,
+        });
         return res.status(500).json({ error: 'Failed to resolve payment order' });
       }
       if (!order) {
@@ -323,7 +331,12 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
         .eq('id', order.id)
         .eq('merchant_id', merchantId);
       if (updateError) {
-        console.error('[Payment Webhook] Order update failed:', updateError.message);
+        console.error('[Payment Webhook] Order update failed', {
+          merchantId,
+          orderId: order.id,
+          paymentId: id,
+          error: updateError.message,
+        });
         return res.status(500).json({ error: 'Failed to persist payment webhook state' });
       }
 
@@ -335,7 +348,12 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
           .eq('id', order.id)
           .eq('merchant_id', merchantId);
         if (feeUpdateError) {
-          console.error('[Payment Webhook] Moyasar fee update failed:', feeUpdateError.message);
+          console.error('[Payment Webhook] Moyasar fee update failed', {
+            merchantId,
+            orderId: order.id,
+            paymentId: id,
+            error: feeUpdateError.message,
+          });
           return res.status(500).json({ error: 'Failed to persist payment fee state' });
         }
       }
@@ -362,7 +380,12 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
               { onConflict: 'customer_id,merchant_id,token' },
             );
           if (upsertError) {
-            console.warn('[Payment Webhook] Card token save failed:', upsertError.message);
+            console.warn('[Payment Webhook] Card token save failed', {
+              merchantId,
+              customerId,
+              paymentId: id,
+              error: upsertError.message,
+            });
           } else {
             console.log('[Payment Webhook] Card token saved for customer', customerId);
           }

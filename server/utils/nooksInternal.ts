@@ -180,6 +180,25 @@ export function requireNooksInternalRequest(req: Request, res: Response): boolea
       warnedHmacEnforcement = true;
       console.warn('[InternalAuth] HMAC verification enforced; rejecting request without valid signature:', hmacResult.reason);
     }
+    // Phase B: audit EVERY rejection (not just the first via the
+    // warnedHmacEnforcement flag). An attacker probing with bad
+    // signatures, or a misconfigured caller, otherwise leaves zero
+    // signal after the first event.
+    void (async () => {
+      try {
+        const { writeAudit } = await import('./auditLog');
+        await writeAudit({
+          merchant_id: null,
+          action: 'internal.hmac_rejected',
+          payload: {
+            reason: hmacResult.reason,
+            method: req.method,
+            path: (req.originalUrl ?? req.url ?? '').toString().slice(0, 200),
+            ip: safeHeaderValue(req.headers['x-forwarded-for']).split(',')[0] || 'unknown',
+          },
+        });
+      } catch { /* never let audit throw */ }
+    })();
     res.status(401).json({ error: `Unauthorized: ${hmacResult.reason}` });
     return false;
   }

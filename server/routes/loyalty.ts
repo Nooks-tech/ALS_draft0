@@ -3,7 +3,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
-import { notifyPassUpdate } from './walletPass';
+import { notifyPassUpdate, notifyPassUpdateSafe } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -180,7 +180,7 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
       }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
 
     // Trigger pass update so the design changes to the new loyalty type
-    notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+    notifyPassUpdateSafe(customerId, merchantId);
     console.log(`[loyalty] Auto-switched customer ${customerId.substring(0, 8)}… from ${customerType} to ${merchantType} (0 balance) — destination balance reset`);
   }
   return { earn: merchantType, redeem: merchantType, transitioning: false, oldSystemType: customerType, oldBalance: 0 };
@@ -323,7 +323,7 @@ async function redeemPointsFromBalance(params: {
     ...(programId ? { program_id: programId } : {}),
   });
 
-  notifyPassUpdate(params.customerId, params.merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+  notifyPassUpdateSafe(params.customerId, params.merchantId);
   return {
     success: true,
     pointsRedeemed: pointsToRedeem,
@@ -394,7 +394,7 @@ async function redeemRewardFromBalance(params: {
     metadata: { ...(params.context?.metadata ?? {}), reward_id: reward.id, reward_name: reward.name },
   });
 
-  notifyPassUpdate(params.customerId, params.merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+  notifyPassUpdateSafe(params.customerId, params.merchantId);
   return {
     success: true,
     reward: reward.name,
@@ -930,7 +930,7 @@ loyaltyRouter.post('/earn', async (req, res) => {
         });
       }
 
-      notifyPassUpdate(customerId, merchantId || '').catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+      notifyPassUpdateSafe(customerId, merchantId || '');
       return res.json({
         success: true, pointsEarned: pointsForStamp, newStamps, milestoneReached, milestoneName,
         newBalance: (ptsBal?.points ?? 0) + pointsForStamp,
@@ -1106,7 +1106,7 @@ export async function earnPoints(
     }
   }
 
-  notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+  notifyPassUpdateSafe(customerId, merchantId);
 
   return {
     success: true,
@@ -1550,7 +1550,7 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
     });
   }
 
-  notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+  notifyPassUpdateSafe(customerId, merchantId);
   return { success: true, cashbackEarned: cashbackSar, newBalance: +((balRow?.balance_sar ?? 0) + cashbackSar).toFixed(2) };
 }
 
@@ -1634,9 +1634,7 @@ export async function restoreCashbackForRefund(params: {
     config_version: configVersion,
   });
 
-  notifyPassUpdate(params.customerId, params.merchantId).catch((err) =>
-    console.warn('[Loyalty] notifyPassUpdate failed after cashback refund:', err instanceof Error ? err.message : err),
-  );
+  notifyPassUpdateSafe(params.customerId, params.merchantId);
   return { restoredSar: amount, alreadyRestored: false };
 }
 
@@ -1780,9 +1778,7 @@ export async function restoreStampMilestonesForRefund(params: {
     source: 'refund',
   });
 
-  notifyPassUpdate(params.customerId, params.merchantId).catch((err) =>
-    console.warn('[Loyalty] notifyPassUpdate failed after stamp refund:', err instanceof Error ? err.message : err),
-  );
+  notifyPassUpdateSafe(params.customerId, params.merchantId);
   return {
     stampsRestored: actualStampsToRestore,
     milestonesCleared: (clearedRows ?? []).map((r) => String((r as { milestone_id: string }).milestone_id)),
@@ -1881,7 +1877,7 @@ loyaltyRouter.post('/redeem-cashback', async (req, res) => {
       source: 'app', config_version: balRow!.config_version,
     });
 
-    notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+    notifyPassUpdateSafe(customerId, merchantId);
     res.json({ success: true, amountRedeemed: amount, newBalance: +(balance - amount).toFixed(2) });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem cashback' });
@@ -2064,7 +2060,7 @@ loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
       ...(orderIdSafe ? { order_id: orderIdSafe } : {}),
     });
 
-    notifyPassUpdate(customerId, merchantId).catch((err) => console.warn('[Loyalty] notifyPassUpdate failed:', err instanceof Error ? err.message : err));
+    notifyPassUpdateSafe(customerId, merchantId);
     res.json({ success: true, rewardName: milestone.reward_name, stampsDeducted: milestone.stamp_number, newStamps: newStampCount });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem milestone' });

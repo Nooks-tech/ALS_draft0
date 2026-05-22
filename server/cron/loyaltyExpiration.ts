@@ -350,17 +350,24 @@ async function runLoyaltyTick() {
   }
 }
 
+async function heartbeatTick() {
+  // Imported here (not at top) to avoid a circular-import risk —
+  // cronHeartbeat itself doesn't depend on this module.
+  const { runWithHeartbeat } = await import('../utils/cronHeartbeat');
+  await runWithHeartbeat('loyaltyExpiration', runLoyaltyTick);
+}
+
 export function startLoyaltyExpirationCron() {
   console.log('[Cron] Loyalty expiration cron started (daily)');
   setInterval(() => {
-    runLoyaltyTick().catch((err) =>
-      console.error('[Loyalty Cron] runLoyaltyTick rejected (should be impossible):', err),
+    heartbeatTick().catch((err) =>
+      console.error('[Loyalty Cron] heartbeatTick rejected (heartbeat captured):', err?.message),
     );
   }, POLL_INTERVAL_MS);
   // First run 30s after startup
   setTimeout(() => {
-    runLoyaltyTick().catch((err) =>
-      console.error('[Loyalty Cron] startup runLoyaltyTick rejected:', err),
+    heartbeatTick().catch((err) =>
+      console.error('[Loyalty Cron] startup heartbeatTick rejected:', err?.message),
     );
   }, 30_000);
 }

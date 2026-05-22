@@ -1,5 +1,6 @@
 import { createClient, type User } from '@supabase/supabase-js';
 import type { Request, Response } from 'express';
+import { writeAudit } from './auditLog';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -98,6 +99,14 @@ export async function requireVerifiedAtMerchant(
   }
 
   if (!data || !data.verified_at) {
+    // Phase B: audit every rejection so a sudden spike (= bug or
+    // expired cohort) is queryable from the dashboard rather than
+    // showing up only as customer complaints.
+    void writeAudit({
+      merchant_id: merchantId,
+      action: 'auth.merchant_verification_rejected',
+      payload: { customer_id: customerId, reason: 'not_enrolled' },
+    });
     if (respond) {
       res.status(401).json({
         error: 'Please verify your phone to use this app.',
@@ -111,6 +120,16 @@ export async function requireVerifiedAtMerchant(
   const verifiedAt = new Date(data.verified_at);
   const ageMs = Date.now() - verifiedAt.getTime();
   if (ageMs > MERCHANT_VERIFICATION_TTL_MS) {
+    void writeAudit({
+      merchant_id: merchantId,
+      action: 'auth.merchant_verification_rejected',
+      payload: {
+        customer_id: customerId,
+        reason: 'expired',
+        verified_at: data.verified_at,
+        age_days: Math.round(ageMs / (24 * 60 * 60 * 1000)),
+      },
+    });
     if (respond) {
       res.status(401).json({
         error: 'Please verify your phone again. It has been a while.',

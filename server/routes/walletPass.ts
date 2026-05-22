@@ -1204,6 +1204,44 @@ async function sendApnsPush(pushToken: string): Promise<boolean> {
   });
 }
 
+/**
+ * Phase B observability wrapper. Use this from any loyalty mutation
+ * path instead of calling notifyPassUpdate directly + tacking on a
+ * `.catch(console.warn)`. The pre-fix pattern logged a generic warn
+ * with no merchant_id / customer_id context — an APNS cert expiry
+ * would surface as 10+ identical lines per minute with nothing to
+ * correlate. This wrapper:
+ *   1. enriches the warn log with the (merchant, customer) pair
+ *   2. ships to Sentry tagged with merchant_id / customer_id
+ *   3. inserts an audit_log row so the merchant dashboard could
+ *      surface "pass pushes are failing" without trawling logs
+ * Always returns void and never throws — callers can fire-and-forget.
+ */
+export function notifyPassUpdateSafe(customerId: string, merchantId: string): void {
+  notifyPassUpdate(customerId, merchantId).catch(async (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('[Loyalty] notifyPassUpdate failed', { merchantId, customerId, error: message });
+    try {
+      const [{ captureError }, { writeAudit }] = await Promise.all([
+        import('../utils/sentryContext'),
+        import('../utils/auditLog'),
+      ]);
+      captureError(err, {
+        component: 'walletPass.notifyPassUpdate',
+        merchantId,
+        customerId,
+      });
+      await writeAudit({
+        merchant_id: merchantId || null,
+        action: 'loyalty.notify_pass_failed',
+        payload: { customer_id: customerId, error: message },
+      });
+    } catch {
+      // Observability hooks must never throw.
+    }
+  });
+}
+
 export async function notifyPassUpdate(customerId: string, merchantId: string): Promise<void> {
   if (!supabaseAdmin || !isConfigured()) return;
 

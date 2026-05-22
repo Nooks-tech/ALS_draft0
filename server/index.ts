@@ -10,12 +10,20 @@ validateEnv();
 // tracing (we only want errors at pilot stage; tracing eats free-tier
 // quota fast). environment lets us filter prod vs preview in the UI.
 import * as Sentry from '@sentry/node';
+import { scrubSentryEvent } from './utils/sentryContext';
 const SENTRY_DSN = (process.env.SENTRY_DSN ?? '').trim();
 if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
     tracesSampleRate: 0,
     environment: process.env.NODE_ENV || 'development',
+    // Phase A: scrub secret-bearing headers and body fields before
+    // shipping. Without this, request bodies containing OTP codes or
+    // headers with Authorization / x-nooks-internal-secret would land
+    // in Sentry's cloud verbatim. Cast is safe — scrubSentryEvent
+    // accepts the generic Event shape and only touches well-known
+    // fields (request, breadcrumbs).
+    beforeSend: scrubSentryEvent as unknown as Sentry.NodeOptions['beforeSend'],
   });
 }
 
@@ -104,6 +112,53 @@ app.use('/api/payment/initiate', paymentLimiter);
 
 app.get('/', (_, res) => res.json({ status: 'ok' }));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));
+
+// Phase F: /ready actually checks DB reachability and surfaces cron
+// health. Railway's load balancer should be pointed at /ready, not
+// /health, so a Supabase outage or a stalled cron flips us out of
+// the healthy pool instead of routing traffic to a broken dyno.
+app.get('/ready', async (_, res) => {
+  const checks: Record<string, unknown> = {};
+  let ok = true;
+  try {
+    const { createClient } = await import('@supabase/supabase-js');
+    const sb = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+      ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+      : null;
+    if (!sb) {
+      checks.db = { ok: false, reason: 'unconfigured' };
+      ok = false;
+    } else {
+      const { error } = await sb.from('merchants').select('id', { head: true, count: 'exact' }).limit(1);
+      if (error) {
+        checks.db = { ok: false, reason: 'query-error', error: error.message };
+        ok = false;
+      } else {
+        checks.db = { ok: true };
+      }
+    }
+  } catch (e: any) {
+    checks.db = { ok: false, reason: 'threw', error: e?.message };
+    ok = false;
+  }
+  // Cron freshness — query getCronHealth for each cron with a
+  // ~2x slack on its expected interval. Crons being stale is
+  // informational, not blocking, so we return 200 even when they
+  // lag; the merchant dashboard can poll /ready and flag them.
+  try {
+    const { getCronHealth } = await import('./utils/cronHeartbeat');
+    const [cart, loyalty, complaint, savedCard] = await Promise.all([
+      getCronHealth('cartAbandonment', 60 * 1000),
+      getCronHealth('loyaltyExpiration', 24 * 60 * 60 * 1000),
+      getCronHealth('complaintEscalation', 30 * 60 * 1000),
+      getCronHealth('savedCardSweep', 6 * 60 * 60 * 1000),
+    ]);
+    checks.crons = { cartAbandonment: cart, loyaltyExpiration: loyalty, complaintEscalation: complaint, savedCardSweep: savedCard };
+  } catch (e: any) {
+    checks.crons = { ok: false, error: e?.message };
+  }
+  res.status(ok ? 200 : 503).json({ status: ok ? 'ready' : 'unready', checks });
+});
 
 app.use('/build', buildRouter);
 app.use('/api/account', accountRouter);
