@@ -494,6 +494,26 @@ ordersRouter.post('/commit', async (req, res) => {
     if (orderType !== 'delivery' && orderType !== 'pickup' && orderType !== 'drivethru') {
       return res.status(400).json({ error: 'orderType must be delivery, pickup, or drivethru' });
     }
+    // Curbside / "receive from your car" orders carry car identifiers
+    // in car_details so the staff can find the vehicle in the lot.
+    // All four fields are required when the order type is drivethru —
+    // without them the order is operationally useless. We tolerate
+    // extra unknown keys (some legacy clients may still send `make` /
+    // `plate`) but require the four canonical fields to be non-empty.
+    if (orderType === 'drivethru') {
+      const cd = carDetails as Record<string, unknown> | null | undefined;
+      const needs = ['plate_letters', 'plate_numbers', 'model', 'color'] as const;
+      const ok =
+        cd != null &&
+        typeof cd === 'object' &&
+        needs.every((k) => typeof cd[k] === 'string' && (cd[k] as string).trim().length > 0);
+      if (!ok) {
+        return res.status(400).json({
+          error:
+            'carDetails must include non-empty plate_letters, plate_numbers, model, and color when orderType=drivethru',
+        });
+      }
+    }
 
     // Subscription enforcement: reject orders for suspended merchants
     if (supabaseAdmin) {
@@ -887,7 +907,15 @@ ordersRouter.post('/commit', async (req, res) => {
           ? Number(promoDiscountSar.toFixed(2))
           : null,
       promo_scope: promoScope === 'delivery' || promoScope === 'total' ? promoScope : null,
-      car_details: orderType === 'drivethru' && carDetails && typeof carDetails === 'object' ? carDetails : null,
+      car_details:
+        orderType === 'drivethru' && carDetails && typeof carDetails === 'object'
+          ? {
+              plate_letters: String((carDetails as Record<string, unknown>).plate_letters ?? '').trim(),
+              plate_numbers: String((carDetails as Record<string, unknown>).plate_numbers ?? '').trim(),
+              model: String((carDetails as Record<string, unknown>).model ?? '').trim(),
+              color: String((carDetails as Record<string, unknown>).color ?? '').trim(),
+            }
+          : null,
       // Per-order processing fee billed to the merchant (NOT to the
       // end customer — the customer's total never includes it). Recorded
       // at commit so cancelled / refused orders flip to 'cancelled' and
@@ -1045,6 +1073,20 @@ ordersRouter.post('/commit', async (req, res) => {
             ...(item.customizations ? { customizations: item.customizations } : {}),
           };
         }),
+        // Curbside / drivethru orders ship to Foodics as a pickup
+        // (Foodics has no curbside type), so the plate + car identifiers
+        // ride in customer_notes — see nooksweb/lib/foodics-orders.ts.
+        // Only forward when the order type warrants it; pickup /
+        // delivery orders have no car_details to send.
+        car_details:
+          orderType === 'drivethru' && carDetails && typeof carDetails === 'object'
+            ? {
+                plate_letters: String((carDetails as Record<string, unknown>).plate_letters ?? '').trim(),
+                plate_numbers: String((carDetails as Record<string, unknown>).plate_numbers ?? '').trim(),
+                model: String((carDetails as Record<string, unknown>).model ?? '').trim(),
+                color: String((carDetails as Record<string, unknown>).color ?? '').trim(),
+              }
+            : null,
       }, {
         customerJwt: (req.headers.authorization || '').toString().replace(/^Bearer\s+/i, '').trim() || null,
       });
@@ -1131,6 +1173,17 @@ ordersRouter.post('/commit', async (req, res) => {
         branchName: typeof branchName === 'string' ? branchName.trim() : null,
         paymentMethod: typeof paymentMethod === 'string' ? paymentMethod.trim() : null,
         paymentId: typeof paymentId === 'string' ? paymentId.trim() : null,
+        // Curbside receipt — surface the four car fields the customer
+        // entered. carDetails was already shape-validated above.
+        carDetails:
+          orderType === 'drivethru' && carDetails && typeof carDetails === 'object'
+            ? {
+                plate_letters: String((carDetails as Record<string, unknown>).plate_letters ?? ''),
+                plate_numbers: String((carDetails as Record<string, unknown>).plate_numbers ?? ''),
+                model: String((carDetails as Record<string, unknown>).model ?? ''),
+                color: String((carDetails as Record<string, unknown>).color ?? ''),
+              }
+            : null,
       });
     }
 

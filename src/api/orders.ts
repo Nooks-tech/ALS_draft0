@@ -43,7 +43,7 @@ export type OrderRow = {
   total_sar: number;
   status: string;
   items: unknown;
-  order_type: 'delivery' | 'pickup';
+  order_type: 'delivery' | 'pickup' | 'drivethru';
   delivery_address: string | null;
   delivery_lat: number | null;
   delivery_lng: number | null;
@@ -84,7 +84,7 @@ export type OrderInsert = {
   total_sar: number;
   status: string;
   items: unknown;
-  order_type: 'delivery' | 'pickup';
+  order_type: 'delivery' | 'pickup' | 'drivethru';
   delivery_address?: string | null;
   delivery_lat?: number | null;
   delivery_lng?: number | null;
@@ -103,7 +103,7 @@ export type CommitOrderPayload = {
   totalSar: number;
   status: string;
   items: unknown;
-  orderType: 'delivery' | 'pickup';
+  orderType: 'delivery' | 'pickup' | 'drivethru';
   deliveryAddress?: string | null;
   deliveryLat?: number | null;
   deliveryLng?: number | null;
@@ -149,6 +149,17 @@ export type CommitOrderPayload = {
    * cashback reversal use cashbackAmountSar (more explicit).
    */
   loyaltyDiscountSar?: number | null;
+  /**
+   * Car identifiers for curbside ("Receive from your car"). Required
+   * shape: { plate_letters, plate_numbers, model, color }. Server
+   * rejects orderType='drivethru' without all four non-empty.
+   */
+  carDetails?: {
+    plate_letters: string;
+    plate_numbers: string;
+    model: string;
+    color: string;
+  } | null;
   relayToNooks?: boolean;
 };
 

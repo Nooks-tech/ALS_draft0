@@ -126,9 +126,14 @@ export default function CheckoutScreen() {
   const [couponInput, setCouponInput] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [draftOrderNote, setDraftOrderNote] = useState('');
-  const [carMake, setCarMake] = useState('');
+  // Curbside ("Receive from your car") — Foodics has no curbside slot,
+  // so the order ships as a pickup with these four fields appended to
+  // customer_notes ("car:<letters> <numbers> | <model> | <color>"). All
+  // four are required to enable Pay when orderType === 'drivethru'.
+  const [carPlateLetters, setCarPlateLetters] = useState('');
+  const [carPlateNumbers, setCarPlateNumbers] = useState('');
+  const [carModel, setCarModel] = useState('');
   const [carColor, setCarColor] = useState('');
-  const [carPlate, setCarPlate] = useState('');
   const [promoValidating, setPromoValidating] = useState(false);
   const [moyasarWebUrl, setMoyasarWebUrl] = useState<string | null>(null);
   const paymentSuccessHandled = useRef(false);
@@ -531,6 +536,14 @@ export default function CheckoutScreen() {
     : 0;
   const chargeAmount = Math.max(0, +(finalTotal - walletApplied).toFixed(2));
   const walletCoversAll = useWallet && walletApplied > 0 && chargeAmount === 0;
+  // Curbside / drivethru must carry all four car fields before Pay
+  // becomes pressable — without them the cashier can't identify the
+  // vehicle and the order is operationally useless. Server-side
+  // validation duplicates the check, but blocking client-side avoids
+  // the round trip + a confusing failure mid-Pay.
+  const curbsideCarInfoMissing =
+    orderType === 'drivethru' &&
+    (!carPlateLetters.trim() || !carPlateNumbers.trim() || !carModel.trim() || !carColor.trim());
   // True whenever there's nothing for the card / Apple Pay to charge —
   // covers every combination of wallet / cashback / stamp-milestone
   // freebies that lands at 0 SAR. We use it both to skip the Moyasar
@@ -712,7 +725,15 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
-          carDetails: orderType === 'drivethru' ? { make: carMake, color: carColor, plate: carPlate } : null,
+          carDetails:
+            orderType === 'drivethru'
+              ? {
+                  plate_letters: carPlateLetters.trim(),
+                  plate_numbers: carPlateNumbers.trim(),
+                  model: carModel.trim(),
+                  color: carColor.trim(),
+                }
+              : null,
           // Apple Pay charged the post-wallet chargeAmount via
           // paymentConfig.amount; this debits the wallet so the
           // ledger matches the customer's outlay.
@@ -1452,7 +1473,13 @@ export default function CheckoutScreen() {
                 <MapPin size={20} color={primaryColor} />
               </View>
               <View className="flex-1 ms-3">
-                <Text className="text-slate-500 text-xs font-bold uppercase tracking-widest">{orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivery to') : (isArabic ? 'الاستلام من' : 'Pickup from')}</Text>
+                <Text className="text-slate-500 text-xs font-bold uppercase tracking-widest">
+                  {orderType === 'delivery'
+                    ? (isArabic ? 'التوصيل إلى' : 'Delivery to')
+                    : orderType === 'drivethru'
+                      ? (isArabic ? 'استلام من السيارة' : 'Car pickup at')
+                      : (isArabic ? 'الاستلام من' : 'Pickup from')}
+                </Text>
                 <Text className="text-slate-900 font-bold text-base" numberOfLines={1}>
                   {orderType === 'delivery' ? deliveryAddress?.address || '—' : selectedBranch?.name || '—'}
                 </Text>
@@ -1486,30 +1513,54 @@ export default function CheckoutScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Curbside / Drive-thru Car Details */}
+          {/* Curbside — "Receive from your car". Four fields ride to
+              Foodics in customer_notes (no native curbside slot). Plate
+              is split into letters + numbers because Saudi plates are
+              two separate panels and we want them legible on the POS
+              receipt as "ABC 1234" rather than "ABC1234". */}
           {orderType === 'drivethru' && (
             <View className="mt-4 bg-slate-50 rounded-[28px] border border-slate-100 p-4">
               <View className="flex-row items-center mb-3">
                 <Car size={20} color={primaryColor} />
-                <Text className="font-bold text-slate-900 ms-2">{isArabic ? 'تفاصيل السيارة' : 'Car Details'}</Text>
+                <Text className="font-bold text-slate-900 ms-2">{isArabic ? 'معلومات سيارتك' : 'Your car info'}</Text>
               </View>
+              {/* Plate: letters + numbers side by side. autoCapitalize
+                  on letters because plate letters are uppercase by
+                  convention; keyboard='numeric' on numbers. */}
+              <Text className="text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wider">{isArabic ? 'لوحة السيارة' : 'License Plate'}</Text>
+              <View className="flex-row mb-3" style={{ gap: 8 }}>
+                <TextInput
+                  className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm text-center font-bold"
+                  placeholder={isArabic ? 'الحروف' : 'Letters'}
+                  value={carPlateLetters}
+                  onChangeText={(v) => setCarPlateLetters(v.toUpperCase())}
+                  autoCapitalize="characters"
+                  maxLength={10}
+                />
+                <TextInput
+                  className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm text-center font-bold"
+                  placeholder={isArabic ? 'الأرقام' : 'Numbers'}
+                  value={carPlateNumbers}
+                  onChangeText={setCarPlateNumbers}
+                  keyboardType="number-pad"
+                  maxLength={10}
+                />
+              </View>
+              <Text className="text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wider">{isArabic ? 'موديل السيارة' : 'Car Model'}</Text>
               <TextInput
-                className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm mb-2"
-                placeholder={isArabic ? 'نوع السيارة (مثل: تويوتا كامري)' : 'Car make (e.g. Toyota Camry)'}
-                value={carMake}
-                onChangeText={setCarMake}
+                className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm mb-3"
+                placeholder={isArabic ? 'مثل: كامري 2024' : 'e.g. Camry 2024'}
+                value={carModel}
+                onChangeText={setCarModel}
+                maxLength={40}
               />
-              <TextInput
-                className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm mb-2"
-                placeholder={isArabic ? 'لون السيارة' : 'Car color'}
-                value={carColor}
-                onChangeText={setCarColor}
-              />
+              <Text className="text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wider">{isArabic ? 'اللون' : 'Color'}</Text>
               <TextInput
                 className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm"
-                placeholder={isArabic ? 'رقم اللوحة' : 'Plate number'}
-                value={carPlate}
-                onChangeText={setCarPlate}
+                placeholder={isArabic ? 'مثل: أبيض' : 'e.g. White'}
+                value={carColor}
+                onChangeText={setCarColor}
+                maxLength={20}
               />
             </View>
           )}
@@ -1923,7 +1974,7 @@ export default function CheckoutScreen() {
               </Text>
               <PriceWithSymbol amount={chargeAmount} iconSize={24} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }} />
             </View>
-          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 ? (
+          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 && !curbsideCarInfoMissing ? (
             <View style={{ width: 180, height: 50 }}>
               <ApplePayButton
                 paymentConfig={paymentConfig}
@@ -1934,9 +1985,9 @@ export default function CheckoutScreen() {
           ) : (
             <TouchableOpacity
               onPress={handlePay}
-              disabled={submitting || deliveryQuoteLoading || !deliveryQuoteWithin}
+              disabled={submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing}
               className="px-6 py-4 rounded-[24px] min-w-[190px] items-center flex-row justify-center"
-              style={{ backgroundColor: primaryColor, opacity: (submitting || deliveryQuoteLoading || !deliveryQuoteWithin) ? 0.5 : 1 }}
+              style={{ backgroundColor: primaryColor, opacity: (submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing) ? 0.5 : 1 }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color="white" />

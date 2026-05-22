@@ -1,4 +1,4 @@
-import { ArrowLeft, Bike, MapPin, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, Bike, Car, MapPin, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -202,12 +202,28 @@ export default function OrderTypeScreen() {
             <TouchableOpacity
               onPress={() => { setOrderType('pickup'); setStep('branch'); }}
               disabled={isClosed || isBusy}
-              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
+              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm mb-4 ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
             >
               <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
               <View className="ms-4 flex-1">
                 <Text className="text-lg font-bold text-slate-800">{isArabic ? 'الاستلام من الفرع' : 'In-Store Pickup'}</Text>
                 <Text className="text-slate-500 text-xs">{isArabic ? 'تجاوز الانتظار واستلمه طازجاً' : 'Skip the line & grab it fresh'}</Text>
+              </View>
+            </TouchableOpacity>
+            {/* Curbside — internally stored as orderType='drivethru'
+                (Foodics has no curbside slot). The customer picks a
+                branch the same way pickup does; checkout.tsx then
+                shows a 4-field car-info form (plate letters +
+                numbers, model, color). */}
+            <TouchableOpacity
+              onPress={() => { setOrderType('drivethru'); setStep('branch'); }}
+              disabled={isClosed || isBusy}
+              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
+            >
+              <View className="bg-sky-100 p-4 rounded-2xl"><Car size={28} color="#0284c7" /></View>
+              <View className="ms-4 flex-1">
+                <Text className="text-lg font-bold text-slate-800">{isArabic ? 'استلام من السيارة' : 'Receive from your car'}</Text>
+                <Text className="text-slate-500 text-xs">{isArabic ? 'نوصله إلى سيارتك في الموقف' : "We'll bring it to your car"}</Text>
               </View>
             </TouchableOpacity>
           </View>

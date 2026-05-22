@@ -7,7 +7,7 @@ import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 interface OrderProps {
   id: string;
   status: 'Placed' | 'Accepted' | 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled' | 'On Hold';
-  orderType?: 'delivery' | 'pickup';
+  orderType?: 'delivery' | 'pickup' | 'drivethru';
   price: number;
   date: string;
   items: string;
@@ -19,11 +19,14 @@ export const OrderCard = ({ id, status, orderType, price, date, items, refundSta
   const { i18n } = useTranslation();
   const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
   const isArabic = i18n.language === 'ar';
+  // Drivethru ("Receive from your car") follows the pickup lifecycle —
+  // 3-step, ends in Received. Treat it as pickup for status display.
+  const isPickupLike = orderType === 'pickup' || orderType === 'drivethru';
   // Normalize the legacy "Accepted" / "Ready" statuses into the 3-step
   // pickup / 4-step delivery lifecycles the rest of the app now uses.
   const displayStatus: OrderProps['status'] =
     status === 'Accepted' ? 'Preparing' :
-    status === 'Ready' && orderType === 'pickup' ? 'Delivered' :
+    status === 'Ready' && isPickupLike ? 'Delivered' :
     status === 'Ready' && orderType === 'delivery' ? 'Preparing' :
     status;
   const statusLabel =
@@ -31,7 +34,7 @@ export const OrderCard = ({ id, status, orderType, price, date, items, refundSta
     displayStatus === 'Preparing' ? (isArabic ? 'قيد التحضير' : 'Preparing') :
     displayStatus === 'Out for delivery' ? (isArabic ? 'خرج للتوصيل' : 'Out for delivery') :
     displayStatus === 'Delivered'
-      ? orderType === 'pickup'
+      ? isPickupLike
         ? (isArabic ? 'تم الاستلام' : 'Received')
         : (isArabic ? 'تم التوصيل' : 'Delivered')
       :

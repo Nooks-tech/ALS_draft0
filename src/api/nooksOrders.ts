@@ -19,7 +19,8 @@ export type NooksOrderPayload = {
   customer_id?: string;
   total_sar: number;
   status: string;
-  order_type?: 'delivery' | 'pickup';
+  order_type?: 'delivery' | 'pickup' | 'drivethru';
+  car_details?: { plate_letters: string; plate_numbers: string; model: string; color: string } | null;
   branch_name?: string;
   delivery_fee?: number;
   payment_id?: string;
@@ -41,7 +42,7 @@ export function buildNooksOrderPayload(
     branchId?: string;
     total: number;
     items: { id: string; name: string; price: number; quantity: number; customizations?: Record<string, unknown> }[];
-    orderType?: 'delivery' | 'pickup';
+    orderType?: 'delivery' | 'pickup' | 'drivethru';
     branchName?: string;
     deliveryFee?: number;
     promoCode?: string;

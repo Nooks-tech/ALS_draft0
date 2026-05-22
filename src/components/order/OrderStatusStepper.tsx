@@ -95,15 +95,20 @@ function normalizeStatus(
 
 export function OrderStatusStepper({
   status,
-  orderType,
+  orderType: rawOrderType,
   accentColor = DEFAULT_ACCENT }: {
   status: OrderStatus;
-  orderType: 'delivery' | 'pickup';
+  orderType: 'delivery' | 'pickup' | 'drivethru';
   accentColor?: string;
 }) {
   const { i18n } = useTranslation();
   const isArabic = i18n.language === 'ar';
 
+  // Curbside ("Receive from your car") follows the pickup lifecycle —
+  // Placed → Preparing → Received — and reuses the pickup labels. Map
+  // it to 'pickup' once at the top so the rest of the stepper stays
+  // simple.
+  const orderType: 'delivery' | 'pickup' = rawOrderType === 'delivery' ? 'delivery' : 'pickup';
   const steps = orderType === 'delivery' ? DELIVERY_STEPS : PICKUP_STEPS;
   const normalized = normalizeStatus(status, orderType);
   const currentIndex = steps.indexOf(normalized);

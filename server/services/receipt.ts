@@ -36,10 +36,19 @@ type ReceiptInput = {
   totalSar: number;
   deliveryFeeSar?: number | null;
   items: Array<{ name: string; quantity: number; price_sar: number }>;
-  orderType: 'delivery' | 'pickup';
+  // 'drivethru' = "Receive from your car" — shows up on the receipt
+  // as "Car pickup" with the customer's car identifiers below.
+  orderType: 'delivery' | 'pickup' | 'drivethru';
   branchName?: string | null;
   paymentMethod?: string | null;
   paymentId?: string | null;
+  /** Only included on drivethru orders. */
+  carDetails?: {
+    plate_letters?: string | null;
+    plate_numbers?: string | null;
+    model?: string | null;
+    color?: string | null;
+  } | null;
   issuedAt?: string;
 };
 
@@ -74,7 +83,36 @@ export async function sendOrderReceipt(input: ReceiptInput): Promise<void> {
 
   const branchLabel = escapeHtml(input.branchName ?? 'Nooks');
   const orderIdEscaped = escapeHtml(input.orderId);
-  const orderTypeLabel = input.orderType === 'delivery' ? 'Delivery' : 'Pickup';
+  const orderTypeLabel =
+    input.orderType === 'delivery'
+      ? 'Delivery'
+      : input.orderType === 'drivethru'
+        ? 'Car pickup'
+        : 'Pickup';
+  // Curbside receipt row — vehicle identifiers so the customer
+  // remembers what they entered and the merchant can cross-check
+  // when the car arrives. Built defensively from possibly-null
+  // sub-fields (DB JSONB can have any subset).
+  const carDetailsRow =
+    input.orderType === 'drivethru' && input.carDetails
+      ? (() => {
+          const cd = input.carDetails!;
+          const plate = [cd.plate_letters, cd.plate_numbers]
+            .filter((p) => p && String(p).trim())
+            .map((p) => escapeHtml(String(p).trim()))
+            .join(' ');
+          const parts: string[] = [];
+          if (plate) parts.push(plate);
+          if (cd.model && String(cd.model).trim()) parts.push(escapeHtml(String(cd.model).trim()));
+          if (cd.color && String(cd.color).trim()) parts.push(escapeHtml(String(cd.color).trim()));
+          if (parts.length === 0) return '';
+          return `
+              <tr>
+                <td style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);color:rgba(242,232,208,0.7);font-size:14px;">Car</td>
+                <td style="padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);text-align:right;color:#f2e8d0;font-size:14px;font-weight:600;">${parts.join(' &middot; ')}</td>
+              </tr>`;
+        })()
+      : '';
   const paymentMethodEscaped = escapeHtml(input.paymentMethod ?? 'Card');
   const paymentRefEscaped = input.paymentId ? ` · ref ${escapeHtml(input.paymentId)}` : '';
 
@@ -109,6 +147,7 @@ export async function sendOrderReceipt(input: ReceiptInput): Promise<void> {
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                 ${rows}
                 ${deliveryRow}
+                ${carDetailsRow}
               </table>
             </td>
           </tr>

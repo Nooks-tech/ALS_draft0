@@ -148,9 +148,16 @@ export function PaymentProcessingOverlay({
     ? Math.max(0, orderSummary.items.length - MAX_VISIBLE_ITEMS)
     : 0;
   const isDelivery = orderSummary?.orderType === 'delivery';
+  const isCurbside = orderSummary?.orderType === 'drivethru';
+  // Header label flips per order type: delivery shows the address,
+  // curbside ("Receive from your car") shows the branch, pickup
+  // shows the branch. Each gets its own verb so the user knows the
+  // overlay reflects what they actually picked.
   const locationHeader = isDelivery
     ? (isArabic ? 'التوصيل إلى' : 'DELIVER TO')
-    : (isArabic ? 'الاستلام من' : 'PICKUP FROM');
+    : isCurbside
+      ? (isArabic ? 'استلام من السيارة' : 'CAR PICKUP AT')
+      : (isArabic ? 'الاستلام من' : 'PICKUP FROM');
   const rowDir: 'row' | 'row-reverse' = isArabic ? 'row-reverse' : 'row';
   const txtAlign: 'left' | 'right' = isArabic ? 'right' : 'left';
 
