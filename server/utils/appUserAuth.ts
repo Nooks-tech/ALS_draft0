@@ -1,6 +1,7 @@
 import { createClient, type User } from '@supabase/supabase-js';
 import type { Request, Response } from 'express';
 import { writeAudit } from './auditLog';
+import { captureError } from './sentryContext';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -94,8 +95,42 @@ export async function requireVerifiedAtMerchant(
     .maybeSingle();
 
   if (error) {
-    if (respond) res.status(500).json({ error: 'Verification lookup failed' });
-    return { ok: false, reason: 'lookup_failed' };
+    // 2026-05-22 production hotfix: a DB query error here was
+    // blocking legitimate transactions (e.g. wallet topup-finalize
+    // after Moyasar had already charged). Could be a transient
+    // network blip, a not-yet-applied migration, or a schema drift.
+    // Fail OPEN so customers don't lose money in flight — the other
+    // auth layers (Supabase JWT, customer_id ownership check, and
+    // Moyasar payment re-verify on /commit, etc.) still apply. The
+    // verification gate is defense-in-depth, not the only line of
+    // defense. We ship a loud Sentry alert + audit row so the
+    // operator notices and fixes the underlying schema issue.
+    console.error('[requireVerifiedAtMerchant] DB lookup failed — failing OPEN to avoid blocking transactions', {
+      merchantId,
+      customerId,
+      error: error.message,
+      code: (error as { code?: string }).code,
+      details: (error as { details?: string }).details,
+    });
+    captureError(new Error(`requireVerifiedAtMerchant DB lookup failed: ${error.message}`), {
+      component: 'requireVerifiedAtMerchant.failOpen',
+      merchantId,
+      customerId,
+      extra: {
+        db_error_code: (error as { code?: string }).code,
+        db_error_details: (error as { details?: string }).details,
+      },
+    });
+    void writeAudit({
+      merchant_id: merchantId,
+      action: 'auth.merchant_verification_failopen',
+      payload: {
+        customer_id: customerId,
+        db_error: error.message,
+        db_error_code: (error as { code?: string }).code,
+      },
+    });
+    return { ok: true, verifiedAt: new Date() };
   }
 
   if (!data || !data.verified_at) {
