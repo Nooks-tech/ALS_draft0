@@ -46,6 +46,7 @@ import { analyticsRouter } from './routes/analytics';
 import { profileRouter } from './routes/profile';
 import { cartRouter } from './routes/cart';
 import { startCartAbandonmentCron } from './cron/cartAbandonment';
+import { startPaymentProcessingHealthCron } from './cron/paymentProcessingHealth';
 import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
 import { startComplaintEscalationCron } from './cron/complaintEscalation';
 import { startSavedCardSweepCron } from './cron/savedCardSweep';
@@ -147,13 +148,14 @@ app.get('/ready', async (_, res) => {
   // lag; the merchant dashboard can poll /ready and flag them.
   try {
     const { getCronHealth } = await import('./utils/cronHeartbeat');
-    const [cart, loyalty, complaint, savedCard] = await Promise.all([
+    const [cart, loyalty, complaint, savedCard, paymentHealth] = await Promise.all([
       getCronHealth('cartAbandonment', 60 * 1000),
       getCronHealth('loyaltyExpiration', 24 * 60 * 60 * 1000),
       getCronHealth('complaintEscalation', 30 * 60 * 1000),
       getCronHealth('savedCardSweep', 6 * 60 * 60 * 1000),
+      getCronHealth('paymentProcessingHealth', 30 * 60 * 1000),
     ]);
-    checks.crons = { cartAbandonment: cart, loyaltyExpiration: loyalty, complaintEscalation: complaint, savedCardSweep: savedCard };
+    checks.crons = { cartAbandonment: cart, loyaltyExpiration: loyalty, complaintEscalation: complaint, savedCardSweep: savedCard, paymentProcessingHealth: paymentHealth };
   } catch (e: any) {
     checks.crons = { ok: false, error: e?.message };
   }
@@ -163,6 +165,14 @@ app.get('/ready', async (_, res) => {
     checks.migrations = await checkMigrationStatus();
   } catch (e: any) {
     checks.migrations = { ok: false, error: e?.message };
+  }
+  // Payment-processing health — count of "completed but webhook
+  // never accrued" orders. The 2026-05-22 incident motivated this.
+  try {
+    const { getPaymentProcessingHealth } = await import('./cron/paymentProcessingHealth');
+    checks.paymentProcessing = await getPaymentProcessingHealth();
+  } catch (e: any) {
+    checks.paymentProcessing = { ok: false, error: e?.message };
   }
   res.status(ok ? 200 : 503).json({ status: ok ? 'ready' : 'unready', checks });
 });
@@ -198,6 +208,7 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   startComplaintEscalationCron();
   startSavedCardSweepCron();
   startCartAbandonmentCron();
+  startPaymentProcessingHealthCron();
   // Surface migration drift at boot. If the latest applied migration
   // is older than 14 days, this logs a WARN + ships a Sentry alert
   // so a 2026-05-22-style migration gap doesn't go unnoticed.
