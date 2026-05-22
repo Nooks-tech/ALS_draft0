@@ -1,82 +1,87 @@
 /**
- * Payment-processing overlay — option 6 "heartbeat / EKG line".
+ * Payment-processing overlay — EKG heartbeat in a floating bottom card,
+ * with an optional order-summary block below the line.
  *
- * Layout: a sheet covers the bottom third of the screen. Above it,
- * a translucent dimmer absorbs taps so the user can't interact
- * with the checkout / wallet page underneath while a payment is in
- * flight, but the upper two-thirds of the page stays visible. No
- * full-screen takeover.
+ * Layout: a card pinned near the bottom of the screen with horizontal
+ * and bottom margins (it floats, not pinned to the edge). Inside,
+ * top-to-bottom: handle, EKG line, divider, items list, divider,
+ * location. A translucent dimmer covers everything above to absorb
+ * taps. The page underneath stays visible.
  *
- * Animation: an SVG path containing five heartbeat-shaped beats
- * laid out across a wide canvas (1000px). The canvas translates
- * leftward at a constant rate. Because every beat in the path is
- * identical, when the animation reaches half-width and resets, the
- * silhouette looks unchanged — the loop is seamless.
+ * orderSummary is optional. Checkout passes it; wallet topup doesn't,
+ * in which case the card shrinks to just handle + EKG.
  *
- * Visual signal: an EKG-style line says "transaction live, vital
- * signs OK" without words and without payment-specific imagery
- * (no credit card, no coin) but with clearly purposeful motion
- * — the user reads "something monitored is happening."
- *
- * No <Modal> used — absolutely-positioned <View> at zIndex 9999
- * so the same component works whether the parent is a Modal
- * (wallet-modal sheet) or a plain page (checkout). Previous Modal-
- * based version failed to mount on checkout for that reason.
+ * No <Modal> — absolutely-positioned <View> at zIndex 9999 so the
+ * same component works whether the parent is a Modal (wallet-modal
+ * sheet) or a plain page (checkout).
  */
 
 import React, { useEffect, useRef } from 'react';
-import { Animated, Dimensions, Easing, StyleSheet, View } from 'react-native';
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
+import { MapPin } from 'lucide-react-native';
+
+export type PaymentProcessingOrderItem = {
+  name: string;
+  quantity: number;
+};
+
+export type PaymentProcessingOrderSummary = {
+  items: PaymentProcessingOrderItem[];
+  /** 'delivery' → "Deliver to <address>"; anything else → "Pickup from <branch>". */
+  orderType: 'pickup' | 'delivery' | 'drivethru' | string;
+  locationLabel: string;
+};
 
 export type PaymentProcessingOverlayProps = {
   visible: boolean;
-  /** Kept for API parity with previous versions. Unused (no text). */
   isArabic?: boolean;
   primaryColor?: string;
-  title?: string;
-  subtitle?: string;
+  /** Order summary block — shown below the EKG. Omit to render a
+   *  shorter card with just the line (used by wallet topup). */
+  orderSummary?: PaymentProcessingOrderSummary;
 };
 
-// One heartbeat over 200px width, baseline at y=80 in a 160-tall
-// viewBox. The pattern is the classic QRS complex stylised down to
-// six segments: flat, small P bump, flat, sharp R spike up, S dip
-// below baseline, T bump, flat. Width chosen so five beats fit in a
-// 1000-wide canvas; the right half (beats 3-4) mirrors the left
-// half (beats 0-1) so the seamless loop reset is invisible.
+// EKG geometry. One QRS-complex beat per BEAT_WIDTH px. Five beats
+// laid out across TOTAL_WIDTH; we scroll exactly half of that and
+// loop — the silhouette at scroll-end matches scroll-start so the
+// reset is invisible.
 const BEAT_WIDTH = 200;
 const BEAT_COUNT = 5;
 const TOTAL_WIDTH = BEAT_WIDTH * BEAT_COUNT;
-// We scroll exactly half the width so the wrap-around lands on an
-// identical waveform position. The render still shows the full
-// width with overflow:hidden clipping outside the sheet.
 const SCROLL_DISTANCE = TOTAL_WIDTH / 2;
 
+// Tighter viewBox than the previous version so the line fills an
+// 80-tall container without empty vertical room. Baseline y=40,
+// spike up to y=8, dip down to y=64.
+const VIEW_HEIGHT = 80;
+
 function buildBeatPath(): string {
-  const baseline = 80;
+  const baseline = 40;
   const segments: string[] = [`M 0 ${baseline}`];
   for (let i = 0; i < BEAT_COUNT; i += 1) {
     const x = i * BEAT_WIDTH;
     // Flat lead-in
     segments.push(`L ${x + 60} ${baseline}`);
     // Small P-wave bump up
-    segments.push(`L ${x + 70} ${baseline - 8}`);
+    segments.push(`L ${x + 70} ${baseline - 5}`);
     segments.push(`L ${x + 80} ${baseline}`);
     // Flat
     segments.push(`L ${x + 90} ${baseline}`);
     // Q small dip down
-    segments.push(`L ${x + 95} ${baseline + 6}`);
+    segments.push(`L ${x + 95} ${baseline + 4}`);
     // R tall spike up
-    segments.push(`L ${x + 102} ${baseline - 50}`);
-    // S deep dip below baseline
-    segments.push(`L ${x + 110} ${baseline + 30}`);
+    segments.push(`L ${x + 102} ${baseline - 32}`);
+    // S dip below baseline
+    segments.push(`L ${x + 110} ${baseline + 24}`);
     // Recovery to baseline
     segments.push(`L ${x + 118} ${baseline}`);
     // Flat
     segments.push(`L ${x + 135} ${baseline}`);
     // Small T-wave bump up
-    segments.push(`L ${x + 150} ${baseline - 6}`);
+    segments.push(`L ${x + 150} ${baseline - 4}`);
     segments.push(`L ${x + 165} ${baseline}`);
-    // Flat trailing into the next beat's lead-in
+    // Flat trailing into next beat's lead-in
     segments.push(`L ${x + BEAT_WIDTH} ${baseline}`);
   }
   return segments.join(' ');
@@ -84,29 +89,25 @@ function buildBeatPath(): string {
 
 const BEAT_PATH = buildBeatPath();
 
+// Max items rendered in the list before we collapse the rest into
+// a "+ N more" row — keeps the card a predictable height for big
+// carts and avoids needing a scroll view inside the sheet.
+const MAX_VISIBLE_ITEMS = 3;
+
 export function PaymentProcessingOverlay({
   visible,
+  isArabic = false,
   primaryColor = '#0f766e',
+  orderSummary,
 }: PaymentProcessingOverlayProps) {
   const translate = useRef(new Animated.Value(0)).current;
-  // Sheet slide-in. Starts at full sheet height below the screen and
-  // animates to 0 (resting position) when `visible` flips true.
   const slideIn = useRef(new Animated.Value(0)).current;
-
-  const screenHeight = Dimensions.get('window').height;
-  // Lower third of the screen — clamped to a minimum so the EKG line
-  // has room on very small devices.
-  const sheetHeight = Math.max(240, Math.round(screenHeight * 0.33));
 
   useEffect(() => {
     if (!visible) {
-      // Snap the slide-in back so the next open animates fresh.
       slideIn.setValue(0);
       return;
     }
-    // EKG scroll loop. translate ranges 0 → -SCROLL_DISTANCE then
-    // resets. 3.2s feels like a calm resting heart rate at this
-    // beat-spacing (~75 BPM equivalent perception).
     const scrollLoop = Animated.loop(
       Animated.timing(translate, {
         toValue: -SCROLL_DISTANCE,
@@ -115,10 +116,9 @@ export function PaymentProcessingOverlay({
         useNativeDriver: true,
       }),
     );
-    // Sheet slide-up — single one-shot animation, not looped.
     const slideUp = Animated.timing(slideIn, {
       toValue: 1,
-      duration: 260,
+      duration: 280,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     });
@@ -132,53 +132,57 @@ export function PaymentProcessingOverlay({
 
   if (!visible) return null;
 
-  // Sheet starts off-screen below, slides to 0.
+  // Slide-in from below. 500px is enough to be off-screen on any
+  // device since the card itself never exceeds ~360px tall.
   const sheetTranslateY = slideIn.interpolate({
     inputRange: [0, 1],
-    outputRange: [sheetHeight, 0],
+    outputRange: [500, 0],
   });
-  // Backdrop fades in alongside the sheet.
   const backdropOpacity = slideIn.interpolate({
     inputRange: [0, 1],
     outputRange: [0, 1],
   });
 
+  const visibleItems = orderSummary?.items.slice(0, MAX_VISIBLE_ITEMS) ?? [];
+  const hiddenCount = orderSummary
+    ? Math.max(0, orderSummary.items.length - MAX_VISIBLE_ITEMS)
+    : 0;
+  const isDelivery = orderSummary?.orderType === 'delivery';
+  const locationHeader = isDelivery
+    ? (isArabic ? 'التوصيل إلى' : 'DELIVER TO')
+    : (isArabic ? 'الاستلام من' : 'PICKUP FROM');
+  const rowDir: 'row' | 'row-reverse' = isArabic ? 'row-reverse' : 'row';
+  const txtAlign: 'left' | 'right' = isArabic ? 'right' : 'left';
+
   return (
     <View pointerEvents="auto" style={styles.root}>
-      {/* Backdrop covers the upper portion. Captures taps so the
-          checkout page isn't tappable underneath. Subtle dimming —
-          the page stays mostly visible. */}
       <Animated.View
         pointerEvents="auto"
         style={[styles.backdrop, { opacity: backdropOpacity }]}
       />
-      {/* Bottom sheet. Pinned to the bottom edge, slides up on mount. */}
       <Animated.View
         style={[
-          styles.sheet,
-          {
-            height: sheetHeight,
-            transform: [{ translateY: sheetTranslateY }],
-          },
+          styles.card,
+          { transform: [{ translateY: sheetTranslateY }] },
         ]}
       >
-        {/* Small handle bar at the top of the sheet — purely visual,
-            doesn't dismiss. Signals "this is a sheet" so the layout
-            reads as intentional rather than a stuck modal. */}
         <View style={styles.handle} />
 
-        {/* EKG canvas. overflow:hidden clips the wide SVG so only
-            the portion inside the sheet width is visible. The SVG
-            is animated leftward inside this clip. */}
+        {/* EKG canvas — clipped width with the SVG translating
+            leftward inside it. */}
         <View style={styles.ekgClip}>
           <Animated.View
             style={{
               width: TOTAL_WIDTH,
-              height: 160,
+              height: VIEW_HEIGHT,
               transform: [{ translateX: translate }],
             }}
           >
-            <Svg width={TOTAL_WIDTH} height={160} viewBox={`0 0 ${TOTAL_WIDTH} 160`}>
+            <Svg
+              width={TOTAL_WIDTH}
+              height={VIEW_HEIGHT}
+              viewBox={`0 0 ${TOTAL_WIDTH} ${VIEW_HEIGHT}`}
+            >
               <Path
                 d={BEAT_PATH}
                 stroke={primaryColor}
@@ -190,6 +194,59 @@ export function PaymentProcessingOverlay({
             </Svg>
           </Animated.View>
         </View>
+
+        {orderSummary && (
+          <>
+            <View style={styles.divider} />
+
+            {/* Items list. Each row: name on one side, "× qty" on
+                the other. Direction flips for Arabic. */}
+            <View style={styles.itemsBlock}>
+              {visibleItems.map((it, idx) => (
+                <View
+                  key={`${it.name}-${idx}`}
+                  style={[styles.itemRow, { flexDirection: rowDir }]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    style={[styles.itemName, { textAlign: txtAlign }]}
+                  >
+                    {it.name}
+                  </Text>
+                  <Text style={styles.itemQty}>× {it.quantity}</Text>
+                </View>
+              ))}
+              {hiddenCount > 0 && (
+                <Text
+                  style={[styles.moreLine, { textAlign: txtAlign }]}
+                >
+                  {isArabic
+                    ? `+ ${hiddenCount} عنصر آخر`
+                    : `+ ${hiddenCount} more`}
+                </Text>
+              )}
+            </View>
+
+            <View style={styles.divider} />
+
+            {/* Location row. MapPin icon, header label above the
+                actual address/branch name. */}
+            <View style={[styles.locationRow, { flexDirection: rowDir }]}>
+              <MapPin size={18} color={primaryColor} />
+              <View style={styles.locationText}>
+                <Text style={[styles.locationHeader, { textAlign: txtAlign }]}>
+                  {locationHeader}
+                </Text>
+                <Text
+                  numberOfLines={2}
+                  style={[styles.locationValue, { textAlign: txtAlign }]}
+                >
+                  {orderSummary.locationLabel || '—'}
+                </Text>
+              </View>
+            </View>
+          </>
+        )}
       </Animated.View>
     </View>
   );
@@ -203,45 +260,93 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     justifyContent: 'flex-end',
-    // High z-index so the overlay sits above page content. The
-    // absolute View approach (vs a Modal) means we can't rely on
-    // native portaling, so zIndex + elevation do the lifting.
+    alignItems: 'center',
     zIndex: 9999,
     elevation: 9999,
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    // Very light dim — the upper page stays clearly readable. We
-    // mostly want to absorb taps, not theatrically darken.
-    backgroundColor: 'rgba(15, 23, 42, 0.18)',
+    backgroundColor: 'rgba(15, 23, 42, 0.22)',
   },
-  sheet: {
-    width: '100%',
+  card: {
+    // Floating card — horizontal margins + lifted off the bottom
+    // edge so it doesn't read as "stuck" to the screen.
+    width: '92%',
+    marginBottom: 32,
     backgroundColor: '#ffffff',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingTop: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    // Soft lift off the page below.
+    borderRadius: 24,
+    paddingTop: 10,
+    paddingHorizontal: 18,
+    paddingBottom: 18,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: -6 },
-    shadowOpacity: 0.12,
-    shadowRadius: 18,
-    elevation: 14,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 22,
+    elevation: 16,
   },
   handle: {
-    width: 44,
-    height: 5,
-    borderRadius: 3,
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
     backgroundColor: '#e2e8f0',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   ekgClip: {
     width: '100%',
-    height: 160,
+    height: VIEW_HEIGHT,
     overflow: 'hidden',
     alignItems: 'flex-start',
     justifyContent: 'center',
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#e2e8f0',
+    marginVertical: 12,
+  },
+  itemsBlock: {
+    gap: 6,
+  },
+  itemRow: {
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  itemName: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginRight: 12,
+    marginLeft: 12,
+  },
+  itemQty: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  moreLine: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  locationRow: {
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  locationText: {
+    flex: 1,
+  },
+  locationHeader: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#94a3b8',
+    letterSpacing: 1,
+  },
+  locationValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginTop: 2,
   },
 });

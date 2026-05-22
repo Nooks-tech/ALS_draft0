@@ -1339,6 +1339,14 @@ export default function CheckoutScreen() {
         visible={submitting}
         isArabic={isArabic}
         primaryColor={primaryColor}
+        orderSummary={{
+          items: cartItems.map((it) => ({ name: it.name, quantity: it.quantity })),
+          orderType,
+          locationLabel:
+            orderType === 'delivery'
+              ? deliveryAddress?.address || '—'
+              : selectedBranch?.name || '—',
+        }}
       />
       {/* Header */}
       <View className="flex-row items-center px-5 py-4 border-b border-slate-100 bg-white">
