@@ -157,6 +157,13 @@ app.get('/ready', async (_, res) => {
   } catch (e: any) {
     checks.crons = { ok: false, error: e?.message };
   }
+  // Migration status — same data the dashboard widget displays.
+  try {
+    const { checkMigrationStatus } = await import('./utils/migrationStatus');
+    checks.migrations = await checkMigrationStatus();
+  } catch (e: any) {
+    checks.migrations = { ok: false, error: e?.message };
+  }
   res.status(ok ? 200 : 503).json({ status: ok ? 'ready' : 'unready', checks });
 });
 
@@ -191,4 +198,8 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   startComplaintEscalationCron();
   startSavedCardSweepCron();
   startCartAbandonmentCron();
+  // Surface migration drift at boot. If the latest applied migration
+  // is older than 14 days, this logs a WARN + ships a Sentry alert
+  // so a 2026-05-22-style migration gap doesn't go unnoticed.
+  import('./utils/migrationStatus').then((m) => void m.logStartupMigrationStatus());
 });
