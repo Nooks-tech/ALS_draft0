@@ -66,7 +66,7 @@ CREATE POLICY "Users can view own enrollments"
 -- this migration (or a later top-up) is safe.
 
 INSERT INTO public.merchant_customers (merchant_id, customer_id, enrolled_via, enrolled_at)
-SELECT merchant_id::uuid, customer_id, 'back_populated', MIN(created_at)
+SELECT src.merchant_id::uuid, src.customer_id, 'back_populated', MIN(src.created_at)
 FROM (
   SELECT merchant_id, customer_id, created_at FROM public.loyalty_member_profiles
     WHERE merchant_id IS NOT NULL AND customer_id IS NOT NULL
@@ -80,8 +80,14 @@ FROM (
   SELECT merchant_id, customer_id, created_at FROM public.customer_orders
     WHERE merchant_id IS NOT NULL AND customer_id IS NOT NULL
 ) src
-WHERE merchant_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-GROUP BY merchant_id, customer_id
+WHERE src.merchant_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  -- Skip orphan merchant_ids — loyalty/order tables can reference
+  -- merchants that have since been deleted. The FK would block the
+  -- insert; this filter quietly drops the orphan rows.
+  AND EXISTS (
+    SELECT 1 FROM public.merchants m WHERE m.id::text = src.merchant_id
+  )
+GROUP BY src.merchant_id, src.customer_id
 ON CONFLICT (merchant_id, customer_id) DO NOTHING;
 
 -- ╔══════════════════════════════════════════════════════════════╗
