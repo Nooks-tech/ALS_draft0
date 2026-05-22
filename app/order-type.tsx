@@ -20,7 +20,7 @@ export default function OrderTypeScreen() {
   const { primaryColor } = useMerchantBranding();
   const { orderType, setOrderType, selectedBranch, setSelectedBranch, setDeliveryAddress } = useCart();
   const { branches } = useMenuContext();
-  const { isClosed, isBusy, isPickupOnly } = useOperations();
+  const { isClosed, isBusy, isPickupOnly, deliveryEnabled, pickupEnabled, drivethruEnabled } = useOperations();
   const { addresses: savedAddresses, setDefault, updateAddress, removeAddress } = useSavedAddresses();
   const [step, setStep] = useState<'choice' | 'branch' | 'map'>('choice');
   const isArabic = i18n.language === 'ar';
@@ -186,7 +186,14 @@ export default function OrderTypeScreen() {
                 </Text>
               </View>
             )}
-            {!isPickupOnly && (
+            {/* Order-type options are gated by the merchant's per-branch
+                enable flags. Each option just hides when its flag is off
+                — the merchant might disable a type at one branch and
+                keep it on at another, so customers see different menus
+                per merchant install but always see SOMETHING. Legacy
+                isPickupOnly is still respected as a fallback for the
+                delivery flag. */}
+            {!isPickupOnly && deliveryEnabled && (
               <TouchableOpacity
                 onPress={handleDelivery}
                 disabled={isClosed || isBusy}
@@ -199,33 +206,52 @@ export default function OrderTypeScreen() {
                 </View>
               </TouchableOpacity>
             )}
-            <TouchableOpacity
-              onPress={() => { setOrderType('pickup'); setStep('branch'); }}
-              disabled={isClosed || isBusy}
-              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm mb-4 ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
-            >
-              <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
-              <View className="ms-4 flex-1">
-                <Text className="text-lg font-bold text-slate-800">{isArabic ? 'الاستلام من الفرع' : 'In-Store Pickup'}</Text>
-                <Text className="text-slate-500 text-xs">{isArabic ? 'تجاوز الانتظار واستلمه طازجاً' : 'Skip the line & grab it fresh'}</Text>
-              </View>
-            </TouchableOpacity>
+            {pickupEnabled && (
+              <TouchableOpacity
+                onPress={() => { setOrderType('pickup'); setStep('branch'); }}
+                disabled={isClosed || isBusy}
+                className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm mb-4 ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
+              >
+                <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
+                <View className="ms-4 flex-1">
+                  <Text className="text-lg font-bold text-slate-800">{isArabic ? 'الاستلام من الفرع' : 'In-Store Pickup'}</Text>
+                  <Text className="text-slate-500 text-xs">{isArabic ? 'تجاوز الانتظار واستلمه طازجاً' : 'Skip the line & grab it fresh'}</Text>
+                </View>
+              </TouchableOpacity>
+            )}
             {/* Curbside — internally stored as orderType='drivethru'
                 (Foodics has no curbside slot). The customer picks a
                 branch the same way pickup does; checkout.tsx then
                 shows a 4-field car-info form (plate letters +
                 numbers, model, color). */}
-            <TouchableOpacity
-              onPress={() => { setOrderType('drivethru'); setStep('branch'); }}
-              disabled={isClosed || isBusy}
-              className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
-            >
-              <View className="bg-sky-100 p-4 rounded-2xl"><Car size={28} color="#0284c7" /></View>
-              <View className="ms-4 flex-1">
-                <Text className="text-lg font-bold text-slate-800">{isArabic ? 'استلام من السيارة' : 'Receive from your car'}</Text>
-                <Text className="text-slate-500 text-xs">{isArabic ? 'نوصله إلى سيارتك في الموقف' : "We'll bring it to your car"}</Text>
+            {drivethruEnabled && (
+              <TouchableOpacity
+                onPress={() => { setOrderType('drivethru'); setStep('branch'); }}
+                disabled={isClosed || isBusy}
+                className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
+              >
+                <View className="bg-sky-100 p-4 rounded-2xl"><Car size={28} color="#0284c7" /></View>
+                <View className="ms-4 flex-1">
+                  <Text className="text-lg font-bold text-slate-800">{isArabic ? 'استلام من السيارة' : 'Receive from your car'}</Text>
+                  <Text className="text-slate-500 text-xs">{isArabic ? 'نوصله إلى سيارتك في الموقف' : "We'll bring it to your car"}</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+            {/* All three types disabled — extremely rare, but if a
+                merchant misconfigures we still want a clear message
+                instead of a blank screen. */}
+            {!deliveryEnabled && !pickupEnabled && !drivethruEnabled && (
+              <View className="p-5 rounded-[28px] bg-amber-50 border border-amber-200">
+                <Text className="font-bold text-amber-800">
+                  {isArabic ? 'لا توجد طرق طلب متاحة' : 'No order types available'}
+                </Text>
+                <Text className="text-amber-700 text-sm mt-1">
+                  {isArabic
+                    ? 'هذا الفرع لا يقبل طلبات حالياً. جرّب فرع آخر أو رجاء حاول لاحقاً.'
+                    : "This branch isn't taking orders right now. Try another branch or come back later."}
+                </Text>
               </View>
-            </TouchableOpacity>
+            )}
           </View>
         )}
 

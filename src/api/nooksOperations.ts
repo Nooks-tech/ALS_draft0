@@ -19,6 +19,13 @@ export type NooksOperations = {
   store_status: StoreStatus;
   prep_time_minutes: number;
   delivery_mode: DeliveryMode;
+  // Per-order-type enable flags. Server returns booleans for any
+  // branch that has the migration applied; default to true for
+  // pre-migration rows so the customer app doesn't accidentally
+  // hide types the merchant never disabled.
+  delivery_enabled?: boolean;
+  pickup_enabled?: boolean;
+  drivethru_enabled?: boolean;
   busy_started_at?: string | null;
   busy_seconds_left?: number | null;
 };
@@ -34,7 +41,20 @@ export async function fetchNooksOperations(merchantId: string, branchId?: string
   const store_status = (data.store_status as StoreStatus) ?? 'open';
   const prep_time_minutes = typeof data.prep_time_minutes === 'number' ? data.prep_time_minutes : 0;
   const delivery_mode = (data.delivery_mode as DeliveryMode) ?? 'delivery_and_pickup';
+  const delivery_enabled =
+    typeof data.delivery_enabled === 'boolean' ? data.delivery_enabled : delivery_mode !== 'pickup_only';
+  const pickup_enabled = typeof data.pickup_enabled === 'boolean' ? data.pickup_enabled : true;
+  const drivethru_enabled = typeof data.drivethru_enabled === 'boolean' ? data.drivethru_enabled : true;
   const busy_started_at = typeof data.busy_started_at === 'string' ? data.busy_started_at : null;
   const busy_seconds_left = typeof data.busy_seconds_left === 'number' ? data.busy_seconds_left : null;
-  return { store_status, prep_time_minutes, delivery_mode, busy_started_at, busy_seconds_left };
+  return {
+    store_status,
+    prep_time_minutes,
+    delivery_mode,
+    delivery_enabled,
+    pickup_enabled,
+    drivethru_enabled,
+    busy_started_at,
+    busy_seconds_left,
+  };
 }

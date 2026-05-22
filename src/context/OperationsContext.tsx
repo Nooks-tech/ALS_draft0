@@ -18,6 +18,13 @@ type OperationsContextType = {
   isClosed: boolean;
   isBusy: boolean;
   isPickupOnly: boolean;
+  // Per-order-type enable flags resolved per selected branch.
+  // Default true when the server didn't return a value (pre-migration
+  // branches) — the customer can still pick the type; server gates
+  // it independently if disabled.
+  deliveryEnabled: boolean;
+  pickupEnabled: boolean;
+  drivethruEnabled: boolean;
   prepTimeMinutes: number;
   busySecondsLeft: number;
 };
@@ -36,6 +43,9 @@ const OperationsContext = createContext<OperationsContextType>({
   isClosed: false,
   isBusy: false,
   isPickupOnly: false,
+  deliveryEnabled: true,
+  pickupEnabled: true,
+  drivethruEnabled: true,
   prepTimeMinutes: 0,
   busySecondsLeft: 0,
 });
@@ -146,6 +156,16 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const isClosed = operations?.store_status === 'closed';
   const isBusy = operations?.store_status === 'busy';
   const isPickupOnly = operations?.delivery_mode === 'pickup_only';
+  // Resolve per-type flags from the server response. Treat missing
+  // booleans as enabled — gracefully handles pre-migration branches.
+  const deliveryEnabled =
+    typeof operations?.delivery_enabled === 'boolean'
+      ? operations.delivery_enabled
+      : !isPickupOnly;
+  const pickupEnabled =
+    typeof operations?.pickup_enabled === 'boolean' ? operations.pickup_enabled : true;
+  const drivethruEnabled =
+    typeof operations?.drivethru_enabled === 'boolean' ? operations.drivethru_enabled : true;
   const prepTimeMinutes = operations?.prep_time_minutes ?? 0;
 
   useEffect(() => {
@@ -160,7 +180,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   }, [isBusy]);
 
   return (
-    <OperationsContext.Provider value={{ operations, loading, refetch, isClosed, isBusy, isPickupOnly, prepTimeMinutes, busySecondsLeft }}>
+    <OperationsContext.Provider value={{ operations, loading, refetch, isClosed, isBusy, isPickupOnly, deliveryEnabled, pickupEnabled, drivethruEnabled, prepTimeMinutes, busySecondsLeft }}>
       {children}
     </OperationsContext.Provider>
   );
