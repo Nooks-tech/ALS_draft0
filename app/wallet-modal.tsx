@@ -43,6 +43,7 @@ import {
   PaymentStatus,
   isMoyasarError } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
+import { PaymentProcessingOverlay } from '../src/components/common/PaymentProcessingOverlay';
 import { APPLE_PAY_MERCHANT_ID, MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY } from '../src/api/config';
 import { walletApi, type WalletBalance, type WalletEntry } from '../src/api/wallet';
 import { paymentApi, type SavedCard } from '../src/api/payment';
@@ -431,6 +432,11 @@ function TopupSheet({
         );
         return;
       }
+      // Show the processing overlay while topupFinalize is in flight.
+      // Apple Pay's native sheet closes the moment the user authorises,
+      // so without this there's a few-second blank window between the
+      // sheet dismiss and the wallet balance update.
+      setSubmitting(true);
       try {
         await walletApi.topupFinalize({ paymentId: id, merchantId });
         await onSuccess();
@@ -439,6 +445,8 @@ function TopupSheet({
           isArabic ? 'تأخّر تحديث الرصيد' : 'Balance update delayed',
           e?.message || (isArabic ? 'حاول السحب للتحديث بعد قليل.' : 'Pull to refresh in a moment.'),
         );
+      } finally {
+        setSubmitting(false);
       }
     },
     [merchantId, onSuccess, isArabic],
@@ -509,6 +517,10 @@ function TopupSheet({
       const id = pendingPaymentId;
       setPendingPaymentId(null);
       setVerifyUrl(null);
+      // Same overlay reason as the Apple Pay branch — between 3DS
+      // WebView dismiss and topupFinalize completion there's a gap
+      // where the user sees a blank stage if we don't flag submitting.
+      setSubmitting(true);
       try {
         await walletApi.topupFinalize({ paymentId: id, merchantId });
         await onSuccess();
@@ -517,6 +529,8 @@ function TopupSheet({
           isArabic ? 'فشل التحقق' : 'Verification failed',
           e?.message || (isArabic ? 'تعذر إكمال تعبئة الرصيد.' : 'Could not finish the top-up.'),
         );
+      } finally {
+        setSubmitting(false);
       }
     },
     [merchantId, onSuccess, pendingPaymentId, isArabic],
@@ -524,6 +538,15 @@ function TopupSheet({
 
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      {/* Top-up payment-processing overlay. Same component the checkout
+          page uses — covers the gap between Apple Pay sheet dismiss /
+          3DS WebView close / saved-card response and the
+          topup-finalize roundtrip completing. */}
+      <PaymentProcessingOverlay
+        visible={submitting}
+        isArabic={isArabic}
+        primaryColor={primaryColor}
+      />
       <SafeAreaView className="flex-1 bg-white">
         <View
           className="px-5 py-4 border-b border-slate-100 items-center justify-between"

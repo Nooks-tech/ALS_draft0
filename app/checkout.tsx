@@ -38,6 +38,7 @@ import {
   PaymentStatus,
   isMoyasarError } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
+import { PaymentProcessingOverlay } from '../src/components/common/PaymentProcessingOverlay';
 import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from '../src/api/config';
 import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
@@ -896,6 +897,12 @@ export default function CheckoutScreen() {
         return;
       }
       if (result instanceof PaymentResponse && result.status === PaymentStatus.paid) {
+        // Show the overlay IMMEDIATELY — before createOrderAfterPayment
+        // sets submitting itself — so there's no visual gap between the
+        // Apple Pay sheet closing and the commit starting. Apple Pay
+        // dismisses its own sheet on success and we get ~50-300ms before
+        // the commit POST returns, which used to be a blank screen.
+        setSubmitting(true);
         createOrderAfterPayment(result.id);
       } else if (result instanceof PaymentResponse && result.status === PaymentStatus.failed) {
         Alert.alert(
@@ -1322,6 +1329,17 @@ export default function CheckoutScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={['top']}>
+      {/* Full-screen payment-processing overlay. Mounts the moment
+          submitting flips true (card / wallet / cashback / stamps /
+          Apple Pay all set it during their commit path). Replaces the
+          tiny ActivityIndicator that used to live inside the Pay
+          button — easier to notice and consistent with Apple Pay
+          where the native button has no spinner. */}
+      <PaymentProcessingOverlay
+        visible={submitting}
+        isArabic={isArabic}
+        primaryColor={primaryColor}
+      />
       {/* Header */}
       <View className="flex-row items-center px-5 py-4 border-b border-slate-100 bg-white">
         <TouchableOpacity onPress={() => router.back()} className="bg-slate-100 p-2 rounded-full">
