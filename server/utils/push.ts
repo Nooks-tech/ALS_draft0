@@ -143,17 +143,76 @@ export async function sendLocalizedPushScoped(opts: {
         };
       })
       .filter((m): m is NonNullable<typeof m> => !!m);
-    if (messages.length === 0) return;
+    if (messages.length === 0) {
+      // 2026-05-22 observability: empty messages means we found
+      // subscription rows but none had a usable token. Worth knowing.
+      console.warn('[push] sendLocalizedPushScoped: no usable tokens', {
+        customerId,
+        merchantId,
+        channel,
+        subscriptionCount: subs.length,
+      });
+      return;
+    }
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
     if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
-    await fetch('https://exp.host/--/api/v2/push/send', {
+    const res = await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
       headers,
       body: JSON.stringify(messages),
     });
+    // 2026-05-22: read per-token receipts so dead tokens surface
+    // instead of vanishing into a silent 200. Mirrors the same logic
+    // in sendPushToCustomer (routes/orders.ts).
+    let okCount = 0;
+    let errorCount = 0;
+    const tokenErrors: Array<{ status: string; code?: string; message?: string }> = [];
+    if (res.ok) {
+      try {
+        const json = (await res.json()) as {
+          data?: Array<{ status?: string; message?: string; details?: { error?: string } }>;
+        };
+        const receipts = Array.isArray(json?.data) ? json.data : [];
+        receipts.forEach((rcpt) => {
+          if (rcpt?.status === 'ok') okCount += 1;
+          else {
+            errorCount += 1;
+            tokenErrors.push({
+              status: rcpt?.status ?? 'unknown',
+              code: rcpt?.details?.error,
+              message: rcpt?.message,
+            });
+          }
+        });
+      } catch {
+        // Parse failed; treat as ok-on-HTTP-2xx.
+      }
+    } else {
+      errorCount = messages.length;
+      const errBody = await res.text().catch(() => '');
+      console.warn('[push] sendLocalizedPushScoped Expo HTTP non-2xx', {
+        customerId,
+        merchantId,
+        channel,
+        status: res.status,
+        body: errBody.slice(0, 200),
+      });
+    }
+    if (errorCount === 0 && okCount > 0) {
+      console.log('[push] Sent', { customerId, merchantId, channel, tokenCount: okCount });
+    } else if (errorCount > 0) {
+      console.warn('[push] Partial / total failure', {
+        customerId,
+        merchantId,
+        channel,
+        ok: okCount,
+        errors: errorCount,
+        tokenErrors,
+      });
+    }
   } catch (e: unknown) {
     console.warn('[push] sendLocalizedPushScoped failed:', e instanceof Error ? e.message : e);
   }

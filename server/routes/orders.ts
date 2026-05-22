@@ -57,14 +57,40 @@ async function sendPushToCustomer(
     if (merchantId) q = q.eq('merchant_id', merchantId);
     const { data: subs } = await q;
     const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
-    if (tokens.length === 0) return;
 
+    // 2026-05-22: detailed observability. Pre-fix, this function was a
+    // black hole — no log on success, no log on "no tokens found", no
+    // inspection of Expo's per-message response. The mofosos test
+    // surfaced exactly this: a Cancelled push fired but the customer
+    // got nothing on the app, and the Railway logs were silent.
+    // Now: every code path emits a log line + audit row.
+    if (tokens.length === 0) {
+      console.warn('[Push] No tokens found', { customerId, merchantId, title });
+      void (async () => {
+        try {
+          const { writeAudit } = await import('../utils/auditLog');
+          await writeAudit({
+            merchant_id: merchantId ?? null,
+            action: 'push.no_tokens',
+            payload: { customer_id: customerId, title },
+          });
+        } catch { /* never let audit throw */ }
+      })();
+      return;
+    }
+
+    // channelId='orders' (transactional channel) — pre-fix this was
+    // 'marketing' which is wrong for order-status / cancellation
+    // pushes. iOS ignores channelId anyway, but on Android a
+    // mis-channeled transactional notification can land in a
+    // category the customer has muted. 'orders' is the channel name
+    // the Localized push helper uses.
     const messages = tokens.map((token: string) => ({
       to: token,
       sound: 'default',
       title,
       body,
-      channelId: 'marketing',
+      channelId: 'orders',
     }));
 
     const headers: Record<string, string> = {
@@ -73,13 +99,101 @@ async function sendPushToCustomer(
     };
     if (EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${EXPO_ACCESS_TOKEN}`;
 
-    await fetch('https://exp.host/--/api/v2/push/send', {
+    const res = await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
       headers,
       body: JSON.stringify(messages),
     });
+
+    // Expo returns { data: [{ status: 'ok' | 'error', message?, details? }, ...] }
+    // — one element per message we sent. We inspect each so a single
+    // dead token (DeviceNotRegistered) doesn't silently sink the whole
+    // batch and we know which token to prune.
+    let okCount = 0;
+    let errorCount = 0;
+    const tokenErrors: Array<{ token: string; status: string; message?: string; code?: string }> = [];
+    if (res.ok) {
+      try {
+        const json = (await res.json()) as { data?: Array<{ status?: string; message?: string; details?: { error?: string } }> };
+        const receipts = Array.isArray(json?.data) ? json.data : [];
+        receipts.forEach((rcpt, idx) => {
+          if (rcpt?.status === 'ok') okCount += 1;
+          else {
+            errorCount += 1;
+            tokenErrors.push({
+              token: String(tokens[idx] ?? '').slice(-12),
+              status: rcpt?.status ?? 'unknown',
+              message: rcpt?.message,
+              code: rcpt?.details?.error,
+            });
+          }
+        });
+      } catch (parseErr: any) {
+        console.warn('[Push] Could not parse Expo response', { customerId, merchantId, error: parseErr?.message });
+      }
+    } else {
+      errorCount = tokens.length;
+      const errBody = await res.text().catch(() => '');
+      console.warn('[Push] Expo HTTP non-2xx', {
+        customerId,
+        merchantId,
+        status: res.status,
+        body: errBody.slice(0, 200),
+      });
+    }
+
+    if (errorCount === 0 && okCount > 0) {
+      console.log(`[Push] Sent`, { customerId, merchantId, title, tokenCount: okCount });
+    } else if (errorCount > 0) {
+      console.warn('[Push] Partial / total failure', {
+        customerId,
+        merchantId,
+        title,
+        ok: okCount,
+        errors: errorCount,
+        tokenErrors,
+      });
+      // Audit + Sentry so partial-deliveries don't disappear into the void.
+      void (async () => {
+        try {
+          const [{ writeAudit }, { captureError }] = await Promise.all([
+            import('../utils/auditLog'),
+            import('../utils/sentryContext'),
+          ]);
+          await writeAudit({
+            merchant_id: merchantId ?? null,
+            action: 'push.delivery_partial_failure',
+            payload: {
+              customer_id: customerId,
+              title,
+              ok_count: okCount,
+              error_count: errorCount,
+              token_errors: tokenErrors,
+            },
+          });
+          if (tokenErrors.some((t) => t.code === 'DeviceNotRegistered')) {
+            captureError(new Error('Expo DeviceNotRegistered — stale push token'), {
+              component: 'push.deviceNotRegistered',
+              merchantId: merchantId ?? undefined,
+              customerId,
+              extra: { tokenErrors },
+            });
+          }
+        } catch { /* never let observability throw */ }
+      })();
+    }
   } catch (e: any) {
-    console.warn('[Push] Failed to send:', e?.message);
+    console.warn('[Push] Failed to send', { customerId, merchantId, error: e?.message });
+    void (async () => {
+      try {
+        const { captureError } = await import('../utils/sentryContext');
+        captureError(e, {
+          component: 'orders.sendPushToCustomer',
+          merchantId: merchantId ?? undefined,
+          customerId,
+        });
+      } catch { /* never let observability throw */ }
+    })();
   }
 }
 
