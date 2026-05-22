@@ -788,6 +788,15 @@ export default function CheckoutScreen() {
             promoDiscountSar: promoApplied ? promoDiscount : null,
             promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
+            carDetails:
+              orderType === 'drivethru'
+                ? {
+                    plate_letters: carPlateLetters.trim(),
+                    plate_numbers: carPlateNumbers.trim(),
+                    model: carModel.trim(),
+                    color: carColor.trim(),
+                  }
+                : null,
             loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
             walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
             cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
@@ -1121,6 +1130,15 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
+          carDetails:
+            orderType === 'drivethru'
+              ? {
+                  plate_letters: carPlateLetters.trim(),
+                  plate_numbers: carPlateNumbers.trim(),
+                  model: carModel.trim(),
+                  color: carColor.trim(),
+                }
+              : null,
           // No wallet debit for free-reward orders. Wallet-only
           // orders debit the full total via the legacy 'wallet'
           // paymentMethod path the server still understands.
@@ -1266,6 +1284,15 @@ export default function CheckoutScreen() {
             promoDiscountSar: promoApplied ? promoDiscount : null,
             promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
+            carDetails:
+              orderType === 'drivethru'
+                ? {
+                    plate_letters: carPlateLetters.trim(),
+                    plate_numbers: carPlateNumbers.trim(),
+                    model: carModel.trim(),
+                    color: carColor.trim(),
+                  }
+                : null,
             // Wallet credit applied as a partial payment. Server
             // debits this from the wallet during commit, then
             // /token-pay below subtracts the same amount from
