@@ -1580,31 +1580,78 @@ async function refundOrderToWallet(
     reason.toLowerCase().startsWith('abandoned payment') &&
     !order.foodics_order_id;
   if (!isAbandonedPaymentSweep) {
-    const lead =
-      cancelledBy === 'merchant'
+    // Customer language preference — per-(merchant, customer), falls back
+    // to English when no profile exists. We localize the cancel push here
+    // because it's the SOLE cancellation notification the customer sees
+    // now (the nooksweb foodics-webhook used to fire a separate bilingual
+    // "couldn't make it work" push — removed because it duplicated this
+    // one and raced under Foodics webhook retries). Single localized
+    // detailed push instead of one brief + one detailed.
+    let customerLang: 'en' | 'ar' = 'en';
+    try {
+      const { data: profile } = await supabaseAdmin
+        .from('customer_merchant_profiles')
+        .select('language')
+        .eq('merchant_id', order.merchant_id)
+        .eq('customer_id', order.customer_id)
+        .maybeSingle();
+      const raw = (profile as { language?: string | null } | null)?.language ?? null;
+      if (raw === 'ar') customerLang = 'ar';
+    } catch {
+      // Profile lookup is best-effort — keep the English default.
+    }
+    const isArabic = customerLang === 'ar';
+    const title = isArabic ? 'تم إلغاء الطلب' : 'Order Cancelled';
+    const lead = isArabic
+      ? cancelledBy === 'merchant'
+        ? 'اضطر المتجر يرفض طلبك.'
+        : 'انتهت مهلة الطلب — المتجر ما قبله في الوقت المحدد.'
+      : cancelledBy === 'merchant'
         ? 'Your order has been refused by the store.'
         : 'Your order timed out — the store did not accept it in time.';
     const pieces: string[] = [];
     if (cardReturnedToCustomer && effectiveCardPaid > 0) {
-      pieces.push(
-        moyasarMethod === 'void'
-          ? `${effectiveCardPaid} SAR will be returned to your card within a few hours`
-          : `${effectiveCardPaid} SAR is being returned to your card (1-3 business days)`,
-      );
+      if (isArabic) {
+        pieces.push(
+          moyasarMethod === 'void'
+            ? `${effectiveCardPaid} ريال راح ترجع لبطاقتك خلال ساعات`
+            : `${effectiveCardPaid} ريال راجعة لبطاقتك (خلال 1-3 أيام عمل)`,
+        );
+      } else {
+        pieces.push(
+          moyasarMethod === 'void'
+            ? `${effectiveCardPaid} SAR will be returned to your card within a few hours`
+            : `${effectiveCardPaid} SAR is being returned to your card (1-3 business days)`,
+        );
+      }
     }
     if (breakdown.wallet && breakdown.wallet.amountSar > 0) {
-      pieces.push(`${breakdown.wallet.amountSar} SAR credited to your wallet`);
+      pieces.push(
+        isArabic
+          ? `${breakdown.wallet.amountSar} ريال أُضيفت لمحفظتك`
+          : `${breakdown.wallet.amountSar} SAR credited to your wallet`,
+      );
     }
     if (breakdown.cashback && breakdown.cashback.amountSar > 0 && !breakdown.cashback.alreadyRestored) {
-      pieces.push(`${breakdown.cashback.amountSar} SAR cashback restored`);
+      pieces.push(
+        isArabic
+          ? `${breakdown.cashback.amountSar} ريال كاش باك مستردّة`
+          : `${breakdown.cashback.amountSar} SAR cashback restored`,
+      );
     }
     if (breakdown.stamps && breakdown.stamps.count > 0 && !breakdown.stamps.alreadyRestored) {
-      pieces.push(`${breakdown.stamps.count} stamps restored`);
+      pieces.push(
+        isArabic
+          ? `${breakdown.stamps.count} أختام مستردّة`
+          : `${breakdown.stamps.count} stamps restored`,
+      );
     }
     const refundLine = pieces.length
-      ? `${pieces.join(', ')}.`
-      : 'No charge was made to your card, so nothing needs to be refunded.';
-    sendPushToCustomer(order.customer_id, 'Order Cancelled', `${lead} ${refundLine}`, order.merchant_id);
+      ? `${pieces.join(isArabic ? '، ' : ', ')}.`
+      : isArabic
+        ? 'ما تم خصم أي مبلغ من بطاقتك، لذلك ما في شي يحتاج استرداد.'
+        : 'No charge was made to your card, so nothing needs to be refunded.';
+    sendPushToCustomer(order.customer_id, title, `${lead} ${refundLine}`, order.merchant_id);
   } else {
     console.log(
       `[Orders] Suppressing cancellation push for abandoned-payment sweep on order ${orderId} (never reached Foodics)`,
