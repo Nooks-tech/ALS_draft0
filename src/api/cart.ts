@@ -9,6 +9,7 @@
  */
 
 import { supabase } from './supabase';
+import { API_URL } from './config';
 
 export type ServerCartItem = {
   id: string;
@@ -32,7 +33,13 @@ export type ServerCart = {
   notified_at: string | null;
 };
 
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
+// Wrong env var name (EXPO_PUBLIC_API_BASE_URL) silently no-op'd this
+// whole file for weeks — saveServerCart returned false at the first
+// guard, customer_carts stayed empty platform-wide, the abandoned-
+// cart cron had nothing to chase. API_URL from config.ts is the same
+// ALS-server base URL every other api/* file uses (EXPO_PUBLIC_API_URL
+// with the dev fallback).
+const API_BASE = API_URL ?? '';
 
 async function getAccessToken(): Promise<string | null> {
   if (!supabase) return null;

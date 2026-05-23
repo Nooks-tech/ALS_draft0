@@ -15,6 +15,7 @@
  */
 
 import { supabase } from './supabase';
+import { API_URL } from './config';
 
 export type ProfileRow = {
   full_name: string | null;
@@ -27,7 +28,12 @@ export type ProfileRow = {
 
 export type ProfileUpdate = Partial<Omit<ProfileRow, 'updated_at'>>;
 
-const API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
+// Same env-var typo as src/api/cart.ts had — EXPO_PUBLIC_API_BASE_URL
+// doesn't exist anywhere in this codebase. The right one is API_URL
+// from config.ts (reads EXPO_PUBLIC_API_URL). Without this, every
+// profile sync returned null/false at the first guard and the
+// customer_merchant_profiles row never got written.
+const API_BASE = API_URL ?? '';
 
 async function getAccessToken(): Promise<string | null> {
   if (!supabase) return null;
