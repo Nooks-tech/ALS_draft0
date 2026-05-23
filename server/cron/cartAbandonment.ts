@@ -7,12 +7,13 @@
  * of relying on a device-local 1-hour notification:
  *
  *   updated_at < now() - 15min AND notified_at IS NULL
- *     → send a merchant-branded "your cart is waiting" push,
+ *     → send a merchant-branded "Don't forget your cart 😉" push,
  *       stamp notified_at so it doesn't repeat.
  *
- *   updated_at < now() - 1h
+ *   updated_at < now() - 45min
  *     → move the row into abandoned_carts (recovered_at NULL),
- *       DELETE from customer_carts.
+ *       DELETE from customer_carts. (15 min notify window + 30 min
+ *       grace after the nudge before the cart is wiped.)
  *
  *   On order commit, the matching abandoned_carts row (if any) gets
  *   recovered_at + recovered_order_id stamped so the dashboard can
@@ -39,8 +40,13 @@ const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
 const POLL_INTERVAL_MS = 60 * 1000; // every minute
-const NOTIFY_AFTER_MS = 15 * 60 * 1000; // 15 min idle
-const ABANDON_AFTER_MS = 60 * 60 * 1000; // 1 hour idle
+const NOTIFY_AFTER_MS = 15 * 60 * 1000; // 15 min idle → "don't forget your cart"
+// 30 min AFTER the notification fires (so 45 min total cart idle) the
+// row gets moved to abandoned_carts and the active cart cleared. This
+// is the spec the founder set 2026-05-23 — gives the customer a
+// reasonable window to come back after the nudge, but doesn't let
+// stale carts sit indefinitely poisoning future opens.
+const ABANDON_AFTER_MS = 45 * 60 * 1000;
 const BATCH_LIMIT = 200;
 
 type CartRow = {
@@ -89,20 +95,24 @@ async function processNotifyBatch() {
         customerId: row.customer_id,
         merchantId: row.merchant_id,
         channel: 'orders',
+        // Single-line winky-face nudge — the founder's preferred copy
+        // 2026-05-23. The detail about how many items / how to finish
+        // ordering used to live on a second line but cluttered the
+        // lockscreen; the title is now the whole message.
         copy: {
           en: {
-            title: 'Your cart is waiting',
+            title: "Don't forget your cart 😉",
             body:
               itemCount === 1
-                ? 'You left an item in your cart. Tap to finish ordering.'
-                : `You left ${itemCount} items in your cart. Tap to finish ordering.`,
+                ? 'There’s still an item waiting. Tap to finish.'
+                : `There are still ${itemCount} items waiting. Tap to finish.`,
           },
           ar: {
-            title: 'سلتك بانتظارك',
+            title: 'لا تنسى سلتك 😉',
             body:
               itemCount === 1
-                ? 'تركت منتج في السلة. اضغط لإتمام الطلب.'
-                : `تركت ${itemCount} منتجات في السلة. اضغط لإتمام الطلب.`,
+                ? 'في منتج لسه ينتظرك. اضغط لإتمام الطلب.'
+                : `في ${itemCount} منتجات لسه تنتظرك. اضغط لإتمام الطلب.`,
           },
         },
       });
