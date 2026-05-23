@@ -259,6 +259,15 @@ export default function CheckoutScreen() {
           customizations: null,
           uniqueId: `reward-${milestoneId}-${foodicsId}`,
           rewardMilestoneId: milestoneId,
+          // Carry the real menu price through so the Foodics relay
+          // can ship the line at face value + a matching reward
+          // discount (POS receipt then reads "Cookie 13 SAR · Discount
+          // 13 SAR" instead of "Cookie 0 SAR · no discount"). Matches
+          // the rewards.tsx path that already passes this. Mirror
+          // here was missing — both screens add the same item type
+          // to the cart, and Foodics needs the price either way.
+          rewardOriginalPriceSar:
+            typeof product.price === 'number' ? product.price : 0,
         });
       }
     }
