@@ -139,6 +139,18 @@ async function processNotifyBatch() {
       console.warn('[cartAbandonment] notified_at stamp failed:', stampErr.message);
     } else {
       sent += 1;
+      // Audit row so "did the cart-abandon push fire for customer X?"
+      // is a one-line supabase query. The push helper itself logs
+      // Expo response codes; this row records the system intent.
+      await supabaseAdmin.from('audit_log').insert({
+        merchant_id: row.merchant_id,
+        action: 'cart.notification_sent',
+        payload: {
+          customer_id: row.customer_id,
+          item_count: itemCount,
+          subtotal_sar: row.subtotal_sar ?? 0,
+        },
+      });
     }
   }
   return sent;
@@ -162,22 +174,52 @@ async function processAbandonBatch() {
   for (const row of data as CartRow[]) {
     const itemCount = Array.isArray(row.items) ? row.items.length : 0;
     if (itemCount > 0) {
-      const { error: insertErr } = await supabaseAdmin
+      // Idempotency guard against the same cart racing two ticks (or a
+      // restart re-processing the same row). abandoned_carts has no
+      // unique constraint on (merchant_id, customer_id) — duplicates
+      // are technically allowed — but two rows for the same
+      // abandonment is data clutter. Look for a row whose
+      // cart_last_updated_at matches THIS cart's updated_at: that's
+      // proof the abandonment was already recorded for this exact
+      // cart state, so skip the insert and just clean up the live
+      // cart row.
+      const { data: existing } = await supabaseAdmin
         .from('abandoned_carts')
-        .insert({
-          merchant_id: row.merchant_id,
-          customer_id: row.customer_id,
-          items: row.items,
-          subtotal_sar: row.subtotal_sar ?? 0,
-          branch_id: row.branch_id,
-          order_type: row.order_type,
-          cart_created_at: row.created_at,
-          cart_last_updated_at: row.updated_at,
-        });
-      if (insertErr) {
-        console.warn('[cartAbandonment] abandoned_carts insert failed:', insertErr.message);
-        // Skip delete — re-try next tick so we don't lose the row.
-        continue;
+        .select('id')
+        .eq('merchant_id', row.merchant_id)
+        .eq('customer_id', row.customer_id)
+        .eq('cart_last_updated_at', row.updated_at)
+        .maybeSingle();
+      if (!existing) {
+        const { error: insertErr } = await supabaseAdmin
+          .from('abandoned_carts')
+          .insert({
+            merchant_id: row.merchant_id,
+            customer_id: row.customer_id,
+            items: row.items,
+            subtotal_sar: row.subtotal_sar ?? 0,
+            branch_id: row.branch_id,
+            order_type: row.order_type,
+            cart_created_at: row.created_at,
+            cart_last_updated_at: row.updated_at,
+          });
+        if (insertErr) {
+          // Loud audit row so the next "why didn't my cart abandon?"
+          // is one supabase query away. Previously this was a silent
+          // console.warn that only Railway logs could surface.
+          await supabaseAdmin.from('audit_log').insert({
+            merchant_id: row.merchant_id,
+            action: 'cart.abandon.insert_failed',
+            payload: {
+              customer_id: row.customer_id,
+              error: insertErr.message,
+              cart_updated_at: row.updated_at,
+              item_count: itemCount,
+            },
+          });
+          // Skip delete — re-try next tick so we don't lose the row.
+          continue;
+        }
       }
     }
 
@@ -187,9 +229,26 @@ async function processAbandonBatch() {
       .eq('merchant_id', row.merchant_id)
       .eq('customer_id', row.customer_id);
     if (delErr) {
-      console.warn('[cartAbandonment] customer_carts delete failed:', delErr.message);
+      await supabaseAdmin.from('audit_log').insert({
+        merchant_id: row.merchant_id,
+        action: 'cart.abandon.delete_failed',
+        payload: { customer_id: row.customer_id, error: delErr.message },
+      });
     } else {
       abandoned += 1;
+      // Success audit — gives us a queryable trail so the merchant
+      // counter on the dashboard can be cross-checked against actual
+      // abandonments rather than guessed from the cron heartbeat.
+      await supabaseAdmin.from('audit_log').insert({
+        merchant_id: row.merchant_id,
+        action: 'cart.abandoned',
+        payload: {
+          customer_id: row.customer_id,
+          item_count: itemCount,
+          subtotal_sar: row.subtotal_sar ?? 0,
+          cart_idle_minutes: Math.round((Date.now() - new Date(row.updated_at).getTime()) / 60000),
+        },
+      });
     }
   }
   return abandoned;
