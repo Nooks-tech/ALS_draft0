@@ -47,6 +47,15 @@ const NOTIFY_AFTER_MS = 15 * 60 * 1000; // 15 min idle → "don't forget your ca
 // reasonable window to come back after the nudge, but doesn't let
 // stale carts sit indefinitely poisoning future opens.
 const ABANDON_AFTER_MS = 45 * 60 * 1000;
+// Per-customer notification cooldown. After we've pinged a customer
+// about an idle cart, don't ping them again for at least this long —
+// even if the cart row gets recreated by the device's silent re-sync
+// (the device's local cache still holds the items after we abandon
+// the server row; CartContext's debounced PUT re-creates the
+// customer_carts row, which previously restarted the 15-min clock
+// and re-fired a notification ~50 min after the last one). Founder
+// spec 2026-05-24: "i only need to be send once".
+const NOTIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const BATCH_LIMIT = 200;
 
 type CartRow = {
@@ -76,6 +85,34 @@ async function processNotifyBatch() {
   }
   if (!data || data.length === 0) return 0;
 
+  // Per-customer cooldown lookup — one batch query rather than N
+  // round-trips. Pulls every (merchant, customer) pair we're about
+  // to consider and checks last_cart_notification_at. Within the
+  // cooldown window we still STAMP the cart's notified_at (so the
+  // cron doesn't keep re-scanning the same row every tick) but skip
+  // the actual push.
+  const pairs = (data ?? []).map((r) => ({ m: r.merchant_id, c: r.customer_id }));
+  const cooldownCutoffIso = new Date(Date.now() - NOTIFY_COOLDOWN_MS).toISOString();
+  const inCooldown = new Set<string>();
+  if (pairs.length > 0) {
+    const { data: cd, error: cdErr } = await supabaseAdmin
+      .from('merchant_customers')
+      .select('merchant_id, customer_id, last_cart_notification_at')
+      .in('merchant_id', Array.from(new Set(pairs.map((p) => p.m))))
+      .in('customer_id', Array.from(new Set(pairs.map((p) => p.c))))
+      .gt('last_cart_notification_at', cooldownCutoffIso);
+    if (cdErr) {
+      // Schema drift safety: if last_cart_notification_at isn't
+      // there yet (migration hasn't run), don't block notifications.
+      // Loud log so we can spot the drift.
+      console.warn('[cartAbandonment] cooldown lookup failed (assuming none):', cdErr.message);
+    } else {
+      for (const row of cd ?? []) {
+        inCooldown.add(`${row.merchant_id}:${row.customer_id}`);
+      }
+    }
+  }
+
   let sent = 0;
   for (const row of data as Array<Pick<CartRow, 'merchant_id' | 'customer_id' | 'items' | 'subtotal_sar' | 'updated_at'>>) {
     const itemCount = Array.isArray(row.items) ? row.items.length : 0;
@@ -87,6 +124,31 @@ async function processNotifyBatch() {
         .delete()
         .eq('merchant_id', row.merchant_id)
         .eq('customer_id', row.customer_id);
+      continue;
+    }
+
+    // Cooldown: customer was already pinged about a cart within the
+    // last NOTIFY_COOLDOWN_MS. Stamp notified_at so the cron stops
+    // re-checking this row each tick, but suppress the push. The
+    // 30-min-after-notification abandon still fires for this row —
+    // it just goes to abandoned_carts silently.
+    if (inCooldown.has(`${row.merchant_id}:${row.customer_id}`)) {
+      const { error: stampErr } = await supabaseAdmin
+        .from('customer_carts')
+        .update({ notified_at: new Date().toISOString() })
+        .eq('merchant_id', row.merchant_id)
+        .eq('customer_id', row.customer_id);
+      if (!stampErr) {
+        await supabaseAdmin.from('audit_log').insert({
+          merchant_id: row.merchant_id,
+          action: 'cart.notification_suppressed_cooldown',
+          payload: {
+            customer_id: row.customer_id,
+            item_count: itemCount,
+            subtotal_sar: row.subtotal_sar ?? 0,
+          },
+        });
+      }
       continue;
     }
 
@@ -151,6 +213,20 @@ async function processNotifyBatch() {
           subtotal_sar: row.subtotal_sar ?? 0,
         },
       });
+      // Stamp the per-customer cooldown so future cart-row
+      // re-creations within the next NOTIFY_COOLDOWN_MS don't
+      // re-notify this same human. Best-effort: if merchant_customers
+      // doesn't have a row for this pair yet (rare; customer should
+      // be enrolled before they can save a server-side cart), the
+      // update is a no-op — the cron will fall through to its normal
+      // 15-min behaviour on the next cart cycle. Pre-migration rows
+      // without the column are also harmless thanks to the lookup
+      // soft-fail above.
+      await supabaseAdmin
+        .from('merchant_customers')
+        .update({ last_cart_notification_at: new Date().toISOString() })
+        .eq('merchant_id', row.merchant_id)
+        .eq('customer_id', row.customer_id);
     }
   }
   return sent;
