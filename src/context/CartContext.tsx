@@ -138,16 +138,45 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         // Phase D: try the server first (source of truth across devices
         // and reinstalls). Fall back to the AsyncStorage cache when
         // offline or the customer isn't authenticated yet.
+        //
+        // 2026-05-24: distinguish three server responses:
+        //   - remote === null         → network error / unauth — fall
+        //                               through to local cache (offline
+        //                               resilience).
+        //   - remote.items.length>0   → server has a saved cart — seed
+        //                               from it.
+        //   - remote.items.length==0  → server EXPLICITLY says empty
+        //                               cart. Either the customer just
+        //                               committed an order, or the
+        //                               abandonment cron deleted the
+        //                               row 45 min+ after no activity.
+        //                               In that case we must clear any
+        //                               stale local cache instead of
+        //                               re-hydrating the user's view
+        //                               with items that no longer
+        //                               exist as a saved cart — the
+        //                               previous fallback re-synced
+        //                               them back to the server and
+        //                               looped the abandon/notify
+        //                               cycle. Founder spec 2026-05-24:
+        //                               "make sure the items in the
+        //                               cart actually get deleted for
+        //                               that user".
         let seeded = false;
+        let serverSaysEmpty = false;
         if (uid !== 'guest' && merchantId) {
           const remote = await fetchServerCart(merchantId);
-          if (remote && Array.isArray(remote.items) && remote.items.length > 0) {
-            setCartItems(remote.items as CartItem[]);
-            if (remote.order_type === 'delivery' || remote.order_type === 'pickup' || remote.order_type === 'drivethru') {
-              setOrderTypeState(remote.order_type);
+          if (remote) {
+            if (Array.isArray(remote.items) && remote.items.length > 0) {
+              setCartItems(remote.items as CartItem[]);
+              if (remote.order_type === 'delivery' || remote.order_type === 'pickup' || remote.order_type === 'drivethru') {
+                setOrderTypeState(remote.order_type);
+              }
+              setLastUpdatedAt(remote.updated_at ? new Date(remote.updated_at).getTime() : Date.now());
+              seeded = true;
+            } else {
+              serverSaysEmpty = true;
             }
-            setLastUpdatedAt(remote.updated_at ? new Date(remote.updated_at).getTime() : Date.now());
-            seeded = true;
           }
         }
 
@@ -166,6 +195,25 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         if (!raw || seeded) return;
         const parsed = JSON.parse(raw) as PersistedCart;
         const now = Date.now();
+
+        // When the server is authoritative-empty and the local cache
+        // hasn't been touched within the abandonment window, the cart
+        // was almost certainly removed by the abandonment cron — clear
+        // local. We use 30 min as the threshold (= the grace window
+        // BETWEEN notification and abandonment); anything more recent
+        // and the customer probably just made a local change that
+        // hasn't synced. Offline edits are protected because remote
+        // === null falls through this branch entirely.
+        const CART_ABANDON_GRACE_MS = 30 * 60 * 1000;
+        if (
+          serverSaysEmpty &&
+          typeof parsed.updatedAt === 'number' &&
+          now - parsed.updatedAt >= CART_ABANDON_GRACE_MS
+        ) {
+          await AsyncStorage.removeItem(CART_CACHE_KEY);
+          return;
+        }
+
         const expiresAt =
           typeof parsed.expiresAt === 'number'
             ? parsed.expiresAt
