@@ -120,7 +120,11 @@ function getUpstashLimiter(max: number, windowMs: number): Ratelimit | null {
     limiter = new Ratelimit({
       redis,
       limiter: Ratelimit.slidingWindow(max, msToUpstashDuration(windowMs)),
-      prefix: `als:${process.env.RATE_LIMIT_NAMESPACE ?? process.env.NODE_ENV ?? 'dev'}`,
+      // Prefix includes (max, windowMs) so different limit configs
+      // over the same dim+value land in separate Redis keyspaces.
+      // Without this, two endpoints with different limits would
+      // share + corrupt each other's counters.
+      prefix: `als:${process.env.RATE_LIMIT_NAMESPACE ?? process.env.NODE_ENV ?? 'dev'}:${max}:${windowMs}`,
       analytics: true,
     });
     upstashLimiters.set(cacheKey, limiter);
@@ -173,9 +177,12 @@ export type LimitsResult =
 
 export function previewLimits(keys: LimitKey[]): LimitsResult {
   const now = Date.now();
-  // Pass 1 — read every dim, bail at the first one that's over.
+  // Pass 1 — read every dim. Bucket key includes (max, windowMs) so
+  // different limit configs over the same dim+value (e.g., per-customer
+  // 5/15m for token-pay vs per-customer 3/15m for attach) don't share
+  // buckets. Without this they'd corrupt each other.
   for (const k of keys) {
-    const mapKey = `m:${k.dim}:${k.value}`;
+    const mapKey = `m:${k.max}:${k.windowMs}:${k.dim}:${k.value}`;
     const bucket = buckets.get(mapKey);
     if (bucket && bucket.resetAt >= now && bucket.count >= k.max) {
       const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
@@ -184,7 +191,7 @@ export function previewLimits(keys: LimitKey[]): LimitsResult {
   }
   // Pass 2 — all clear, increment every dim.
   for (const k of keys) {
-    const mapKey = `m:${k.dim}:${k.value}`;
+    const mapKey = `m:${k.max}:${k.windowMs}:${k.dim}:${k.value}`;
     const bucket = buckets.get(mapKey);
     if (!bucket || bucket.resetAt < now) {
       buckets.set(mapKey, { count: 1, resetAt: now + k.windowMs });
