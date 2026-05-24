@@ -17,6 +17,8 @@
     "@nwpr/pass-js": "^7.0.2",
     "@sentry/node": "^10.52.0",
     "@supabase/supabase-js": "^2.95.3",
+    "@upstash/ratelimit": "^2.0.8",
+    "@upstash/redis": "^1.38.0",
     "adm-zip": "^0.5.16",
     "cors": "^2.8.5",
     "do-not-zip": "^1.0.0",

@@ -77,6 +77,81 @@ export const paymentRateLimit = createRateLimit({ max: 30, windowMs: 60_000, pre
 
 import crypto from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { Redis } from '@upstash/redis';
+import { Ratelimit } from '@upstash/ratelimit';
+
+/* ──────────────────────────────────────────────────────────────────
+   Upstash backend (Path B) — multi-dyno-safe sliding window.
+   Activates when UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
+   are set. Falls back to the in-memory bucket store otherwise so
+   dev/local environments work without Redis.
+   ────────────────────────────────────────────────────────────────── */
+
+let upstashRedis: Redis | null = null;
+const upstashLimiters = new Map<string, Ratelimit>();
+
+function getUpstash(): Redis | null {
+  if (upstashRedis) return upstashRedis;
+  const url = process.env.UPSTASH_REDIS_REST_URL?.trim();
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
+  if (!url || !token) return null;
+  try {
+    upstashRedis = new Redis({ url, token });
+    return upstashRedis;
+  } catch (err) {
+    console.warn('[rate-limit] Upstash init failed, falling back to in-memory:', err);
+    return null;
+  }
+}
+
+function msToUpstashDuration(ms: number): `${number} s` | `${number} m` | `${number} h` | `${number} d` {
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))} s`;
+  if (ms < 60 * 60_000) return `${Math.round(ms / 60_000)} m`;
+  if (ms < 24 * 60 * 60_000) return `${Math.round(ms / (60 * 60_000))} h`;
+  return `${Math.round(ms / (24 * 60 * 60_000))} d`;
+}
+
+function getUpstashLimiter(max: number, windowMs: number): Ratelimit | null {
+  const redis = getUpstash();
+  if (!redis) return null;
+  const cacheKey = `${max}:${windowMs}`;
+  let limiter = upstashLimiters.get(cacheKey);
+  if (!limiter) {
+    limiter = new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(max, msToUpstashDuration(windowMs)),
+      prefix: `als:${process.env.RATE_LIMIT_NAMESPACE ?? process.env.NODE_ENV ?? 'dev'}`,
+      analytics: true,
+    });
+    upstashLimiters.set(cacheKey, limiter);
+  }
+  return limiter;
+}
+
+async function previewLimitsUpstash(keys: LimitKey[]): Promise<LimitsResult> {
+  try {
+    const results = await Promise.all(
+      keys.map(async (k) => {
+        const limiter = getUpstashLimiter(k.max, k.windowMs);
+        if (!limiter) return { k, success: true, reset: 0, remaining: k.max };
+        const res = await limiter.limit(`${k.dim}:${k.value}`);
+        return { k, ...res };
+      }),
+    );
+    const blocked = results.find((r) => !r.success);
+    if (blocked) {
+      const retryAfter = Math.max(1, Math.ceil((blocked.reset - Date.now()) / 1000));
+      return { ok: false, dim: blocked.k.dim, retryAfter };
+    }
+    return { ok: true };
+  } catch (err) {
+    console.warn(
+      '[rate-limit] Upstash check failed, allowing through:',
+      err instanceof Error ? err.message : String(err),
+    );
+    return { ok: true };
+  }
+}
 
 export function hashKey(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -146,7 +221,12 @@ export async function enforceLimits(
     merchantId?: string | null;
   },
 ): Promise<boolean> {
-  const decision = previewLimits(opts.keys);
+  // Upstash when configured (Path B — multi-dyno-safe sliding window);
+  // in-memory otherwise (Path A fallback).
+  const useUpstash = !!getUpstash();
+  const decision = useUpstash
+    ? await previewLimitsUpstash(opts.keys)
+    : previewLimits(opts.keys);
   if (decision.ok) return true;
 
   res.setHeader('Retry-After', String(decision.retryAfter));
