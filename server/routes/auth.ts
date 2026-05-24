@@ -11,6 +11,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createHmac, randomUUID } from 'crypto';
 import { sendSms, normalizePhone, otpMessage } from '../services/sms';
 import { creditMerchantSmsWallet, debitMerchantSmsWallet } from '../lib/smsWallet';
+import { enforceLimits, hashKey } from '../utils/rateLimit';
 
 /**
  * Mask a Saudi number for logs/audit: keep prefix + last 3, redact the middle.
@@ -145,6 +146,22 @@ router.post('/send-otp', async (req, res) => {
     if (recentIpAttempts.length >= OTP_MAX_PER_IP_WINDOW) {
       return res.status(429).json({ error: 'Too many verification attempts from this network. Please try again later.' });
     }
+
+    // Per-merchant cap on OTP sends — protects the merchant's SMS
+    // wallet from being drained by a distributed attack (per-phone +
+    // per-IP above don't bound the total across attackers). 100 SMS
+    // per hour per merchant is well above legitimate signup traffic
+    // even for the biggest merchant we'd onboard — anything over that
+    // is almost certainly abuse.
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'auth.send-otp',
+        keys: [{ dim: 'merchant', value: merchantId, max: 100, windowMs: 60 * 60_000 }],
+        supabaseAdmin: adminClient,
+        merchantId,
+      }))
+    )
+      return;
 
     const { data: latestOtp } = await adminClient
       .from('sms_otp')
@@ -345,6 +362,26 @@ router.post('/verify-otp', async (req, res) => {
     if (!adminClient) {
       return res.status(500).json({ error: 'OTP service not configured' });
     }
+
+    // Brute-force defense — 6-digit OTP has 1M combinations, an
+    // unbounded /verify-otp lets an attacker try ~600/min sustained
+    // and crack it inside an hour. Cap per-phone at 5/15min (matches
+    // the human-realistic mistype budget) and per-IP at 20/min
+    // (catches scripts that rotate phones to bypass per-phone). Phone
+    // is hashed before bucket — same value across send-otp + verify-otp
+    // so a follow-up audit query can correlate.
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'auth.verify-otp',
+        keys: [
+          { dim: 'phone', value: hashKey(normalised), max: 5, windowMs: 15 * 60_000 },
+          { dim: 'ip', value: getRequestIp(req), max: 20, windowMs: 60_000 },
+        ],
+        supabaseAdmin: adminClient,
+        merchantId,
+      }))
+    )
+      return;
 
     // 1. Verify OTP — skipped when BYPASS_SMS=true
     if (!BYPASS_SMS) {

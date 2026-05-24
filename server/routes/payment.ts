@@ -5,7 +5,7 @@ import { calculateCommission, calculateMoyasarFee, normalizeMerchantId, paymentS
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
-import { paymentRateLimit, webhookRateLimit } from '../utils/rateLimit';
+import { paymentRateLimit, webhookRateLimit, enforceLimits } from '../utils/rateLimit';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
 
 /** Constant-time string comparison; safe to call with strings of any length. */
@@ -471,6 +471,16 @@ paymentRouter.post('/saved-cards/attach', async (req, res) => {
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
     if (!token) return res.status(400).json({ error: 'token required' });
 
+    // Cap attaches at 3 per 15 min per customer — legitimate add-a-card
+    // flows fire once per card. Higher rates are usually token-probe
+    // attempts against the merchant's Moyasar account.
+    if (!(await enforceLimits(req, res, {
+      endpoint: 'payment.saved-cards.attach',
+      keys: [{ dim: 'customer', value: user.id, max: 3, windowMs: 15 * 60_000 }],
+      supabaseAdmin,
+      merchantId,
+    }))) return;
+
     const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
     const secretKey = runtimeConfig.secretKey;
     if (!secretKey) {
@@ -589,6 +599,17 @@ paymentRouter.delete('/saved-cards/:id', async (req, res) => {
       return res.status(503).json({ error: 'Database not configured' });
     }
 
+    // 10/min per customer — generous because deletes are idempotent
+    // and the client can retry transient failures. Mainly here to
+    // stop a script from rapid-firing deletes to enumerate which
+    // card IDs belong to the customer.
+    if (!(await enforceLimits(req, res, {
+      endpoint: 'payment.saved-cards.delete',
+      keys: [{ dim: 'customer', value: user.id, max: 10, windowMs: 60_000 }],
+      supabaseAdmin,
+      merchantId: null,
+    }))) return;
+
     // Look up the card to get the token and merchant for Moyasar deletion
     const { data: card, error: lookupError } = await supabaseAdmin
       .from('customer_saved_cards')
@@ -656,6 +677,21 @@ paymentRouter.post('/token-pay', async (req, res) => {
     if (!supabaseAdmin) {
       return res.status(503).json({ error: 'Database not configured' });
     }
+
+    // Rate-limit guard against card-testing attacks. Per-customer
+    // bounds normal user retries to ~5 every 15 min; per-saved-card
+    // is the actual card-testing protection — even if an attacker
+    // rotates customers, hammering one stolen token gets capped at
+    // 3 attempts per 15-min window. Both checked, both must pass.
+    if (!(await enforceLimits(req, res, {
+      endpoint: 'payment.token-pay',
+      keys: [
+        { dim: 'customer', value: user.id,      max: 5, windowMs: 15 * 60_000 },
+        { dim: 'card',     value: savedCardId,  max: 3, windowMs: 15 * 60_000 },
+      ],
+      supabaseAdmin,
+      merchantId: scopedMerchantId,
+    }))) return;
 
     // Look up the saved card
     const { data: card, error: cardError } = await supabaseAdmin
