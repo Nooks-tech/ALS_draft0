@@ -1,5 +1,5 @@
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
+import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import {
   ArrowLeft,
@@ -45,18 +45,20 @@ import { useMenuContext } from '../../src/context/MenuContext';
 type SliderItem = { id: string; image: string; title: string; subtitle: string };
 
 /**
- * Slider banner image that:
- *   1. Reserves the container immediately so the layout doesn't jump
- *      when the image arrives.
- *   2. Paints a subtle brand-tinted placeholder behind the image.
- *   3. Fetches the image with RN's native Image component (so iOS / Android
- *      both honor the URL cache) and fades it in on the `onLoad` event.
+ * Slider banner image with a fade + settle animation on load.
  *
- * The fade-in re-triggers on every mount because each banner is keyed
- * by id in the parent FlatList — swapping banners replays the animation;
- * cached images just fade in faster (the Image cache hit hits onLoad
- * within a few frames, so the user still sees the smoothing rather
- * than a flash).
+ * Layout: a brand-tinted placeholder paints immediately so the
+ * container reserves its space — no layout jump when the image
+ * arrives. The image itself sits on top, starts at opacity 0 and
+ * scale 0.95, and on the native `onLoad` event animates to
+ * opacity 1 and scale 1 over 320ms with an ease-out cubic curve.
+ * Effect reads as the image "landing" — quick to feel responsive,
+ * then gently decelerates as it locks into the final frame.
+ *
+ * The fade re-triggers on every mount because each banner is keyed
+ * by id in the parent FlatList — swapping banners replays the
+ * animation. Cached images still go through it, just compressed
+ * into a few frames once onLoad fires almost immediately.
  */
 function SliderBannerImage({
   uri,
@@ -68,9 +70,15 @@ function SliderBannerImage({
   borderRadius?: number;
 }) {
   const opacity = useSharedValue(0);
-  const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  const scale = useSharedValue(0.95);
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [{ scale: scale.value }],
+  }));
   const handleLoad = () => {
-    opacity.value = withTiming(1, { duration: 350 });
+    const timing = { duration: 320, easing: Easing.out(Easing.cubic) };
+    opacity.value = withTiming(1, timing);
+    scale.value = withTiming(1, timing);
   };
   return (
     <>
