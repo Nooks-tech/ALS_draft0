@@ -458,19 +458,30 @@ export default function MoreScreen() {
         <Text className="text-center text-xs mb-4" style={{ color: textColor }}>{copy.version}</Text>
 
         {/* Designed-by-nooks footer. Halftone wordmark sits inline
-            with the label and dominates the line — the brand name
-            is the message, "Designed by" just frames it. Tint
-            follows textColor so the halftone adapts to dark-mode
-            menu backgrounds without baking white into the asset. */}
-        <View className="flex-row items-center justify-center mb-2" style={{ gap: 10 }}>
+            with the label; "nooks" is wrapped in a TouchableOpacity
+            that opens our website. The PNG was cropped to its tight
+            content bbox (651x194) so the dimensions below directly
+            match the visible halftone — no transparent padding
+            between the label and the brand name. Tint follows
+            textColor so the halftone adapts to dark-mode menu
+            backgrounds without baking white into the asset. */}
+        <View className="flex-row items-center justify-center mb-2" style={{ gap: 8 }}>
           <Text className="text-[14px]" style={{ color: textColor, opacity: 0.55 }}>
             {isArabic ? 'تصميم' : 'Designed by'}
           </Text>
-          <Image
-            source={require('../../assets/images/nooks-wordmark.png')}
-            style={{ width: 275, height: 80, opacity: 0.75, tintColor: textColor }}
-            resizeMode="contain"
-          />
+          <TouchableOpacity
+            onPress={() => Linking.openURL('https://www.nooks.space')}
+            accessibilityLabel="Visit nooks.space"
+            accessibilityRole="link"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            activeOpacity={0.7}
+          >
+            <Image
+              source={require('../../assets/images/nooks-wordmark.png')}
+              style={{ width: 168, height: 50, opacity: 0.75, tintColor: textColor }}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
         </View>
       </ScrollView>
 
