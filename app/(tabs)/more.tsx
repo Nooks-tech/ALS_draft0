@@ -478,7 +478,7 @@ export default function MoreScreen() {
           >
             <Image
               source={require('../../assets/images/nooks-wordmark.png')}
-              style={{ width: 168, height: 50, opacity: 0.75, tintColor: textColor }}
+              style={{ width: 126, height: 38, opacity: 0.75, tintColor: textColor }}
               resizeMode="contain"
             />
           </TouchableOpacity>
