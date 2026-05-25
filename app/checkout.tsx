@@ -68,6 +68,7 @@ import { commitOrder } from '../src/api/orders';
 import { reportCartEvent } from '../src/api/cartEvents';
 import { useMenu } from '../src/hooks/useMenu';
 import { readCache, writeCache } from '../src/lib/persistentCache';
+import { openMapToLocation } from '../src/lib/openMaps';
 
 // Wallet is no longer one of these — it's a redeemable credit
 // applied via the useWallet toggle (see the cashback-style row in
@@ -1505,9 +1506,31 @@ export default function CheckoutScreen() {
           {/* Delivery & Order Details (display only, no change) */}
           <View className="bg-slate-50 rounded-[28px] border border-slate-100 overflow-hidden">
             <View className="flex-row items-center px-4 py-4">
-              <View className="w-11 h-11 rounded-2xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
-                <MapPin size={20} color={primaryColor} />
-              </View>
+              {/* MapPin icon doubles as a tap target when the branch
+                  has coords. Pickup + drivethru both need this — the
+                  customer is physically driving to the branch. */}
+              {(() => {
+                const isPickupLike = orderType === 'pickup' || orderType === 'drivethru';
+                const branchLat = (selectedBranch as { latitude?: number } | null)?.latitude;
+                const branchLng = (selectedBranch as { longitude?: number } | null)?.longitude;
+                const canOpenMap =
+                  isPickupLike && typeof branchLat === 'number' && typeof branchLng === 'number';
+                const inner = (
+                  <View className="w-11 h-11 rounded-2xl items-center justify-center" style={{ backgroundColor: `${primaryColor}18` }}>
+                    <MapPin size={20} color={primaryColor} />
+                  </View>
+                );
+                if (!canOpenMap) return inner;
+                return (
+                  <TouchableOpacity
+                    onPress={() => openMapToLocation(branchLat, branchLng, selectedBranch?.name, isArabic ? 'ar' : 'en')}
+                    accessibilityLabel={isArabic ? 'افتح الخريطة' : 'Open map'}
+                    hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+                  >
+                    {inner}
+                  </TouchableOpacity>
+                );
+              })()}
               <View className="flex-1 ms-3">
                 <Text className="text-slate-500 text-xs font-bold uppercase tracking-widest">
                   {orderType === 'delivery'
@@ -1563,11 +1586,18 @@ export default function CheckoutScreen() {
               {/* Plate: letters + numbers side by side. autoCapitalize
                   on letters because plate letters are uppercase by
                   convention; keyboard='numeric' on numbers. */}
+              {/* placeholderTextColor: the default iOS placeholder
+                  rgba(0,0,0,0.22) is too faint against bg-white inside
+                  the bg-slate-50 card — the form looked empty/disabled
+                  in screenshots. Bump to slate-400 (#94a3b8) so the
+                  hint is readable while still distinct from typed
+                  values. */}
               <Text className="text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wider">{isArabic ? 'لوحة السيارة' : 'License Plate'}</Text>
               <View className="flex-row mb-3" style={{ gap: 8 }}>
                 <TextInput
                   className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm text-center font-bold"
                   placeholder={isArabic ? 'الحروف' : 'Letters'}
+                  placeholderTextColor="#94a3b8"
                   value={carPlateLetters}
                   onChangeText={(v) => setCarPlateLetters(v.toUpperCase())}
                   autoCapitalize="characters"
@@ -1576,6 +1606,7 @@ export default function CheckoutScreen() {
                 <TextInput
                   className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm text-center font-bold"
                   placeholder={isArabic ? 'الأرقام' : 'Numbers'}
+                  placeholderTextColor="#94a3b8"
                   value={carPlateNumbers}
                   onChangeText={setCarPlateNumbers}
                   keyboardType="number-pad"
@@ -1586,6 +1617,7 @@ export default function CheckoutScreen() {
               <TextInput
                 className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm mb-3"
                 placeholder={isArabic ? 'مثل: كامري 2024' : 'e.g. Camry 2024'}
+                placeholderTextColor="#94a3b8"
                 value={carModel}
                 onChangeText={setCarModel}
                 maxLength={40}
@@ -1594,6 +1626,7 @@ export default function CheckoutScreen() {
               <TextInput
                 className="bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-900 text-sm"
                 placeholder={isArabic ? 'مثل: أبيض' : 'e.g. White'}
+                placeholderTextColor="#94a3b8"
                 value={carColor}
                 onChangeText={setCarColor}
                 maxLength={20}

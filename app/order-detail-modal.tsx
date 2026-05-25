@@ -1,5 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { AlertTriangle, Camera, Flag, Map, MapPin, MessageSquare, Phone, RefreshCw, Store, Truck, User, X } from 'lucide-react-native';
+import { AlertTriangle, Camera, Car, Flag, Map, MapPin, MessageSquare, Phone, RefreshCw, Store, Truck, User, X } from 'lucide-react-native';
+import { openMapToLocation } from '../src/lib/openMaps';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
@@ -495,10 +496,27 @@ export default function OrderDetailModal() {
               <Text className="flex-1 ms-2 text-slate-700">{order.deliveryAddress}</Text>
             </View>
           )}
-          {order.orderType === 'pickup' && order.branchName && (
-            <View className="flex-row items-start mb-4 p-3 bg-slate-50 rounded-xl">
-              <Store size={18} color="#F59E0B" style={{ marginTop: 2 }} />
+          {/* Pickup + drivethru both pin the customer to a branch.
+              Show the map button when we have coords (branchLat/Lon
+              come from branch_mappings via /api/orders payload). */}
+          {(order.orderType === 'pickup' || order.orderType === 'drivethru') && order.branchName && (
+            <View className="flex-row items-center mb-4 p-3 bg-slate-50 rounded-xl">
+              {order.orderType === 'drivethru' ? (
+                <Car size={18} color="#F59E0B" />
+              ) : (
+                <Store size={18} color="#F59E0B" />
+              )}
               <Text className="flex-1 ms-2 text-slate-700">{order.branchName}</Text>
+              {typeof branchLat === 'number' && typeof branchLon === 'number' && (
+                <TouchableOpacity
+                  onPress={() => openMapToLocation(branchLat, branchLon, order.branchName, isArabic ? 'ar' : 'en')}
+                  className="p-2 rounded-full bg-white border border-slate-200"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  accessibilityLabel={isArabic ? 'افتح الخريطة' : 'Open map'}
+                >
+                  <Map size={16} color={primaryColor} />
+                </TouchableOpacity>
+              )}
             </View>
           )}
 

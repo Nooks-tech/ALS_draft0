@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { ArrowLeft, ArrowRight, Bike, ChevronLeft, ChevronRight, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Bike, Car, ChevronLeft, ChevronRight, Map, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -10,6 +10,7 @@ import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
 import { reportCartEvent } from '../src/api/cartEvents';
+import { openMapToLocation } from '../src/lib/openMaps';
 export default function CartScreen() {
   const router = useRouter();
   const { i18n } = useTranslation();
@@ -146,39 +147,72 @@ export default function CartScreen() {
         contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 24, paddingBottom: 200 }}
       >
         {/* --- ORDER TYPE STATUS --- */}
-          <View className="items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100" style={{ flexDirection: 'row' }}>
-            <View style={[orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : undefined, { marginEnd: 16 }]} className={orderType === 'delivery' ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
-              {orderType === 'delivery' ? (
-                <Bike size={24} color={primaryColor} />
-              ) : (
-                <Store size={24} color="#F59E0B" />
-              )}
-            </View>
-            <View className="flex-1" style={{ marginEnd: 12 }}>
-              {/* writingDirection makes the English branch name align
-                  to the start of its line in RTL mode (= right side
-                  on screen), so it doesn't run into the Change
-                  button on the far end. */}
-              <Text
-                className="text-[10px] font-bold text-slate-400 uppercase tracking-widest"
-                style={{ writingDirection: isArabic ? 'rtl' : 'ltr' }}
-              >
-                {orderType === 'delivery' ? (isArabic ? 'التوصيل إلى' : 'Delivering to') : (isArabic ? 'الاستلام من' : 'Picking up from')}
-              </Text>
-              <Text
-                className="text-slate-800 font-bold text-base"
-                style={{ writingDirection: isArabic ? 'rtl' : 'ltr' }}
-                numberOfLines={2}
-              >
-                {orderType === 'delivery'
-                  ? deliveryAddress?.address || (isArabic ? 'أضف عنوان التوصيل' : 'Add delivery address')
-                  : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch')}
-              </Text>
-            </View>
-            <TouchableOpacity onPress={() => router.push('/order-type')}>
-              <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? 'تغيير' : 'Change'}</Text>
-            </TouchableOpacity>
-          </View>
+          {(() => {
+            // Drivethru shares Foodics' pickup semantics but the
+            // customer-facing label needs to say "receive in your car"
+            // — the branch icon + "Pickup from" wording is what we
+            // hand to merchants on real pickup orders. The map button
+            // is shared between pickup and drivethru since both need
+            // the customer to physically arrive at a branch.
+            const isPickupLike = orderType === 'pickup' || orderType === 'drivethru';
+            const branchLat = (selectedBranch as { latitude?: number } | null)?.latitude;
+            const branchLng = (selectedBranch as { longitude?: number } | null)?.longitude;
+            const canOpenMap =
+              isPickupLike && typeof branchLat === 'number' && typeof branchLng === 'number';
+            const eyebrow = orderType === 'delivery'
+              ? (isArabic ? 'التوصيل إلى' : 'Delivering to')
+              : orderType === 'drivethru'
+                ? (isArabic ? 'استلام في السيارة' : 'Receive in car at')
+                : (isArabic ? 'الاستلام من' : 'Picking up from');
+            return (
+              <View className="items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100" style={{ flexDirection: 'row' }}>
+                <View style={[orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : undefined, { marginEnd: 16 }]} className={orderType === 'delivery' ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
+                  {orderType === 'delivery' ? (
+                    <Bike size={24} color={primaryColor} />
+                  ) : orderType === 'drivethru' ? (
+                    <Car size={24} color="#F59E0B" />
+                  ) : (
+                    <Store size={24} color="#F59E0B" />
+                  )}
+                </View>
+                <View className="flex-1" style={{ marginEnd: 12 }}>
+                  {/* writingDirection makes the English branch name align
+                      to the start of its line in RTL mode (= right side
+                      on screen), so it doesn't run into the Change
+                      button on the far end. */}
+                  <Text
+                    className="text-[10px] font-bold text-slate-400 uppercase tracking-widest"
+                    style={{ writingDirection: isArabic ? 'rtl' : 'ltr' }}
+                  >
+                    {eyebrow}
+                  </Text>
+                  <Text
+                    className="text-slate-800 font-bold text-base"
+                    style={{ writingDirection: isArabic ? 'rtl' : 'ltr' }}
+                    numberOfLines={2}
+                  >
+                    {orderType === 'delivery'
+                      ? deliveryAddress?.address || (isArabic ? 'أضف عنوان التوصيل' : 'Add delivery address')
+                      : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch')}
+                  </Text>
+                </View>
+                {canOpenMap && (
+                  <TouchableOpacity
+                    onPress={() => openMapToLocation(branchLat, branchLng, selectedBranch?.name, isArabic ? 'ar' : 'en')}
+                    className="p-2 rounded-full bg-white border border-slate-200"
+                    style={{ marginEnd: 8 }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityLabel={isArabic ? 'افتح الخريطة' : 'Open map'}
+                  >
+                    <Map size={18} color={primaryColor} />
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={() => router.push('/order-type')}>
+                  <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? 'تغيير' : 'Change'}</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })()}
 
           <Text className="text-lg font-bold text-slate-900 mb-4" style={{ }}>{isArabic ? 'ملخص الطلب' : 'Order Summary'}</Text>
 

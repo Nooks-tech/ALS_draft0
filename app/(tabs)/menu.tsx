@@ -560,28 +560,34 @@ export default function MenuScreen() {
               <Text className="text-xl font-bold" style={{ color: textColor }}>{section.title}</Text>
             </View>,
             ...section.data.map((product) => (
+              // 20% smaller card vs. the previous design: image
+              // 127→102, radii 24→20 / 20→16, padding 3.5→2.5,
+              // text-lg→text-base, icon sizes 18→14. Only the
+              // customer-app menu card is touched — the merchant
+              // PhoneSimulator in nooksweb uses its own hardcoded
+              // styling and is unaffected.
               <TouchableOpacity
                 key={product.id}
                 onPress={() => openProduct(product)}
                 activeOpacity={0.8}
-                className="mx-5 mb-4 rounded-[24px] shadow-sm p-3.5"
+                className="mx-5 mb-3 rounded-[20px] shadow-sm p-2.5"
                 style={{ backgroundColor: menuCardColor, flexDirection: 'row' }}
               >
-                <Image source={{ uri: product.image }} className="w-[127px] h-[127px] rounded-[20px] bg-slate-200" />
+                <Image source={{ uri: product.image }} className="w-[102px] h-[102px] rounded-[16px] bg-slate-200" />
                 <View
-                  className="flex-1 justify-between py-1"
-                  style={{ marginStart: 16 }}
+                  className="flex-1 justify-between py-0.5"
+                  style={{ marginStart: 12 }}
                 >
                   <View>
-                    <Text className="text-lg font-bold" style={{ color: textColor }}>{product.name}</Text>
-                    <Text className="text-xs mt-1" style={{ color: textColor }} numberOfLines={1}>{product.description}</Text>
+                    <Text className="text-base font-bold" style={{ color: textColor }}>{product.name}</Text>
+                    <Text className="text-[11px] mt-0.5" style={{ color: textColor }} numberOfLines={1}>{product.description}</Text>
                   </View>
                   <View
-                    className="justify-between items-center mt-2"
+                    className="justify-between items-center mt-1.5"
                     style={{ flexDirection: 'row' }}
                   >
-                    <PriceWithSymbol amount={product.price} iconSize={18} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700', fontSize: 18 }} />
-                    <View className="p-1.5 rounded-lg" style={{ backgroundColor: accent }}><Plus size={18} color="white" /></View>
+                    <PriceWithSymbol amount={product.price} iconSize={14} iconColor={textColor} textStyle={{ color: textColor, fontWeight: '700', fontSize: 15 }} />
+                    <View className="p-1 rounded-md" style={{ backgroundColor: accent }}><Plus size={14} color="white" /></View>
                   </View>
                 </View>
               </TouchableOpacity>

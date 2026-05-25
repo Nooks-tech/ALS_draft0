@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ArrowLeft, Heart, Minus, Plus } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Heart, Minus, Plus } from 'lucide-react-native';
 import { useEffect, useMemo, useState } from 'react';
 import { Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
@@ -124,8 +124,18 @@ export default function ProductScreen() {
   return (
     <SafeAreaView className="flex-1 bg-white">
       <View className="px-5 py-4 items-center justify-between border-b border-slate-100" style={{ flexDirection: 'row' }}>
+        {/* RN's RTL system auto-flips transforms, so the original
+            `scaleX:-1` was actually un-flipping the icon in Arabic,
+            which on some Android builds caused the SVG path to land
+            outside its viewport — invisible but still touchable.
+            Swap to a dedicated ArrowRight icon for RTL and skip the
+            transform entirely. */}
         <TouchableOpacity onPress={() => router.back()} className="bg-slate-100 p-2 rounded-full">
-          <ArrowLeft size={22} color="#334155" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
+          {isArabic ? (
+            <ArrowRight size={22} color="#334155" />
+          ) : (
+            <ArrowLeft size={22} color="#334155" />
+          )}
         </TouchableOpacity>
         <Text className="text-lg font-bold text-slate-800">{isArabic ? 'المنتج' : 'Product'}</Text>
         <TouchableOpacity onPress={() => product && toggleFavorite(product.id)} className="bg-slate-100 p-2 rounded-full">
