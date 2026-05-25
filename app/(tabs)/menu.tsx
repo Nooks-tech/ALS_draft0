@@ -41,6 +41,68 @@ import { useMenuContext } from '../../src/context/MenuContext';
 
 type SliderItem = { id: string; image: string; title: string; subtitle: string };
 
+/**
+ * Slider banner image that:
+ *   1. Reserves the container immediately so the layout doesn't jump
+ *      when the image arrives.
+ *   2. Paints a subtle brand-tinted placeholder behind the image.
+ *   3. Fetches the image with RN's native Image component (so iOS / Android
+ *      both honor the URL cache) and fades it in on the `onLoad` event.
+ *
+ * The fade-in re-triggers on every mount because each banner is keyed
+ * by id in the parent FlatList — swapping banners replays the animation;
+ * cached images just fade in faster (the Image cache hit hits onLoad
+ * within a few frames, so the user still sees the smoothing rather
+ * than a flash).
+ */
+function SliderBannerImage({
+  uri,
+  placeholderColor,
+  borderRadius = 16,
+}: {
+  uri: string;
+  placeholderColor: string;
+  borderRadius?: number;
+}) {
+  const opacity = useSharedValue(0);
+  const animatedStyle = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  const handleLoad = () => {
+    opacity.value = withTiming(1, { duration: 350 });
+  };
+  return (
+    <>
+      <View
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: placeholderColor,
+          opacity: 0.18,
+          borderRadius,
+        }}
+      />
+      <Animated.Image
+        source={{ uri }}
+        onLoad={handleLoad}
+        resizeMode="cover"
+        style={[
+          {
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            borderRadius,
+          },
+          animatedStyle,
+        ]}
+      />
+    </>
+  );
+}
+
 export default function MenuScreen() {
   const { i18n } = useTranslation();
   const { totalItems, totalPrice, orderType, selectedBranch, deliveryAddress } = useCart();
@@ -393,22 +455,23 @@ export default function MenuScreen() {
                 style={{ width: promoWidth, marginRight: 16 }}
                 className="rounded-2xl overflow-hidden shadow-md bg-white"
               >
-                <ImageBackground
-                  source={{ uri: promo.image }}
-                  className="h-40 justify-end p-4"
-                  imageStyle={{ borderRadius: 16 }}
-                >
+                {/* Container reserves layout immediately; image fades
+                    in on load. Dark overlay + text sit on top so the
+                    label is readable both before (against placeholder)
+                    and after (against image) the fade-in. */}
+                <View className="h-40 justify-end p-4" style={{ position: 'relative' }}>
+                  <SliderBannerImage uri={promo.image} placeholderColor={primaryColor} />
                   <View className="absolute inset-0 bg-black/40 rounded-2xl" />
                   <Text className="text-white font-bold text-2xl z-10">{promo.subtitle}</Text>
                   <Text className="text-gray-200 text-sm z-10">{promo.title}</Text>
-                </ImageBackground>
+                </View>
               </TouchableOpacity>
             )}
           />
         </View>
       </View>
     );
-  }, [promoWidth, promoItemWidth, sliderItems, backgroundColor, router]);
+  }, [promoWidth, promoItemWidth, sliderItems, backgroundColor, primaryColor, router]);
 
   const categoryBar = useMemo(() => (
     <View className="px-5 pb-3 pt-1" style={{ backgroundColor }}>
