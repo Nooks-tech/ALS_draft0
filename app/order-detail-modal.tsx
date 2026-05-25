@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { AlertTriangle, Camera, Car, Flag, Map, MapPin, MessageSquare, Phone, RefreshCw, Store, Truck, User, X } from 'lucide-react-native';
+import { AlertTriangle, Camera, Car, Check, Flag, Map, MapPin, MessageSquare, Phone, RefreshCw, Store, Truck, User, X } from 'lucide-react-native';
 import { openMapToLocation } from '../src/lib/openMaps';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -62,7 +62,7 @@ export default function OrderDetailModal() {
   const { i18n } = useTranslation();
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
   const router = useRouter();
-  const { orders } = useOrders();
+  const { orders, markArrived } = useOrders();
   const { setCartFromOrder } = useCart();
   const { user } = useAuth();
   const order = orders.find((o) => o.id === orderId);
@@ -123,6 +123,30 @@ export default function OrderDetailModal() {
       Alert.alert(isArabic ? 'خطأ' : 'Error', e?.message || 'Network error');
     } finally {
       setMarkReceivedLoading(false);
+    }
+  };
+
+  // Curbside arrival ping. Locks while in-flight so a double-tap
+  // doesn't double-fire, and the OrdersContext.markArrived already
+  // does an optimistic write to customerArrivedAt — by the time
+  // we await here the order detail above us has already re-rendered
+  // with the green "Notified" pill.
+  const [markArrivedLoading, setMarkArrivedLoading] = useState(false);
+  const handleMarkArrived = async () => {
+    if (!orderId || markArrivedLoading) return;
+    setMarkArrivedLoading(true);
+    try {
+      const result = await markArrived(String(orderId));
+      if (!result.success) {
+        Alert.alert(
+          isArabic ? 'تعذر إعلام المتجر' : "Couldn't notify the store",
+          result.error || (isArabic ? 'حاول مرة ثانية' : 'Please try again'),
+        );
+      }
+    } catch (e: any) {
+      Alert.alert(isArabic ? 'خطأ' : 'Error', e?.message || 'Network error');
+    } finally {
+      setMarkArrivedLoading(false);
     }
   };
 
@@ -519,6 +543,67 @@ export default function OrderDetailModal() {
               )}
             </View>
           )}
+
+          {/* Curbside arrival CTA. Pinned right under the branch
+              card so it reads as a direct follow-up to "you're
+              going to this branch". Three states:
+                1. Already arrived → green confirmation pill with
+                   the local-time stamp.
+                2. Not arrived yet, in-flight (Placed/Accepted/
+                   Preparing/Ready), foodics_order_id present → big
+                   tappable button.
+                3. Closed (Cancelled/Delivered/On Hold) or no
+                   foodics_order_id → render nothing. */}
+          {order.orderType === 'drivethru' && (() => {
+            if (order.customerArrivedAt) {
+              return (
+                <View className="mb-4 p-4 rounded-2xl bg-green-50 border border-green-200 flex-row items-center" style={{ gap: 10 }}>
+                  <View className="w-9 h-9 rounded-full items-center justify-center bg-green-100">
+                    <Check size={18} color="#15803d" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="font-bold text-green-800">
+                      {isArabic ? 'تم إعلام المتجر' : 'Store notified'}
+                    </Text>
+                    <Text className="text-xs text-green-700 mt-0.5">
+                      {isArabic
+                        ? `أرسلنا تنبيهاً للكاشير في ${new Date(order.customerArrivedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
+                        : `We pinged the cashier at ${new Date(order.customerArrivedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`}
+                    </Text>
+                  </View>
+                </View>
+              );
+            }
+            const isInFlight =
+              order.status !== 'Cancelled' &&
+              order.status !== 'Delivered' &&
+              order.status !== 'On Hold';
+            if (!isInFlight || !order.foodicsOrderId) return null;
+            return (
+              <TouchableOpacity
+                onPress={handleMarkArrived}
+                disabled={markArrivedLoading}
+                activeOpacity={0.85}
+                className="mb-4 p-4 rounded-2xl flex-row items-center justify-center"
+                style={{
+                  backgroundColor: primaryColor,
+                  opacity: markArrivedLoading ? 0.7 : 1,
+                  gap: 10,
+                }}
+              >
+                {markArrivedLoading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Car size={20} color="#ffffff" />
+                    <Text className="text-white font-bold text-base">
+                      {isArabic ? 'وصلت — أعلم الكاشير' : "I've arrived — notify cashier"}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            );
+          })()}
 
           {/* Live driver tracking map */}
           {showDriverMap && (

@@ -1,4 +1,4 @@
-import { Car, Check, Clock } from 'lucide-react-native';
+import { Clock } from 'lucide-react-native';
 import { Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { PriceWithSymbol } from '../common/PriceWithSymbol';
@@ -12,21 +12,10 @@ interface OrderProps {
   date: string;
   items: string;
   refundStatus?: string | null;
-  /** customer_orders.foodics_order_id — the arrival ping has no
-   * destination if the order never reached Foodics, so the button
-   * stays hidden until this is set. */
-  foodicsOrderId?: string | null;
-  /** customer_orders.customer_arrived_at — set after the customer
-   * taps "I've arrived". When present the button is replaced by a
-   * "Notified at HH:MM" pill so they know the cashier was pinged. */
-  customerArrivedAt?: string | null;
-  /** Optional callback for the "I've arrived" button. Only used on
-   * drivethru orders with foodicsOrderId set and not yet arrived. */
-  onMarkArrived?: () => void;
   onPress?: () => void;
 }
 
-export const OrderCard = ({ id, status, orderType, price, date, items, refundStatus, foodicsOrderId, customerArrivedAt, onMarkArrived, onPress }: OrderProps) => {
+export const OrderCard = ({ id, status, orderType, price, date, items, refundStatus, onPress }: OrderProps) => {
   const { i18n } = useTranslation();
   const { primaryColor, menuCardColor, textColor } = useMerchantBranding();
   const isArabic = i18n.language === 'ar';
@@ -115,48 +104,6 @@ export const OrderCard = ({ id, status, orderType, price, date, items, refundSta
           <Text className="font-bold text-sm" style={{ color: primaryColor }}>{isArabic ? 'عرض التفاصيل' : 'View Details'}</Text>
         </TouchableOpacity>
       </View>
-
-      {/* Curbside arrival button. Conditions for showing:
-            - orderType is drivethru (other types have no arrival flow)
-            - foodicsOrderId is set (cashier device exists to ping)
-            - customerArrivedAt is still null (haven't pinged yet)
-            - order is mid-flight, not Cancelled/Delivered/On Hold
-          When already arrived, render a green confirmation pill with
-          the local-time stamp instead of the button, so the customer
-          knows the cashier was actually notified.
-          stopPropagation isn't needed on the inner Touchable because
-          react-native's TouchableOpacity wrapping is non-bubbling. */}
-      {orderType === 'drivethru' && (
-        customerArrivedAt ? (
-          <View
-            className="mt-3 pt-3 border-t border-gray-50 flex-row items-center"
-            style={{ gap: 8 }}
-          >
-            <View className="rounded-full px-3 py-1.5 flex-row items-center bg-green-100" style={{ gap: 6 }}>
-              <Check size={14} color="#15803d" />
-              <Text className="text-xs font-bold text-green-700">
-                {isArabic
-                  ? `تم إعلام المتجر · ${new Date(customerArrivedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`
-                  : `Notified · ${new Date(customerArrivedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`}
-              </Text>
-            </View>
-          </View>
-        ) : (
-          foodicsOrderId && onMarkArrived && status !== 'Cancelled' && status !== 'Delivered' && status !== 'On Hold' && (
-            <TouchableOpacity
-              onPress={onMarkArrived}
-              activeOpacity={0.85}
-              className="mt-3 pt-3 border-t border-gray-50 flex-row items-center justify-center rounded-xl py-3"
-              style={{ backgroundColor: `${primaryColor}15`, borderRadius: 12 }}
-            >
-              <Car size={18} color={primaryColor} />
-              <Text className="font-bold text-sm ms-2" style={{ color: primaryColor }}>
-                {isArabic ? 'وصلت — أعلم الكاشير' : "I've arrived — notify cashier"}
-              </Text>
-            </TouchableOpacity>
-          )
-        )
-      )}
     </TouchableOpacity>
   );
 };
