@@ -34,7 +34,24 @@ import { useCart } from '../src/context/CartContext';
 import { useMenuContext } from '../src/context/MenuContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
-import { loyaltyApi, type LoyaltyBalance } from '../src/api/loyalty';
+import { loyaltyApi, type LoyaltyBalance, type LoyaltyReward, type LoyaltyTransaction } from '../src/api/loyalty';
+import { readCache, writeCache } from '../src/lib/persistentCache';
+
+/**
+ * Shared with app/(tabs)/offers.tsx so the rewards screen and the
+ * offers/points tab paint from the same persisted snapshot. If the
+ * user has visited the offers tab once this session (or ever, since
+ * the cache lives in AsyncStorage), the rewards screen renders the
+ * milestones instantly from disk and only spins on a true cold
+ * launch.
+ */
+type LoyaltyCache = {
+  balance: LoyaltyBalance | null;
+  transactions: LoyaltyTransaction[];
+  rewards: LoyaltyReward[];
+};
+const loyaltyCacheKey = (merchantId: string, userId: string) =>
+  `@als_loyalty_${merchantId}_${userId}`;
 
 function hexWithAlpha(hex: string, alpha: number): string {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);
@@ -125,20 +142,53 @@ export default function RewardsScreen() {
   const [balance, setBalance] = useState<LoyaltyBalance | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Stale-while-revalidate. Tries the persisted snapshot first
+  // (shared with offers.tsx — same key, same shape) so the milestone
+  // grid paints instantly; the network fetch runs in parallel and
+  // overrides state when it lands.
+  // Preload path: app/(tabs)/menu.tsx fires a background fetch when
+  // the menu screen mounts, so by the time the user taps the rewards
+  // FAB, the cache has fresh data and the cold-load spinner never
+  // shows.
   useEffect(() => {
     if (!user?.id || !merchantId) {
       setLoading(false);
       return;
     }
     let cancelled = false;
-    setLoading(true);
+    const key = loyaltyCacheKey(merchantId, user.id);
+
+    // Step 1 — synchronous-ish read from disk. If the cache has a
+    // balance, paint it and skip the spinner entirely.
+    readCache<LoyaltyCache>(key).then((cached) => {
+      if (cancelled) return;
+      if (cached?.balance) {
+        setBalance(cached.balance);
+        setLoading(false);
+      }
+    });
+
+    // Step 2 — fresh fetch. Always runs, even if the cache hit, so
+    // milestone changes / new stamps show up without a refresh.
     loyaltyApi
       .getBalance(user.id, merchantId)
       .then((b) => {
-        if (!cancelled) setBalance(b);
+        if (cancelled) return;
+        setBalance(b);
+        // Merge with whatever the offers tab last wrote — we only
+        // know about balance here, so preserve transactions/rewards
+        // so offers tab stays warm too.
+        readCache<LoyaltyCache>(key).then((prev) => {
+          if (cancelled) return;
+          writeCache<LoyaltyCache>(key, {
+            balance: b,
+            transactions: prev?.transactions ?? [],
+            rewards: prev?.rewards ?? [],
+          });
+        });
       })
       .catch(() => {
-        // best effort
+        // best effort — keep whatever the cache had.
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

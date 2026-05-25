@@ -33,6 +33,8 @@ import {
   View
 } from 'react-native';
 import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners';
+import { loyaltyApi, type LoyaltyBalance, type LoyaltyReward, type LoyaltyTransaction } from '../../src/api/loyalty';
+import { readCache, writeCache } from '../../src/lib/persistentCache';
 import { PriceWithSymbol } from '../../src/components/common/PriceWithSymbol';
 import { useAuth } from '../../src/context/AuthContext';
 import { useCart } from '../../src/context/CartContext';
@@ -150,6 +152,42 @@ export default function MenuScreen() {
     if (!merchantId) return;
     fetchNooksBanners(merchantId).then(setNooksBanners);
   }, [merchantId]);
+
+  // Preload the loyalty balance for the stamps-rewards screen so when
+  // the user taps the rewards button the screen paints from disk
+  // (offers.tsx and rewards.tsx share this cache key/shape). No state
+  // is set here — this is fire-and-forget, results land in
+  // AsyncStorage and the rewards screen reads them on its own
+  // useEffect. Fails silent: rewards screen still does its own fetch
+  // so a missed preload just means a one-time spinner.
+  useEffect(() => {
+    if (!merchantId || !customerId) return;
+    const key = `@als_loyalty_${merchantId}_${customerId}`;
+    type LoyaltyCache = {
+      balance: LoyaltyBalance | null;
+      transactions: LoyaltyTransaction[];
+      rewards: LoyaltyReward[];
+    };
+    let cancelled = false;
+    loyaltyApi
+      .getBalance(customerId, merchantId)
+      .then(async (balance) => {
+        if (cancelled || !balance) return;
+        const prev = await readCache<LoyaltyCache>(key);
+        if (cancelled) return;
+        await writeCache<LoyaltyCache>(key, {
+          balance,
+          transactions: prev?.transactions ?? [],
+          rewards: prev?.rewards ?? [],
+        });
+      })
+      .catch(() => {
+        // best-effort preload, nothing to surface
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [merchantId, customerId]);
 
   const sliderItems: SliderItem[] = useMemo(() => {
     const sliderBanners = nooksBanners.filter((b) => b.placement === 'slider');
