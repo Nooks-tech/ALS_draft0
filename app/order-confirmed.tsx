@@ -1,5 +1,5 @@
-import { useRouter } from 'expo-router';
-import { CheckCircle } from 'lucide-react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Car, CheckCircle } from 'lucide-react-native';
 import { Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,11 +9,13 @@ export default function OrderConfirmedScreen() {
   const router = useRouter();
   const { primaryColor } = useMerchantBranding();
   const { i18n } = useTranslation();
+  const { orderType } = useLocalSearchParams<{ orderId?: string; orderType?: string }>();
   const isArabic = i18n.language === 'ar';
+  const isDrivethru = orderType === 'drivethru';
 
   return (
     <SafeAreaView className="flex-1 bg-white items-center justify-center px-6">
-      <View className="items-center mb-8">
+      <View className="items-center mb-6">
         <View className="w-20 h-20 rounded-full items-center justify-center mb-4" style={{ backgroundColor: `${primaryColor}15` }}>
           <CheckCircle size={48} color={primaryColor} />
         </View>
@@ -22,6 +24,36 @@ export default function OrderConfirmedScreen() {
           {isArabic ? 'طلبك قيد التحضير الآن.' : 'Your order is now being prepared.'}
         </Text>
       </View>
+
+      {/* Drivethru reminder — the cashier has no way to see the
+          customer is physically there until the customer taps
+          "I've arrived" on the order page. Surface that ahead of
+          time so they don't drive up expecting to be served
+          immediately. Amber card to read as informational, not as
+          a warning/error. */}
+      {isDrivethru && (
+        <View
+          className="w-full rounded-2xl border p-4 mb-2"
+          style={{
+            backgroundColor: '#FEF3C7',
+            borderColor: '#FCD34D',
+          }}
+        >
+          <View className="flex-row items-start">
+            <Car size={20} color="#B45309" style={{ marginTop: 2 }} />
+            <View className="flex-1 ms-3">
+              <Text className="font-bold text-base mb-1" style={{ color: '#92400E' }}>
+                {isArabic ? 'لا تنسَ إعلامنا عند وصولك' : "Don't forget to notify us"}
+              </Text>
+              <Text className="text-sm leading-5" style={{ color: '#92400E' }}>
+                {isArabic
+                  ? 'لما توصل المتجر بسيارتك، افتح صفحة الطلبات واضغط زر "وصلت" داخل بطاقة الطلب عشان الكاشير يعرف.'
+                  : "When you pull up at the store, open the Orders page and tap the “I've arrived” button on your order card so the cashier knows."}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
 
       <TouchableOpacity
         onPress={() => {
@@ -36,7 +68,7 @@ export default function OrderConfirmedScreen() {
           router.dismissAll();
           router.replace('/(tabs)/orders');
         }}
-        className="mt-8 py-4 px-8 rounded-2xl"
+        className="mt-6 py-4 px-8 rounded-2xl"
         style={{ backgroundColor: primaryColor }}
       >
         <Text className="text-white font-bold text-base">{isArabic ? 'عرض الطلبات' : 'View Orders'}</Text>

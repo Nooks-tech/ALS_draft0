@@ -73,6 +73,13 @@ export type OrderRow = {
   card_paid_sar?: number | null;
   promo_discount_sar?: number | null;
   promo_code?: string | null;
+  // Curbside arrival ping (added 2026-05-25 in
+  // 20260525_customer_arrived_at.sql). Populated when the customer
+  // taps "I've arrived" on the order card. foodics_order_id is
+  // exposed so the customer app can gate the button on the order
+  // actually having reached Foodics.
+  customer_arrived_at?: string | null;
+  foodics_order_id?: string | null;
 };
 
 export type OrderInsert = {
@@ -300,6 +307,27 @@ export async function customerMarkReceived(orderId: string): Promise<{
 }> {
   return api.post<{ success: boolean; status?: string; error?: string; unlocksInMs?: number }>(
     `/api/orders/${orderId}/customer-received`,
+    {},
+  );
+}
+
+/**
+ * Curbside arrival ping — fire when the customer parks at the
+ * branch on a "receive from your car" order. Server validates the
+ * order is drivethru + foodics-relayed + not already arrived, then
+ * stamps customer_arrived_at and relays to nooksweb to push the
+ * cashier device. Idempotent: a re-tap on the same order returns
+ * `alreadyArrived: true` with the original timestamp instead of
+ * 4xxing, so a flaky-network retry doesn't surface as an error.
+ */
+export async function customerMarkArrived(orderId: string): Promise<{
+  success: boolean;
+  customerArrivedAt?: string;
+  alreadyArrived?: boolean;
+  error?: string;
+}> {
+  return api.post<{ success: boolean; customerArrivedAt?: string; alreadyArrived?: boolean; error?: string }>(
+    `/api/orders/${orderId}/customer-arrived`,
     {},
   );
 }

@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ArrowRight, Package } from 'lucide-react-native';
-import { ActivityIndicator, FlatList, Platform, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Platform, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { OrderCard } from '../../src/components/order/OrderCard';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
@@ -9,10 +9,20 @@ import { useOrders } from '../../src/context/OrdersContext';
 export default function OrdersScreen() {
   const { t, i18n } = useTranslation();
   const router = useRouter();
-  const { orders, loading } = useOrders();
+  const { orders, loading, markArrived } = useOrders();
   const { primaryColor, backgroundColor, textColor } = useMerchantBranding();
   const isArabic = i18n.language === 'ar';
   const BackIcon = isArabic ? ArrowRight : ArrowLeft;
+
+  const handleMarkArrived = async (orderId: string) => {
+    const result = await markArrived(orderId);
+    if (!result.success) {
+      Alert.alert(
+        isArabic ? 'تعذر إعلام المتجر' : "Couldn't notify the store",
+        result.error || (isArabic ? 'حاول مرة ثانية' : 'Please try again'),
+      );
+    }
+  };
 
   const orderItemsSummary = (order: (typeof orders)[0]) =>
     order.items.map((i) => `${i.name}${i.quantity > 1 ? ` x${i.quantity}` : ''}`).join(', ');
@@ -62,6 +72,9 @@ export default function OrdersScreen() {
                 date={item.date}
                 items={orderItemsSummary(item)}
                 refundStatus={item.refundStatus}
+                foodicsOrderId={item.foodicsOrderId ?? null}
+                customerArrivedAt={item.customerArrivedAt ?? null}
+                onMarkArrived={() => handleMarkArrived(item.id)}
                 onPress={() => router.push({ pathname: '/order-detail-modal', params: { orderId: item.id } })}
               />
             );

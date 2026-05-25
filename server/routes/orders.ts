@@ -21,6 +21,7 @@ import { sendOrderReceipt } from '../services/receipt';
 import { earnPoints, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
+import { enforceLimits } from '../utils/rateLimit';
 import { creditWalletForRefund } from './wallet';
 
 export const ordersRouter = Router();
@@ -2154,6 +2155,111 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
   } catch (err: any) {
     console.error('[orders] customer-received error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to mark received' });
+  }
+});
+
+/*
+ * ── POST /api/orders/:id/customer-arrived ──
+ *
+ * Curbside ("receive from your car") arrival ping. The customer taps
+ * "I've arrived" on their order card after parking at the branch.
+ * We:
+ *   1) validate the order is theirs, drivethru, foodics-relayed,
+ *      not cancelled/delivered, and not already marked arrived
+ *   2) stamp customer_arrived_at = now() in customer_orders
+ *   3) relay to nooksweb so it calls Foodics
+ *      /v5/devices/push_notifications with order_customer_arrived,
+ *      which highlights the ticket on the cashier device
+ *
+ * The Foodics call is best-effort — a Foodics outage must NOT roll
+ * back the local timestamp because the customer is still physically
+ * there. nooksweb's audit_log records every attempt so ops can see
+ * drift. The customer can re-tap if their first tap got a network
+ * error, since the DB write was idempotent on customer_arrived_at.
+ *
+ * Rate-limit: per-customer 10/hour. A real arrival is one tap; 10
+ * absorbs flaky-network retries while still blocking trivial spam.
+ */
+ordersRouter.post('/:id/customer-arrived', async (req, res) => {
+  try {
+    const user = await requireAuthenticatedAppUser(req, res);
+    if (!user) return;
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const orderId = req.params.id;
+    const { data: order, error } = await supabaseAdmin
+      .from('customer_orders')
+      .select('id, customer_id, status, order_type, foodics_order_id, merchant_id, customer_arrived_at')
+      .eq('id', orderId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    if (order.order_type !== 'drivethru') {
+      return res.status(400).json({ error: 'This action is only for curbside (receive-from-car) orders' });
+    }
+    if (!order.foodics_order_id) {
+      // Order never made it to Foodics — nothing to ping. The customer
+      // shouldn't be seeing the button in this case (the OrderCard
+      // gates on foodicsOrderId), so this is a belt-and-braces 400.
+      return res.status(400).json({ error: 'Order has not been accepted by the store yet' });
+    }
+    if (order.status === 'Cancelled' || order.status === 'Delivered') {
+      return res.status(400).json({ error: 'Order is already closed' });
+    }
+    if (order.customer_arrived_at) {
+      // Idempotent success — surface the existing timestamp so the
+      // app can render its "Notified at HH:MM" state without
+      // re-firing the Foodics call.
+      return res.json({ success: true, alreadyArrived: true, customerArrivedAt: order.customer_arrived_at });
+    }
+
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'orders.customer-arrived',
+        keys: [{ dim: 'customer', value: user.id, max: 10, windowMs: 60 * 60_000 }],
+        supabaseAdmin,
+        merchantId: order.merchant_id ?? undefined,
+      }))
+    )
+      return;
+
+    const now = new Date().toISOString();
+    const { error: updateErr } = await supabaseAdmin
+      .from('customer_orders')
+      .update({ customer_arrived_at: now, updated_at: now })
+      .eq('id', orderId)
+      .is('customer_arrived_at', null);
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+    // Relay to nooksweb. Fire-and-forget so a slow Foodics call
+    // doesn't keep the customer staring at a spinner — they tapped
+    // arrived, the local state is durable, and the cashier ping is
+    // a downstream concern.
+    if (NOOKS_API_BASE_URL && NOOKS_INTERNAL_SECRET) {
+      fetch(`${NOOKS_API_BASE_URL}/api/public/orders/customer-arrived`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
+        },
+        body: JSON.stringify({ internalOrderId: orderId }),
+      })
+        .then(async (resp) => {
+          if (!resp.ok) {
+            console.warn('[Orders] Foodics arrived relay non-2xx:', resp.status);
+          }
+        })
+        .catch((e) => {
+          console.warn('[Orders] Foodics arrived relay failed (non-blocking):', e?.message);
+        });
+    }
+
+    res.json({ success: true, customerArrivedAt: now });
+  } catch (err: any) {
+    console.error('[orders] customer-arrived error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to mark arrived' });
   }
 });
 

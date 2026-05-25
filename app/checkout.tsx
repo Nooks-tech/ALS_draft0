@@ -915,7 +915,7 @@ export default function CheckoutScreen() {
       router.dismissAll();
       // Immediate navigation — no setTimeout. Commit/loyalty/promo are
       // all firing in the background now, so there's nothing to wait for.
-      router.replace({ pathname: '/order-confirmed', params: { orderId } });
+      router.replace({ pathname: '/order-confirmed', params: { orderId, orderType } });
     } catch (err: any) {
       Alert.alert(
         isArabic ? 'فشل الطلب' : 'Order Failed',
@@ -1235,7 +1235,7 @@ export default function CheckoutScreen() {
         // instead of switching to the Orders tab — same fix the card
         // path already has at the equivalent spot.
         router.dismissAll();
-        router.replace({ pathname: '/order-confirmed', params: { orderId: walletOrderId } });
+        router.replace({ pathname: '/order-confirmed', params: { orderId: walletOrderId, orderType } });
       } catch (err: any) {
         const msg = err?.message ?? '';
         if (msg.includes('INSUFFICIENT_WALLET_BALANCE')) {

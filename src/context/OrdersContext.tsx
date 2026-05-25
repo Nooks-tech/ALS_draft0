@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { AppState } from 'react-native';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
+import { customerMarkArrived, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
 import { useMerchant } from './MerchantContext';
 import { submitOrderToNooks } from '../api/nooksOrders';
 import type { CartItem } from './CartContext';
@@ -56,6 +56,14 @@ export type PlacedOrder = {
   cashbackPaidSar?: number;
   cardPaidSar?: number;
   promoDiscountSar?: number;
+  // Curbside ("receive from your car") arrival ping — set when the
+  // customer taps "I've arrived" on the order card. Persisted in
+  // customer_orders.customer_arrived_at so it survives device
+  // changes / signouts. foodicsOrderId is exposed so the OrderCard
+  // can gate the button: if Foodics never accepted the order, the
+  // arrival ping has no destination.
+  customerArrivedAt?: string | null;
+  foodicsOrderId?: string | null;
 };
 
 export type OrdersContextType = {
@@ -81,6 +89,16 @@ export type OrdersContextType = {
   cancelOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
   holdOrderForEdit: (orderId: string) => Promise<{ success: boolean; error?: string }>;
   resumeHeldOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
+  /**
+   * Curbside arrival ping. Optimistically writes
+   * customerArrivedAt locally so the OrderCard flips to
+   * "Notified at HH:MM" immediately, then fires the API call. On
+   * failure we revert the optimistic write so the button reappears
+   * — the customer can re-tap. Server is idempotent on the
+   * customer_arrived_at column, so a successful re-tap returns the
+   * original timestamp via `alreadyArrived: true`.
+   */
+  markArrived: (orderId: string) => Promise<{ success: boolean; error?: string }>;
   refresh: () => Promise<void>;
 };
 
@@ -142,6 +160,8 @@ function rowToOrder(row: OrderRow): PlacedOrder {
     cardPaidSar: row.card_paid_sar != null ? Number(row.card_paid_sar) : undefined,
     promoDiscountSar: row.promo_discount_sar != null ? Number(row.promo_discount_sar) : undefined,
     promoCode: row.promo_code ?? undefined,
+    customerArrivedAt: (row as { customer_arrived_at?: string | null }).customer_arrived_at ?? null,
+    foodicsOrderId: (row as { foodics_order_id?: string | null }).foodics_order_id ?? null,
   };
 }
 
@@ -515,8 +535,45 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, []);
 
+  const markArrived = useCallback(async (orderId: string) => {
+    // Optimistic UI: flip customerArrivedAt locally NOW so the
+    // button hides immediately and the customer doesn't double-tap
+    // while the request is in flight. If the server rejects we
+    // revert. The server is idempotent, so a successful retry of a
+    // failed attempt just confirms what we already wrote.
+    const optimisticAt = new Date().toISOString();
+    setOrders((prev) =>
+      prev.map((o) => (o.id === orderId ? { ...o, customerArrivedAt: optimisticAt } : o))
+    );
+    try {
+      const result = await customerMarkArrived(orderId);
+      if (!result.success && !result.alreadyArrived) {
+        // Revert the optimistic write — the button comes back so
+        // the user can re-tap.
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? { ...o, customerArrivedAt: null } : o))
+        );
+        return { success: false, error: result.error || 'Failed to notify store' };
+      }
+      // Replace the optimistic timestamp with the server-canonical
+      // one when we have it (might be from a prior tap if
+      // alreadyArrived is true).
+      if (result.customerArrivedAt) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? { ...o, customerArrivedAt: result.customerArrivedAt! } : o))
+        );
+      }
+      return { success: true };
+    } catch (err: any) {
+      setOrders((prev) =>
+        prev.map((o) => (o.id === orderId ? { ...o, customerArrivedAt: null } : o))
+      );
+      return { success: false, error: err?.message || 'Network error' };
+    }
+  }, []);
+
   return (
-    <OrdersContext.Provider value={{ orders, loading, addOrder, cancelOrder, holdOrderForEdit, resumeHeldOrder, refresh }}>
+    <OrdersContext.Provider value={{ orders, loading, addOrder, cancelOrder, holdOrderForEdit, resumeHeldOrder, markArrived, refresh }}>
       {children}
     </OrdersContext.Provider>
   );
