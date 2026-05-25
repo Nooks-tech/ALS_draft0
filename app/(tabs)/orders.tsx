@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { ArrowLeft, ArrowRight, Package } from 'lucide-react-native';
-import { ActivityIndicator, FlatList, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, Platform, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { OrderCard } from '../../src/components/order/OrderCard';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
@@ -66,7 +66,17 @@ export default function OrdersScreen() {
               />
             );
           }}
-          contentContainerStyle={orders.length === 0 ? { flexGrow: 1, padding: 16 } : { padding: 16 }}
+          contentContainerStyle={
+            orders.length === 0
+              ? { flexGrow: 1, padding: 16 }
+              : {
+                  padding: 16,
+                  // Clears the floating tab bar (96 ios / 78 android)
+                  // — without this, the last order row is hidden
+                  // behind the tab bar.
+                  paddingBottom: Platform.OS === 'ios' ? 130 : 110,
+                }
+          }
           ListEmptyComponent={
             <View className="flex-1 items-center justify-center px-8">
               <Package size={52} color="#94a3b8" />

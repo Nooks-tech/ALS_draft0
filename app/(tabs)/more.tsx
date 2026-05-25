@@ -29,7 +29,7 @@ import Constants from 'expo-constants';
 import { useProfile } from '../../src/context/ProfileContext';
 import { useCallback, useEffect, useState } from 'react';
 import { walletApi } from '../../src/api/wallet';
-import { Alert, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, Linking, Platform, SafeAreaView, ScrollView, StatusBar, Text, TouchableOpacity, View } from 'react-native';
 import { useLanguageSwitch } from '../../src/context/LanguageSwitchContext';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
@@ -362,7 +362,11 @@ export default function MoreScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0, backgroundColor }}>
-      <ScrollView>
+      {/* paddingBottom clears the floating tab bar (96 on iOS / 78 on
+          Android — see (tabs)/_layout.tsx). Without it the version
+          text + delete-account row sit under the tab bar where the
+          user can't reach them. */}
+      <ScrollView contentContainerStyle={{ paddingBottom: Platform.OS === 'ios' ? 130 : 110 }}>
         <View className="p-6 mb-4 items-center" style={{ backgroundColor }}>
           <View className="w-20 h-20 rounded-full mb-3 justify-center items-center" style={{ backgroundColor: `${primaryColor}20` }}>
             <Text className="text-2xl font-bold" style={{ color: primaryColor }}>
@@ -451,7 +455,21 @@ export default function MoreScreen() {
           />
         </View>
 
-        <Text className="text-center text-xs mb-8" style={{ color: textColor }}>{copy.version}</Text>
+        <Text className="text-center text-xs mb-4" style={{ color: textColor }}>{copy.version}</Text>
+
+        {/* Designed-by-nooks footer. Halftone wordmark; tint follows
+            the merchant's textColor so it adapts to dark-mode menu
+            backgrounds without baking white into the asset. */}
+        <View className="items-center mb-2">
+          <Text className="text-[10px] mb-1" style={{ color: textColor, opacity: 0.55 }}>
+            {isArabic ? 'تصميم' : 'Designed by'}
+          </Text>
+          <Image
+            source={require('../../assets/images/nooks-wordmark.png')}
+            style={{ width: 80, height: 24, opacity: 0.6, tintColor: textColor }}
+            resizeMode="contain"
+          />
+        </View>
       </ScrollView>
 
       {/* The language-switch overlay is mounted in _layout.tsx

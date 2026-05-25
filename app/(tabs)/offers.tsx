@@ -656,7 +656,11 @@ export default function OffersScreen() {
               ) : null
             }
             renderItem={({ item }) => <OfferCard {...item} />}
-            contentContainerStyle={{ padding: 16 }}
+            contentContainerStyle={{
+              padding: 16,
+              // Clears the floating tab bar (96 ios / 78 android).
+              paddingBottom: Platform.OS === 'ios' ? 130 : 110,
+            }}
           />
           {!offersFetchDone && (
             <View style={[StyleSheet.absoluteFillObject, { backgroundColor }]} pointerEvents="auto">
@@ -680,7 +684,19 @@ export default function OffersScreen() {
             <ActivityIndicator size="large" color={primaryColor} />
           </View>
         ) : (
-          <ScrollView className="flex-1" contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+          <ScrollView
+            className="flex-1"
+            contentContainerStyle={{
+              padding: 16,
+              // 40 was originally tuned for a static bottom safe-area
+              // but the tab bar is absolute-positioned (height 96/78,
+              // see (tabs)/_layout.tsx) and covers the scroll content.
+              // Bump to fully clear the bar so loyalty transactions
+              // and the Apple Wallet button stay reachable on every
+              // device.
+              paddingBottom: Platform.OS === 'ios' ? 130 : 110,
+            }}
+          >
             {/* Main Loyalty Card — shows ONE card matching the user's effective
                 loyalty type (never both). Mirrors the dashboard's Wallet Card
                 Designer preview 1:1 (flat background, logo top-left, Card Title
