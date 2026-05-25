@@ -9,6 +9,7 @@ import {
   Gift,
   Plus,
   Search,
+  ShoppingBag,
   Store,
   X
 } from 'lucide-react-native';
@@ -807,13 +808,15 @@ export default function MenuScreen() {
         </View>
       ) : null}
 
-      {/* FLOATING REWARDS FAB — bottom-right of the menu, above the
-          cart bar when cart is non-empty. Only shown to signed-in
-          customers (rewards are user-scoped). Tap routes to the
-          rewards screen where the customer can redeem stamp
-          milestones into the cart as 0-priced items.
-          The vertical offset matches the cart bar's height so the
-          FAB doesn't collide with it when cart is non-empty. */}
+      {/* FLOATING ACTION BUTTONS — Rewards bottom-left, Cart
+          bottom-right. Both share the same iOS-app-icon-style
+          rounded box (60x60, rounded-[18]) so they read as a
+          matched pair at opposite corners.
+          Rewards is gated on signed-in customers (rewards are
+          user-scoped). Cart is gated on totalItems>0 — there's
+          nothing to view when the cart is empty. Browsing isn't
+          gated by branch status; checkout is where we validate
+          the customer's selected/nearest branch. */}
       {customerId && (
         <TouchableOpacity
           onPress={() => router.push('/rewards' as never)}
@@ -822,13 +825,11 @@ export default function MenuScreen() {
           activeOpacity={0.85}
           style={{
             position: 'absolute',
-            end: 20,
-            bottom: totalItems > 0
-              ? (Platform.OS === 'ios' ? 196 : 180)
-              : (Platform.OS === 'ios' ? 104 : 88),
-            width: 56,
-            height: 56,
-            borderRadius: 28,
+            start: 20,
+            bottom: Platform.OS === 'ios' ? 104 : 88,
+            width: 60,
+            height: 60,
+            borderRadius: 18,
             backgroundColor: accent,
             alignItems: 'center',
             justifyContent: 'center',
@@ -840,45 +841,58 @@ export default function MenuScreen() {
             zIndex: 110,
           }}
         >
-          <Gift size={26} color="#ffffff" />
+          <Gift size={28} color="#ffffff" />
         </TouchableOpacity>
       )}
 
-      {/* FLOATING CART — browsing isn't gated by branch status. Checkout
-          is where we validate the customer's selected / nearest branch. */}
       {!!totalItems && (
-        <View
-          className="absolute left-5 right-5 z-[120]"
-          style={{ bottom: Platform.OS === 'ios' ? 104 : 88 }}
+        <TouchableOpacity
+          onPress={() => router.push('/cart')}
+          accessibilityLabel={isArabic ? 'عرض السلة' : 'View cart'}
+          accessibilityRole="button"
+          activeOpacity={0.85}
+          style={{
+            position: 'absolute',
+            end: 20,
+            bottom: Platform.OS === 'ios' ? 104 : 88,
+            width: 60,
+            height: 60,
+            borderRadius: 18,
+            backgroundColor: accent,
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 6 },
+            shadowOpacity: 0.25,
+            shadowRadius: 12,
+            elevation: 8,
+            zIndex: 110,
+          }}
         >
-          <TouchableOpacity
-            onPress={() => router.push('/cart')}
-            className="p-5 rounded-[28px] items-center shadow-2xl"
-            style={{ backgroundColor: accent, flexDirection: 'row' }}
-            activeOpacity={0.8}
+          <ShoppingBag size={26} color="#ffffff" />
+          {/* Item-count badge sits in the top-end corner of the
+              button — same pattern as iOS notification badges so
+              the metric reads instantly without taking room from
+              the central icon. */}
+          <View
+            style={{
+              position: 'absolute',
+              top: -6,
+              end: -6,
+              minWidth: 22,
+              height: 22,
+              borderRadius: 11,
+              paddingHorizontal: 5,
+              backgroundColor: '#ef4444',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: 2,
+              borderColor: backgroundColor,
+            }}
           >
-            <View
-              className="items-center flex-1"
-              style={{ flexDirection: 'row' }}
-            >
-              <View
-                className="bg-white/20 px-3 py-1.5 rounded-xl"
-                style={{ marginEnd: 12 }}
-              >
-                <Text className="text-white font-bold">{totalItems}</Text>
-              </View>
-              <Text className="text-white font-bold text-lg">{isArabic ? 'عرض السلة' : 'View Cart'}</Text>
-              {/* marginStart: 'auto' pushes the price block to the
-                  end of the row in either direction — replaces the
-                  old physical marginLeft:'auto' that didn't flip in
-                  RTL. */}
-              <View style={{ marginStart: 'auto', paddingEnd: 12 }}>
-                <PriceWithSymbol amount={totalPrice} iconSize={18} iconColor="#fff" textStyle={{ color: '#fff', fontWeight: '700', fontSize: 18 }} />
-              </View>
-              <ChevronRight size={24} color="white" style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }} />
-            </View>
-          </TouchableOpacity>
-        </View>
+            <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>{totalItems}</Text>
+          </View>
+        </TouchableOpacity>
       )}
     </View>
   );
