@@ -457,16 +457,18 @@ export default function MoreScreen() {
 
         <Text className="text-center text-xs mb-4" style={{ color: textColor }}>{copy.version}</Text>
 
-        {/* Designed-by-nooks footer. Halftone wordmark; tint follows
-            the merchant's textColor so it adapts to dark-mode menu
-            backgrounds without baking white into the asset. */}
-        <View className="items-center mb-2">
-          <Text className="text-[10px] mb-1" style={{ color: textColor, opacity: 0.55 }}>
+        {/* Designed-by-nooks footer. Halftone wordmark sits inline
+            with the label, slightly taller than the cap-height so it
+            reads as a sibling word rather than a stacked logo. Tint
+            follows textColor so the halftone adapts to dark-mode
+            menu backgrounds without baking white into the asset. */}
+        <View className="flex-row items-center justify-center mb-2" style={{ gap: 6 }}>
+          <Text className="text-[11px]" style={{ color: textColor, opacity: 0.55 }}>
             {isArabic ? 'تصميم' : 'Designed by'}
           </Text>
           <Image
             source={require('../../assets/images/nooks-wordmark.png')}
-            style={{ width: 80, height: 24, opacity: 0.6, tintColor: textColor }}
+            style={{ width: 56, height: 16, opacity: 0.6, tintColor: textColor }}
             resizeMode="contain"
           />
         </View>
