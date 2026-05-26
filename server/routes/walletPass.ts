@@ -218,27 +218,32 @@ function createStripPng(w: number, h: number, r: number, g: number, b: number): 
 }
 
 /**
- * Render the stamp-card grid as the wallet pass strip image so the pass
- * mirrors the dashboard's loyalty preview 1:1 within Apple's storeCard
- * template. Each box reflects the customer's progress (filled vs empty)
- * and uses the merchant's configured colors and stamp icon.
+ * Render a horizontal progress bar for the points-mode strip image.
  *
- * Returns null if `sharp` is unavailable or rendering fails so the caller
- * can fall back to the solid background strip.
+ * Apple Wallet @1x/@2x dimensions for storeCard strips: 375×98 / 750×196,
+ * but the spec for this renderer is a 300×60-equivalent visual treatment.
+ * We render at 750×196 (Apple's @2x storeCard strip size) so the pass
+ * looks crisp on Retina devices and keep the visual proportions of the
+ * 300×60 brief — track + fill + centered "X pts to next reward" label.
+ *
+ * - Empty track: 22% alpha of textColor on a card-background-colored canvas
+ * - Filled portion: full textColor
+ * - Label: textColor (high contrast)
+ *
+ * Returns null if `sharp` is unavailable so the caller can fall back to
+ * the solid background strip.
  */
-async function buildStampGridStripPng(opts: {
-  stamps: number;
-  stampTarget: number;
+async function buildPointsProgressStripPng(opts: {
+  /** Current customer points (already rounded for display). */
+  points: number;
+  /** Threshold of the next unaffordable milestone (anchor for the bar). */
+  nextThreshold: number | null;
+  /** Bar background canvas (merchant's wallet_card_bg_color). */
   bgColor: string;
-  stampBoxColor: string;
-  stampIconColor: string;
-  stampIconUrl?: string | null;
-  businessType: 'cafe' | 'restaurant';
-  /**
-   * Percent scale applied on top of the default icon-to-box ratio (100 = default).
-   * Clamped to [20, 200] — anything beyond starts to overflow the stamp box.
-   */
-  iconScalePercent?: number | null;
+  /** Track + label color (merchant's wallet_card_text_color). */
+  textColor: string;
+  /** Override label — if null, a "X pts to next reward" string is rendered. */
+  labelOverride?: string | null;
 }): Promise<Buffer | null> {
   let sharpMod: typeof import('sharp');
   try {
@@ -247,118 +252,84 @@ async function buildStampGridStripPng(opts: {
     return null;
   }
 
+  // Apple storeCard strip @2x dimensions. 375x98 @1x scaled 2x for retina.
   const W = 750;
-  // Strip at 300 px gives proper tall stamp boxes. Apple's auxiliaryFields
-  // row DOES render as a distinct second row below secondaryFields as
-  // long as primaryFields has a non-empty entry (see pass.json build
-  // for stamps — we inject a small "STAMPS: X / Y" primary field to
-  // keep the three-row template layout active).
-  const H = 300;
-  const total = Math.max(1, Math.min(20, Math.round(opts.stampTarget) || 8));
-  const filled = Math.max(0, Math.min(total, Math.round(opts.stamps) || 0));
-  // Match the dashboard StampCardPreview grid: 1 row when 5 or fewer, otherwise 2 rows.
-  const cols = total <= 5 ? total : Math.ceil(total / 2);
-  const rows = Math.ceil(total / cols);
+  const H = 196;
 
-  const padding = 4;
-  const gap = 8;
-  const boxW = Math.max(40, Math.floor((W - padding * 2 - gap * (cols - 1)) / cols));
-  const boxH = Math.max(40, Math.floor((H - padding * 2 - gap * (rows - 1)) / rows));
-
-  const gridW = cols * boxW + (cols - 1) * gap;
-  const gridH = rows * boxH + (rows - 1) * gap;
-  const startX = Math.round((W - gridW) / 2);
-  const startY = Math.round((H - gridH) / 2);
-  // Corner radius scales off the shorter box dimension so rectangular
-  // boxes don't look like pills.
-  const radius = Math.max(2, Math.round(Math.min(boxW, boxH) * 0.18));
-
-  function toRgba(hex: string, alpha: number): string {
-    let h = (hex || '').replace('#', '').trim();
+  function toRgba(color: string, alpha: number): string {
+    // Accept #RRGGBB, #RGB, or rgb(...) — anything else falls back to white.
+    const trimmed = (color || '').trim();
+    if (trimmed.startsWith('rgb')) {
+      const m = trimmed.match(/\d+/g);
+      if (m && m.length >= 3) return `rgba(${m[0]},${m[1]},${m[2]},${alpha})`;
+      return `rgba(255,255,255,${alpha})`;
+    }
+    let h = trimmed.replace('#', '');
     if (h.length === 3) h = h.split('').map((c) => c + c).join('');
-    if (!/^[0-9a-fA-F]{6}$/.test(h)) return `rgba(16,185,129,${alpha})`;
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return `rgba(255,255,255,${alpha})`;
     const r = parseInt(h.slice(0, 2), 16);
     const g = parseInt(h.slice(2, 4), 16);
     const b = parseInt(h.slice(4, 6), 16);
     return `rgba(${r},${g},${b},${alpha})`;
   }
 
-  // Optionally embed the merchant's uploaded stamp icon as an inline data URI.
-  // libvips/librsvg supports <image href="data:..."> which keeps everything in
-  // a single SVG and avoids a second sharp.composite pass.
-  let customDataUrl: string | null = null;
-  if (opts.stampIconUrl) {
-    try {
-      const r = await fetch(opts.stampIconUrl);
-      if (r.ok) {
-        const buf = Buffer.from(await r.arrayBuffer());
-        const ct = r.headers.get('content-type') || 'image/png';
-        customDataUrl = `data:${ct};base64,${buf.toString('base64')}`;
-      }
-    } catch {
-      /* fall through with default icons */
-    }
-  }
+  // Bar geometry — centered horizontally, slightly above vertical center
+  // so the label has breathing room below.
+  const barH = 36;
+  const barX = 80;
+  const barW = W - barX * 2;
+  const barY = Math.round((H - barH) / 2) - 12;
+  const radius = barH / 2;
 
-  // Default outline icons (24x24 viewBox) used when the merchant hasn't
-  // uploaded a custom stamp image. Two variants — coffee cup and fork+knife
-  // — to match the dashboard's businessType-driven default.
-  const defaultPath: Record<string, string> = {
-    cafe: 'M5 11h12v3a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4v-3z M17 11h2.5a2.5 2.5 0 0 1 0 5H17 M8 4v3 M12 4v3 M16 4v3',
-    restaurant: 'M6 3v8c0 1.1 0.9 2 2 2v8 M6 11h4 M10 3v8c0 1.1-0.9 2-2 2 M16 3c-1.1 0-2 0.9-2 2v6c0 1.1 0.9 2 2 2v8',
-  };
-  const iconPath = defaultPath[opts.businessType] || defaultPath.cafe;
+  let progressRatio = 0;
+  if (opts.nextThreshold && opts.nextThreshold > 0) {
+    progressRatio = Math.max(0, Math.min(1, opts.points / opts.nextThreshold));
+  }
+  const filledW = Math.round(barW * progressRatio);
+
+  const remaining = opts.nextThreshold == null
+    ? 0
+    : Math.max(0, Math.ceil(opts.nextThreshold - opts.points));
+  const label = opts.labelOverride
+    ?? (opts.nextThreshold == null
+      ? ''
+      : remaining === 0
+        ? 'Reward unlocked!'
+        : `${remaining} pts to next reward`);
 
   const parts: string[] = [];
-  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
   parts.push(`<rect width="${W}" height="${H}" fill="${opts.bgColor}"/>`);
-
-  for (let i = 0; i < total; i++) {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    const x = startX + col * (boxW + gap);
-    const y = startY + row * (boxH + gap);
-    const isFilled = i < filled;
-    const boxFill = isFilled ? toRgba(opts.stampBoxColor, 1) : toRgba(opts.stampBoxColor, 0.22);
-
-    parts.push(`<rect x="${x}" y="${y}" width="${boxW}" height="${boxH}" rx="${radius}" fill="${boxFill}"/>`);
-
-    // Icon size is keyed off the SHORTER box dimension so the logo stays
-    // comfortably inside rectangular cells. Merchants with an uploaded
-    // stamp logo start at 72% of that dimension; built-in glyphs at 66%.
-    // Merchant slider (iconScalePercent) multiplies on top, clamped so the
-    // icon can't overflow the box or shrink to nothing.
-    const rawScale = typeof opts.iconScalePercent === 'number' ? opts.iconScalePercent : 100;
-    const scale = Math.max(20, Math.min(200, rawScale)) / 100;
-    const baseRatio = customDataUrl ? 0.72 : 0.66;
-    // Cap effective ratio at 0.92 so even at 200% the icon keeps a small
-    // bezel inside the box instead of touching the edge.
-    const effectiveRatio = Math.min(0.92, baseRatio * scale);
-    const iconSize = Math.round(Math.min(boxW, boxH) * effectiveRatio);
-    const iconX = x + Math.round((boxW - iconSize) / 2);
-    const iconY = y + Math.round((boxH - iconSize) / 2);
-    const iconOpacity = isFilled ? 1 : 0.35;
-
-    if (customDataUrl) {
-      parts.push(
-        `<image href="${customDataUrl}" xlink:href="${customDataUrl}" x="${iconX}" y="${iconY}" width="${iconSize}" height="${iconSize}" opacity="${iconOpacity}" preserveAspectRatio="xMidYMid meet"/>`,
-      );
-    } else {
-      const viewBoxScale = iconSize / 24;
-      parts.push(
-        `<g transform="translate(${iconX} ${iconY}) scale(${viewBoxScale})" opacity="${iconOpacity}"><path d="${iconPath}" fill="none" stroke="${opts.stampIconColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>`,
-      );
-    }
+  // Empty track
+  parts.push(`<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" rx="${radius}" fill="${toRgba(opts.textColor, 0.22)}"/>`);
+  // Filled portion (only if there's progress to show)
+  if (filledW > 0) {
+    parts.push(`<rect x="${barX}" y="${barY}" width="${filledW}" height="${barH}" rx="${radius}" fill="${toRgba(opts.textColor, 1)}"/>`);
   }
-
+  // Label
+  if (label) {
+    const labelY = barY + barH + 38;
+    parts.push(
+      `<text x="${W / 2}" y="${labelY}" font-family="-apple-system, system-ui, sans-serif" font-size="26" font-weight="600" fill="${toRgba(opts.textColor, 1)}" text-anchor="middle">${escapeXml(label)}</text>`,
+    );
+  }
   parts.push('</svg>');
 
   try {
     return await sharpMod(Buffer.from(parts.join(''))).png({ compressionLevel: 6 }).toBuffer();
   } catch (err: any) {
-    console.warn('[WalletPass] stamp grid render failed:', err?.message);
+    console.warn('[WalletPass] points progress strip render failed:', err?.message);
     return null;
   }
+}
+
+function escapeXml(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 
@@ -573,6 +544,16 @@ async function attachWalletLogosToFiles(
   }
 }
 
+/**
+ * Points-mode milestone shape consumed by buildPassJson. Renamed from
+ * stamp_number → points_threshold to match the Phase 4 schema rename.
+ */
+type PointsMilestone = {
+  id: string;
+  points_threshold: number;
+  reward_name: string;
+};
+
 function buildPassJson(opts: {
   serialNumber: string;
   description: string;
@@ -584,32 +565,30 @@ function buildPassJson(opts: {
   cardLabel: string;
   points: number;
   lifetimePoints: number;
-  pointValueSar: number;
-  earnRate: string;
   expiresLabel: string;
   barcodeMessage: string;
   memberCode: string;
   customerId: string;
   hasLogoImage: boolean;
   templateType?: string;
-  stamps?: number;
-  stampTarget?: number;
-  stampEnabled?: boolean;
-  nextRewardName?: string;
-  nextRewardCost?: number;
   locations?: Array<{ lat: number; lng: number; name: string }>;
   loyaltyType?: string;
   cashbackBalance?: number;
   cashbackPercent?: number;
   businessType?: string;
   /**
-   * All active stamp milestones for the merchant, sorted by stamp_number asc.
-   * The first 2 render as secondary fields, next 2 as auxiliary fields; any
-   * overflow lands in backFields.
+   * All active points milestones for the merchant, sorted by
+   * points_threshold ascending (cheapest first). Front of the pass shows
+   * the next 2 unredeemed as secondaryFields and the next 2 as
+   * auxiliaryFields. All milestones surface on the back of the pass.
    */
-  milestones?: Array<{ stamp_number: number; reward_name: string }>;
+  milestones?: PointsMilestone[];
 }): Buffer {
-  const loyaltyType = opts.loyaltyType ?? 'stamps';
+  // Defensive normalization: legacy rows may still carry 'stamps' but the
+  // Phase 1-4 contract collapsed stamps→points. Treat anything not
+  // explicitly 'cashback' as points so the render path stays predictable.
+  const rawType = opts.loyaltyType ?? 'points';
+  const loyaltyType: 'cashback' | 'points' = rawType === 'cashback' ? 'cashback' : 'points';
 
   let storeCard: Record<string, unknown[]>;
 
@@ -625,124 +604,90 @@ function buildPassJson(opts: {
     },
   ];
 
-  switch (loyaltyType) {
-    case 'cashback':
-      storeCard = {
-        headerFields: titleHeader,
-        primaryFields: [
-          { key: 'balance', label: 'CASHBACK BALANCE', value: `${(opts.cashbackBalance ?? 0).toFixed(2)} SAR` },
-        ],
-        secondaryFields: [
-          { key: 'cashbackRate', label: 'CASHBACK RATE', value: `${opts.cashbackPercent ?? 5}% back` },
-          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel, textAlignment: 'PKTextAlignmentRight' },
-        ],
-        backFields: [
-          { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
-          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn cashback on your purchase.' },
-          { key: 'redeem', label: 'Redeem', value: 'Cashback can be used at checkout in the app.' },
-        ],
+  if (loyaltyType === 'cashback') {
+    storeCard = {
+      headerFields: titleHeader,
+      primaryFields: [
+        { key: 'balance', label: 'CASHBACK BALANCE', value: `${(opts.cashbackBalance ?? 0).toFixed(2)} SAR` },
+      ],
+      secondaryFields: [
+        { key: 'cashbackRate', label: 'CASHBACK RATE', value: `${opts.cashbackPercent ?? 5}% back` },
+        { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel, textAlignment: 'PKTextAlignmentRight' },
+      ],
+      backFields: [
+        { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
+        { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn cashback on your purchase.' },
+        { key: 'redeem', label: 'Redeem', value: 'Cashback can be used at checkout in the app.' },
+      ],
+    };
+  } else {
+    // ─── Points mode ───
+    // Render strategy (per Phase 5 spec):
+    //   primary    → POINTS balance (current points count, integer display)
+    //   secondary  → next 2 unredeemed rewards in cost-ascending order
+    //   auxiliary  → rewards #3 and #4 in cost-ascending order
+    //   back       → lifetime points + all rewards (up to 20)
+    // Customers redeem points by deducting the milestone's points_threshold
+    // — they can pick any reward they can afford, so we surface the cheapest
+    // ones on the front and let the full list live on the back.
+    const allMilestones = (opts.milestones ?? [])
+      .filter((m) => m && typeof m.points_threshold === 'number' && (m.reward_name || '').trim().length > 0)
+      .slice()
+      .sort((a, b) => a.points_threshold - b.points_threshold);
+
+    // Front-of-pass slots — cheapest 4 milestones split across secondary/aux.
+    // We don't filter by affordability here: showing customers what's still
+    // ahead is motivating, and Apple's storeCard template only has so many
+    // visible slots, so cost-ascending is the most informative ordering.
+    const frontMilestones = allMilestones.slice(0, 4);
+    const secondaryMilestones = frontMilestones.slice(0, 2);
+    const auxiliaryMilestones = frontMilestones.slice(2, 4);
+
+    const buildFrontField = (m: PointsMilestone, alignRight: boolean) => {
+      const field: Record<string, unknown> = {
+        key: `milestone_${m.id}`,
+        label: (m.reward_name || '').trim() || '—',
+        value: `${Math.round(m.points_threshold)} pts`,
       };
-      break;
+      if (alignRight) field.textAlignment = 'PKTextAlignmentRight';
+      return field;
+    };
 
-    case 'stamps': {
-      const filledCount = Math.min(opts.stamps ?? 0, opts.stampTarget ?? 8);
-      const total = opts.stampTarget ?? 8;
+    const secondaryFields = secondaryMilestones.map((m, i) =>
+      buildFrontField(m, i === secondaryMilestones.length - 1 && secondaryMilestones.length > 1),
+    );
+    const auxiliaryFields = auxiliaryMilestones.map((m, i) =>
+      buildFrontField(m, i === auxiliaryMilestones.length - 1 && auxiliaryMilestones.length > 1),
+    );
 
-      // Map the merchant's configured milestones onto Apple's field slots.
-      // Layout goal (identical to the dashboard preview and the in-app card):
-      //   header    → Card Title on the right, logo on the left
-      //   strip     → rendered stamp grid (accurate per-customer fill)
-      //   primary   → empty (the strip is the focal point)
-      //   secondary → 1st + 2nd milestone (top row of the 2x2)
-      //   auxiliary → 3rd + 4th milestone (bottom row of the 2x2)
-      // The storeCard template can only fit 4 milestones on the pass front.
-      // The Loyalty dashboard enforces that same cap when the merchant adds
-      // milestones, so we slice here only defensively — in case older rows
-      // still exist in the DB.
-      const sortedMilestones = (opts.milestones ?? [])
-        .filter((m) => m && typeof m.stamp_number === 'number' && (m.reward_name || '').trim().length > 0)
-        .slice()
-        .sort((a, b) => a.stamp_number - b.stamp_number)
-        .slice(0, 4);
+    // Apple Wallet supports many backFields; we surface up to 20 rewards
+    // so the customer sees the whole catalog in the "i" flip view.
+    const backMilestoneFields = allMilestones.slice(0, 20).map((m) => ({
+      key: `back_milestone_${m.id}`,
+      label: (m.reward_name || '').trim() || '—',
+      value: `${Math.round(m.points_threshold)} pts`,
+    }));
 
-      const buildMilestoneField = (
-        m: { stamp_number: number; reward_name: string },
-        alignRight: boolean,
-      ) => {
-        const field: Record<string, unknown> = {
-          key: `milestone_${m.stamp_number}`,
-          label: `STAMP ${m.stamp_number}`,
-          value: (m.reward_name || '').trim() || '—',
-        };
-        if (alignRight) field.textAlignment = 'PKTextAlignmentRight';
-        return field;
-      };
+    // Math.floor for the displayed points balance — never round up, that
+    // would inflate what customers see vs. what they can spend (fractional
+    // points are possible when points_per_sar is decimal like 0.5).
+    const displayPoints = Math.max(0, Math.floor(opts.points));
 
-      const secondaryMilestones = sortedMilestones.slice(0, 2);
-      const auxiliaryMilestones = sortedMilestones.slice(2, 4);
-
-      const secondaryFields = secondaryMilestones.map((m, i) =>
-        buildMilestoneField(m, i === secondaryMilestones.length - 1 && secondaryMilestones.length > 1),
-      );
-      const auxiliaryFields = auxiliaryMilestones.map((m, i) =>
-        buildMilestoneField(m, i === auxiliaryMilestones.length - 1 && auxiliaryMilestones.length > 1),
-      );
-
-      // Apple's storeCard template fundamentally only supports a single
-      // row of milestone-style fields under Arabic RTL — secondaryFields
-      // and auxiliaryFields collapse together regardless of how we split,
-      // and primaryFields renders as a giant balance-style overlay on
-      // the strip (unsuitable for a compact line). After exhausting the
-      // template's flex points, we commit to a clean single row of up
-      // to 4 milestones here and surface the rest on the back of the
-      // pass where they render top-to-bottom with no compression.
-      const frontMilestones = sortedMilestones.slice(0, 4);
-      const frontFields = frontMilestones.map((m, i) =>
-        buildMilestoneField(m, i === frontMilestones.length - 1 && frontMilestones.length > 1),
-      );
-      const backMilestoneFields = sortedMilestones.map((m) => ({
-        key: `milestone_back_${m.stamp_number}`,
-        label: `STAMP ${m.stamp_number}`,
-        value: (m.reward_name || '').trim() || '—',
-      }));
-      // Unused locals kept (no-op) so the older branched split doesn't
-      // read as dead code if someone re-derives it later.
-      void secondaryFields; void auxiliaryFields;
-      storeCard = {
-        headerFields: titleHeader,
-        primaryFields: [],
-        secondaryFields: frontFields,
-        auxiliaryFields: [],
-        backFields: [
-          { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
-          { key: 'stampsSummary', label: 'Stamps', value: `${filledCount} / ${total}` },
-          ...backMilestoneFields,
-          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn stamps and redeem rewards.' },
-          { key: 'howItWorks', label: 'How it works', value: 'Earn 1 stamp per completed order. Reach milestones to unlock rewards!' },
-        ],
-      };
-      break;
-    }
-
-    default: // points
-      storeCard = {
-        headerFields: titleHeader,
-        primaryFields: [
-          { key: 'balance', label: 'POINTS BALANCE', value: opts.points },
-        ],
-        secondaryFields: [
-          { key: 'worth', label: 'WORTH', value: `${(opts.points * opts.pointValueSar).toFixed(2)} SAR` },
-          { key: 'earnRate', label: 'EARN RATE', value: opts.earnRate },
-          { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel },
-        ],
-        backFields: [
-          { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
-          { key: 'lifetime', label: 'Lifetime Points', value: String(opts.lifetimePoints) },
-          { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn points.' },
-          { key: 'redeem', label: 'Redeem', value: 'Points can be used at checkout in the app.' },
-        ],
-      };
-      break;
+    storeCard = {
+      headerFields: titleHeader,
+      primaryFields: [
+        { key: 'balance', label: 'POINTS', value: displayPoints },
+      ],
+      secondaryFields,
+      auxiliaryFields,
+      backFields: [
+        { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
+        { key: 'lifetime', label: 'LIFETIME POINTS', value: String(Math.max(0, Math.floor(opts.lifetimePoints))) },
+        ...backMilestoneFields,
+        { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn points.' },
+        { key: 'redeem', label: 'Redeem', value: 'Points can be used at checkout in the app — pick any reward you can afford.' },
+      ],
+    };
   }
 
   const pass: Record<string, unknown> = {
@@ -1003,11 +948,6 @@ walletPassRouter.get(
       const textColor = config?.wallet_card_text_color || '#FFFFFF';
       const cardLabel = config?.wallet_card_label || merchant?.cafe_name || appConfig?.app_name || 'Loyalty Card';
       const passDescription = merchant?.cafe_name || config?.wallet_card_label || appConfig?.app_name || 'Loyalty Card';
-      const pointValueSar = config?.point_value_sar ?? 0.1;
-      const pointsPerSar = config?.points_per_sar ?? 0.1;
-      const earnRate = config?.earn_mode === 'per_order'
-        ? `${config?.points_per_order ?? 10} pts/order`
-        : `${Math.round(pointsPerSar * 100)}% back`;
 
       const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
       const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
@@ -1054,60 +994,64 @@ walletPassRouter.get(
       );
       await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
-      // Fetch stamp data, next reward, cashback balance, and branch locations
       // Effective type for the customer — same auto-migration contract as
       // the /api/loyalty/balance endpoint (keep old type until balance hits 0,
-      // then migrate to the merchant's current config type).
+      // then migrate to the merchant's current config type). Phase 1-4
+      // collapsed stamps → points, so normalize any lingering 'stamps'
+      // value to 'points' defensively.
       const route = await getCustomerLoyaltyRoute(merchantId, customerId);
-      const loyaltyType = (route.redeem as 'cashback' | 'stamps' | null)
-        || config?.loyalty_type
-        || 'stamps';
-      const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
-        supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
-          .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
-        supabaseAdmin.from('loyalty_rewards').select('name, points_cost')
-          .eq('merchant_id', merchantId).eq('is_active', true)
-          .order('points_cost', { ascending: true }).limit(1).maybeSingle(),
+      const rawType = route.redeem ?? config?.loyalty_type ?? 'points';
+      const loyaltyType: 'cashback' | 'points' = rawType === 'cashback' ? 'cashback' : 'points';
+
+      // Re-read milestones fresh on every pass render so config changes
+      // (new reward, threshold tweak) show up immediately when the
+      // existing notifyPassUpdate nudges the device. No in-memory cache.
+      const [{ data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
         supabaseAdmin.from('branch_mappings').select('name, latitude, longitude')
           .eq('merchant_id', merchantId)
           .not('latitude', 'is', null).not('longitude', 'is', null).limit(10),
         supabaseAdmin.from('loyalty_cashback_balances').select('balance_sar')
           .eq('customer_id', customerId).eq('merchant_id', merchantId)
           .order('config_version', { ascending: false }).limit(1).maybeSingle(),
-        supabaseAdmin.from('loyalty_stamp_milestones').select('reward_name, stamp_number')
+        supabaseAdmin.from('loyalty_milestones').select('id, reward_name, points_threshold')
           .eq('merchant_id', merchantId).eq('is_active', true)
-          .order('stamp_number', { ascending: true }),
+          .order('points_threshold', { ascending: true }),
       ]);
-      const activeMilestones = (milestoneRows ?? []) as Array<{ stamp_number: number; reward_name: string }>;
-      const currentStampsForNext = stampRow?.stamps ?? 0;
-      const nextMilestone = activeMilestones.find((m) => m.stamp_number > currentStampsForNext) ?? activeMilestones[0] ?? null;
+      const activeMilestones = (milestoneRows ?? []) as PointsMilestone[];
 
-      // Stamps loyalty: render the stamp grid as the strip image so the pass
-      // mirrors the dashboard's preview (filled boxes match the customer's
-      // current stamp count, colors and icon respect the merchant's config).
-      if (loyaltyType === 'stamps') {
-        const stampGrid = await buildStampGridStripPng({
-          stamps: stampRow?.stamps ?? 0,
-          stampTarget: config?.stamp_target ?? 8,
+      // Points-mode strip: draw a horizontal progress bar to the
+      // cheapest UNAFFORDABLE milestone. If the customer can afford
+      // every reward, hide the bar and show "All rewards unlocked".
+      if (loyaltyType === 'points') {
+        const displayPoints = Math.max(0, Math.floor(points));
+        const sortedMs = activeMilestones
+          .slice()
+          .sort((a, b) => a.points_threshold - b.points_threshold);
+        const nextUnaffordable = sortedMs.find((m) => m.points_threshold > displayPoints) ?? null;
+
+        let label: string | null;
+        let nextThreshold: number | null;
+        if (sortedMs.length === 0) {
+          label = 'Earn points on every order';
+          nextThreshold = null;
+        } else if (!nextUnaffordable) {
+          label = 'All rewards unlocked — keep earning!';
+          nextThreshold = null;
+        } else {
+          label = null; // helper generates "X pts to next reward"
+          nextThreshold = nextUnaffordable.points_threshold;
+        }
+
+        const progressStrip = await buildPointsProgressStripPng({
+          points: displayPoints,
+          nextThreshold,
           bgColor,
-          stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
-          // Stamp icon color follows the card's text color — the
-          // dashboard no longer exposes a separate picker (the merchant
-          // told us "doesn't do anything" because Apple Wallet caches
-          // pass artwork until APNs nudges it to refresh). Falling back
-          // to text color keeps a single source of truth that always
-          // contrasts the card background by definition.
-          stampIconColor: config?.wallet_card_text_color ?? '#FFFFFF',
-          stampIconUrl: config?.wallet_stamp_icon_url ?? null,
-          businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
-          iconScalePercent:
-            config?.wallet_stamp_icon_scale != null
-              ? Number(config.wallet_stamp_icon_scale)
-              : null,
+          textColor,
+          labelOverride: label,
         });
-        if (stampGrid) {
-          files['strip.png'] = stampGrid;
-          files['strip@2x.png'] = stampGrid;
+        if (progressStrip) {
+          files['strip.png'] = progressStrip;
+          files['strip@2x.png'] = progressStrip;
         }
       }
 
@@ -1122,9 +1066,6 @@ walletPassRouter.get(
         cardLabel,
         points,
         lifetimePoints,
-        pointValueSar,
-        earnRate,
-
         expiresLabel,
         barcodeMessage,
         memberCode: memberProfile.member_code,
@@ -1134,11 +1075,6 @@ walletPassRouter.get(
         cashbackBalance: cbRow?.balance_sar ?? 0,
         cashbackPercent: config?.cashback_percent ?? 5,
         businessType: config?.business_type ?? 'cafe',
-        stamps: stampRow?.stamps ?? 0,
-        stampTarget: config?.stamp_target ?? 8,
-        stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
-        nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
-        nextRewardCost: cheapestReward?.points_cost ?? undefined,
         milestones: activeMilestones,
         locations: (branches ?? [])
           .filter((b: any) => b.latitude && b.longitude)
@@ -1375,8 +1311,8 @@ walletPassRouter.get('/wallet-pass/debug', async (req, res) => {
         fgColor: 'rgb(255,255,255)',
         labelColor: 'rgb(210, 210, 210)',
         cardLabel: 'Debug',
-        points: 0, lifetimePoints: 0, pointValueSar: 0.1,
-        earnRate: '10% back',
+        points: 0,
+        lifetimePoints: 0,
         expiresLabel: 'Never',
         barcodeMessage: 'NKDEBUG00',
         memberCode: 'NKDEBUG00',
@@ -1447,7 +1383,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
     let textColor = 'rgb(255, 255, 255)';
     let cardLabel = 'Loyalty Card';
     let passDescription = 'Loyalty Card';
-    let earnRate = '10% back in points';
     let logoUrl: string | null = null;
 
     const merchantId = req.query.merchantId as string;
@@ -1464,10 +1399,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
         textColor = hexToRgb(config.wallet_card_text_color || '#FFFFFF');
         cardLabel = config.wallet_card_label || merchant?.cafe_name || appConfig?.app_name || 'Loyalty Card';
         passDescription = merchant?.cafe_name || config.wallet_card_label || appConfig?.app_name || 'Loyalty Card';
-        const pps = config.points_per_sar ?? 0.1;
-        earnRate = config.earn_mode === 'per_order'
-          ? `${config.points_per_order ?? 10} points per order`
-          : `${Math.round(pps * 100)}% back in points`;
       }
       logoUrl = resolveWalletLogoUrl(config?.wallet_card_logo_url);
       logoText = resolveWalletLogoText(
@@ -1507,8 +1438,6 @@ walletPassRouter.get('/wallet-pass/test', async (req, res) => {
       cardLabel,
       points: 0,
       lifetimePoints: 0,
-      pointValueSar: 0.1,
-      earnRate,
       expiresLabel: 'Never',
       barcodeMessage: 'NKTEST000',
       memberCode: 'NKTEST000',
@@ -1555,12 +1484,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     const textColor = config?.wallet_card_text_color || '#FFFFFF';
     const cardLabel = config?.wallet_card_label || merchant?.cafe_name || appConfig?.app_name || 'Loyalty Card';
     const passDescription = merchant?.cafe_name || config?.wallet_card_label || appConfig?.app_name || 'Loyalty Card';
-    const pointValueSar = config?.point_value_sar ?? 0.1;
-    const pointsPerSar = config?.points_per_sar ?? 0.1;
-
-    const earnRate = config?.earn_mode === 'per_order'
-      ? `${config?.points_per_order ?? 10} pts/order`
-      : `${Math.round(pointsPerSar * 100)}% back`;
 
     const expiresLabel = formatExpiryDate(lastEarnDate, config?.expiry_months ?? null);
     const memberProfile = await ensureLoyaltyMemberProfile(merchantId, customerId);
@@ -1594,37 +1517,33 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       }
     }
 
-    // Determine effective loyalty type: member override > config default
-    // Ask the loyalty module for the customer's effective type. This handles
-    // the transition contract (customer keeps old type until balance hits 0,
-    // then auto-migrates to the merchant's current type) exactly the same way
-    // the /api/loyalty/balance endpoint does.
+    // Determine effective loyalty type: member override > config default.
+    // Ask the loyalty module for the customer's effective type — handles
+    // the transition contract the same way /api/loyalty/balance does.
+    // Phase 1-4 collapsed stamps → points, so normalize any 'stamps' value
+    // (legacy member rows, older configs) to 'points'.
     const route = await getCustomerLoyaltyRoute(merchantId, customerId);
-    const loyaltyType = (route.redeem as 'cashback' | 'stamps' | null)
-      || memberLoyaltyInfo?.active_loyalty_type
-      || config?.loyalty_type
-      || 'stamps';
+    const rawType = route.redeem
+      ?? memberLoyaltyInfo?.active_loyalty_type
+      ?? config?.loyalty_type
+      ?? 'points';
+    const loyaltyType: 'cashback' | 'points' = rawType === 'cashback' ? 'cashback' : 'points';
 
-    // Fetch type-specific balances and branch locations in parallel
-    const [{ data: stampRow }, { data: cheapestReward }, { data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
-      supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
-        .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
-      supabaseAdmin.from('loyalty_rewards').select('name, points_cost')
-        .eq('merchant_id', merchantId).eq('is_active', true)
-        .order('points_cost', { ascending: true }).limit(1).maybeSingle(),
+    // Re-read milestones fresh on every pass render so config changes
+    // (new reward, threshold tweak) show up immediately when the
+    // existing notifyPassUpdate nudges the device.
+    const [{ data: branches }, { data: cbRow }, { data: milestoneRows }] = await Promise.all([
       supabaseAdmin.from('branch_mappings').select('name, latitude, longitude')
         .eq('merchant_id', merchantId)
         .not('latitude', 'is', null).not('longitude', 'is', null).limit(10),
       supabaseAdmin.from('loyalty_cashback_balances').select('balance_sar')
         .eq('customer_id', customerId).eq('merchant_id', merchantId)
         .order('config_version', { ascending: false }).limit(1).maybeSingle(),
-      supabaseAdmin.from('loyalty_stamp_milestones').select('reward_name, stamp_number')
+      supabaseAdmin.from('loyalty_milestones').select('id, reward_name, points_threshold')
         .eq('merchant_id', merchantId).eq('is_active', true)
-        .order('stamp_number', { ascending: true }),
+        .order('points_threshold', { ascending: true }),
     ]);
-    const activeMilestones = (milestoneRows ?? []) as Array<{ stamp_number: number; reward_name: string }>;
-    const currentStampsForNext = stampRow?.stamps ?? 0;
-    const nextMilestone = activeMilestones.find((m) => m.stamp_number > currentStampsForNext) ?? activeMilestones[0] ?? null;
+    const activeMilestones = (milestoneRows ?? []) as PointsMilestone[];
 
     // Foodics Loyalty Adapter QR format. customer_name omitted because
     // iso-8859-1 messageEncoding can't represent Arabic chars and
@@ -1663,26 +1582,40 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     );
     await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
-    // Stamps loyalty: replace the solid strip with the rendered stamp grid so
-    // the pass front mirrors the dashboard's stamp-card preview 1:1 (colors,
-    // icons, filled-vs-empty layout).
-    if (loyaltyType === 'stamps') {
-      const stampGrid = await buildStampGridStripPng({
-        stamps: stampRow?.stamps ?? 0,
-        stampTarget: config?.stamp_target ?? 8,
+    // Points-mode strip: draw a horizontal progress bar to the cheapest
+    // UNAFFORDABLE milestone. Special-cases: no milestones configured →
+    // "Earn points on every order"; customer can afford every reward →
+    // "All rewards unlocked — keep earning!"
+    if (loyaltyType === 'points') {
+      const displayPoints = Math.max(0, Math.floor(points));
+      const sortedMs = activeMilestones
+        .slice()
+        .sort((a, b) => a.points_threshold - b.points_threshold);
+      const nextUnaffordable = sortedMs.find((m) => m.points_threshold > displayPoints) ?? null;
+
+      let label: string | null;
+      let nextThreshold: number | null;
+      if (sortedMs.length === 0) {
+        label = 'Earn points on every order';
+        nextThreshold = null;
+      } else if (!nextUnaffordable) {
+        label = 'All rewards unlocked — keep earning!';
+        nextThreshold = null;
+      } else {
+        label = null;
+        nextThreshold = nextUnaffordable.points_threshold;
+      }
+
+      const progressStrip = await buildPointsProgressStripPng({
+        points: displayPoints,
+        nextThreshold,
         bgColor,
-        stampBoxColor: config?.wallet_stamp_box_color ?? '#10B981',
-        stampIconColor: config?.wallet_stamp_icon_color ?? '#FFFFFF',
-        stampIconUrl: config?.wallet_stamp_icon_url ?? null,
-        businessType: (config?.business_type as 'cafe' | 'restaurant') ?? 'cafe',
-        iconScalePercent:
-          config?.wallet_stamp_icon_scale != null
-            ? Number(config.wallet_stamp_icon_scale)
-            : null,
+        textColor,
+        labelOverride: label,
       });
-      if (stampGrid) {
-        files['strip.png'] = stampGrid;
-        files['strip@2x.png'] = stampGrid;
+      if (progressStrip) {
+        files['strip.png'] = progressStrip;
+        files['strip@2x.png'] = progressStrip;
       }
     }
 
@@ -1697,8 +1630,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       cardLabel,
       points,
       lifetimePoints,
-      pointValueSar,
-      earnRate,
       expiresLabel,
       barcodeMessage,
       memberCode: memberProfile.member_code,
@@ -1708,11 +1639,6 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       cashbackBalance: cbRow?.balance_sar ?? 0,
       cashbackPercent: config?.cashback_percent ?? 5,
       businessType: config?.business_type ?? 'cafe',
-      stamps: stampRow?.stamps ?? 0,
-      stampTarget: config?.stamp_target ?? 8,
-      stampEnabled: loyaltyType === 'stamps' || (config?.stamp_enabled ?? false),
-      nextRewardName: nextMilestone?.reward_name ?? cheapestReward?.name ?? undefined,
-      nextRewardCost: cheapestReward?.points_cost ?? undefined,
       milestones: activeMilestones,
       locations: (branches ?? [])
         .filter((b: any) => b.latitude && b.longitude)
