@@ -646,14 +646,19 @@ loyaltyRouter.get('/balance', async (req, res) => {
             .filter((id: string) => typeof id === 'string' && id),
         ),
       );
+      // Table is `products`; the Foodics product UUID is stored on
+      // `foodics_product_id` (the row's own `id` is our internal PK).
+      // Scope by merchant_id to keep RLS-safe even though service-role
+      // can read across — defensive against future RLS tightening.
       const productImages = new Map<string, string>();
       if (allProductIds.length > 0) {
         const { data: prodData } = await supabaseAdmin
-          .from('foodics_products')
-          .select('id, image_url')
-          .in('id', allProductIds);
-        for (const p of (prodData ?? []) as Array<{ id: string; image_url: string | null }>) {
-          if (p.image_url) productImages.set(p.id, p.image_url);
+          .from('products')
+          .select('foodics_product_id, image_url')
+          .eq('merchant_id', merchantId)
+          .in('foodics_product_id', allProductIds);
+        for (const p of (prodData ?? []) as Array<{ foodics_product_id: string; image_url: string | null }>) {
+          if (p.image_url) productImages.set(p.foodics_product_id, p.image_url);
         }
       }
 

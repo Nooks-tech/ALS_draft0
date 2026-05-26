@@ -287,31 +287,18 @@ async function buildPointsProgressStripPng(opts: {
   }
   const filledW = Math.round(barW * progressRatio);
 
-  const remaining = opts.nextThreshold == null
-    ? 0
-    : Math.max(0, Math.ceil(opts.nextThreshold - opts.points));
-  const label = opts.labelOverride
-    ?? (opts.nextThreshold == null
-      ? ''
-      : remaining === 0
-        ? 'Reward unlocked!'
-        : `${remaining} pts to next reward`);
-
+  // Strip image is intentionally text-free now. SVG-rendered text on
+  // the pass strip can't show Arabic glyphs (system fonts in the
+  // sharp render path don't include Arabic), which was rendering as
+  // boxes. The "X pts to next reward" info is already in the NEXT
+  // REWARD secondary field on the pass front — no need to duplicate.
   const parts: string[] = [];
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
   parts.push(`<rect width="${W}" height="${H}" fill="${opts.bgColor}"/>`);
   // Empty track
   parts.push(`<rect x="${barX}" y="${barY}" width="${barW}" height="${barH}" rx="${radius}" fill="${toRgba(opts.textColor, 0.22)}"/>`);
-  // Filled portion (only if there's progress to show)
   if (filledW > 0) {
     parts.push(`<rect x="${barX}" y="${barY}" width="${filledW}" height="${barH}" rx="${radius}" fill="${toRgba(opts.textColor, 1)}"/>`);
-  }
-  // Label
-  if (label) {
-    const labelY = barY + barH + 38;
-    parts.push(
-      `<text x="${W / 2}" y="${labelY}" font-family="-apple-system, system-ui, sans-serif" font-size="26" font-weight="600" fill="${toRgba(opts.textColor, 1)}" text-anchor="middle">${escapeXml(label)}</text>`,
-    );
   }
   parts.push('</svg>');
 
