@@ -1833,6 +1833,26 @@ loyaltyRouter.post('/redeem-milestone', handleRedeemMilestone);
 loyaltyRouter.post('/redeem-stamp-milestone', handleRedeemMilestone);
 
 /**
+ * POST /api/loyalty/internal/notify-pass-update
+ * Body: { customerId, merchantId }
+ *
+ * Internal-only — fires the Apple Wallet pass push notification for
+ * one customer's pass. Called by nooksweb after a kiosk walk-in claim
+ * lands so the customer's pass refreshes without them having to open
+ * the Nooks app. Uses requireNooksInternalRequest to gate by shared
+ * secret — never exposed to the public internet.
+ */
+loyaltyRouter.post('/internal/notify-pass-update', async (req, res) => {
+  if (!requireNooksInternalRequest(req, res)) return;
+  const { customerId, merchantId } = req.body ?? {};
+  if (typeof customerId !== 'string' || typeof merchantId !== 'string') {
+    return res.status(400).json({ error: 'customerId and merchantId required' });
+  }
+  notifyPassUpdateSafe(customerId, merchantId);
+  res.json({ ok: true });
+});
+
+/**
  * POST /api/loyalty/unredeem-milestone
  *
  * Body: { customerId, merchantId, redemptionId }
