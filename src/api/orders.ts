@@ -43,7 +43,7 @@ export type OrderRow = {
   total_sar: number;
   status: string;
   items: unknown;
-  order_type: 'delivery' | 'pickup' | 'drivethru';
+  order_type: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   delivery_address: string | null;
   delivery_lat: number | null;
   delivery_lng: number | null;
@@ -91,7 +91,7 @@ export type OrderInsert = {
   total_sar: number;
   status: string;
   items: unknown;
-  order_type: 'delivery' | 'pickup' | 'drivethru';
+  order_type: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   delivery_address?: string | null;
   delivery_lat?: number | null;
   delivery_lng?: number | null;
@@ -110,7 +110,7 @@ export type CommitOrderPayload = {
   totalSar: number;
   status: string;
   items: unknown;
-  orderType: 'delivery' | 'pickup' | 'drivethru';
+  orderType: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   deliveryAddress?: string | null;
   deliveryLat?: number | null;
   deliveryLng?: number | null;

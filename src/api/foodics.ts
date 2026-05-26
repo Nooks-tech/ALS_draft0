@@ -47,7 +47,7 @@ export interface OrderDiscount {
 
 export interface CreateOrderPayload {
   branchId: string;
-  orderType: 'delivery' | 'pickup' | 'drivethru';
+  orderType: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   items: Array<{
     productId: string;
     quantity: number;

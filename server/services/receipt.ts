@@ -38,7 +38,7 @@ type ReceiptInput = {
   items: Array<{ name: string; quantity: number; price_sar: number }>;
   // 'drivethru' = "Receive from your car" — shows up on the receipt
   // as "Car pickup" with the customer's car identifiers below.
-  orderType: 'delivery' | 'pickup' | 'drivethru';
+  orderType: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   branchName?: string | null;
   paymentMethod?: string | null;
   paymentId?: string | null;

@@ -28,7 +28,7 @@ export type ServerCart = {
   items: ServerCartItem[];
   subtotal_sar: number;
   branch_id: string | null;
-  order_type: 'delivery' | 'pickup' | 'drivethru' | null;
+  order_type: 'delivery' | 'pickup' | 'drivethru' | 'dine_in' | null;
   updated_at: string | null;
   notified_at: string | null;
 };
@@ -69,7 +69,7 @@ export async function saveServerCart(
     items: ServerCartItem[];
     subtotal_sar: number;
     branch_id: string | null;
-    order_type: 'delivery' | 'pickup' | 'drivethru' | null;
+    order_type: 'delivery' | 'pickup' | 'drivethru' | 'dine_in' | null;
   },
 ): Promise<boolean> {
   if (!API_BASE || !merchantId) return false;

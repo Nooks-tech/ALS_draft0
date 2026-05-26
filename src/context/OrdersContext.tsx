@@ -18,7 +18,7 @@ export type PlacedOrder = {
   total: number;
   date: string;
   items: CartItem[];
-  orderType: 'delivery' | 'pickup' | 'drivethru';
+  orderType: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   merchantId?: string;
   branchName?: string;
   branchId?: string;

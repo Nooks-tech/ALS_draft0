@@ -98,7 +98,7 @@ export function OrderStatusStepper({
   orderType: rawOrderType,
   accentColor = DEFAULT_ACCENT }: {
   status: OrderStatus;
-  orderType: 'delivery' | 'pickup' | 'drivethru';
+  orderType: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   accentColor?: string;
 }) {
   const { i18n } = useTranslation();

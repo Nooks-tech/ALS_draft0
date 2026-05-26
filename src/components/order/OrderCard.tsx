@@ -7,7 +7,7 @@ import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 interface OrderProps {
   id: string;
   status: 'Placed' | 'Accepted' | 'Preparing' | 'Ready' | 'Out for delivery' | 'Delivered' | 'Cancelled' | 'On Hold';
-  orderType?: 'delivery' | 'pickup' | 'drivethru';
+  orderType?: 'delivery' | 'pickup' | 'drivethru' | 'dine_in';
   price: number;
   date: string;
   items: string;

@@ -363,6 +363,18 @@ ordersRouter.post('/commit', async (req, res) => {
       cashbackAmountSar,
       stampMilestoneIds,
       stampsConsumed,
+      // QR-code attribution. Set when the customer arrived via a
+      // scanned QR. qrCodeId links the order back to the QR for
+      // analytics + the dashboard "Table 5" chip. tableId is the
+      // Foodics-side UUID that gets sent in the relay body for
+      // dine_in orders. foodicsTableName is cached on the order row
+      // so the dashboard can render the table label even if the
+      // merchant later renames it in Foodics. guests defaults to 1
+      // server-side if omitted.
+      qrCodeId,
+      tableId,
+      foodicsTableName,
+      guests,
     } = req.body ?? {};
 
     if (!id || typeof id !== 'string') {
@@ -388,6 +400,34 @@ ordersRouter.post('/commit', async (req, res) => {
     }
     if (typeof totalSar !== 'number' || !Number.isFinite(totalSar) || totalSar < 0) {
       return res.status(400).json({ error: 'totalSar must be a valid non-negative number' });
+    }
+
+    // ─── QR + dine-in validation ──────────────────────────────────────
+    // Server is the source of truth on QR ↔ branch ↔ table linkage —
+    // client can't lie about which table they're at. If a qrCodeId is
+    // supplied, verify it's active + belongs to this merchant + matches
+    // the order type. Dine-in orders MUST have a tableId from an active
+    // QR (Foodics rejects type=1 without table_id).
+    let resolvedQrCode:
+      | { foodics_table_id: string | null; foodics_table_name: string | null; branch_id: string | null; order_type_hint: string | null }
+      | null = null;
+    if (qrCodeId) {
+      const { data: qr } = await supabaseAdmin
+        .from('merchant_qr_codes')
+        .select('id, merchant_id, branch_id, foodics_table_id, foodics_table_name, order_type_hint, active')
+        .eq('id', qrCodeId)
+        .maybeSingle();
+      if (!qr || qr.merchant_id !== merchantId || !qr.active) {
+        return res.status(400).json({ error: 'Invalid or inactive QR code' });
+      }
+      resolvedQrCode = qr;
+    }
+    if (orderType === 'dine_in') {
+      if (!resolvedQrCode || !resolvedQrCode.foodics_table_id) {
+        return res.status(400).json({ error: 'dine_in orders require a QR code linked to a Foodics table' });
+      }
+      // Force server-side values over any client-supplied ones — client
+      // can request dine_in but the table identity comes from the QR row.
     }
 
     // ─── Defense-in-depth: per-item price floor + total sanity ───
@@ -917,6 +957,17 @@ ordersRouter.post('/commit', async (req, res) => {
               color: String((carDetails as Record<string, unknown>).color ?? '').trim(),
             }
           : null,
+      // QR + dine-in attribution. We pull server-truth values from the
+      // resolved QR row (validation block above) instead of trusting
+      // client-supplied tableId/foodicsTableName — prevents a tampered
+      // client from claiming a table they aren't at.
+      qr_code_id: qrCodeId && resolvedQrCode ? qrCodeId : null,
+      foodics_table_id: resolvedQrCode?.foodics_table_id ?? null,
+      foodics_table_name: resolvedQrCode?.foodics_table_name ?? null,
+      guests:
+        orderType === 'dine_in'
+          ? Math.max(1, Math.floor(Number(guests ?? 1)))
+          : null,
       // Per-order processing fee billed to the merchant (NOT to the
       // end customer — the customer's total never includes it). Recorded
       // at commit so cancelled / refused orders flip to 'cancelled' and
@@ -1088,6 +1139,18 @@ ordersRouter.post('/commit', async (req, res) => {
                 color: String((carDetails as Record<string, unknown>).color ?? '').trim(),
               }
             : null,
+        // Dine-in: tableId is REQUIRED by Foodics (type=1 without
+        // table_id returns 422). foodicsTableName + guests are
+        // display-only — nooksweb relay maps them into customer_notes
+        // for the printed receipt. qrCodeId rides along so a
+        // table-deleted-in-Foodics 422 can auto-archive the QR.
+        qr_code_id: resolvedQrCode ? qrCodeId : null,
+        table_id: resolvedQrCode?.foodics_table_id ?? null,
+        foodics_table_name: resolvedQrCode?.foodics_table_name ?? null,
+        guests:
+          orderType === 'dine_in'
+            ? Math.max(1, Math.floor(Number(guests ?? 1)))
+            : null,
       }, {
         customerJwt: (req.headers.authorization || '').toString().replace(/^Bearer\s+/i, '').trim() || null,
       });
@@ -1097,7 +1160,7 @@ ordersRouter.post('/commit', async (req, res) => {
       // — the customer-app order list filter requires it to be
       // non-null, so a fire-and-forget update would mean the order
       // briefly disappeared from the list right after creation.
-      const relayData = relayResult as { foodics?: { ok?: boolean; foodicsOrderId?: string; error?: string } } | null;
+      const relayData = relayResult as { foodics?: { ok?: boolean; foodicsOrderId?: string; error?: string; tableUnavailable?: boolean } } | null;
       if (relayData?.foodics?.ok && relayData.foodics.foodicsOrderId) {
         const { error: foodicsIdErr } = await supabaseAdmin
           .from('customer_orders')
@@ -1108,10 +1171,34 @@ ordersRouter.post('/commit', async (req, res) => {
         } else {
           console.log(`[Orders] Stored foodics_order_id for ${id}`);
         }
+        // Audit the QR attribution so analytics can answer
+        // "what's the order count per QR?" without a join.
+        if (qrCodeId && resolvedQrCode) {
+          try {
+            await supabaseAdmin.from('audit_log').insert({
+              merchant_id: merchantId,
+              action: 'customer_order.qr_attached',
+              payload: {
+                order_id: id,
+                qr_code_id: qrCodeId,
+                foodics_table_id: resolvedQrCode.foodics_table_id ?? null,
+                order_type: orderType,
+              },
+            });
+          } catch { /* audit never blocks the commit response */ }
+        }
       } else if (relayData?.foodics && relayData.foodics.ok === false) {
         // Foodics relay returned a non-ok response (e.g., bad
-        // modifier mapping, branch closed). Throw so the outer
-        // catch reverses the side effects.
+        // modifier mapping, branch closed). For dine-in:
+        // tableUnavailable=true means the merchant deleted the
+        // Foodics table — surface that distinctly so the client
+        // shows "Ask staff" instead of a generic error.
+        if (relayData.foodics.tableUnavailable) {
+          throw Object.assign(
+            new Error('TABLE_UNAVAILABLE'),
+            { code: 'TABLE_UNAVAILABLE' },
+          );
+        }
         throw new Error(relayData.foodics.error || 'Foodics relay returned ok=false');
       }
       } catch (relayErr: any) {
