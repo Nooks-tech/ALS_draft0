@@ -877,26 +877,19 @@ export async function earnPoints(
   if (programId) existQuery = existQuery.eq('program_id', programId);
   const { data: existing } = await existQuery.single();
 
-  if (existing) {
-    let updateQuery = supabaseAdmin
-      .from('loyalty_points')
-      .update({
-        points: existing.points + pointsEarned,
-        lifetime_points: existing.lifetime_points + pointsEarned,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId);
-    if (programId) updateQuery = updateQuery.eq('program_id', programId);
-    await updateQuery;
-  } else {
-    await supabaseAdmin.from('loyalty_points').insert({
-      customer_id: customerId,
-      merchant_id: merchantId,
-      points: pointsEarned,
-      lifetime_points: pointsEarned,
-      ...(programId ? { program_id: programId } : {}),
-    });
+  // Atomic increment via SECURITY DEFINER RPC. The read-then-update
+  // pattern silently dropped writes on some Supabase project configs
+  // (RLS edge case — see [[feedback_rls_service_role]] memory note).
+  // The RPC does INSERT…ON CONFLICT in a single SQL statement, so it
+  // can never miss writes regardless of project policy state.
+  const { error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
+    p_customer_id: customerId,
+    p_merchant_id: merchantId,
+    p_points: pointsEarned,
+    p_config_version: config?.config_version ?? 1,
+  });
+  if (incErr) {
+    console.error('[earnPoints] increment_loyalty_points RPC failed:', incErr.message);
   }
 
   await supabaseAdmin.from('loyalty_transactions').insert({
