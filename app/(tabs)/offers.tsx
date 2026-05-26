@@ -50,6 +50,7 @@ import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
 import { AppleWalletAddPassButton } from '../../src/components/apple-wallet/AppleWalletAddPassButton';
+import { loyaltyEvents } from '../../src/lib/loyaltyEvents';
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/.exec(hex);
@@ -418,6 +419,14 @@ export default function OffersScreen() {
   useEffect(() => {
     if (tab === 'points') loadLoyalty();
   }, [tab, loadLoyalty]);
+
+  // Cart-removal refund → refetch balance in real time.
+  useEffect(() => {
+    const unsubscribe = loyaltyEvents.subscribe(() => {
+      void loadLoyalty();
+    });
+    return unsubscribe;
+  }, [loadLoyalty]);
 
   const handleAddToAppleWallet = useCallback(async () => {
     if (!user?.id || !merchantId) return;

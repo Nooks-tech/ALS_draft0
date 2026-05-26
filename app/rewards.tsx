@@ -56,6 +56,7 @@ import {
   type RedemptionResult,
 } from '../src/api/loyalty';
 import { readCache, writeCache } from '../src/lib/persistentCache';
+import { loyaltyEvents } from '../src/lib/loyaltyEvents';
 
 /** Shared cache key/shape with app/(tabs)/offers.tsx + app/(tabs)/menu.tsx. */
 type LoyaltyCache = {
@@ -207,6 +208,17 @@ export default function RewardsScreen() {
     }
   }, [user?.id, merchantId]);
 
+  // Refetch balance whenever the cart triggers a milestone refund.
+  // Without this, removing a reward from cart refunds points in the DB
+  // but the rewards screen keeps showing the pre-refund balance until
+  // the next focus.
+  useEffect(() => {
+    const unsubscribe = loyaltyEvents.subscribe(() => {
+      void refreshBalance();
+    });
+    return unsubscribe;
+  }, [refreshBalance]);
+
   useEffect(() => {
     if (!user?.id || !merchantId) {
       setLoading(false);
@@ -299,8 +311,11 @@ export default function RewardsScreen() {
     );
 
     // Add the reward's foodics products to the cart as 0-priced
-    // reward items, same pattern the legacy stamps flow used so
-    // checkout/server reward-floor exemption recognises them.
+    // reward items. Tag each line with both the milestone id (for
+    // server-side reward-floor exemption) AND the redemption tx id
+    // so CartContext can call /unredeem-milestone if the customer
+    // removes the line before checkout — points refunded in real
+    // time without an app restart.
     for (const fid of target.foodics_product_ids) {
       const product = menuProducts.find((p) => p.foodicsProductId === fid);
       if (!product || !product.foodicsProductId) continue;
@@ -313,6 +328,7 @@ export default function RewardsScreen() {
         customizations: null,
         uniqueId: `reward-${target.id}-${product.foodicsProductId}-${idempotencyKey}`,
         rewardMilestoneId: target.id,
+        rewardRedemptionId: result.redemptionId,
         rewardOriginalPriceSar: typeof product.price === 'number' ? product.price : 0,
       });
     }

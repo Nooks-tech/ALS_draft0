@@ -7,6 +7,8 @@ import {
   saveServerCart,
   type ServerCartItem,
 } from '../api/cart';
+import { loyaltyApi } from '../api/loyalty';
+import { loyaltyEvents } from '../lib/loyaltyEvents';
 import { useAuth } from './AuthContext';
 import { useMerchant } from './MerchantContext';
 
@@ -35,6 +37,13 @@ export type CartItem = {
    * cart items.
    */
   rewardMilestoneId?: string;
+  /**
+   * Points-redemption transaction id returned by /redeem-milestone.
+   * Used to call /unredeem-milestone (refund) when the customer
+   * removes the reward from their cart before checkout. The server
+   * is idempotent on this id so multiple calls are safe.
+   */
+  rewardRedemptionId?: string;
   /**
    * Original menu price of a reward item. Customer sees 0 SAR in the
    * cart, but the Foodics relay sends the item at full price with a
@@ -367,26 +376,90 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   // ADDED: Specifically for the + and - buttons in the Cart Screen
   const updateQuantity = (uniqueId: string, amount: number) => {
     touchCart();
-    setCartItems((prevItems) => 
-      prevItems.map((item) => 
-        item.uniqueId === uniqueId 
-          ? { ...item, quantity: item.quantity + amount } 
-          : item
-      ).filter(item => item.quantity > 0)
-    );
+    setCartItems((prevItems) => {
+      const updated = prevItems.map((item) =>
+        item.uniqueId === uniqueId
+          ? { ...item, quantity: item.quantity + amount }
+          : item,
+      );
+      // Any item driven to quantity ≤ 0 is removed. If a reward line
+      // gets removed this way, refund the redemption AND cascade-remove
+      // its sibling lines (same redemption can span multiple products).
+      const removedItems = updated.filter((it) => it.quantity <= 0);
+      const refundRids = new Set<string>();
+      for (const it of removedItems) {
+        if (it.rewardRedemptionId) refundRids.add(it.rewardRedemptionId);
+      }
+      let next = updated.filter((it) => it.quantity > 0);
+      if (refundRids.size > 0) {
+        const linked = next.filter((it) => it.rewardRedemptionId && refundRids.has(it.rewardRedemptionId));
+        if (linked.length > 0) next = next.filter((it) => !it.rewardRedemptionId || !refundRids.has(it.rewardRedemptionId));
+        refundRedemptionsFor([...removedItems, ...linked]);
+      }
+      return next;
+    });
   };
+
+  /**
+   * Fire-and-forget refund for a removed reward. Called when the
+   * customer takes a reward back out of the cart before checkout.
+   * Server-side idempotent on redemptionId, so we don't need to
+   * track which ones we've already refunded locally.
+   */
+  const refundRedemptionsFor = useCallback(
+    (items: CartItem[]) => {
+      if (!user?.id || !merchantId) return;
+      const redemptionIds = Array.from(
+        new Set(items.map((it) => it.rewardRedemptionId).filter((id): id is string => Boolean(id))),
+      );
+      for (const rid of redemptionIds) {
+        loyaltyApi
+          .unredeemMilestone(merchantId, user.id, rid)
+          .then(() => {
+            // Tell every subscribed loyalty screen to refetch — they
+            // re-pull /balance and show the refunded points instantly.
+            loyaltyEvents.emit();
+          })
+          .catch((err) => {
+            console.warn('[cart] unredeem-milestone failed for', rid, err);
+          });
+      }
+    },
+    [user?.id, merchantId],
+  );
 
   const removeFromCart = (product: any) => {
     touchCart();
     setCartItems((prevItems) => {
       const uniqueId = product.uniqueId;
-      return prevItems.filter((item) => item.uniqueId !== uniqueId);
+      const removed = prevItems.find((item) => item.uniqueId === uniqueId);
+      // If the removed line was part of a reward redemption, ALSO remove
+      // any sibling reward lines that share the same redemptionId — a
+      // single redemption can fan out to multiple Foodics products, and
+      // the customer's intent in removing one is to back out of the
+      // whole reward (otherwise we'd refund the points but leave them
+      // with a partial freebie still in the cart).
+      const targetRid = removed?.rewardRedemptionId;
+      let next: CartItem[];
+      if (targetRid) {
+        const linked = prevItems.filter((item) => item.rewardRedemptionId === targetRid);
+        next = prevItems.filter((item) => item.rewardRedemptionId !== targetRid);
+        refundRedemptionsFor(linked);
+      } else {
+        next = prevItems.filter((item) => item.uniqueId !== uniqueId);
+      }
+      return next;
     });
   };
 
   const clearCart = () => {
     touchCart();
-    setCartItems([]);
+    setCartItems((prevItems) => {
+      // Refund any reward redemptions before clearing — handles the
+      // "user pressed Clear Cart" UX path without leaking points.
+      refundRedemptionsFor(prevItems);
+      return [];
+    });
   };
 
   const setCartFromOrder = (order: {

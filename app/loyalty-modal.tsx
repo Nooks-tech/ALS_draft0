@@ -54,6 +54,7 @@ import { useMenuContext } from '../src/context/MenuContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
+import { loyaltyEvents } from '../src/lib/loyaltyEvents';
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/.exec(hex);
@@ -189,6 +190,14 @@ export default function LoyaltyModal() {
     }, [loadLoyalty]),
   );
 
+  // Refetch balance the moment a cart-removal triggers a points refund.
+  useEffect(() => {
+    const unsubscribe = loyaltyEvents.subscribe(() => {
+      void loadLoyalty();
+    });
+    return unsubscribe;
+  }, [loadLoyalty]);
+
   const reloadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!supabase || !user?.id) return;
@@ -299,6 +308,7 @@ export default function LoyaltyModal() {
         customizations: null,
         uniqueId: `reward-${target.id}-${product.foodicsProductId}-${idempotencyKey}`,
         rewardMilestoneId: target.id,
+        rewardRedemptionId: result.redemptionId,
         rewardOriginalPriceSar: typeof product.price === 'number' ? product.price : 0,
       });
     }

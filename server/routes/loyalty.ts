@@ -1832,6 +1832,195 @@ loyaltyRouter.post('/redeem-milestone', handleRedeemMilestone);
 // stamp-flavored URL. Same handler, no special-case for the legacy path.
 loyaltyRouter.post('/redeem-stamp-milestone', handleRedeemMilestone);
 
+/**
+ * POST /api/loyalty/unredeem-milestone
+ *
+ * Body: { customerId, merchantId, redemptionId }
+ *
+ * Refunds a points redemption when the customer removes the reward from
+ * their cart before checkout. Without this, points are deducted at
+ * redeem-milestone time but the reward isn't actually consumed if the
+ * customer changes their mind — they'd lose points for nothing.
+ *
+ * Atomic flow (mirrors redeem-milestone in reverse):
+ *   1. Look up the redemption transaction by id (scoped to customer+merchant)
+ *   2. Verify it hasn't already been refunded (idempotent — second call no-ops)
+ *   3. Verify the originating order_id doesn't exist as a committed customer_order
+ *      (once they checked out, the points are spent and shouldn't refund)
+ *   4. Insert an opposing 'refund' transaction with positive points
+ *   5. Increment loyalty_points + lifetime is NOT bumped (refund isn't earning)
+ *   6. Mark the original transaction's metadata.refunded_at so we don't
+ *      double-refund
+ *
+ * Rate-limit: 30/min per customer/merchant — same as redeem.
+ */
+async function handleUnredeemMilestone(req: any, res: any) {
+  try {
+    const { customerId, merchantId, redemptionId } = req.body ?? {};
+    if (!customerId || !merchantId || !redemptionId) {
+      return res.status(400).json({ error: 'customerId, merchantId, redemptionId required' });
+    }
+
+    // Same rate-limit family as redeem so a customer mashing add/remove
+    // can't generate ledger spam. enforceLimits returns true on pass,
+    // false when it has already sent a 429 — we just return early then.
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'loyalty.unredeem-milestone',
+        keys: [
+          { dim: 'customer', value: `${customerId}:${merchantId}`, max: 30, windowMs: 60_000 },
+        ],
+        supabaseAdmin,
+        merchantId,
+      }))
+    ) {
+      return;
+    }
+
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured' });
+
+    // Find the original redemption (must belong to this customer + merchant,
+    // must be a 'redeem' row, must reference an active milestone).
+    const { data: original } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('id, points, customer_id, merchant_id, type, reference_id, metadata, order_id')
+      .eq('id', redemptionId)
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .eq('type', 'redeem')
+      .maybeSingle();
+    if (!original) {
+      return res.status(404).json({ error: 'Redemption not found' });
+    }
+
+    // Idempotency: if we already refunded this redemption, return success
+    // without doing anything. Lets the cart-context fire the refund call
+    // multiple times safely (e.g. on every remove → re-add → remove cycle).
+    const alreadyRefundedAt = (original.metadata as Record<string, unknown> | null)?.refunded_at;
+    if (alreadyRefundedAt) {
+      return res.json({
+        success: true,
+        deduplicated: true,
+        refundedAt: alreadyRefundedAt,
+      });
+    }
+
+    // Guard against refunding after checkout. If the customer actually
+    // completed the order, the reward was consumed and the points are
+    // legitimately spent — DO NOT refund.
+    if (original.order_id && !String(original.order_id).startsWith('milestone-redeem:')) {
+      const { data: completedOrder } = await supabaseAdmin
+        .from('customer_orders')
+        .select('id, foodics_order_id, payment_confirmed_at')
+        .eq('id', original.order_id)
+        .maybeSingle();
+      if (completedOrder?.foodics_order_id || completedOrder?.payment_confirmed_at) {
+        return res.status(409).json({
+          error: 'Order already completed — points are non-refundable',
+        });
+      }
+    }
+
+    // Points value is negative on a redeem row; abs() to add back.
+    const pointsToRefund = Math.abs(Number(original.points ?? 0));
+    if (pointsToRefund === 0) {
+      return res.status(400).json({ error: 'Original redemption has zero points' });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // 1. Insert the refund transaction (positive points). Use a 'redeem'
+    //    type with a marker in metadata rather than a separate 'refund'
+    //    type to keep the existing balance computation working — the
+    //    ledger sums all 'earn'+'redeem' rows.
+    const { data: refundRow, error: refundErr } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .insert({
+        customer_id: customerId,
+        merchant_id: merchantId,
+        type: 'redeem',
+        loyalty_type: 'points',
+        points: pointsToRefund, // positive = refund
+        source: 'app',
+        reference_type: 'milestone_refund',
+        reference_id: String(original.reference_id ?? ''),
+        order_id: `milestone-refund:${redemptionId}`,
+        description: 'Refund: reward removed from cart',
+        metadata: {
+          refund_of: redemptionId,
+          original_milestone_id: original.reference_id,
+        },
+      })
+      .select('id')
+      .single();
+    if (refundErr || !refundRow) {
+      return res.status(500).json({ error: refundErr?.message || 'Refund insert failed' });
+    }
+
+    // 2. Mark the original redemption as refunded — prevents double-refund
+    //    on the next call.
+    await supabaseAdmin
+      .from('loyalty_transactions')
+      .update({
+        metadata: {
+          ...(original.metadata as Record<string, unknown> | null ?? {}),
+          refunded_at: nowIso,
+          refund_transaction_id: refundRow.id,
+        },
+      })
+      .eq('id', redemptionId);
+
+    // 3. Increment the points balance (do NOT touch lifetime_points —
+    //    a refund isn't earning). Read-modify-write because Supabase
+    //    doesn't expose atomic UPDATE-by-expression in the JS client.
+    const { data: pts } = await supabaseAdmin
+      .from('loyalty_points')
+      .select('points')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .maybeSingle();
+    const currentBalance = Number(pts?.points ?? 0);
+    const newBalance = currentBalance + pointsToRefund;
+    if (pts) {
+      await supabaseAdmin
+        .from('loyalty_points')
+        .update({ points: newBalance, updated_at: nowIso })
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId);
+    } else {
+      await supabaseAdmin.from('loyalty_points').insert({
+        customer_id: customerId,
+        merchant_id: merchantId,
+        points: pointsToRefund,
+        lifetime_points: 0,
+      });
+    }
+
+    // 4. Audit log
+    await supabaseAdmin.from('audit_log').insert({
+      merchant_id: merchantId,
+      action: 'loyalty.milestone_refunded',
+      payload: {
+        customer_id: customerId,
+        redemption_id: redemptionId,
+        refund_transaction_id: refundRow.id,
+        points_refunded: pointsToRefund,
+        reason: 'cart_removal',
+      },
+    });
+
+    return res.json({
+      success: true,
+      pointsRefunded: pointsToRefund,
+      newBalance,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to refund redemption' });
+  }
+}
+
+loyaltyRouter.post('/unredeem-milestone', handleUnredeemMilestone);
+
 /* ═══════════════════════════════════════════════════════════════════
    LOYALTY PROGRAMS – Versioned program management (DEPRECATED - kept for backwards compat)
    ═══════════════════════════════════════════════════════════════════ */

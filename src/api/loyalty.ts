@@ -215,6 +215,23 @@ export const loyaltyApi = {
       idempotencyKey,
     }),
 
+  /**
+   * Refund a milestone redemption when the customer removes the reward
+   * from their cart before checkout. Idempotent — calling twice with the
+   * same redemptionId returns the original refund result (no double-refund).
+   * Server rejects with 409 if the originating order was already
+   * checked out (points are spent at that point and can't be unspent).
+   */
+  unredeemMilestone: (
+    merchantId: string,
+    customerId: string,
+    redemptionId: string,
+  ) =>
+    api.post<{ success: boolean; pointsRefunded?: number; newBalance?: number; deduplicated?: boolean }>(
+      '/api/loyalty/unredeem-milestone',
+      { customerId, merchantId, redemptionId },
+    ),
+
   getMilestones: (merchantId: string) =>
     api.get<{ milestones: LoyaltyMilestone[] }>(
       `/api/loyalty/stamp-milestones?merchantId=${encodeURIComponent(merchantId)}`
