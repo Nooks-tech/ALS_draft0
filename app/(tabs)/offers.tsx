@@ -441,8 +441,17 @@ export default function OffersScreen() {
       // fetch. This guarantees the merchant's dashboard saves
       // invalidate the customer-app cache deterministically, instead
       // of leaving orphan entries to bite us later.
+      // Bump this when the pass.json shape changes (Apple Wallet
+       // chrome, primary/secondary field structure, strip image, etc).
+       // Mixing it into the cached version string forces every existing
+       // device to refetch on the next "Add to Wallet" press — even
+       // though loyalty_config.updated_at didn't change. Without this,
+       // a code-only redesign ships but customers see the pre-deploy
+       // cached pkpass when they tap the button.
+       const PASS_TEMPLATE_VERSION = 'pts-v3-no-strip';
       const passCacheKey = `@als_apple_pass_${merchantId}_${user.id}`;
-      const currentVersion = balance?.configUpdatedAt ? String(balance.configUpdatedAt) : '';
+      const cfgVersion = balance?.configUpdatedAt ? String(balance.configUpdatedAt) : '';
+      const currentVersion = `${PASS_TEMPLATE_VERSION}|${cfgVersion}`;
       type CachedPass = { base64: string; version: string };
       const cached = await readCache<CachedPass>(passCacheKey);
       let base64: string | null = null;
