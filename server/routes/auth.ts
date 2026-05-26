@@ -12,6 +12,7 @@ import { createHmac, randomUUID } from 'crypto';
 import { sendSms, normalizePhone, otpMessage } from '../services/sms';
 import { creditMerchantSmsWallet, debitMerchantSmsWallet } from '../lib/smsWallet';
 import { enforceLimits, hashKey } from '../utils/rateLimit';
+import { mergeWalkInProfiles } from '../services/walkInMerge';
 
 /**
  * Mask a Saudi number for logs/audit: keep prefix + last 3, redact the middle.
@@ -422,6 +423,13 @@ router.post('/verify-otp', async (req, res) => {
     if (signInData?.session) {
       await ensureProfile(normalised, signInData.session.user.id);
       await stampMerchantVerification(signInData.session.user.id, merchantId, deviceId);
+      // Phase 4: claim any kiosk walk-in profiles that match this phone.
+      // Fire-and-forget — never block the OTP response on the merge.
+      if (adminClient) {
+        void mergeWalkInProfiles(adminClient, signInData.session.user.id, `+${normalised}`).catch(
+          (err) => console.warn('[Auth] walkin merge (existing user) failed:', err),
+        );
+      }
       return res.json({
         ok: true,
         session: {
@@ -458,6 +466,13 @@ router.post('/verify-otp', async (req, res) => {
 
     await ensureProfile(normalised, newSession.session.user.id);
     await stampMerchantVerification(newSession.session.user.id, merchantId, deviceId);
+    // Phase 4: claim any kiosk walk-in profiles that match this phone.
+    // Fire-and-forget — never block the OTP response on the merge.
+    if (adminClient) {
+      void mergeWalkInProfiles(adminClient, newSession.session.user.id, `+${normalised}`).catch(
+        (err) => console.warn('[Auth] walkin merge (new user) failed:', err),
+      );
+    }
 
     res.json({
       ok: true,
