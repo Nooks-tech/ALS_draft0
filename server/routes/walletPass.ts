@@ -609,47 +609,37 @@ function buildPassJson(opts: {
     };
   } else {
     // ─── Points mode ───
-    // Per user feedback, the pass surfaces ONLY the next affordable
-    // reward (the customer's immediate target), not the whole catalog.
-    //   primary    → POINTS balance
-    //   secondary  → NEXT reward name + cost (1 field)
-    //   auxiliary  → empty
-    //   back       → lifetime points + member code
-    // The strip image (built separately) carries the small circular
-    // reward thumbnail pulled from Foodics.
+    // Literal cashback layout, just relabeled per merchant request:
+    //   primary    → POINTS BALANCE (mirrors CASHBACK BALANCE)
+    //   secondary  → NEXT REWARD + LIFETIME (mirrors CASHBACK RATE + EXPIRES)
+    //   back       → member code + how-to text
+    // No strip image (same as cashback).
     const allMilestones = (opts.milestones ?? [])
       .filter((m) => m && typeof m.points_threshold === 'number' && (m.reward_name || '').trim().length > 0)
       .slice()
       .sort((a, b) => a.points_threshold - b.points_threshold);
 
-    // "Next" = cheapest unaffordable reward. If everything is affordable,
-    // show the highest-tier as a stretch goal so the pass isn't empty.
     const displayPoints = Math.max(0, Math.floor(opts.points));
+    const lifetimeDisplay = Math.max(0, Math.floor(opts.lifetimePoints));
     const nextReward =
       allMilestones.find((m) => m.points_threshold > displayPoints) ??
       allMilestones[allMilestones.length - 1] ??
       null;
-
-    const secondaryFields = nextReward
-      ? [
-          {
-            key: `milestone_${nextReward.id}`,
-            label: 'NEXT REWARD',
-            value: `${(nextReward.reward_name || '').trim() || '—'} · ${Math.round(nextReward.points_threshold)} pts`,
-          },
-        ]
-      : [];
+    const nextRewardValue = nextReward
+      ? `${(nextReward.reward_name || '').trim() || '—'} · ${Math.round(nextReward.points_threshold)} pts`
+      : '—';
 
     storeCard = {
       headerFields: titleHeader,
       primaryFields: [
-        { key: 'balance', label: 'POINTS', value: displayPoints },
+        { key: 'balance', label: 'POINTS BALANCE', value: `${displayPoints} pts` },
       ],
-      secondaryFields,
-      auxiliaryFields: [],
+      secondaryFields: [
+        { key: 'nextReward', label: 'NEXT REWARD', value: nextRewardValue },
+        { key: 'lifetime', label: 'LIFETIME', value: String(lifetimeDisplay), textAlignment: 'PKTextAlignmentRight' },
+      ],
       backFields: [
         { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
-        { key: 'lifetime', label: 'LIFETIME POINTS', value: String(Math.max(0, Math.floor(opts.lifetimePoints))) },
         { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn points.' },
         { key: 'redeem', label: 'Redeem', value: 'Points can be used at checkout in the app — pick any reward you can afford.' },
       ],
@@ -985,41 +975,10 @@ walletPassRouter.get(
       ]);
       const activeMilestones = (milestoneRows ?? []) as PointsMilestone[];
 
-      // Points-mode strip: draw a horizontal progress bar to the
-      // cheapest UNAFFORDABLE milestone. If the customer can afford
-      // every reward, hide the bar and show "All rewards unlocked".
-      if (loyaltyType === 'points') {
-        const displayPoints = Math.max(0, Math.floor(points));
-        const sortedMs = activeMilestones
-          .slice()
-          .sort((a, b) => a.points_threshold - b.points_threshold);
-        const nextUnaffordable = sortedMs.find((m) => m.points_threshold > displayPoints) ?? null;
-
-        let label: string | null;
-        let nextThreshold: number | null;
-        if (sortedMs.length === 0) {
-          label = 'Earn points on every order';
-          nextThreshold = null;
-        } else if (!nextUnaffordable) {
-          label = 'All rewards unlocked — keep earning!';
-          nextThreshold = null;
-        } else {
-          label = null; // helper generates "X pts to next reward"
-          nextThreshold = nextUnaffordable.points_threshold;
-        }
-
-        const progressStrip = await buildPointsProgressStripPng({
-          points: displayPoints,
-          nextThreshold,
-          bgColor,
-          textColor,
-          labelOverride: label,
-        });
-        if (progressStrip) {
-          files['strip.png'] = progressStrip;
-          files['strip@2x.png'] = progressStrip;
-        }
-      }
+      // Points-mode pass intentionally has NO strip image (mirrors
+      // cashback layout). The pass.json secondary fields already
+      // surface the NEXT REWARD and LIFETIME totals — a progress bar
+      // on top of that was visual noise and broke Arabic rendering.
 
       files['pass.json'] = buildPassJson({
         serialNumber,
@@ -1548,42 +1507,9 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     );
     await attachWalletLogosToFiles(files, { logoUrl, inAppLogoScale });
 
-    // Points-mode strip: draw a horizontal progress bar to the cheapest
-    // UNAFFORDABLE milestone. Special-cases: no milestones configured →
-    // "Earn points on every order"; customer can afford every reward →
-    // "All rewards unlocked — keep earning!"
-    if (loyaltyType === 'points') {
-      const displayPoints = Math.max(0, Math.floor(points));
-      const sortedMs = activeMilestones
-        .slice()
-        .sort((a, b) => a.points_threshold - b.points_threshold);
-      const nextUnaffordable = sortedMs.find((m) => m.points_threshold > displayPoints) ?? null;
-
-      let label: string | null;
-      let nextThreshold: number | null;
-      if (sortedMs.length === 0) {
-        label = 'Earn points on every order';
-        nextThreshold = null;
-      } else if (!nextUnaffordable) {
-        label = 'All rewards unlocked — keep earning!';
-        nextThreshold = null;
-      } else {
-        label = null;
-        nextThreshold = nextUnaffordable.points_threshold;
-      }
-
-      const progressStrip = await buildPointsProgressStripPng({
-        points: displayPoints,
-        nextThreshold,
-        bgColor,
-        textColor,
-        labelOverride: label,
-      });
-      if (progressStrip) {
-        files['strip.png'] = progressStrip;
-        files['strip@2x.png'] = progressStrip;
-      }
-    }
+    // Points-mode pass uses the same chrome as cashback — no strip
+    // image. The pass.json fields (POINTS balance + NEXT REWARD
+    // secondary) carry everything the customer needs to see.
 
     files['pass.json'] = buildPassJson({
       serialNumber: `loyalty-${merchantId}-${customerId}`,

@@ -876,9 +876,10 @@ export default function OffersScreen() {
               }
 
               /* ── POINTS ──
-                 Mirrors the cashback card layout per merchant feedback:
-                 just balance + next reward. No catalog, no progress bar,
-                 no images. The full rewards screen is one tap away. */
+                 Literally clones the cashback layout above with the few
+                 wording changes the merchant called out: SAR → نقطة,
+                 CASHBACK BALANCE → POINTS BALANCE, CASHBACK RATE →
+                 NEXT REWARD, EXPIRES → LIFETIME. No bespoke styling. */
               if (loyaltyType === 'points') {
                 const points = Math.max(0, Math.floor(balance?.points ?? 0));
                 const lifetime = Math.max(0, Math.floor(balance?.lifetimePoints ?? 0));
@@ -892,18 +893,18 @@ export default function OffersScreen() {
                 const nextCost = nextReward
                   ? nextReward.points_threshold ?? nextReward.stamp_number
                   : null;
-                const expiryLabel = balance?.expiryMonths
-                  ? (isArabic ? `${balance.expiryMonths} شهر` : `${balance.expiryMonths} mo`)
-                  : (isArabic ? 'لا ينتهي' : 'Never');
+                const nextRewardLabel = nextReward
+                  ? `${(nextReward.reward_name || '').trim()} · ${nextCost}`
+                  : (isArabic ? 'لا توجد' : 'None');
 
                 return (
                   <View style={cardShell}>
                     {headerRow}
                     <Text style={{ color: cardTextColor, fontSize: 44, fontWeight: '700', lineHeight: 52, marginTop: 24 }}>
-                      {points}
+                      {points} {isArabic ? 'نقطة' : 'pts'}
                     </Text>
                     <Text style={{ color: cardSubTextColor, fontSize: 13, letterSpacing: 1.5, marginTop: 4 }}>
-                      {isArabic ? 'النقاط' : 'POINTS'}
+                      {isArabic ? 'رصيد النقاط' : 'POINTS BALANCE'}
                     </Text>
                     <View style={{
                       height: 1,
@@ -911,7 +912,7 @@ export default function OffersScreen() {
                       marginBottom: 14,
                       backgroundColor: cardLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.22)' }} />
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <View style={{ flex: 1, marginEnd: 12 }}>
+                      <View>
                         <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
                           {isArabic ? 'المكافأة التالية' : 'NEXT REWARD'}
                         </Text>
@@ -919,9 +920,7 @@ export default function OffersScreen() {
                           numberOfLines={1}
                           style={{ color: cardTextColor, fontSize: 15, fontWeight: '600', marginTop: 4 }}
                         >
-                          {nextReward
-                            ? `${(nextReward.reward_name || '').trim()} · ${nextCost} ${isArabic ? 'ن' : 'pts'}`
-                            : (isArabic ? '—' : '—')}
+                          {nextRewardLabel}
                         </Text>
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
