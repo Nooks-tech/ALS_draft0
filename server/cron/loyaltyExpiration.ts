@@ -156,80 +156,11 @@ async function expireStaleCashback() {
   }
 }
 
-// ── 1c. Expire stale stamp progress ──
-
-async function expireStaleStamps() {
-  if (!supabaseAdmin) return;
-
-  const now = new Date().toISOString();
-
-  // Find stamp earn transactions that have expired
-  const { data: expiredStampTxns, error } = await supabaseAdmin
-    .from('loyalty_transactions')
-    .select('id, customer_id, merchant_id, points')
-    .eq('type', 'earn')
-    .eq('loyalty_type', 'stamps')
-    .eq('expired', false)
-    .not('expires_at', 'is', null)
-    .lt('expires_at', now)
-    .limit(BATCH_LIMIT);
-
-  if (error || !expiredStampTxns?.length) return;
-
-  console.log(`[Loyalty Cron] Found ${expiredStampTxns.length} expired stamp transactions`);
-
-  // Group by customer+merchant
-  type StampGroup = { customerId: string; merchantId: string; txnIds: string[]; totalPoints: number };
-  const grouped = new Map<string, StampGroup>();
-  for (const txn of expiredStampTxns as Array<{ id: string; customer_id: string; merchant_id: string; points: number }>) {
-    const key = `${txn.customer_id}:${txn.merchant_id}`;
-    const existing: StampGroup = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, txnIds: [], totalPoints: 0 };
-    existing.txnIds.push(txn.id);
-    existing.totalPoints += txn.points;
-    grouped.set(key, existing);
-  }
-
-  for (const group of grouped.values()) {
-    // Mark transactions as expired
-    await supabaseAdmin.from('loyalty_transactions').update({ expired: true }).in('id', group.txnIds);
-
-    // Calculate stamps to expire (1 stamp = 10 points)
-    const stampsToExpire = Math.floor(group.totalPoints / 10);
-
-    // Deduct from stamp count
-    const { data: stampData } = await supabaseAdmin.from('loyalty_stamps')
-      .select('stamps')
-      .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId).maybeSingle();
-
-    if (stampData && stampsToExpire > 0) {
-      const newStamps = Math.max(0, stampData.stamps - stampsToExpire);
-      await supabaseAdmin.from('loyalty_stamps')
-        .update({ stamps: newStamps, updated_at: now })
-        .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId);
-    }
-
-    // Deduct from internal points balance too
-    const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
-      .select('points')
-      .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId).maybeSingle();
-
-    if (ptsBal) {
-      await supabaseAdmin.from('loyalty_points')
-        .update({ points: Math.max(0, ptsBal.points - group.totalPoints), updated_at: now })
-        .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId);
-    }
-
-    // Audit trail
-    await supabaseAdmin.from('loyalty_transactions').insert({
-      customer_id: group.customerId, merchant_id: group.merchantId,
-      type: 'expire', loyalty_type: 'stamps', points: -group.totalPoints,
-      description: `${stampsToExpire} stamp(s) expired due to inactivity`, source: 'system',
-    });
-
-    sendPush(group.customerId, group.merchantId, 'Stamps Expired', `${stampsToExpire} stamp(s) have expired. Complete an order to keep earning!`);
-    console.log(`[Loyalty Cron] Expired ${stampsToExpire} stamps for customer ${group.customerId}`);
-  }
-}
+// Stamp-specific expiration removed in Phase 1 — the underlying
+// loyalty_stamps table is dropped. Points-mode expiry is covered by
+// expireStalePoints above (which reads from loyalty_points). Phase 2
+// will revisit whether points need any extra notification copy
+// beyond the existing "Points Expired" push.
 
 // ── 2. Clean up retired loyalty programs past grace period ──
 
@@ -319,8 +250,6 @@ async function warnUpcomingExpiry() {
     if (txnType === 'cashback') {
       const sarValue = (group.totalPoints * 0.1).toFixed(2);
       sendPush(group.customerId, group.merchantId, 'Cashback Expiring Soon', `You have ${sarValue} SAR cashback expiring in ${days}. Use it before it expires!`);
-    } else if (txnType === 'stamps') {
-      sendPush(group.customerId, group.merchantId, 'Stamps Expiring Soon', `Your stamp card progress is expiring in ${days}. Complete an order to keep your stamps!`);
     } else {
       sendPush(group.customerId, group.merchantId, 'Points Expiring Soon', `You have ${group.totalPoints} points expiring in ${days}. Use them before they expire!`);
     }
@@ -338,7 +267,6 @@ async function runLoyaltyTick() {
     ['warnUpcomingExpiry', warnUpcomingExpiry],
     ['expireStalePoints', expireStalePoints],
     ['expireStaleCashback', expireStaleCashback],
-    ['expireStaleStamps', expireStaleStamps],
     ['cleanupRetiredPrograms', cleanupRetiredPrograms],
   ];
   for (const [name, task] of tasks) {

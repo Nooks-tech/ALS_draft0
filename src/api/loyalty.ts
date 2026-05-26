@@ -4,13 +4,17 @@
 import { api } from './client';
 
 export interface LoyaltyBalance {
-  loyaltyType: 'cashback' | 'stamps';
+  // Phase 1: stamps mode dropped; backend now returns 'points' or
+  // 'cashback' only. The literal type is widened to include 'stamps'
+  // until Phase 3 retires the mobile-UI screens that still pattern-
+  // match on it, so the existing UI keeps compiling.
+  loyaltyType: 'cashback' | 'points' | 'stamps';
   memberCode: string;
   // Transition state
   transitioning?: boolean;
-  oldSystemType?: 'cashback' | 'stamps' | null;
+  oldSystemType?: 'cashback' | 'points' | 'stamps' | null;
   oldSystemBalance?: number;
-  redeemType?: 'cashback' | 'stamps' | null;
+  redeemType?: 'cashback' | 'points' | 'stamps' | null;
   // Points
   points: number;
   lifetimePoints: number;
@@ -24,7 +28,9 @@ export interface LoyaltyBalance {
   cashbackBalance: number;
   cashbackPercent: number;
   maxCashbackPerOrderSar?: number | null;
-  // Stamps
+  // Legacy stamp-shaped fields — populated as zeros/empty arrays by
+  // the server during the Phase 1 cut-over. Phase 3 will rewrite the
+  // consumer UI around the points model and remove these.
   stampEnabled: boolean;
   stampTarget: number;
   stampRewardDescription: string;

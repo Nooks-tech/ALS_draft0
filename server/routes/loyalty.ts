@@ -1,13 +1,19 @@
 /**
- * Loyalty routes – merchant-config-driven points, stamps, rewards, and wallet pass
+ * Loyalty routes – merchant-config-driven points + cashback rewards, and wallet pass.
+ *
+ * Phase 1 refactor (2026-05-26): stamps mode dropped. The remaining
+ * loyalty modes are 'points' (default) and 'cashback'. Milestone
+ * rewards now live on the renamed loyalty_milestones table and use
+ * a points_threshold column instead of stamp_number. Phase 2/3 will
+ * rebuild the wallet-pass + customer-app loyalty UI around the new
+ * points model.
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
-import { notifyPassUpdate, notifyPassUpdateSafe } from './walletPass';
+import { notifyPassUpdateSafe } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
-import { sendLocalizedPushScoped } from '../utils/push';
 
 export const loyaltyRouter = Router();
 
@@ -17,17 +23,16 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
+type LoyaltyMode = 'cashback' | 'points';
+
 const DEFAULT_CONFIG = {
-  loyalty_type: null as 'cashback' | 'stamps' | null,  // 'points' removed — only cashback + stamps supported
+  loyalty_type: null as LoyaltyMode | null,
   earn_mode: 'per_sar' as const,
   points_per_sar: 0.1,
   points_per_order: 10,
   point_value_sar: 0.1,
   cashback_percent: 5,
   expiry_months: null as number | null,
-  stamp_enabled: false,
-  stamp_target: 8,
-  stamp_reward_description: 'Free item',
   wallet_card_logo_scale: null as number | null,
   wallet_stamp_icon_scale: null as number | null,
   config_version: 1,
@@ -123,7 +128,8 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
         .maybeSingle();
       oldBalance = cbData?.balance_sar ?? 0;
     } else {
-      // stamps (internally points) or legacy points
+      // points (or legacy stamps row, which now lives only in
+      // loyalty_points after the Phase 1 schema collapse)
       const { data: ptsData } = await supabaseAdmin
         .from('loyalty_points')
         .select('points')
@@ -146,18 +152,10 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
       .update({ active_loyalty_type: merchantType, loyalty_type_opted_in_at: now })
       .eq('customer_id', customerId).eq('merchant_id', merchantId);
 
-    // Zero out the DESTINATION system's balance. Without this,
-    // a customer who once accumulated balance in system X, was
-    // switched to system Y, exhausted Y, and is now flipping back
-    // to X sees their old X balance resurface (incident 2026-05-15
-    // 08:57 — customer had 2 stamps left over from yesterday and
-    // saw them reappear the moment the merchant flipped from
-    // cashback back to stamps). The auto-switch rule promises a
-    // clean slate in the new system, so we enforce it here.
-    if (merchantType === 'stamps') {
-      await supabaseAdmin.from('loyalty_stamps')
-        .update({ stamps: 0, completed_cards: 0, updated_at: now })
-        .eq('customer_id', customerId).eq('merchant_id', merchantId);
+    // Zero out the DESTINATION system's balance so a customer who
+    // accumulated in X, was switched to Y and exhausted Y, then
+    // flipped back to X doesn't see old X balance resurface.
+    if (merchantType === 'points') {
       await supabaseAdmin.from('loyalty_points')
         .update({ points: 0, updated_at: now })
         .eq('customer_id', customerId).eq('merchant_id', merchantId);
@@ -444,24 +442,19 @@ loyaltyRouter.put('/config', async (req, res) => {
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
-    // stamp_target is a platform-locked invariant (always 8). Removed from
-    // the allowed list so a merchant can't change it via the dashboard;
-    // the DB default + the seed in DEFAULT_LOYALTY_CONFIG handle the value.
-    // Reasoning: at 8 stamps × 10 SAR floor, every "buy 8 get 1 free" card
-    // is at minimum 80 SAR of real spend, which keeps the loyalty system
-    // economic for the merchant and stops merchants from configuring
-    // 2-stamp cards that hand out free items at 20 SAR.
+    // Phase 1: stamps mode dropped. loyalty_type accepts 'points' or
+    // 'cashback' only. Legacy stamp_* columns are no longer writable.
     const allowed = [
       'loyalty_type', 'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
       'cashback_percent',
-      'expiry_months', 'stamp_enabled', 'stamp_reward_description',
+      'expiry_months',
       'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
       'wallet_card_label', 'wallet_card_secondary_label', 'wallet_card_logo_scale',
       'wallet_card_banner_url', 'wallet_stamp_box_color', 'wallet_stamp_icon_color',
       'wallet_stamp_icon_url', 'wallet_stamp_icon_scale', 'business_type', 'pass_template_type',
     ];
-    if ('stamp_target' in fields) {
-      console.warn('[loyalty] Refusing to set stamp_target — platform-locked at 8');
+    if (fields.loyalty_type && fields.loyalty_type !== 'points' && fields.loyalty_type !== 'cashback') {
+      return res.status(400).json({ error: "loyalty_type must be 'points' or 'cashback'" });
     }
 
     // Config versioning: if loyalty_type or key rates changed, bump version
@@ -474,7 +467,7 @@ loyaltyRouter.put('/config', async (req, res) => {
     let bumpedToVersion: number | null = null;
     if (typeChanged || rateChanged) {
       fields.config_version = previousConfigVersion + 1;
-      fields.previous_loyalty_type = currentConfig.loyalty_type ?? 'stamps';
+      fields.previous_loyalty_type = currentConfig.loyalty_type ?? 'points';
       fields.config_changed_at = new Date().toISOString();
       allowed.push('config_version', 'previous_loyalty_type', 'config_changed_at');
       bumpedToVersion = fields.config_version;
@@ -615,27 +608,27 @@ loyaltyRouter.get('/balance', async (req, res) => {
     // Once the old balance reaches 0, this call auto-migrates them to the
     // merchant's current type (see getCustomerLoyaltyRoute for the logic).
     const route = await getCustomerLoyaltyRoute(merchantId, customerId);
-    const loyaltyType = (route.redeem as 'cashback' | 'stamps' | null) ?? config.loyalty_type ?? 'stamps';
+    const loyaltyType = (route.redeem as LoyaltyMode | null) ?? config.loyalty_type ?? 'points';
 
-    // Stamps data
-    let stamps = 0;
-    let completedCards = 0;
-    let stampMilestones: any[] = [];
-    let availableRedemptions: any[] = [];
-    if (loyaltyType === 'stamps' || config.stamp_enabled) {
-      const [{ data: stampData }, { data: milestoneData }, { data: redemptionData }] = await Promise.all([
-        supabaseAdmin.from('loyalty_stamps').select('stamps, completed_cards')
-          .eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle(),
-        supabaseAdmin.from('loyalty_stamp_milestones').select('*')
-          .eq('merchant_id', merchantId).eq('is_active', true).order('stamp_number', { ascending: true }),
-        supabaseAdmin.from('loyalty_stamp_redemptions').select('*')
-          .eq('customer_id', customerId).eq('merchant_id', merchantId)
-          .is('redeemed_at', null),
-      ]);
-      stamps = stampData?.stamps ?? 0;
-      completedCards = stampData?.completed_cards ?? 0;
-      stampMilestones = milestoneData ?? [];
-      availableRedemptions = redemptionData ?? [];
+    // Milestones — the renamed loyalty_milestones table now uses
+    // points_threshold instead of stamp_number. We surface them under
+    // legacy field names (stamp_number / stampMilestones) so the
+    // customer app's existing UI keeps compiling until Phase 3
+    // rewrites the consumer screens around the points model.
+    let stampMilestones: Array<{ id: string; stamp_number: number; reward_name: string; foodics_product_ids: string[] }> = [];
+    if (loyaltyType === 'points') {
+      const { data: milestoneData } = await supabaseAdmin
+        .from('loyalty_milestones')
+        .select('id, points_threshold, reward_name, foodics_product_ids')
+        .eq('merchant_id', merchantId)
+        .eq('is_active', true)
+        .order('points_threshold', { ascending: true });
+      stampMilestones = (milestoneData ?? []).map((m: { id: string; points_threshold: number; reward_name: string; foodics_product_ids: string[] | null }) => ({
+        id: m.id,
+        stamp_number: m.points_threshold,
+        reward_name: m.reward_name,
+        foodics_product_ids: m.foodics_product_ids ?? [],
+      }));
     }
 
     // Cashback balance
@@ -673,14 +666,16 @@ loyaltyRouter.get('/balance', async (req, res) => {
       cashbackBalance: +cashbackBalance.toFixed(2),
       cashbackPercent: config.cashback_percent ?? 5,
       maxCashbackPerOrderSar: config.max_cashback_per_order_sar ?? null,
-      // Stamps
-      stampEnabled: loyaltyType === 'stamps' || config.stamp_enabled,
-      stampTarget: config.stamp_target,
-      stampRewardDescription: config.stamp_reward_description,
-      stamps,
-      completedCards,
+      // Legacy stamp-shaped fields — kept for mobile UI compatibility
+      // during the Phase 1 cut-over. Phase 3 will remove these from the
+      // response and the consuming UI together.
+      stampEnabled: loyaltyType === 'points',
+      stampTarget: 8,
+      stampRewardDescription: '',
+      stamps: 0,
+      completedCards: 0,
       stampMilestones,
-      availableRedemptions,
+      availableRedemptions: [] as Array<{ id: string; milestone_id: string; stamp_number: number }>,
       // Wallet card
       walletCardBgColor: config.wallet_card_bg_color || null,
       walletCardTextColor: config.wallet_card_text_color || null,
@@ -757,186 +752,6 @@ loyaltyRouter.post('/earn', async (req, res) => {
       return res.json(result);
     }
 
-    if (loyaltyType === 'stamps') {
-      // ─── Minimum order subtotal for a stamp (anti-spam) ───
-      // Without a floor a malicious customer could spam an order of
-      // a 1-SAR item to farm stamps. Anything below 10 SAR is treated
-      // as ineligible — order still completes normally, but no stamp
-      // is granted. The merchant can no longer override this floor;
-      // it's a platform invariant, like the locked stamp_target=8.
-      const STAMP_MIN_SUBTOTAL_SAR = 10;
-      if (Number(orderSubtotal) < STAMP_MIN_SUBTOTAL_SAR) {
-        return res.json({
-          success: true,
-          stampSkipped: true,
-          reason: 'below_minimum_subtotal',
-          minSubtotalSar: STAMP_MIN_SUBTOTAL_SAR,
-          stamps: 0,
-          milestoneReached: false,
-        });
-      }
-
-      // Idempotency: if we've already stamped this order, short-circuit.
-      // Without this, any webhook replay that squeaks past the regression
-      // guard in the Foodics handler would double-stamp the customer.
-      // Cashback has the same check (see earnCashback).
-      const { data: alreadyStamped } = await supabaseAdmin
-        .from('loyalty_transactions')
-        .select('id')
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId || '')
-        .eq('order_id', orderId)
-        .eq('type', 'earn')
-        .eq('loyalty_type', 'stamps')
-        .limit(1)
-        .maybeSingle();
-      if (alreadyStamped) {
-        const { data: stampRow } = await supabaseAdmin
-          .from('loyalty_stamps')
-          .select('stamps, completed_cards')
-          .eq('customer_id', customerId)
-          .eq('merchant_id', merchantId || '')
-          .maybeSingle();
-        return res.json({
-          success: true,
-          alreadyEarned: true,
-          stamps: stampRow?.stamps ?? 0,
-          milestoneReached: false,
-        });
-      }
-
-      // INTERNAL ACCOUNTING ONLY: 1 stamp = 10 internal points.
-      const pointsForStamp = 10;
-
-      // Per-purchase expiry: each stamp earn gets its own expiry date.
-      const stampExpiresAt = config.expiry_months
-        ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
-        : null;
-
-      // Insert the earn transaction FIRST. The partial unique index
-      // on (merchant_id, customer_id, order_id, loyalty_type) WHERE
-      // type='earn' protects against the Foodics double-webhook
-      // race (see earnCashback for the same pattern + the incident
-      // notes). If we lose the race, short-circuit before bumping
-      // any balances.
-      const txInsert = await supabaseAdmin.from('loyalty_transactions').insert({
-        customer_id: customerId, merchant_id: merchantId || '', order_id: orderId,
-        type: 'earn', loyalty_type: 'stamps', points: pointsForStamp,
-        description: `Earned 1 stamp (order completed)`, source: 'app',
-        expires_at: stampExpiresAt,
-      });
-      if (txInsert.error) {
-        if ((txInsert.error as { code?: string }).code === '23505') {
-          console.warn('[earn stamps] Race-loser insert skipped for order', orderId);
-          const { data: stampRow } = await supabaseAdmin
-            .from('loyalty_stamps')
-            .select('stamps, completed_cards')
-            .eq('customer_id', customerId)
-            .eq('merchant_id', merchantId || '')
-            .maybeSingle();
-          return res.json({
-            success: true,
-            alreadyEarned: true,
-            stamps: stampRow?.stamps ?? 0,
-            milestoneReached: false,
-          });
-        }
-        return res.status(500).json({ error: txInsert.error.message });
-      }
-
-      // Insert won — increment stamp count + internal points balance.
-      const { data: stampRow } = await supabaseAdmin.from('loyalty_stamps')
-        .select('stamps, completed_cards')
-        .eq('customer_id', customerId).eq('merchant_id', merchantId || '').maybeSingle();
-
-      const newStamps = (stampRow?.stamps ?? 0) + 1;
-      if (stampRow) {
-        await supabaseAdmin.from('loyalty_stamps')
-          .update({ stamps: newStamps, updated_at: new Date().toISOString() })
-          .eq('customer_id', customerId).eq('merchant_id', merchantId || '');
-      } else {
-        await supabaseAdmin.from('loyalty_stamps').insert({
-          customer_id: customerId, merchant_id: merchantId || '',
-          stamps: newStamps, completed_cards: 0,
-        });
-      }
-
-      const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
-        .select('points, lifetime_points')
-        .eq('customer_id', customerId).eq('merchant_id', merchantId || '').maybeSingle();
-      if (ptsBal) {
-        await supabaseAdmin.from('loyalty_points')
-          .update({ points: ptsBal.points + pointsForStamp, lifetime_points: ptsBal.lifetime_points + pointsForStamp, updated_at: new Date().toISOString() })
-          .eq('customer_id', customerId).eq('merchant_id', merchantId || '');
-      } else {
-        await supabaseAdmin.from('loyalty_points').insert({
-          customer_id: customerId, merchant_id: merchantId || '',
-          points: pointsForStamp, lifetime_points: pointsForStamp,
-        });
-      }
-
-      // Check if any milestone was reached (highest milestone where stamp_number <= newStamps)
-      const { data: milestones } = await supabaseAdmin.from('loyalty_stamp_milestones')
-        .select('id, stamp_number, reward_name, foodics_product_ids')
-        .eq('merchant_id', merchantId || '').eq('is_active', true)
-        .lte('stamp_number', newStamps)
-        .order('stamp_number', { ascending: false })
-        .limit(1);
-
-      // Filter out milestones already awarded (unredeemed redemption exists)
-      if (milestones && milestones.length > 0) {
-        const { data: existingRedemption } = await supabaseAdmin.from('loyalty_stamp_redemptions')
-          .select('id')
-          .eq('customer_id', customerId).eq('merchant_id', merchantId || '')
-          .eq('milestone_id', milestones[0].id).is('redeemed_at', null)
-          .maybeSingle();
-        if (existingRedemption) {
-          // Already has an unredeemed reward for this milestone — don't create another
-          milestones.length = 0;
-        }
-      }
-
-      let milestoneReached = false;
-      let milestoneName = '';
-      if (milestones && milestones.length > 0) {
-        const hit = milestones[0];
-        milestoneReached = true;
-        milestoneName = hit.reward_name;
-
-        // Create redemption record (redeemable at branch via Foodics adapter or in-app)
-        await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
-          customer_id: customerId, merchant_id: merchantId || '',
-          milestone_id: hit.id, stamp_number: hit.stamp_number,
-        });
-
-        // Push notification to customer — localized per device using
-        // push_subscriptions.app_language. Merchant-scoped so the same
-        // auth.uid installed across multiple merchant apps doesn't get
-        // the milestone-unlock push fanned out to every brand.
-        sendLocalizedPushScoped({
-          customerId,
-          merchantId: merchantId || '',
-          channel: 'loyalty',
-          copy: {
-            en: {
-              title: 'Milestone Reward Unlocked!',
-              body: `You earned ${hit.stamp_number} stamps! Your reward: ${hit.reward_name}. Show your wallet card at the branch or redeem in the app.`,
-            },
-            ar: {
-              title: 'فزت بمكافأة!',
-              body: `جمعت ${hit.stamp_number} ختمة! المكافأة: ${hit.reward_name}. اعرض بطاقة المحفظة في الفرع أو استبدلها من التطبيق.`,
-            },
-          },
-        });
-      }
-
-      notifyPassUpdateSafe(customerId, merchantId || '');
-      return res.json({
-        success: true, pointsEarned: pointsForStamp, newStamps, milestoneReached, milestoneName,
-        newBalance: (ptsBal?.points ?? 0) + pointsForStamp,
-      });
-    }
-
     // Default: points
     const result = await earnPoints(customerId, orderId, Number(orderSubtotal), merchantId || '');
     res.json(result);
@@ -954,7 +769,7 @@ export async function earnPoints(
   orderSubtotal: number,
   merchantId: string,
   context?: LoyaltyActionContext,
-): Promise<{ success: boolean; pointsEarned: number; newBalance: number; stampAwarded?: boolean; stampRewardGranted?: boolean }> {
+): Promise<{ success: boolean; pointsEarned: number; newBalance: number }> {
   if (!supabaseAdmin) throw new Error('Database not configured');
   await ensureLoyaltyMemberProfile(merchantId, customerId);
 
@@ -986,8 +801,6 @@ export async function earnPoints(
       success: true,
       pointsEarned: 0,
       newBalance: existingBalance?.points ?? 0,
-      stampAwarded: false,
-      stampRewardGranted: false,
     };
   }
 
@@ -1036,6 +849,7 @@ export async function earnPoints(
     merchant_id: merchantId,
     order_id: orderId,
     type: 'earn',
+    loyalty_type: 'points',
     points: pointsEarned,
     description: `Earned ${pointsEarned} points`,
     expires_at: expiresAt,
@@ -1049,71 +863,12 @@ export async function earnPoints(
     ...(programId ? { program_id: programId } : {}),
   });
 
-  let stampAwarded = false;
-  let stampRewardGranted = false;
-  if (config.stamp_enabled && merchantId) {
-    let stampQuery = supabaseAdmin
-      .from('loyalty_stamps')
-      .select('stamps, completed_cards')
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId);
-    if (programId) stampQuery = stampQuery.eq('program_id', programId);
-    const { data: stampRow } = await stampQuery.single();
-
-    let newStamps = (stampRow?.stamps ?? 0) + 1;
-    let completedCards = stampRow?.completed_cards ?? 0;
-    stampAwarded = true;
-
-    if (newStamps >= config.stamp_target) {
-      completedCards += 1;
-      newStamps = 0;
-      stampRewardGranted = true;
-
-      await supabaseAdmin.from('loyalty_transactions').insert({
-        customer_id: customerId,
-        merchant_id: merchantId,
-        order_id: orderId,
-        type: 'earn',
-        points: 0,
-        description: `Stamp card completed! ${config.stamp_reward_description}`,
-        branch_id: normalizeOptionalString(context?.branchId),
-        source: normalizeOptionalString(context?.source) ?? 'app',
-        actor_user_id: normalizeOptionalString(context?.actorUserId),
-        actor_role: normalizeOptionalString(context?.actorRole),
-        reference_type: normalizeOptionalString(context?.referenceType),
-        reference_id: normalizeOptionalString(context?.referenceId),
-        metadata: context?.metadata ?? {},
-        ...(programId ? { program_id: programId } : {}),
-      });
-    }
-
-    if (stampRow) {
-      let stampUpdateQuery = supabaseAdmin
-        .from('loyalty_stamps')
-        .update({ stamps: newStamps, completed_cards: completedCards, updated_at: new Date().toISOString() })
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId);
-      if (programId) stampUpdateQuery = stampUpdateQuery.eq('program_id', programId);
-      await stampUpdateQuery;
-    } else {
-      await supabaseAdmin.from('loyalty_stamps').insert({
-        customer_id: customerId,
-        merchant_id: merchantId,
-        stamps: newStamps,
-        completed_cards: completedCards,
-        ...(programId ? { program_id: programId } : {}),
-      });
-    }
-  }
-
   notifyPassUpdateSafe(customerId, merchantId);
 
   return {
     success: true,
     pointsEarned,
     newBalance: (existing?.points ?? 0) + pointsEarned,
-    stampAwarded,
-    stampRewardGranted,
   };
 }
 
@@ -1638,152 +1393,23 @@ export async function restoreCashbackForRefund(params: {
   return { restoredSar: amount, alreadyRestored: false };
 }
 
-export async function restoreStampMilestonesForRefund(params: {
+/**
+ * Phase 1 no-op shim. The old stamp-redemption table is gone, so there
+ * are no per-order redemption rows to clear and no separate stamp count
+ * to restore. The points balance that backed the redemption is already
+ * refunded by the points-mode restore path that Phase 2 will introduce;
+ * orders.ts still imports this for legacy refund call-sites and gets a
+ * zeroed result. The function is kept exported (instead of deleted) so
+ * Phase 2's cancellation refactor can land before this is removed.
+ */
+export async function restoreStampMilestonesForRefund(_params: {
   customerId: string;
   merchantId: string;
   milestoneIds: string[];
   stampsConsumed: number;
   orderId: string;
 }): Promise<{ stampsRestored: number; milestonesCleared: string[]; alreadyRestored: boolean }> {
-  if (!supabaseAdmin) throw new Error('Database not configured');
-  if (params.milestoneIds.length === 0 || params.stampsConsumed <= 0) {
-    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
-  }
-
-  // Idempotency marker — same pattern as cashback.
-  const { data: priorReverse } = await supabaseAdmin
-    .from('loyalty_transactions')
-    .select('id, points')
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .eq('order_id', params.orderId)
-    .eq('type', 'earn')
-    .eq('loyalty_type', 'stamps')
-    .eq('source', 'refund')
-    .maybeSingle();
-  if (priorReverse) {
-    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: true };
-  }
-
-  // Clear redemption rows so the milestone is available again. The
-  // checkout redeem step either flips an existing unredeemed row's
-  // redeemed_at to NOT-NULL OR inserts a fresh row — either way the
-  // row now has redeemed_at set. Setting it back to NULL makes the
-  // milestone re-eligible for redemption next checkout. We don't
-  // DELETE the row because keeping the history is useful for ops.
-  //
-  // DO THIS FIRST so we can check what was actually redeemed. The
-  // order row carries stamps_consumed from the commit payload, but
-  // that's just an intent declaration — if the customer's
-  // post-commit redeem-stamp-milestone call never landed (3DS
-  // abandoned, app crashed between the two calls), the redemption
-  // row never had redeemed_at set, so nothing to clear and nothing
-  // to credit. Crediting anyway hands the customer free stamps they
-  // never spent — observed 2026-05-16 with abandoned-payment
-  // orders 02340043 + 02680835 surfacing +2 stamp ledger entries
-  // each with no matching deduction.
-  // Two-tier restore:
-  //   1) Preferred: rows tagged with this exact order_id. New
-  //      redemptions store order_id (migration 20260518000002), so
-  //      a customer who used the same milestone on two consecutive
-  //      orders can have order A's refund clear ONLY order A's
-  //      redemption.
-  //   2) Legacy fallback: rows pre-dating the order_id column have
-  //      order_id IS NULL. For those, we fall back to clearing any
-  //      redeemed row that matches (customer, merchant, milestone)
-  //      — the old behaviour. Only takes effect when no order-tagged
-  //      rows are found, so it can't fire AFTER a successful tagged
-  //      clear.
-  let { data: clearedRows } = await supabaseAdmin
-    .from('loyalty_stamp_redemptions')
-    .update({ redeemed_at: null, redeemed_via: null })
-    .eq('order_id', params.orderId)
-    .in('milestone_id', params.milestoneIds)
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .not('redeemed_at', 'is', null)
-    .select('milestone_id, stamp_number');
-  if (!clearedRows || clearedRows.length === 0) {
-    const legacy = await supabaseAdmin
-      .from('loyalty_stamp_redemptions')
-      .update({ redeemed_at: null, redeemed_via: null })
-      .is('order_id', null)
-      .in('milestone_id', params.milestoneIds)
-      .eq('customer_id', params.customerId)
-      .eq('merchant_id', params.merchantId)
-      .not('redeemed_at', 'is', null)
-      .select('milestone_id, stamp_number');
-    clearedRows = legacy.data ?? [];
-  }
-  const actualStampsToRestore = (clearedRows ?? []).reduce(
-    (sum, r) => sum + Number((r as { stamp_number?: number }).stamp_number ?? 0),
-    0,
-  );
-  if (actualStampsToRestore === 0) {
-    console.log(
-      `[Loyalty] No redeemed milestones found for order ${params.orderId}; skipping stamp restoration to avoid phantom credit`,
-    );
-    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
-  }
-
-  // Add stamps back. We use a non-atomic read+write because nobody
-  // else is racing to modify stamps at refund time (the order is in
-  // 'Cancelled' transition; no concurrent earn/redeem expected).
-  const { data: stampRow } = await supabaseAdmin
-    .from('loyalty_stamps')
-    .select('stamps')
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .maybeSingle();
-  const newStamps = (stampRow?.stamps ?? 0) + actualStampsToRestore;
-  if (stampRow) {
-    await supabaseAdmin
-      .from('loyalty_stamps')
-      .update({ stamps: newStamps, updated_at: new Date().toISOString() })
-      .eq('customer_id', params.customerId)
-      .eq('merchant_id', params.merchantId);
-  } else {
-    await supabaseAdmin.from('loyalty_stamps').insert({
-      customer_id: params.customerId,
-      merchant_id: params.merchantId,
-      stamps: actualStampsToRestore,
-    });
-  }
-
-  // Refund the internal points (1 stamp = 10 internal points, mirrors
-  // the deduct in redeem-stamp-milestone).
-  const pointsToRestore = actualStampsToRestore * 10;
-  const { data: ptsBal } = await supabaseAdmin
-    .from('loyalty_points')
-    .select('points')
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .maybeSingle();
-  if (ptsBal) {
-    await supabaseAdmin
-      .from('loyalty_points')
-      .update({ points: Number(ptsBal.points ?? 0) + pointsToRestore, updated_at: new Date().toISOString() })
-      .eq('customer_id', params.customerId)
-      .eq('merchant_id', params.merchantId);
-  }
-
-  await supabaseAdmin.from('loyalty_transactions').insert({
-    customer_id: params.customerId,
-    merchant_id: params.merchantId,
-    order_id: params.orderId,
-    type: 'earn',
-    loyalty_type: 'stamps',
-    points: pointsToRestore,
-    description: `Restored ${actualStampsToRestore} stamps from cancelled order ${params.orderId.slice(-8)}`,
-    source: 'refund',
-  });
-
-  notifyPassUpdateSafe(params.customerId, params.merchantId);
-  return {
-    stampsRestored: actualStampsToRestore,
-    milestonesCleared: (clearedRows ?? []).map((r) => String((r as { milestone_id: string }).milestone_id)),
-    alreadyRestored: false,
-  };
+  return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
 }
 
 /** POST /api/loyalty/redeem-cashback — redeem cashback SAR at checkout or via Foodics adapter */
@@ -1904,167 +1530,67 @@ loyaltyRouter.get('/cashback-balance', async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════════
-   STAMP MILESTONES — milestone listing + redemption
+   MILESTONES — points-threshold rewards (renamed from stamps in Phase 1)
    ═══════════════════════════════════════════════════════════════════ */
 
-/** GET /api/loyalty/stamp-milestones?merchantId=X */
+/**
+ * GET /api/loyalty/stamp-milestones?merchantId=X
+ *
+ * Endpoint URL kept (mobile clients still call it) but the underlying
+ * table is now loyalty_milestones with points_threshold. We surface
+ * the legacy field name `stamp_number` so the customer app keeps
+ * compiling until Phase 3 rebuilds the screens.
+ */
 loyaltyRouter.get('/stamp-milestones', async (req, res) => {
   try {
     const merchantId = req.query.merchantId as string;
     if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
 
-    const { data, error } = await supabaseAdmin.from('loyalty_stamp_milestones')
-      .select('*').eq('merchant_id', merchantId).eq('is_active', true)
-      .order('stamp_number', { ascending: true });
+    const { data, error } = await supabaseAdmin
+      .from('loyalty_milestones')
+      .select('id, points_threshold, reward_name, reward_description, reward_image_url, foodics_product_ids, is_active')
+      .eq('merchant_id', merchantId)
+      .eq('is_active', true)
+      .order('points_threshold', { ascending: true });
 
     if (error) return res.status(500).json({ error: error.message });
-    res.json({ milestones: data ?? [] });
+    const milestones = (data ?? []).map((m: { id: string; points_threshold: number; reward_name: string; reward_description: string | null; reward_image_url: string | null; foodics_product_ids: string[] | null; is_active: boolean }) => ({
+      id: m.id,
+      stamp_number: m.points_threshold,
+      points_threshold: m.points_threshold,
+      reward_name: m.reward_name,
+      reward_description: m.reward_description,
+      reward_image_url: m.reward_image_url,
+      foodics_product_ids: m.foodics_product_ids ?? [],
+      is_active: m.is_active,
+    }));
+    res.json({ milestones });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to get milestones' });
   }
 });
 
-/** POST /api/loyalty/redeem-stamp-milestone — redeem a stamp milestone reward */
+/**
+ * POST /api/loyalty/redeem-stamp-milestone — Phase 1 placeholder.
+ *
+ * The stamp redemption flow is being rebuilt as a points-redeem
+ * workflow in Phase 2. The mobile app still calls this endpoint; we
+ * accept the call and return 503 with a structured body so the UI can
+ * surface a maintenance message instead of crashing. Phase 2 will
+ * replace this with a real points-based milestone redemption against
+ * loyalty_milestones.points_threshold.
+ */
 loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
-  try {
-    // Accept either: user auth (app checkout) OR internal secret (Foodics adapter via nooksweb)
-    // constant-time compare via shared helper — the previous inline
-    // === check was a microsecond-level timing oracle.
-    const hasInternalSecret = hasValidInternalSecret(req);
-    if (!hasInternalSecret) {
-      const { customerId: bodyCustomerId } = req.body ?? {};
-      if (!await requireMatchingCustomer(req, res, bodyCustomerId)) return;
-    }
-    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
-
-    const { customerId, merchantId, milestoneId, via, orderId } = req.body;
-    if (!customerId || !merchantId || !milestoneId) {
-      return res.status(400).json({ error: 'customerId, merchantId, milestoneId required' });
-    }
-    const orderIdSafe = typeof orderId === 'string' && orderId.trim() ? orderId.trim() : null;
-
-    // Get milestone
-    const { data: milestone } = await supabaseAdmin.from('loyalty_stamp_milestones')
-      .select('*').eq('id', milestoneId).eq('merchant_id', merchantId).single();
-    if (!milestone) return res.status(404).json({ error: 'Milestone not found' });
-
-    // Idempotency belt-and-suspenders: if we redeemed THIS exact
-    // milestone for this customer in the last 30 seconds, treat the
-    // call as a no-op replay of a successful prior redemption. The
-    // optimistic-concurrency check below ALREADY blocks the actual
-    // double-deduct race, but a flaky client that retries on a 200
-    // response could otherwise hit "stamps changed during redemption"
-    // 409s on the retry path. With this dedupe the retry returns the
-    // original success.
-    const dedupeWindowMs = 30 * 1000;
-    const dedupeSinceIso = new Date(Date.now() - dedupeWindowMs).toISOString();
-    const { data: recentRedeem } = await supabaseAdmin
-      .from('loyalty_stamp_redemptions')
-      .select('id, redeemed_at')
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId)
-      .eq('milestone_id', milestoneId)
-      .not('redeemed_at', 'is', null)
-      .gte('redeemed_at', dedupeSinceIso)
-      .order('redeemed_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (recentRedeem) {
-      return res.json({
-        success: true,
-        idempotent: true,
-        rewardName: milestone.reward_name,
-        stampsDeducted: 0,
-        newStamps: undefined,
-      });
-    }
-
-    // Atomic stamp deduction with optimistic concurrency. The previous
-    // implementation was read-then-update, which let a fast double-tap
-    // (or a checkout with multiple selected milestones) deduct from the
-    // same balance twice. The .eq('stamps', currentStamps) clause makes
-    // the UPDATE a no-op if anything else moved the balance between our
-    // read and write — we surface that as 409 so the caller refetches
-    // and retries. .select() returns the row(s) actually updated.
-    const { data: stampData } = await supabaseAdmin.from('loyalty_stamps')
-      .select('stamps').eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();
-    const currentStamps = stampData?.stamps ?? 0;
-    if (currentStamps < milestone.stamp_number) {
-      return res.status(400).json({ error: `Need ${milestone.stamp_number} stamps. Current: ${currentStamps}` });
-    }
-    const newStampCount = currentStamps - milestone.stamp_number;
-    const { data: updatedRows, error: updateError } = await supabaseAdmin.from('loyalty_stamps')
-      .update({ stamps: newStampCount, updated_at: new Date().toISOString() })
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId)
-      .eq('stamps', currentStamps) // optimistic-concurrency guard
-      .select('stamps');
-    if (updateError) {
-      return res.status(500).json({ error: updateError.message });
-    }
-    if (!updatedRows || updatedRows.length === 0) {
-      // Either the row didn't exist or another write moved the balance
-      // between our read and write — refuse so the client refetches.
-      return res.status(409).json({
-        error: 'Stamp balance changed during redemption. Refresh and try again.',
-      });
-    }
-
-    // Mark existing unredeemed record as redeemed, or create new one
-    const { data: existingRedemption } = await supabaseAdmin.from('loyalty_stamp_redemptions')
-      .select('id')
-      .eq('customer_id', customerId).eq('merchant_id', merchantId)
-      .eq('milestone_id', milestoneId).is('redeemed_at', null)
-      .maybeSingle();
-
-    if (existingRedemption) {
-      await supabaseAdmin.from('loyalty_stamp_redemptions')
-        .update({
-          redeemed_at: new Date().toISOString(),
-          redeemed_via: via === 'branch' ? 'branch' : 'app',
-          ...(orderIdSafe ? { order_id: orderIdSafe } : {}),
-        })
-        .eq('id', existingRedemption.id);
-    } else {
-      await supabaseAdmin.from('loyalty_stamp_redemptions').insert({
-        customer_id: customerId, merchant_id: merchantId,
-        milestone_id: milestoneId, stamp_number: milestone.stamp_number,
-        ...(orderIdSafe ? { order_id: orderIdSafe } : {}),
-        redeemed_at: new Date().toISOString(),
-        redeemed_via: via === 'branch' ? 'branch' : 'app',
-      });
-    }
-
-    // Deduct internal points (1 stamp = 10 internal points — NOT Foodics points, see earn endpoint comment)
-    const pointsToDeduct = milestone.stamp_number * 10;
-    const { data: ptsBal } = await supabaseAdmin.from('loyalty_points')
-      .select('points').eq('customer_id', customerId).eq('merchant_id', merchantId).maybeSingle();
-    if (ptsBal) {
-      await supabaseAdmin.from('loyalty_points')
-        .update({ points: Math.max(0, ptsBal.points - pointsToDeduct), updated_at: new Date().toISOString() })
-        .eq('customer_id', customerId).eq('merchant_id', merchantId);
-    }
-
-    // Log transaction. Stamping order_id lets the refund path filter
-    // restorations by the EXACT order that consumed these stamps,
-    // instead of clearing every redemption for this milestone (which
-    // previously could clear another order's still-active redemption
-    // and hand the customer a free reward at the second order).
-    await supabaseAdmin.from('loyalty_transactions').insert({
-      customer_id: customerId, merchant_id: merchantId,
-      type: 'redeem', loyalty_type: 'stamps',
-      points: -pointsToDeduct,
-      description: `Redeemed milestone: ${milestone.reward_name} (-${milestone.stamp_number} stamps)`,
-      source: via === 'branch' ? 'branch' : 'app',
-      ...(orderIdSafe ? { order_id: orderIdSafe } : {}),
-    });
-
-    notifyPassUpdateSafe(customerId, merchantId);
-    res.json({ success: true, rewardName: milestone.reward_name, stampsDeducted: milestone.stamp_number, newStamps: newStampCount });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to redeem milestone' });
+  const hasInternalSecret = hasValidInternalSecret(req);
+  if (!hasInternalSecret) {
+    const { customerId: bodyCustomerId } = req.body ?? {};
+    if (!await requireMatchingCustomer(req, res, bodyCustomerId)) return;
   }
+  return res.status(503).json({
+    error: 'Milestone redemption is temporarily disabled while the points loyalty system is being upgraded.',
+    code: 'MILESTONE_REDEMPTION_DISABLED',
+  });
 });
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2147,11 +1673,11 @@ loyaltyRouter.post('/programs/retire-and-launch', async (req, res) => {
     if (createErr) return res.status(500).json({ error: createErr.message });
 
     // Update loyalty_config with new settings.
-    // stamp_target intentionally NOT in allowedFields — platform-locked at 8.
+    // Phase 1: stamp_* columns are no longer writable (stamps mode dropped).
     const configPayload: Record<string, unknown> = { merchant_id: merchantId };
     const allowedFields = [
       'earn_mode', 'points_per_sar', 'points_per_order', 'point_value_sar',
-      'expiry_months', 'stamp_enabled', 'stamp_reward_description',
+      'expiry_months',
       'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
       'wallet_card_label', 'wallet_card_secondary_label', 'pass_template_type',
     ];
@@ -2179,29 +1705,20 @@ loyaltyRouter.post('/programs/retire-and-launch', async (req, res) => {
 /**
  * POST /api/loyalty/restore-pos-redemption
  *
- * Reverses any loyalty deductions tied to a Foodics POS order_id.
+ * Reverses cashback deductions tied to a Foodics POS order_id.
  *
  * Context: when a Foodics cashier scans a customer's QR and applies
- * a reward at the POS, nooksweb's /api/adapter/v1/redeem deducts the
- * customer's balance (stamps or cashback) immediately so the POS can
- * apply the discount line. If that POS order is later voided in
- * Foodics — cashier cancels, customer walks out, payment fails — the
- * deduction is stranded: the customer lost their stamps/cashback but
- * never got the reward.
+ * a cashback redemption at the POS, nooksweb's /api/adapter/v1/redeem
+ * deducts the customer's balance immediately so the POS can apply the
+ * discount line. If that POS order is later voided in Foodics, this
+ * endpoint puts the cashback back.
  *
- * The Foodics webhook fires on void/refund and calls this endpoint
- * for the affected POS order_id. We look up every redeem-type
- * loyalty_transactions row tagged with that order_id and run the
- * matching restore helper (cashback or stamps).
+ * Phase 1: the stamps reversal branch is gone (stamps mode dropped).
+ * Phase 2 will add a points-mode reversal path here.
  *
- * Idempotent — restoreCashbackForRefund / restoreStampMilestonesForRefund
- * each gate on a 'refund' marker transaction and skip if it exists,
- * so re-firing on webhook retry is safe.
- *
- * Internal-only (NOOKS_INTERNAL_SECRET). Customer-app callers must use
- * the existing per-order /merchant-cancel path which handles internal
- * customer_orders rows; this endpoint is the matching gateway for
- * POS-only orders that don't have a Nooks customer_orders row.
+ * Idempotent — restoreCashbackForRefund gates on a 'refund' marker
+ * transaction and skips if it exists, so re-firing on webhook retry
+ * is safe.
  */
 loyaltyRouter.post('/restore-pos-redemption', async (req, res) => {
   try {
@@ -2227,20 +1744,14 @@ loyaltyRouter.post('/restore-pos-redemption', async (req, res) => {
     }
 
     const cashbackRestored: Array<{ customerId: string; amountSar: number; alreadyRestored: boolean }> = [];
-    const stampRestored: Array<{ customerId: string; stamps: number; milestonesCleared: string[]; alreadyRestored: boolean }> = [];
 
     // Cashback reversals — one per customer that had cashback deducted
-    // on this POS order. We sum amounts within the same customer since
-    // /redeem-cashback only writes one transaction per (customer, order)
-    // but be defensive against legacy data with duplicate rows.
+    // on this POS order.
     const cashbackByCustomer = new Map<string, number>();
-    const stampCustomers = new Set<string>();
     for (const tx of redeemTxs) {
       const amount = Math.abs(Number(tx.amount_sar ?? 0));
       if (tx.loyalty_type === 'cashback' && amount > 0) {
         cashbackByCustomer.set(tx.customer_id, (cashbackByCustomer.get(tx.customer_id) ?? 0) + amount);
-      } else if (tx.loyalty_type === 'stamps') {
-        stampCustomers.add(tx.customer_id);
       }
     }
 
@@ -2254,39 +1765,7 @@ loyaltyRouter.post('/restore-pos-redemption', async (req, res) => {
       cashbackRestored.push({ customerId, amountSar: result.restoredSar, alreadyRestored: result.alreadyRestored });
     }
 
-    // Stamp reversals — restoreStampMilestonesForRefund needs the
-    // milestone_ids and stamps_consumed declared by the original
-    // redemption. Look those up from loyalty_stamp_redemptions tagged
-    // with this order_id.
-    for (const customerId of stampCustomers) {
-      const { data: redemptionRows } = await supabaseAdmin
-        .from('loyalty_stamp_redemptions')
-        .select('milestone_id, stamp_number')
-        .eq('order_id', orderId)
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId)
-        .not('redeemed_at', 'is', null);
-      const milestoneIds = (redemptionRows ?? []).map((r) => r.milestone_id).filter((v): v is string => typeof v === 'string');
-      const stampsConsumed = (redemptionRows ?? []).reduce(
-        (sum, r) => sum + Number((r as { stamp_number?: number }).stamp_number ?? 0),
-        0,
-      );
-      const result = await restoreStampMilestonesForRefund({
-        customerId,
-        merchantId,
-        milestoneIds,
-        stampsConsumed,
-        orderId,
-      });
-      stampRestored.push({
-        customerId,
-        stamps: result.stampsRestored,
-        milestonesCleared: result.milestonesCleared,
-        alreadyRestored: result.alreadyRestored,
-      });
-    }
-
-    res.json({ success: true, restored: { cashback: cashbackRestored, stamps: stampRestored } });
+    res.json({ success: true, restored: { cashback: cashbackRestored, stamps: [] as Array<{ customerId: string; stamps: number; milestonesCleared: string[]; alreadyRestored: boolean }> } });
   } catch (err: any) {
     console.error('[loyalty] restore-pos-redemption error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to restore POS redemption' });

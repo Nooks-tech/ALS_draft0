@@ -55,7 +55,7 @@ accountRouter.get('/export', async (req, res) => {
     // pointer from the global identity row for context.
     // Also: push_subscriptions uses `customer_id`, not `user_id` —
     // the legacy `user_id` filter returned zero rows here too.
-    const [profile, identity, orders, complaints, loyaltyTx, stamps, points, cashback, subs] =
+    const [profile, identity, orders, complaints, loyaltyTx, points, cashback, subs] =
       await Promise.all([
         supabaseAdmin
           .from('customer_merchant_profiles')
@@ -76,7 +76,6 @@ accountRouter.get('/export', async (req, res) => {
           .limit(5000),
         supabaseAdmin.from('order_complaints').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId).limit(500),
         supabaseAdmin.from('loyalty_transactions').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId).limit(5000),
-        supabaseAdmin.from('loyalty_stamps').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('loyalty_points').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('loyalty_cashback_balances').select('*').eq('customer_id', user.id).eq('merchant_id', merchantId),
         supabaseAdmin.from('push_subscriptions').select('merchant_id, platform, app_language, marketing_opt_in, last_seen_at').eq('customer_id', user.id).eq('merchant_id', merchantId),
@@ -103,7 +102,6 @@ accountRouter.get('/export', async (req, res) => {
       orders: orders.data ?? [],
       complaints: complaints.data ?? [],
       loyalty_transactions: loyaltyTx.data ?? [],
-      loyalty_stamps: stamps.data ?? [],
       loyalty_points: points.data ?? [],
       cashback_balances: cashback.data ?? [],
       saved_addresses_note: 'Saved delivery addresses are stored on your device only (in the app\'s local storage), not on our servers. They are not included in this server-side export.',
@@ -123,7 +121,7 @@ accountRouter.get('/export', async (req, res) => {
  *
  * Per-merchant account erasure. The customer is initiating deletion
  * from inside ONE merchant's white-label app, so by default we only
- * touch that merchant's slice of their data — loyalty_stamps,
+ * touch that merchant's slice of their data —
  * loyalty_points, loyalty_cashback_balances, order_complaints, and
  * loyalty_transactions filtered on (customer_id, merchant_id);
  * customer_orders anonymised for that merchant only;
@@ -186,7 +184,6 @@ accountRouter.delete('/', async (req, res) => {
     // is customer_id, not user_id (silent no-op before this fix).
     await Promise.all([
       supabaseAdmin.from('push_subscriptions').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
-      supabaseAdmin.from('loyalty_stamps').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('loyalty_points').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('loyalty_cashback_balances').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('order_complaints').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),

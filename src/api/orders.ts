@@ -147,8 +147,14 @@ export type CommitOrderPayload = {
    * order row so cancel can restore each milestone's stamps and clear
    * the redemption rows. Empty / omitted = no stamp redemption.
    */
+  /**
+   * Legacy: list of milestone ids redeemed at checkout. Kept on the
+   * order payload so legacy clients still commit; Phase 1 backend
+   * treats refunds against these as a no-op (the stamps table is gone).
+   * Phase 2/3 will rebuild the milestone redemption path around points.
+   */
   stampMilestoneIds?: string[];
-  /** SUM of milestone.stamp_number for each redeemed milestone. */
+  /** Legacy: SUM of points consumed per redeemed milestone. */
   stampsConsumed?: number | null;
   /**
    * Loyalty-discount SAR (cashback-as-discount or points discount).
