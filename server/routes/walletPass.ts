@@ -622,56 +622,36 @@ function buildPassJson(opts: {
     };
   } else {
     // ─── Points mode ───
-    // Render strategy (per Phase 5 spec):
-    //   primary    → POINTS balance (current points count, integer display)
-    //   secondary  → next 2 unredeemed rewards in cost-ascending order
-    //   auxiliary  → rewards #3 and #4 in cost-ascending order
-    //   back       → lifetime points + all rewards (up to 20)
-    // Customers redeem points by deducting the milestone's points_threshold
-    // — they can pick any reward they can afford, so we surface the cheapest
-    // ones on the front and let the full list live on the back.
+    // Per user feedback, the pass surfaces ONLY the next affordable
+    // reward (the customer's immediate target), not the whole catalog.
+    //   primary    → POINTS balance
+    //   secondary  → NEXT reward name + cost (1 field)
+    //   auxiliary  → empty
+    //   back       → lifetime points + member code
+    // The strip image (built separately) carries the small circular
+    // reward thumbnail pulled from Foodics.
     const allMilestones = (opts.milestones ?? [])
       .filter((m) => m && typeof m.points_threshold === 'number' && (m.reward_name || '').trim().length > 0)
       .slice()
       .sort((a, b) => a.points_threshold - b.points_threshold);
 
-    // Front-of-pass slots — cheapest 4 milestones split across secondary/aux.
-    // We don't filter by affordability here: showing customers what's still
-    // ahead is motivating, and Apple's storeCard template only has so many
-    // visible slots, so cost-ascending is the most informative ordering.
-    const frontMilestones = allMilestones.slice(0, 4);
-    const secondaryMilestones = frontMilestones.slice(0, 2);
-    const auxiliaryMilestones = frontMilestones.slice(2, 4);
-
-    const buildFrontField = (m: PointsMilestone, alignRight: boolean) => {
-      const field: Record<string, unknown> = {
-        key: `milestone_${m.id}`,
-        label: (m.reward_name || '').trim() || '—',
-        value: `${Math.round(m.points_threshold)} pts`,
-      };
-      if (alignRight) field.textAlignment = 'PKTextAlignmentRight';
-      return field;
-    };
-
-    const secondaryFields = secondaryMilestones.map((m, i) =>
-      buildFrontField(m, i === secondaryMilestones.length - 1 && secondaryMilestones.length > 1),
-    );
-    const auxiliaryFields = auxiliaryMilestones.map((m, i) =>
-      buildFrontField(m, i === auxiliaryMilestones.length - 1 && auxiliaryMilestones.length > 1),
-    );
-
-    // Apple Wallet supports many backFields; we surface up to 20 rewards
-    // so the customer sees the whole catalog in the "i" flip view.
-    const backMilestoneFields = allMilestones.slice(0, 20).map((m) => ({
-      key: `back_milestone_${m.id}`,
-      label: (m.reward_name || '').trim() || '—',
-      value: `${Math.round(m.points_threshold)} pts`,
-    }));
-
-    // Math.floor for the displayed points balance — never round up, that
-    // would inflate what customers see vs. what they can spend (fractional
-    // points are possible when points_per_sar is decimal like 0.5).
+    // "Next" = cheapest unaffordable reward. If everything is affordable,
+    // show the highest-tier as a stretch goal so the pass isn't empty.
     const displayPoints = Math.max(0, Math.floor(opts.points));
+    const nextReward =
+      allMilestones.find((m) => m.points_threshold > displayPoints) ??
+      allMilestones[allMilestones.length - 1] ??
+      null;
+
+    const secondaryFields = nextReward
+      ? [
+          {
+            key: `milestone_${nextReward.id}`,
+            label: 'NEXT REWARD',
+            value: `${(nextReward.reward_name || '').trim() || '—'} · ${Math.round(nextReward.points_threshold)} pts`,
+          },
+        ]
+      : [];
 
     storeCard = {
       headerFields: titleHeader,
@@ -679,11 +659,10 @@ function buildPassJson(opts: {
         { key: 'balance', label: 'POINTS', value: displayPoints },
       ],
       secondaryFields,
-      auxiliaryFields,
+      auxiliaryFields: [],
       backFields: [
         { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
         { key: 'lifetime', label: 'LIFETIME POINTS', value: String(Math.max(0, Math.floor(opts.lifetimePoints))) },
-        ...backMilestoneFields,
         { key: 'branchUse', label: 'In-store use', value: 'Show this barcode at the branch to earn points.' },
         { key: 'redeem', label: 'Redeem', value: 'Points can be used at checkout in the app — pick any reward you can afford.' },
       ],

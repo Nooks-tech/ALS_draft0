@@ -688,12 +688,13 @@ export default function MenuScreen() {
   ]);
 
   const listHeaderComponent = useMemo(() => {
-    const hasLoyalty = !!loyaltyCard;
+    // Embedded loyalty card removed per user feedback — the dedicated
+    // /loyalty-modal already surfaces points + the rewards catalog,
+    // so the duplicate above the slider was just visual noise.
     const hasSlider = sliderItems.length > 0;
-    if (!hasLoyalty && !hasSlider) return null;
+    if (!hasSlider) return null;
     return (
       <View style={{ backgroundColor }}>
-        {loyaltyCard}
         {hasSlider && (
           <View className="py-4">
             <FlatList
@@ -731,7 +732,7 @@ export default function MenuScreen() {
         )}
       </View>
     );
-  }, [promoWidth, promoItemWidth, sliderItems, backgroundColor, primaryColor, router, loyaltyCard]);
+  }, [promoWidth, promoItemWidth, sliderItems, backgroundColor, primaryColor, router]);
 
   const categoryBar = useMemo(() => (
     <View className="px-5 pb-3 pt-1" style={{ backgroundColor }}>

@@ -633,6 +633,30 @@ loyaltyRouter.get('/balance', async (req, res) => {
         .eq('merchant_id', merchantId)
         .eq('is_active', true)
         .order('points_threshold', { ascending: true });
+
+      // Pull Foodics product images for every product referenced by
+      // these milestones in one query — we no longer rely on the
+      // dashboard image-upload column. The merchant manages product
+      // photos in Foodics, full stop. If a Foodics image is missing
+      // we fall back to the stored reward_image_url for back-compat.
+      const allProductIds = Array.from(
+        new Set(
+          (milestoneData ?? [])
+            .flatMap((m: { foodics_product_ids?: string[] | null }) => m.foodics_product_ids ?? [])
+            .filter((id: string) => typeof id === 'string' && id),
+        ),
+      );
+      const productImages = new Map<string, string>();
+      if (allProductIds.length > 0) {
+        const { data: prodData } = await supabaseAdmin
+          .from('foodics_products')
+          .select('id, image_url')
+          .in('id', allProductIds);
+        for (const p of (prodData ?? []) as Array<{ id: string; image_url: string | null }>) {
+          if (p.image_url) productImages.set(p.id, p.image_url);
+        }
+      }
+
       stampMilestones = (milestoneData ?? []).map((m: {
         id: string;
         points_threshold: number;
@@ -640,15 +664,21 @@ loyaltyRouter.get('/balance', async (req, res) => {
         reward_description: string | null;
         reward_image_url: string | null;
         foodics_product_ids: string[] | null;
-      }) => ({
-        id: m.id,
-        stamp_number: m.points_threshold,
-        points_threshold: m.points_threshold,
-        reward_name: m.reward_name,
-        reward_description: m.reward_description,
-        reward_image_url: m.reward_image_url,
-        foodics_product_ids: m.foodics_product_ids ?? [],
-      }));
+      }) => {
+        const firstProductId = m.foodics_product_ids?.[0];
+        const foodicsImage = firstProductId ? productImages.get(firstProductId) ?? null : null;
+        return {
+          id: m.id,
+          stamp_number: m.points_threshold,
+          points_threshold: m.points_threshold,
+          reward_name: m.reward_name,
+          reward_description: m.reward_description,
+          // Foodics product image is authoritative; reward_image_url
+          // is legacy fallback for milestones created before this fix.
+          reward_image_url: foodicsImage ?? m.reward_image_url,
+          foodics_product_ids: m.foodics_product_ids ?? [],
+        };
+      });
     }
 
     // Cashback balance
