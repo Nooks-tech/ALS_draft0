@@ -563,22 +563,27 @@ export default function OffersScreen() {
     [nooksBanners],
   );
 
-  // The server returns the customer's EFFECTIVE loyalty type (account for
-  // in-flight transitions). Only stamps or cashback — points is deprecated.
-  // When the merchant hasn't activated loyalty yet, this stays null and the
-  // card renders a "not yet active" empty state.
-  const loyaltyType: 'stamps' | 'cashback' | null =
-    balance?.loyaltyType === 'stamps' || balance?.loyaltyType === 'cashback'
+  // Effective loyalty type returned by the server. Stamps has been
+  // dropped platform-wide (cashback or points only) — but we keep the
+  // 'stamps' branch live for legacy customers whose passes haven't been
+  // re-issued yet. They'll get migrated to points on their next sync.
+  const loyaltyType: 'stamps' | 'cashback' | 'points' | null =
+    balance?.loyaltyType === 'stamps'
+      || balance?.loyaltyType === 'cashback'
+      || balance?.loyaltyType === 'points'
       ? balance.loyaltyType
       : null;
   const loyaltyTabLabel = loyaltyType === 'stamps'
     ? (isArabic ? 'بطاقة الأختام' : 'Stamps')
     : loyaltyType === 'cashback'
       ? (isArabic ? 'كاش باك' : 'Cashback')
-      : (isArabic ? 'الولاء' : 'Loyalty');
+      : loyaltyType === 'points'
+        ? (isArabic ? 'النقاط' : 'Points')
+        : (isArabic ? 'الولاء' : 'Loyalty');
   const cardTitle = balance?.walletCardLabel
     || (loyaltyType === 'stamps' ? (isArabic ? 'بطاقة الأختام' : 'Stamp Card')
        : loyaltyType === 'cashback' ? (isArabic ? 'كاش باك' : 'Cashback')
+       : loyaltyType === 'points' ? (isArabic ? 'بطاقة النقاط' : 'Points Card')
        : (isArabic ? 'بطاقة الولاء' : 'Loyalty Card'));
   const cardLogoUrl = balance?.walletCardLogoUrl || null;
   const cardBgColor = balance?.walletCardBgColor || primaryColor;
@@ -853,6 +858,69 @@ export default function OffersScreen() {
                         </Text>
                         <Text style={{ color: cardTextColor, fontSize: 15, fontWeight: '600', marginTop: 4 }}>
                           {expiryLabel}
+                        </Text>
+                      </View>
+                    </View>
+                    <MemberQrCard memberCode={memberCode} />
+                  </View>
+                );
+              }
+
+              /* ── POINTS ──
+                 Mirrors the cashback card layout per merchant feedback:
+                 just balance + next reward. No catalog, no progress bar,
+                 no images. The full rewards screen is one tap away. */
+              if (loyaltyType === 'points') {
+                const points = Math.max(0, Math.floor(balance?.points ?? 0));
+                const lifetime = Math.max(0, Math.floor(balance?.lifetimePoints ?? 0));
+                const sorted = (balance?.stampMilestones ?? [])
+                  .filter((m) => (m.reward_name || '').trim().length > 0)
+                  .slice()
+                  .sort((a, b) => (a.points_threshold ?? a.stamp_number) - (b.points_threshold ?? b.stamp_number));
+                const nextReward =
+                  sorted.find((m) => (m.points_threshold ?? m.stamp_number) > points) ??
+                  sorted[sorted.length - 1] ?? null;
+                const nextCost = nextReward
+                  ? nextReward.points_threshold ?? nextReward.stamp_number
+                  : null;
+                const expiryLabel = balance?.expiryMonths
+                  ? (isArabic ? `${balance.expiryMonths} شهر` : `${balance.expiryMonths} mo`)
+                  : (isArabic ? 'لا ينتهي' : 'Never');
+
+                return (
+                  <View style={cardShell}>
+                    {headerRow}
+                    <Text style={{ color: cardTextColor, fontSize: 44, fontWeight: '700', lineHeight: 52, marginTop: 24 }}>
+                      {points}
+                    </Text>
+                    <Text style={{ color: cardSubTextColor, fontSize: 13, letterSpacing: 1.5, marginTop: 4 }}>
+                      {isArabic ? 'النقاط' : 'POINTS'}
+                    </Text>
+                    <View style={{
+                      height: 1,
+                      marginTop: 18,
+                      marginBottom: 14,
+                      backgroundColor: cardLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.22)' }} />
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                      <View style={{ flex: 1, marginEnd: 12 }}>
+                        <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
+                          {isArabic ? 'المكافأة التالية' : 'NEXT REWARD'}
+                        </Text>
+                        <Text
+                          numberOfLines={1}
+                          style={{ color: cardTextColor, fontSize: 15, fontWeight: '600', marginTop: 4 }}
+                        >
+                          {nextReward
+                            ? `${(nextReward.reward_name || '').trim()} · ${nextCost} ${isArabic ? 'ن' : 'pts'}`
+                            : (isArabic ? '—' : '—')}
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={{ color: cardSubTextColor, fontSize: 11, letterSpacing: 1 }}>
+                          {isArabic ? 'مكتسبة' : 'LIFETIME'}
+                        </Text>
+                        <Text style={{ color: cardTextColor, fontSize: 15, fontWeight: '600', marginTop: 4 }}>
+                          {lifetime}
                         </Text>
                       </View>
                     </View>
