@@ -136,6 +136,9 @@ export default function MenuScreen() {
   const [nooksBanners, setNooksBanners] = useState<NooksBanner[]>([]);
   const [activePopup, setActivePopup] = useState<SliderItem | null>(null);
   const popupSessionConsumedRef = useRef(false);
+  // Phase 3: embedded loyalty card. Loaded from the same cache the
+  // rewards screen reads — preloaded on mount, then refreshed live.
+  const [loyaltyBalance, setLoyaltyBalance] = useState<LoyaltyBalance | null>(null);
 
   const displayCategories = useMemo(() => categories.filter((c) => c !== 'All'), [categories]);
   const sections = useMemo(() =>
@@ -161,13 +164,10 @@ export default function MenuScreen() {
     fetchNooksBanners(merchantId).then(setNooksBanners);
   }, [merchantId]);
 
-  // Preload the loyalty balance for the stamps-rewards screen so when
-  // the user taps the rewards button the screen paints from disk
-  // (offers.tsx and rewards.tsx share this cache key/shape). No state
-  // is set here — this is fire-and-forget, results land in
-  // AsyncStorage and the rewards screen reads them on its own
-  // useEffect. Fails silent: rewards screen still does its own fetch
-  // so a missed preload just means a one-time spinner.
+  // Phase 3: preload the loyalty balance for both the embedded card
+  // here AND the rewards screen (offers.tsx/rewards.tsx share this
+  // cache key/shape). Cached snapshot paints instantly on mount; the
+  // network refresh runs in parallel and updates state when it lands.
   useEffect(() => {
     if (!merchantId || !customerId) return;
     const key = `@als_loyalty_${merchantId}_${customerId}`;
@@ -177,10 +177,19 @@ export default function MenuScreen() {
       rewards: LoyaltyReward[];
     };
     let cancelled = false;
+
+    // Step 1 — cached snapshot for instant paint.
+    readCache<LoyaltyCache>(key).then((cached) => {
+      if (cancelled) return;
+      if (cached?.balance) setLoyaltyBalance(cached.balance);
+    });
+
+    // Step 2 — network refresh.
     loyaltyApi
       .getBalance(customerId, merchantId)
       .then(async (balance) => {
         if (cancelled || !balance) return;
+        setLoyaltyBalance(balance);
         const prev = await readCache<LoyaltyCache>(key);
         if (cancelled) return;
         await writeCache<LoyaltyCache>(key, {
@@ -196,6 +205,40 @@ export default function MenuScreen() {
       cancelled = true;
     };
   }, [merchantId, customerId]);
+
+  // Phase 3: compute the next affordable milestone for the progress
+  // indicator on the embedded loyalty card. Smallest-cost unaffordable
+  // milestone = the next reward the user is working toward. If all
+  // milestones are affordable, we point to the most expensive one as
+  // an "everything unlocked!" indicator.
+  const loyaltyProgress = useMemo(() => {
+    if (!loyaltyBalance || loyaltyBalance.loyaltyType !== 'points') return null;
+    const milestones = (loyaltyBalance.stampMilestones ?? [])
+      .map((m) => ({
+        ...m,
+        cost: m.points_threshold ?? m.stamp_number,
+      }))
+      .sort((a, b) => a.cost - b.cost);
+    if (milestones.length === 0) return null;
+    const points = loyaltyBalance.points ?? 0;
+    const next = milestones.find((m) => m.cost > points);
+    if (!next) {
+      // Everything's affordable
+      const highest = milestones[milestones.length - 1];
+      return {
+        nextName: highest.reward_name,
+        nextCost: highest.cost,
+        progress: 1,
+        allUnlocked: true,
+      };
+    }
+    return {
+      nextName: next.reward_name,
+      nextCost: next.cost,
+      progress: Math.max(0, Math.min(1, points / next.cost)),
+      allUnlocked: false,
+    };
+  }, [loyaltyBalance]);
 
   const sliderItems: SliderItem[] = useMemo(() => {
     const sliderBanners = nooksBanners.filter((b) => b.placement === 'slider');
@@ -479,46 +522,216 @@ export default function MenuScreen() {
     return () => clearInterval(interval);
   }, [promoItemWidth, sliderItems.length]);
 
-  const listHeaderComponent = useMemo(() => {
-    if (sliderItems.length === 0) return null;
+  // Phase 3: compact loyalty card. Renders for signed-in customers in
+  // points mode. Shows the live balance + a progress arc to the next
+  // affordable milestone. Tap → opens /loyalty-modal (full card with
+  // catalog). For cashback merchants we still surface the balance so
+  // the embed isn't conditional on loyalty type alone.
+  const loyaltyCard = useMemo(() => {
+    if (!customerId || !loyaltyBalance) return null;
+    const isCashback = loyaltyBalance.loyaltyType === 'cashback';
+    const open = () => router.push('/loyalty-modal' as never);
+
+    if (isCashback) {
+      return (
+        <TouchableOpacity
+          onPress={open}
+          activeOpacity={0.85}
+          style={{
+            marginHorizontal: 16,
+            marginTop: 14,
+            padding: 16,
+            borderRadius: 22,
+            backgroundColor: primaryColor,
+            flexDirection: 'row',
+            alignItems: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 6 },
+            shadowOpacity: 0.18,
+            shadowRadius: 12,
+            elevation: 6,
+          }}
+        >
+          <View
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: 'rgba(255,255,255,0.22)',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginEnd: 12,
+            }}
+          >
+            <Gift size={22} color="#ffffff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>
+              {isArabic ? 'كاش باك' : 'CASHBACK'}
+            </Text>
+            <Text style={{ color: '#ffffff', fontSize: 20, fontWeight: '800', marginTop: 2 }}>
+              {(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} {isArabic ? 'ر.س' : 'SAR'}
+            </Text>
+          </View>
+          <ChevronRight
+            size={18}
+            color="#ffffff"
+            style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }}
+          />
+        </TouchableOpacity>
+      );
+    }
+
+    // Points mode
+    const lifetime = loyaltyBalance.lifetimePoints ?? 0;
+    const points = loyaltyBalance.points ?? 0;
+    const progress = loyaltyProgress?.progress ?? 0;
+    const nextName = loyaltyProgress?.nextName ?? null;
+    const nextCost = loyaltyProgress?.nextCost ?? null;
+    const allUnlocked = loyaltyProgress?.allUnlocked ?? false;
+
     return (
-      <View style={{ backgroundColor }}>
-        <View className="py-4">
-          <FlatList
-            ref={promoRef}
-            data={sliderItems}
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            snapToInterval={promoItemWidth}
-            snapToAlignment="start"
-            decelerationRate="fast"
-            contentContainerStyle={{ paddingHorizontal: 16 }}
-            onMomentumScrollEnd={(e) => { promoIndexRef.current = Math.round(e.nativeEvent.contentOffset.x / promoItemWidth); }}
-            renderItem={({ item: promo }) => (
-              <TouchableOpacity
-                onPress={() => router.replace('/(tabs)/offers')}
-                activeOpacity={1}
-                style={{ width: promoWidth, marginRight: 16 }}
-                className="rounded-2xl overflow-hidden shadow-md bg-white"
-              >
-                {/* Container reserves layout immediately; image fades
-                    in on load. Dark overlay + text sit on top so the
-                    label is readable both before (against placeholder)
-                    and after (against image) the fade-in. */}
-                <View className="h-40 justify-end p-4" style={{ position: 'relative' }}>
-                  <SliderBannerImage uri={promo.image} placeholderColor={primaryColor} />
-                  <View className="absolute inset-0 bg-black/40 rounded-2xl" />
-                  <Text className="text-white font-bold text-2xl z-10">{promo.subtitle}</Text>
-                  <Text className="text-gray-200 text-sm z-10">{promo.title}</Text>
-                </View>
-              </TouchableOpacity>
-            )}
+      <TouchableOpacity
+        onPress={open}
+        activeOpacity={0.85}
+        style={{
+          marginHorizontal: 16,
+          marginTop: 14,
+          padding: 16,
+          borderRadius: 22,
+          backgroundColor: primaryColor,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.18,
+          shadowRadius: 12,
+          elevation: 6,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 22,
+              backgroundColor: 'rgba(255,255,255,0.22)',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginEnd: 12,
+            }}
+          >
+            <Gift size={22} color="#ffffff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 11, fontWeight: '700', letterSpacing: 1 }}>
+              {isArabic ? 'نقاطك' : 'YOUR POINTS'}
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 2 }}>
+              <Text style={{ color: '#ffffff', fontSize: 24, fontWeight: '800' }}>
+                {points}
+              </Text>
+              <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '600', marginStart: 6 }}>
+                {isArabic ? 'نقطة' : 'pts'}
+              </Text>
+              {lifetime > points && (
+                <Text style={{ color: 'rgba(255,255,255,0.65)', fontSize: 11, marginStart: 8 }}>
+                  {isArabic ? `· ${lifetime} مكتسبة` : `· ${lifetime} lifetime`}
+                </Text>
+              )}
+            </View>
+          </View>
+          <ChevronRight
+            size={18}
+            color="#ffffff"
+            style={{ transform: [{ scaleX: isArabic ? -1 : 1 }] }}
           />
         </View>
+
+        {nextName && nextCost != null && (
+          <View style={{ marginTop: 12 }}>
+            <View
+              style={{
+                height: 6,
+                borderRadius: 3,
+                backgroundColor: 'rgba(255,255,255,0.18)',
+                overflow: 'hidden',
+              }}
+            >
+              <View
+                style={{
+                  width: `${Math.round(progress * 100)}%`,
+                  height: '100%',
+                  borderRadius: 3,
+                  backgroundColor: '#ffffff',
+                }}
+              />
+            </View>
+            <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 11, marginTop: 6 }}>
+              {allUnlocked
+                ? isArabic
+                  ? `كل المكافآت متاحة! استبدل ${nextName}`
+                  : `Everything unlocked! Redeem ${nextName}`
+                : isArabic
+                  ? `${Math.max(0, nextCost - points)} نقطة حتى ${nextName}`
+                  : `${Math.max(0, nextCost - points)} pts to ${nextName}`}
+            </Text>
+          </View>
+        )}
+      </TouchableOpacity>
+    );
+  }, [
+    customerId,
+    loyaltyBalance,
+    loyaltyProgress,
+    primaryColor,
+    isArabic,
+    router,
+  ]);
+
+  const listHeaderComponent = useMemo(() => {
+    const hasLoyalty = !!loyaltyCard;
+    const hasSlider = sliderItems.length > 0;
+    if (!hasLoyalty && !hasSlider) return null;
+    return (
+      <View style={{ backgroundColor }}>
+        {loyaltyCard}
+        {hasSlider && (
+          <View className="py-4">
+            <FlatList
+              ref={promoRef}
+              data={sliderItems}
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              snapToInterval={promoItemWidth}
+              snapToAlignment="start"
+              decelerationRate="fast"
+              contentContainerStyle={{ paddingHorizontal: 16 }}
+              onMomentumScrollEnd={(e) => { promoIndexRef.current = Math.round(e.nativeEvent.contentOffset.x / promoItemWidth); }}
+              renderItem={({ item: promo }) => (
+                <TouchableOpacity
+                  onPress={() => router.replace('/(tabs)/offers')}
+                  activeOpacity={1}
+                  style={{ width: promoWidth, marginRight: 16 }}
+                  className="rounded-2xl overflow-hidden shadow-md bg-white"
+                >
+                  {/* Container reserves layout immediately; image fades
+                      in on load. Dark overlay + text sit on top so the
+                      label is readable both before (against placeholder)
+                      and after (against image) the fade-in. */}
+                  <View className="h-40 justify-end p-4" style={{ position: 'relative' }}>
+                    <SliderBannerImage uri={promo.image} placeholderColor={primaryColor} />
+                    <View className="absolute inset-0 bg-black/40 rounded-2xl" />
+                    <Text className="text-white font-bold text-2xl z-10">{promo.subtitle}</Text>
+                    <Text className="text-gray-200 text-sm z-10">{promo.title}</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        )}
       </View>
     );
-  }, [promoWidth, promoItemWidth, sliderItems, backgroundColor, primaryColor, router]);
+  }, [promoWidth, promoItemWidth, sliderItems, backgroundColor, primaryColor, router, loyaltyCard]);
 
   const categoryBar = useMemo(() => (
     <View className="px-5 pb-3 pt-1" style={{ backgroundColor }}>

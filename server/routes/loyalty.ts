@@ -14,6 +14,7 @@ import { notifyPassUpdateSafe } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
+import { enforceLimits } from '../utils/rateLimit';
 
 export const loyaltyRouter = Router();
 
@@ -611,22 +612,41 @@ loyaltyRouter.get('/balance', async (req, res) => {
     const loyaltyType = (route.redeem as LoyaltyMode | null) ?? config.loyalty_type ?? 'points';
 
     // Milestones — the renamed loyalty_milestones table now uses
-    // points_threshold instead of stamp_number. We surface them under
-    // legacy field names (stamp_number / stampMilestones) so the
-    // customer app's existing UI keeps compiling until Phase 3
-    // rewrites the consumer screens around the points model.
-    let stampMilestones: Array<{ id: string; stamp_number: number; reward_name: string; foodics_product_ids: string[] }> = [];
+    // points_threshold instead of stamp_number. Phase 3 surfaces both
+    // the new canonical field (points_threshold + reward_image_url +
+    // reward_description) AND the legacy stamp_number alias so older
+    // builds of the app keep compiling. The new winding-path UI only
+    // reads the canonical names.
+    let stampMilestones: Array<{
+      id: string;
+      stamp_number: number;
+      points_threshold: number;
+      reward_name: string;
+      reward_description: string | null;
+      reward_image_url: string | null;
+      foodics_product_ids: string[];
+    }> = [];
     if (loyaltyType === 'points') {
       const { data: milestoneData } = await supabaseAdmin
         .from('loyalty_milestones')
-        .select('id, points_threshold, reward_name, foodics_product_ids')
+        .select('id, points_threshold, reward_name, reward_description, reward_image_url, foodics_product_ids')
         .eq('merchant_id', merchantId)
         .eq('is_active', true)
         .order('points_threshold', { ascending: true });
-      stampMilestones = (milestoneData ?? []).map((m: { id: string; points_threshold: number; reward_name: string; foodics_product_ids: string[] | null }) => ({
+      stampMilestones = (milestoneData ?? []).map((m: {
+        id: string;
+        points_threshold: number;
+        reward_name: string;
+        reward_description: string | null;
+        reward_image_url: string | null;
+        foodics_product_ids: string[] | null;
+      }) => ({
         id: m.id,
         stamp_number: m.points_threshold,
+        points_threshold: m.points_threshold,
         reward_name: m.reward_name,
+        reward_description: m.reward_description,
+        reward_image_url: m.reward_image_url,
         foodics_product_ids: m.foodics_product_ids ?? [],
       }));
     }
@@ -1572,26 +1592,210 @@ loyaltyRouter.get('/stamp-milestones', async (req, res) => {
 });
 
 /**
- * POST /api/loyalty/redeem-stamp-milestone — Phase 1 placeholder.
+ * POST /api/loyalty/redeem-milestone — Phase 3 points-mode redemption.
  *
- * The stamp redemption flow is being rebuilt as a points-redeem
- * workflow in Phase 2. The mobile app still calls this endpoint; we
- * accept the call and return 503 with a structured body so the UI can
- * surface a maintenance message instead of crashing. Phase 2 will
- * replace this with a real points-based milestone redemption against
- * loyalty_milestones.points_threshold.
+ * Catalog-style (Starbucks-style) deduction: customer at 250 pts can
+ * redeem a 150-pt reward → balance drops to 100. The same milestone
+ * can be redeemed again later once the balance has accrued enough.
+ * No one-time-unlock semantics.
+ *
+ * Body: { customerId, merchantId, milestoneId, idempotencyKey }
+ * Auth: Bearer JWT (must match customerId, same pattern as /balance)
+ *
+ * Behavior:
+ *   - Lookup milestone, verify merchant_id matches.
+ *   - Idempotency: if a redeem tx with the same idempotency_key
+ *     already exists for (customer, merchant) in the last 24h,
+ *     return the previous result instead of re-deducting.
+ *   - Atomic balance check + deduction via .gte() conditional update
+ *     (prevents double-spend race; same pattern as /redeem and
+ *     /redeem-cashback in this file).
+ *   - Insert loyalty_transactions row: type='redeem', loyalty_type='points',
+ *     points=-points_threshold, reference_type='milestone',
+ *     reference_id=milestoneId, metadata={ idempotency_key, milestone_name }.
+ *   - Rate limit: 10 redemptions / minute per customer per merchant.
  */
-loyaltyRouter.post('/redeem-stamp-milestone', async (req, res) => {
-  const hasInternalSecret = hasValidInternalSecret(req);
-  if (!hasInternalSecret) {
-    const { customerId: bodyCustomerId } = req.body ?? {};
-    if (!await requireMatchingCustomer(req, res, bodyCustomerId)) return;
+async function handleRedeemMilestone(req: Request, res: Response) {
+  try {
+    if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
+
+    const { customerId, merchantId, milestoneId, idempotencyKey } = req.body ?? {};
+    if (!customerId || !merchantId || !milestoneId || !idempotencyKey) {
+      return res.status(400).json({
+        error: 'customerId, merchantId, milestoneId, and idempotencyKey are required',
+      });
+    }
+    if (typeof idempotencyKey !== 'string' || idempotencyKey.length < 8 || idempotencyKey.length > 128) {
+      return res.status(400).json({ error: 'idempotencyKey must be 8-128 chars' });
+    }
+
+    if (!await requireMatchingCustomer(req, res, customerId)) return;
+
+    // Rate limit: 10/min/(customer, merchant). Use the same enforceLimits
+    // helper the rest of the server uses so we get the Upstash backend
+    // when configured + in-memory fallback otherwise.
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'loyalty.redeem-milestone',
+        keys: [
+          { dim: 'customer', value: `${customerId}:${merchantId}`, max: 10, windowMs: 60_000 },
+        ],
+        supabaseAdmin,
+        merchantId,
+      }))
+    ) return;
+
+    // ─── Idempotency check ───
+    // Match on metadata->>'idempotency_key' within the last 24h.
+    // If found, return the previous result without re-deducting.
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: priorRedeem } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('id, points, metadata')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .eq('type', 'redeem')
+      .eq('reference_type', 'milestone')
+      .eq('reference_id', milestoneId)
+      .gte('created_at', twentyFourHoursAgo)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (priorRedeem && priorRedeem.length > 0) {
+      const match = priorRedeem.find((r) => {
+        const meta = (r.metadata ?? {}) as { idempotency_key?: string };
+        return meta.idempotency_key === idempotencyKey;
+      });
+      if (match) {
+        // Return current balance + milestone details for the client.
+        const { data: currentBalance } = await supabaseAdmin
+          .from('loyalty_points')
+          .select('points')
+          .eq('customer_id', customerId)
+          .eq('merchant_id', merchantId)
+          .maybeSingle();
+        const { data: milestoneRow } = await supabaseAdmin
+          .from('loyalty_milestones')
+          .select('reward_name, foodics_product_ids')
+          .eq('id', milestoneId)
+          .eq('merchant_id', merchantId)
+          .maybeSingle();
+        return res.json({
+          success: true,
+          newBalance: currentBalance?.points ?? 0,
+          redemptionId: match.id,
+          milestoneRewardName: milestoneRow?.reward_name ?? '',
+          foodicsProductIds: milestoneRow?.foodics_product_ids ?? [],
+          deduplicated: true,
+        });
+      }
+    }
+
+    // ─── Look up milestone (merchant-scoped) ───
+    const { data: milestone, error: milestoneErr } = await supabaseAdmin
+      .from('loyalty_milestones')
+      .select('id, points_threshold, reward_name, foodics_product_ids, is_active, merchant_id')
+      .eq('id', milestoneId)
+      .eq('merchant_id', merchantId)
+      .maybeSingle();
+    if (milestoneErr || !milestone) {
+      return res.status(404).json({ error: 'Milestone not found for this merchant' });
+    }
+    if (!milestone.is_active) {
+      return res.status(404).json({ error: 'Milestone is not active' });
+    }
+    const pointsThreshold = Number(milestone.points_threshold);
+    if (!Number.isFinite(pointsThreshold) || pointsThreshold <= 0) {
+      return res.status(500).json({ error: 'Invalid milestone points_threshold' });
+    }
+
+    await ensureLoyaltyMemberProfile(merchantId, customerId);
+
+    // ─── Read current balance ───
+    const { data: balanceRow } = await supabaseAdmin
+      .from('loyalty_points')
+      .select('points')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .maybeSingle();
+    const currentPoints = balanceRow?.points ?? 0;
+    if (currentPoints < pointsThreshold) {
+      return res.status(400).json({
+        error: 'Not enough points',
+        needed: pointsThreshold,
+        current: currentPoints,
+      });
+    }
+
+    // ─── Insert transaction FIRST, then deduct ───
+    // Commit-before-deduct discipline: the transaction row is the
+    // audit-trail anchor; if the balance update fails we still have
+    // a record of the attempt. The balance update is atomic with a
+    // .gte() guard so a concurrent redemption can't overdraw.
+    const { data: txRow, error: txErr } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .insert({
+        customer_id: customerId,
+        merchant_id: merchantId,
+        order_id: `milestone-redeem:${milestoneId}:${idempotencyKey}`,
+        type: 'redeem',
+        loyalty_type: 'points',
+        points: -pointsThreshold,
+        description: `Redeemed milestone: ${milestone.reward_name ?? ''}`,
+        source: 'app',
+        reference_type: 'milestone',
+        reference_id: milestoneId,
+        metadata: {
+          idempotency_key: idempotencyKey,
+          milestone_name: milestone.reward_name ?? '',
+        },
+      })
+      .select('id')
+      .single();
+    if (txErr || !txRow) {
+      return res.status(500).json({ error: txErr?.message || 'Failed to record redemption' });
+    }
+
+    // Atomic conditional balance deduct — .gte() guarantees we don't
+    // overdraw if a concurrent redeem already ran.
+    const { data: updatedBalance, error: updateErr } = await supabaseAdmin
+      .from('loyalty_points')
+      .update({
+        points: currentPoints - pointsThreshold,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .gte('points', pointsThreshold)
+      .select('points')
+      .maybeSingle();
+    if (updateErr || !updatedBalance) {
+      // Roll back the transaction row we inserted — the balance
+      // didn't drop, so we shouldn't leave a redemption record.
+      await supabaseAdmin.from('loyalty_transactions').delete().eq('id', txRow.id);
+      return res.status(409).json({
+        error: 'Redemption failed — balance changed during processing. Please try again.',
+      });
+    }
+
+    notifyPassUpdateSafe(customerId, merchantId);
+
+    return res.json({
+      success: true,
+      newBalance: updatedBalance.points,
+      redemptionId: txRow.id,
+      milestoneRewardName: milestone.reward_name ?? '',
+      foodicsProductIds: milestone.foodics_product_ids ?? [],
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to redeem milestone' });
   }
-  return res.status(503).json({
-    error: 'Milestone redemption is temporarily disabled while the points loyalty system is being upgraded.',
-    code: 'MILESTONE_REDEMPTION_DISABLED',
-  });
-});
+}
+
+loyaltyRouter.post('/redeem-milestone', handleRedeemMilestone);
+
+// Back-compat alias — the mobile app's older builds still POST to the
+// stamp-flavored URL. Same handler, no special-case for the legacy path.
+loyaltyRouter.post('/redeem-stamp-milestone', handleRedeemMilestone);
 
 /* ═══════════════════════════════════════════════════════════════════
    LOYALTY PROGRAMS – Versioned program management (DEPRECATED - kept for backwards compat)

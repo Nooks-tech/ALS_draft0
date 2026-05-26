@@ -1,50 +1,63 @@
 /**
- * Stand-alone rewards screen. Opens from the menu page's circular
- * rewards button. Lets the customer redeem stamp milestones WITHOUT
- * adding regular menu items first — the redeemed milestone's free
- * items go into the cart as zero-priced line items, just like a
- * normal order. Whether they then add menu items on top or check
- * out with just the rewards is their choice.
+ * Phase 3 rewards screen — winding-path catalog of points-mode milestones.
  *
  * Layout:
  *   - Header (back arrow + title)
- *   - Compact stamp counter at top (boxes only, no full loyalty card)
- *   - Scrollable milestone list, each with reward name, sub-text,
- *     and the Foodics product images (side-by-side if multiple)
- *   - Tap a redeemable milestone -> adds its products to cart as
- *     reward items + flashes a "Added!" state. Locked milestones
- *     show "Need N more stamps" and are tappable but non-functional.
- *   - Bottom button -> go to cart to checkout.
+ *   - Large animated point-balance counter (rolls up to the latest value
+ *     on every change) with a "Lifetime: X points earned" subtitle.
+ *   - Vertical SVG S-curve connecting milestone nodes that alternate
+ *     left/right of center. Each node is a 84dp circle showing the
+ *     reward image; below it sits the reward name + a points-cost pill.
+ *     Affordable milestones (balance >= points_threshold) are full
+ *     color + tappable; unaffordable ones render in greyscale with a
+ *     lock overlay and a "Need X more points" label.
+ *   - Tap an affordable milestone → confirmation modal → POST to
+ *     /api/loyalty/redeem-milestone with a client-generated
+ *     idempotencyKey. On success, the milestone's foodics_product_ids
+ *     are added to the cart as 0-priced reward lines (same pattern as
+ *     the legacy stamps flow), the balance refreshes from the response,
+ *     and a "redeemed!" toast flashes for 2 s.
+ *   - Empty state (0 milestones): friendly illustration + copy, no
+ *     winding path drawn.
+ *
+ * Reusing the existing AsyncStorage cache key so the offers tab + this
+ * screen still warm each other's data.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
+  Modal,
   ScrollView,
   StatusBar,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
+import {
+  Easing,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, Check, Gift, Lock, ShoppingCart, Star } from 'lucide-react-native';
+import { ArrowLeft, Gift, Lock, Sparkles, X, Check } from 'lucide-react-native';
 import { useAuth } from '../src/context/AuthContext';
 import { useCart } from '../src/context/CartContext';
 import { useMenuContext } from '../src/context/MenuContext';
 import { useMerchant } from '../src/context/MerchantContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
-import { loyaltyApi, type LoyaltyBalance, type LoyaltyReward, type LoyaltyTransaction } from '../src/api/loyalty';
+import {
+  loyaltyApi,
+  type LoyaltyBalance,
+  type LoyaltyReward,
+  type LoyaltyTransaction,
+  type RedemptionResult,
+} from '../src/api/loyalty';
 import { readCache, writeCache } from '../src/lib/persistentCache';
 
-/**
- * Shared with app/(tabs)/offers.tsx so the rewards screen and the
- * offers/points tab paint from the same persisted snapshot. If the
- * user has visited the offers tab once this session (or ever, since
- * the cache lives in AsyncStorage), the rewards screen renders the
- * milestones instantly from disk and only spins on a true cold
- * launch.
- */
+/** Shared cache key/shape with app/(tabs)/offers.tsx + app/(tabs)/menu.tsx. */
 type LoyaltyCache = {
   balance: LoyaltyBalance | null;
   transactions: LoyaltyTransaction[];
@@ -53,81 +66,92 @@ type LoyaltyCache = {
 const loyaltyCacheKey = (merchantId: string, userId: string) =>
   `@als_loyalty_${merchantId}_${userId}`;
 
-function hexWithAlpha(hex: string, alpha: number): string {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return hex;
-  const a = Math.max(0, Math.min(1, alpha));
-  const aHex = Math.round(a * 255)
-    .toString(16)
-    .padStart(2, '0');
-  return `#${m[1]}${aHex}`;
+/**
+ * Compact UUID-ish generator suitable for an idempotency key. Crypto
+ * randomness isn't required — the only consumer is the server's
+ * 24-hour-window dedup check, which uses (idempotencyKey, milestoneId)
+ * as a composite. 96 bits of entropy is plenty against accidental
+ * collisions within a per-customer-per-milestone scope.
+ */
+function makeIdempotencyKey(): string {
+  const ts = Date.now().toString(36);
+  const a = Math.random().toString(36).slice(2, 10);
+  const b = Math.random().toString(36).slice(2, 10);
+  return `als-redeem-${ts}-${a}${b}`;
 }
 
 /**
- * Compact stamp counter — just the box grid, no card chrome / QR / logo.
- * Mirrors the StampGrid from app/(tabs)/offers.tsx but kept inline so the
- * rewards screen doesn't depend on the offers tab.
+ * Animated digit counter — text node whose displayed number rolls
+ * from prev to next over ~600ms with an ease-out curve. Used for the
+ * point balance header so a successful redemption visibly counts the
+ * balance DOWN instead of snapping.
  */
-function CompactStampGrid({
-  stampTarget,
-  stamps,
-  boxColor,
-  iconColor,
-  iconUrl,
-  iconScalePercent,
-}: {
-  stampTarget: number;
-  stamps: number;
-  boxColor: string;
-  iconColor: string;
-  iconUrl: string | null;
-  iconScalePercent: number | null;
-}) {
-  const total = Math.max(1, Math.min(20, Math.round(stampTarget)));
-  const filled = Math.max(0, Math.min(total, Math.round(stamps)));
-  const cols = total <= 5 ? total : Math.ceil(total / 2);
-  const emptyBg = hexWithAlpha(boxColor, 0.22);
-  const cellWidthPct = `${100 / cols}%` as const;
-  const iconFrac = Math.max(0.6, Math.min(1.4, (iconScalePercent ?? 100) / 100));
-  const uploadedIconSize = `${Math.round(55 * iconFrac)}%` as const;
-  const defaultIconSize = Math.max(10, Math.min(40, Math.floor(200 / cols) * iconFrac));
+function AnimatedBalance({ value, color }: { value: number; color: string }) {
+  const animated = useSharedValue(value);
+  const [displayed, setDisplayed] = useState(value);
+  const lastValueRef = useRef(value);
+
+  useEffect(() => {
+    if (lastValueRef.current === value) return;
+    animated.value = lastValueRef.current;
+    animated.value = withTiming(value, { duration: 650, easing: Easing.out(Easing.cubic) });
+    lastValueRef.current = value;
+    // Drive setDisplayed off requestAnimationFrame so reanimated
+    // doesn't clobber the JS-side text. We sample the shared value
+    // ~16ms per tick. Cleared on unmount or re-fire.
+    let raf: number;
+    const sample = () => {
+      const v = Math.round(animated.value);
+      setDisplayed(v);
+      if (Math.abs(v - value) > 0.5) raf = requestAnimationFrame(sample);
+    };
+    sample();
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [value, animated]);
 
   return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
-      {Array.from({ length: total }).map((_, i) => {
-        const isFilled = i < filled;
-        return (
-          <View key={i} style={{ width: cellWidthPct, paddingHorizontal: 4, paddingVertical: 4 }}>
-            <View
-              style={{
-                aspectRatio: 1,
-                borderRadius: 14,
-                backgroundColor: isFilled ? boxColor : emptyBg,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              {iconUrl ? (
-                <Image
-                  source={{ uri: iconUrl }}
-                  style={{ width: uploadedIconSize, height: uploadedIconSize, opacity: isFilled ? 1 : 0.35 }}
-                  resizeMode="contain"
-                />
-              ) : (
-                <Star
-                  size={defaultIconSize}
-                  color={iconColor}
-                  fill={iconColor}
-                  style={{ opacity: isFilled ? 1 : 0.35 }}
-                />
-              )}
-            </View>
-          </View>
-        );
-      })}
-    </View>
+    <Text
+      style={{
+        color,
+        fontSize: 64,
+        fontWeight: '800',
+        lineHeight: 70,
+        letterSpacing: -1,
+      }}
+    >
+      {displayed}
+    </Text>
   );
 }
+
+/** Vertical S-curve between two points, alternating left/right of center. */
+function buildSCurvePath(
+  nodes: Array<{ x: number; y: number }>,
+): string {
+  if (nodes.length === 0) return '';
+  let path = `M ${nodes[0].x} ${nodes[0].y}`;
+  for (let i = 1; i < nodes.length; i++) {
+    const prev = nodes[i - 1];
+    const cur = nodes[i];
+    const midY = (prev.y + cur.y) / 2;
+    // Bezier control points pull the curve sideways so the path
+    // S-swings between nodes rather than zig-zagging linearly.
+    path += ` C ${prev.x} ${midY}, ${cur.x} ${midY}, ${cur.x} ${cur.y}`;
+  }
+  return path;
+}
+
+type MilestoneRow = {
+  id: string;
+  reward_name: string;
+  reward_image_url: string | null;
+  points_threshold: number;
+  foodics_product_ids: string[];
+  affordable: boolean;
+  pointsShort: number;
+};
 
 export default function RewardsScreen() {
   const router = useRouter();
@@ -136,20 +160,53 @@ export default function RewardsScreen() {
   const { user } = useAuth();
   const { primaryColor, backgroundColor, menuCardColor, textColor } = useMerchantBranding();
   const { products: menuProducts } = useMenuContext();
-  const { cartItems, addToCart, removeFromCart, totalItems } = useCart();
+  const { addToCart } = useCart();
   const isArabic = i18n.language === 'ar';
 
   const [balance, setBalance] = useState<LoyaltyBalance | null>(null);
   const [loading, setLoading] = useState(true);
+  const [redeemingId, setRedeemingId] = useState<string | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<MilestoneRow | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Local "just redeemed" set — milestone IDs that the user has redeemed
+   * this session. Used for the green-checkmark flash so the UI confirms
+   * the redemption even before the balance number animates down. Cleared
+   * after 2.5 s per id so a second redemption of the same milestone
+   * re-animates fresh.
+   */
+  const [recentRedeems, setRecentRedeems] = useState<Set<string>>(new Set());
 
-  // Stale-while-revalidate. Tries the persisted snapshot first
-  // (shared with offers.tsx — same key, same shape) so the milestone
-  // grid paints instantly; the network fetch runs in parallel and
-  // overrides state when it lands.
-  // Preload path: app/(tabs)/menu.tsx fires a background fetch when
-  // the menu screen mounts, so by the time the user taps the rewards
-  // FAB, the cache has fresh data and the cold-load spinner never
-  // shows.
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2400);
+  }, []);
+
+  // Cleanup toast timer on unmount
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
+  /** Stale-while-revalidate balance load. */
+  const refreshBalance = useCallback(async () => {
+    if (!user?.id || !merchantId) return;
+    try {
+      const b = await loyaltyApi.getBalance(user.id, merchantId);
+      setBalance(b);
+      const key = loyaltyCacheKey(merchantId, user.id);
+      const prev = await readCache<LoyaltyCache>(key);
+      await writeCache<LoyaltyCache>(key, {
+        balance: b,
+        transactions: prev?.transactions ?? [],
+        rewards: prev?.rewards ?? [],
+      });
+    } catch {
+      // best-effort — keep whatever the cache had
+    }
+  }, [user?.id, merchantId]);
+
   useEffect(() => {
     if (!user?.id || !merchantId) {
       setLoading(false);
@@ -157,9 +214,6 @@ export default function RewardsScreen() {
     }
     let cancelled = false;
     const key = loyaltyCacheKey(merchantId, user.id);
-
-    // Step 1 — synchronous-ish read from disk. If the cache has a
-    // balance, paint it and skip the spinner entirely.
     readCache<LoyaltyCache>(key).then((cached) => {
       if (cancelled) return;
       if (cached?.balance) {
@@ -167,94 +221,89 @@ export default function RewardsScreen() {
         setLoading(false);
       }
     });
-
-    // Step 2 — fresh fetch. Always runs, even if the cache hit, so
-    // milestone changes / new stamps show up without a refresh.
-    loyaltyApi
-      .getBalance(user.id, merchantId)
-      .then((b) => {
-        if (cancelled) return;
-        setBalance(b);
-        // Merge with whatever the offers tab last wrote — we only
-        // know about balance here, so preserve transactions/rewards
-        // so offers tab stays warm too.
-        readCache<LoyaltyCache>(key).then((prev) => {
-          if (cancelled) return;
-          writeCache<LoyaltyCache>(key, {
-            balance: b,
-            transactions: prev?.transactions ?? [],
-            rewards: prev?.rewards ?? [],
-          });
-        });
-      })
-      .catch(() => {
-        // best effort — keep whatever the cache had.
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    refreshBalance().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
     return () => {
       cancelled = true;
     };
-  }, [user?.id, merchantId]);
+  }, [user?.id, merchantId, refreshBalance]);
 
-  // Derive which milestones are currently selected from cart items.
-  // Reward items in the cart carry a rewardMilestoneId tag; the set
-  // of those tag values IS the selected-milestones set.
-  const selectedMilestoneIds = useMemo(() => {
-    const s = new Set<string>();
-    for (const ci of cartItems) {
-      if (ci.rewardMilestoneId) s.add(ci.rewardMilestoneId);
-    }
-    return s;
-  }, [cartItems]);
+  const points = balance?.points ?? 0;
+  const lifetimePoints = balance?.lifetimePoints ?? 0;
 
-  // Stamps committed to already-selected milestones — used to disable
-  // additional selections that would exceed the balance.
-  const usedBudget = useMemo(() => {
-    if (!balance) return 0;
-    let used = 0;
-    for (const id of selectedMilestoneIds) {
-      const m = balance.stampMilestones.find((x) => x.id === id);
-      if (m) used += m.stamp_number;
-    }
-    return used;
-  }, [balance, selectedMilestoneIds]);
-
-  // Build the milestone list with redeem state + product previews.
-  const milestoneRows = useMemo(() => {
+  /** Catalog of milestone rows, sorted by points_threshold ascending. */
+  const milestoneRows: MilestoneRow[] = useMemo(() => {
     if (!balance) return [];
     return [...balance.stampMilestones]
-      .sort((a, b) => a.stamp_number - b.stamp_number)
+      .sort((a, b) => (a.points_threshold ?? a.stamp_number) - (b.points_threshold ?? b.stamp_number))
       .map((m) => {
-        const products = (m.foodics_product_ids ?? [])
-          .map((fid) => menuProducts.find((p) => p.foodicsProductId === fid))
-          .filter((p): p is NonNullable<typeof p> => !!p);
-        const selected = selectedMilestoneIds.has(m.id);
-        const remainingBudget = balance.stamps - usedBudget;
-        const budgetBlocked = !selected && m.stamp_number > remainingBudget;
+        const cost = m.points_threshold ?? m.stamp_number;
+        const affordable = points >= cost;
         return {
           id: m.id,
           reward_name: m.reward_name,
-          stamp_number: m.stamp_number,
-          products,
-          redeemable: balance.stamps >= m.stamp_number,
-          selected,
-          budgetBlocked,
+          reward_image_url: m.reward_image_url ?? null,
+          points_threshold: cost,
+          foodics_product_ids: m.foodics_product_ids ?? [],
+          affordable,
+          pointsShort: Math.max(0, cost - points),
         };
       });
-  }, [balance, menuProducts, selectedMilestoneIds, usedBudget]);
+  }, [balance, points]);
 
-  const handleRedeem = (row: (typeof milestoneRows)[number]) => {
-    if (!row.redeemable || row.budgetBlocked) return;
-    // Add the milestone's product(s) to the cart as zero-priced
-    // line items, tagged with rewardMilestoneId so checkout + cart
-    // know they're rewards. `rewardOriginalPriceSar` carries the
-    // real menu price through to the Foodics relay so the POS shows
-    // the item at full price + a matching per-item discount (rather
-    // than as a $0 line that distorts item revenue).
-    for (const product of row.products) {
-      if (!product.foodicsProductId) continue;
+  /** SVG winding path nodes — alternating left/right of center. */
+  const pathLayout = useMemo(() => {
+    if (milestoneRows.length === 0) return null;
+    const width = 320;
+    const horizontalOffset = 90; // distance from center
+    const nodeSpacing = 200;
+    const top = 40;
+    const nodes = milestoneRows.map((row, i) => ({
+      id: row.id,
+      x: width / 2 + (i % 2 === 0 ? -horizontalOffset : horizontalOffset),
+      y: top + i * nodeSpacing,
+    }));
+    const path = buildSCurvePath(nodes);
+    const height = top + (milestoneRows.length - 1) * nodeSpacing + 120;
+    return { width, height, nodes, path };
+  }, [milestoneRows]);
+
+  const handleConfirmRedeem = useCallback(async () => {
+    if (!confirmTarget || !user?.id || !merchantId) return;
+    const target = confirmTarget;
+    setConfirmTarget(null);
+    setRedeemingId(target.id);
+
+    const idempotencyKey = makeIdempotencyKey();
+    let result: RedemptionResult | null = null;
+    try {
+      result = await loyaltyApi.redeemMilestone(merchantId, user.id, target.id, idempotencyKey);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Redemption failed';
+      showToast(msg);
+      setRedeemingId(null);
+      return;
+    }
+
+    if (!result || !result.success) {
+      showToast(isArabic ? 'تعذّر الاستبدال' : 'Could not redeem');
+      setRedeemingId(null);
+      return;
+    }
+
+    // Update local balance immediately from the response (the server
+    // is the source of truth; we don't subtract locally and hope).
+    setBalance((prev) =>
+      prev ? { ...prev, points: result!.newBalance } : prev,
+    );
+
+    // Add the reward's foodics products to the cart as 0-priced
+    // reward items, same pattern the legacy stamps flow used so
+    // checkout/server reward-floor exemption recognises them.
+    for (const fid of target.foodics_product_ids) {
+      const product = menuProducts.find((p) => p.foodicsProductId === fid);
+      if (!product || !product.foodicsProductId) continue;
       addToCart({
         id: product.id,
         name: `🎁 ${product.name}`,
@@ -262,41 +311,57 @@ export default function RewardsScreen() {
         basePrice: 0,
         image: product.image ?? '',
         customizations: null,
-        uniqueId: `reward-${row.id}-${product.foodicsProductId}`,
-        rewardMilestoneId: row.id,
+        uniqueId: `reward-${target.id}-${product.foodicsProductId}-${idempotencyKey}`,
+        rewardMilestoneId: target.id,
         rewardOriginalPriceSar: typeof product.price === 'number' ? product.price : 0,
       });
     }
-  };
 
-  const handleUnredeem = (row: (typeof milestoneRows)[number]) => {
-    if (!row.selected) return;
-    for (const product of row.products) {
-      if (!product.foodicsProductId) continue;
-      removeFromCart({ uniqueId: `reward-${row.id}-${product.foodicsProductId}` });
-    }
-  };
+    // Flash a checkmark on the milestone for 2.5 s.
+    setRecentRedeems((prev) => {
+      const next = new Set(prev);
+      next.add(target.id);
+      return next;
+    });
+    setTimeout(() => {
+      setRecentRedeems((prev) => {
+        const next = new Set(prev);
+        next.delete(target.id);
+        return next;
+      });
+    }, 2500);
 
-  // Stamp-card styling — read from loyalty balance with sensible defaults.
-  const stampTarget = Math.max(1, balance?.stampTarget ?? 8);
-  const stamps = Math.max(0, Math.min(stampTarget, balance?.stamps ?? 0));
-  const boxColor = balance?.walletStampBoxColor || primaryColor || '#10B981';
-  const iconColor = balance?.walletStampIconColor || '#FFFFFF';
-  const iconUrl = balance?.walletStampIconUrl || null;
-  const iconScale = balance?.walletStampIconScale ?? null;
+    showToast(
+      isArabic
+        ? `تم استبدال ${target.reward_name}!`
+        : `Redeemed ${target.reward_name}!`,
+    );
+    setRedeemingId(null);
+    // Refresh from server so lifetime + history are fresh too.
+    void refreshBalance();
+  }, [
+    confirmTarget,
+    user?.id,
+    merchantId,
+    isArabic,
+    addToCart,
+    menuProducts,
+    refreshBalance,
+    showToast,
+  ]);
 
   const hasAnyMilestones = milestoneRows.length > 0;
 
   return (
     <View style={{ flex: 1, backgroundColor }}>
-      <StatusBar barStyle="dark-content" />
+      <StatusBar barStyle="light-content" />
 
       {/* Header */}
       <View
         style={{
           paddingTop: 56,
           paddingHorizontal: 20,
-          paddingBottom: 16,
+          paddingBottom: 24,
           backgroundColor: primaryColor,
           flexDirection: 'row',
           alignItems: 'center',
@@ -327,7 +392,34 @@ export default function RewardsScreen() {
             marginEnd: 36,
           }}
         >
-          {isArabic ? 'مكافآت الأختام' : 'Stamp Rewards'}
+          {isArabic ? 'كتالوج المكافآت' : 'Rewards Catalog'}
+        </Text>
+      </View>
+
+      {/* Header points balance */}
+      <View
+        style={{
+          backgroundColor: primaryColor,
+          paddingHorizontal: 24,
+          paddingBottom: 28,
+          alignItems: 'center',
+          borderBottomLeftRadius: 36,
+          borderBottomRightRadius: 36,
+        }}
+      >
+        <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, fontWeight: '600', letterSpacing: 1 }}>
+          {isArabic ? 'رصيدك' : 'YOUR BALANCE'}
+        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 4 }}>
+          <AnimatedBalance value={points} color="#ffffff" />
+          <Text style={{ color: '#ffffff', fontSize: 18, fontWeight: '600', marginStart: 8 }}>
+            {isArabic ? 'نقطة' : 'pts'}
+          </Text>
+        </View>
+        <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, marginTop: 6 }}>
+          {isArabic
+            ? `العمر الإجمالي: ${lifetimePoints} نقطة مكتسبة`
+            : `Lifetime: ${lifetimePoints} points earned`}
         </Text>
       </View>
 
@@ -336,226 +428,371 @@ export default function RewardsScreen() {
           <ActivityIndicator size="large" color={primaryColor} />
         </View>
       ) : !hasAnyMilestones ? (
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40 }}>
-          <Gift size={48} color="#94a3b8" />
-          <Text style={{ color: '#64748b', marginTop: 12, textAlign: 'center' }}>
+        <View
+          style={{
+            flex: 1,
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingHorizontal: 40,
+          }}
+        >
+          <View
+            style={{
+              width: 96,
+              height: 96,
+              borderRadius: 48,
+              backgroundColor: `${primaryColor}20`,
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginBottom: 18,
+            }}
+          >
+            <Sparkles size={42} color={primaryColor} />
+          </View>
+          <Text
+            style={{
+              color: textColor,
+              fontWeight: '700',
+              fontSize: 18,
+              textAlign: 'center',
+              marginBottom: 8,
+            }}
+          >
+            {isArabic ? 'لا توجد مكافآت بعد' : 'No rewards yet'}
+          </Text>
+          <Text style={{ color: textColor, opacity: 0.6, textAlign: 'center' }}>
             {isArabic
-              ? 'لم يحدد المتجر مكافآت ختم بعد.'
-              : 'This store has no stamp rewards yet.'}
+              ? 'هذا المتجر لم يضف مكافآت إلى الكتالوج بعد. تابع لتجميع النقاط!'
+              : 'This merchant hasn’t added any rewards yet. Keep earning points!'}
           </Text>
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
+          contentContainerStyle={{ paddingTop: 28, paddingBottom: 80, paddingHorizontal: 12, alignItems: 'center' }}
           showsVerticalScrollIndicator={false}
         >
-          {/* Compact stamp counter at top — just the boxes, no card chrome. */}
-          <View
-            style={{
-              backgroundColor: menuCardColor,
-              borderRadius: 24,
-              padding: 16,
-              marginBottom: 20,
-            }}
-          >
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-              <Text style={{ color: textColor, fontWeight: '700', flex: 1 }}>
-                {isArabic ? `لديك ${stamps} ختم` : `You have ${stamps} stamp${stamps === 1 ? '' : 's'}`}
-              </Text>
-              <Text style={{ color: textColor, opacity: 0.6, fontSize: 12 }}>
-                {isArabic ? `من أصل ${stampTarget}` : `of ${stampTarget}`}
-              </Text>
-            </View>
-            <CompactStampGrid
-              stampTarget={stampTarget}
-              stamps={stamps}
-              boxColor={boxColor}
-              iconColor={iconColor}
-              iconUrl={iconUrl}
-              iconScalePercent={iconScale}
-            />
-          </View>
-
-          {/* Milestone list */}
-          {milestoneRows.map((row) => {
-            const stampsShort = Math.max(0, row.stamp_number - stamps);
-            const subText = row.selected
-              ? isArabic ? 'تمت إضافته إلى السلة' : 'Added to cart'
-              : row.budgetBlocked
-                ? isArabic ? 'الرصيد المتبقي غير كافٍ' : 'Not enough stamps left'
-                : row.redeemable
-                  ? isArabic ? `يستهلك ${row.stamp_number} ختم` : `Uses ${row.stamp_number} stamp${row.stamp_number === 1 ? '' : 's'}`
-                  : isArabic ? `يلزم ${stampsShort} ختم إضافي` : `Need ${stampsShort} more stamp${stampsShort === 1 ? '' : 's'}`;
-            const dim = (!row.redeemable || row.budgetBlocked) && !row.selected;
-
-            return (
-              <View
-                key={row.id}
-                style={{
-                  backgroundColor: menuCardColor,
-                  borderRadius: 24,
-                  padding: 16,
-                  marginBottom: 14,
-                  borderWidth: row.selected ? 2 : 0,
-                  borderColor: row.selected ? primaryColor : 'transparent',
-                  opacity: dim ? 0.55 : 1,
-                }}
+          {pathLayout && (
+            <View style={{ width: pathLayout.width, height: pathLayout.height, position: 'relative' }}>
+              {/* The winding S-curve path itself. Rendered behind the
+                  nodes so the line passes through every node center. */}
+              <Svg
+                width={pathLayout.width}
+                height={pathLayout.height}
+                style={{ position: 'absolute', top: 0, left: 0 }}
               >
-                {/* Product images — side-by-side if multiple */}
-                {row.products.length > 0 ? (
-                  <View style={{ flexDirection: 'row', marginBottom: 12, gap: 8 }}>
-                    {row.products.map((p, idx) => (
-                      <View
-                        key={`${p.id}-${idx}`}
-                        style={{
-                          flex: 1,
-                          aspectRatio: row.products.length === 1 ? 16 / 9 : 1,
-                          borderRadius: 16,
-                          backgroundColor: '#e2e8f0',
-                          overflow: 'hidden',
-                        }}
-                      >
-                        {p.image ? (
-                          <Image source={{ uri: p.image }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
-                        ) : (
-                          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                            <Gift size={32} color="#94a3b8" />
-                          </View>
-                        )}
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
+                <Path
+                  d={pathLayout.path}
+                  stroke={`${primaryColor}40`}
+                  strokeWidth={10}
+                  fill="none"
+                  strokeLinecap="round"
+                />
+                <Path
+                  d={pathLayout.path}
+                  stroke={primaryColor}
+                  strokeWidth={4}
+                  fill="none"
+                  strokeLinecap="round"
+                  strokeDasharray="2,8"
+                />
+              </Svg>
 
-                {/* Reward name + sub-text */}
-                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+              {/* Milestone nodes overlaid on the path. */}
+              {milestoneRows.map((row, idx) => {
+                const node = pathLayout.nodes[idx];
+                const NODE_SIZE = 84;
+                const isRecent = recentRedeems.has(row.id);
+                const isBusy = redeemingId === row.id;
+                return (
                   <View
+                    key={row.id}
                     style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: 16,
-                      backgroundColor: row.redeemable ? `${primaryColor}25` : '#f1f5f9',
+                      position: 'absolute',
+                      left: node.x - NODE_SIZE / 2,
+                      top: node.y - NODE_SIZE / 2,
                       alignItems: 'center',
-                      justifyContent: 'center',
-                      marginEnd: 10,
+                      width: NODE_SIZE,
                     }}
                   >
-                    {row.redeemable ? (
-                      <Gift size={16} color={primaryColor} />
-                    ) : (
-                      <Lock size={14} color="#94a3b8" />
-                    )}
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ color: textColor, fontWeight: '700', fontSize: 16 }}>
-                      {row.reward_name || (isArabic ? 'مكافأة' : 'Reward')}
-                    </Text>
-                    <Text style={{ color: textColor, opacity: 0.6, fontSize: 12, marginTop: 2 }}>
-                      {subText}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Action button */}
-                {row.selected ? (
-                  <TouchableOpacity
-                    onPress={() => handleUnredeem(row)}
-                    style={{
-                      paddingVertical: 12,
-                      borderRadius: 16,
-                      alignItems: 'center',
-                      backgroundColor: '#fee2e2',
-                      flexDirection: 'row',
-                      justifyContent: 'center',
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Check size={16} color="#b91c1c" style={{ marginEnd: 6 }} />
-                    <Text style={{ color: '#b91c1c', fontWeight: '700' }}>
-                      {isArabic ? 'إلغاء الاستبدال' : 'Cancel redemption'}
-                    </Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    onPress={() => handleRedeem(row)}
-                    disabled={!row.redeemable || row.budgetBlocked}
-                    style={{
-                      paddingVertical: 12,
-                      borderRadius: 16,
-                      alignItems: 'center',
-                      backgroundColor: row.redeemable && !row.budgetBlocked ? primaryColor : '#e2e8f0',
-                      flexDirection: 'row',
-                      justifyContent: 'center',
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <Gift
-                      size={16}
-                      color={row.redeemable && !row.budgetBlocked ? '#ffffff' : '#94a3b8'}
-                      style={{ marginEnd: 6 }}
-                    />
-                    <Text
+                    <TouchableOpacity
+                      onPress={() => row.affordable && !isBusy && setConfirmTarget(row)}
+                      disabled={!row.affordable || isBusy}
+                      activeOpacity={0.85}
+                      accessibilityLabel={`${row.reward_name} ${row.points_threshold} ${isArabic ? 'نقطة' : 'points'}`}
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: !row.affordable }}
                       style={{
-                        color: row.redeemable && !row.budgetBlocked ? '#ffffff' : '#94a3b8',
-                        fontWeight: '700',
+                        width: NODE_SIZE,
+                        height: NODE_SIZE,
+                        borderRadius: NODE_SIZE / 2,
+                        backgroundColor: row.affordable ? '#ffffff' : '#f1f5f9',
+                        borderWidth: 3,
+                        borderColor: row.affordable ? primaryColor : '#cbd5e1',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        shadowColor: '#000',
+                        shadowOffset: { width: 0, height: 4 },
+                        shadowOpacity: row.affordable ? 0.18 : 0.06,
+                        shadowRadius: 8,
+                        elevation: row.affordable ? 6 : 2,
+                        overflow: 'hidden',
                       }}
                     >
-                      {row.redeemable
-                        ? row.budgetBlocked
-                          ? isArabic ? 'الرصيد غير كافٍ' : 'Not enough stamps'
-                          : isArabic ? 'استبدال' : 'Redeem'
-                        : isArabic
-                          ? 'مقفل'
-                          : 'Locked'}
+                      {row.reward_image_url ? (
+                        <Image
+                          source={{ uri: row.reward_image_url }}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            opacity: row.affordable ? 1 : 0.4,
+                          }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <Gift
+                          size={32}
+                          color={row.affordable ? primaryColor : '#94a3b8'}
+                        />
+                      )}
+                      {!row.affordable && (
+                        <View
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            backgroundColor: 'rgba(0,0,0,0.18)',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Lock size={26} color="#ffffff" />
+                        </View>
+                      )}
+                      {isRecent && (
+                        <View
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            backgroundColor: 'rgba(16,185,129,0.85)',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Check size={32} color="#ffffff" />
+                        </View>
+                      )}
+                      {isBusy && (
+                        <View
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            backgroundColor: 'rgba(255,255,255,0.7)',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <ActivityIndicator size="small" color={primaryColor} />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+
+                    {/* Reward name */}
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        marginTop: 8,
+                        fontSize: 12,
+                        fontWeight: '700',
+                        color: textColor,
+                        opacity: row.affordable ? 1 : 0.55,
+                        textAlign: 'center',
+                        maxWidth: 132,
+                      }}
+                    >
+                      {row.reward_name || (isArabic ? 'مكافأة' : 'Reward')}
                     </Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            );
-          })}
+
+                    {/* Cost pill */}
+                    <View
+                      style={{
+                        marginTop: 4,
+                        paddingHorizontal: 10,
+                        paddingVertical: 3,
+                        borderRadius: 12,
+                        backgroundColor: row.affordable ? primaryColor : '#e2e8f0',
+                      }}
+                    >
+                      <Text
+                        style={{
+                          color: row.affordable ? '#ffffff' : '#64748b',
+                          fontSize: 11,
+                          fontWeight: '700',
+                        }}
+                      >
+                        {row.points_threshold} {isArabic ? 'نقطة' : 'pts'}
+                      </Text>
+                    </View>
+
+                    {!row.affordable && (
+                      <Text
+                        style={{
+                          marginTop: 2,
+                          fontSize: 10,
+                          color: textColor,
+                          opacity: 0.5,
+                          textAlign: 'center',
+                          maxWidth: 120,
+                        }}
+                        numberOfLines={2}
+                      >
+                        {isArabic
+                          ? `يلزم ${row.pointsShort} نقطة`
+                          : `Need ${row.pointsShort} more`}
+                      </Text>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )}
         </ScrollView>
       )}
 
-      {/* Bottom CTA. Shows when EITHER the cart has regular items OR
-          the customer has selected at least one reward — so a
-          rewards-only order can also proceed to checkout. */}
-      {(totalItems > 0 || selectedMilestoneIds.size > 0) && (
+      {/* Confirmation modal */}
+      <Modal
+        visible={!!confirmTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirmTarget(null)}
+      >
         <View
           style={{
-            position: 'absolute',
-            left: 20,
-            right: 20,
-            bottom: 32,
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.55)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            paddingHorizontal: 28,
           }}
         >
-          <TouchableOpacity
-            onPress={() => router.push((totalItems > 0 ? '/cart' : '/checkout') as never)}
+          <View
             style={{
-              paddingVertical: 16,
-              borderRadius: 28,
-              alignItems: 'center',
-              backgroundColor: primaryColor,
-              flexDirection: 'row',
-              justifyContent: 'center',
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 8 },
-              shadowOpacity: 0.2,
-              shadowRadius: 16,
-              elevation: 8,
+              backgroundColor: menuCardColor,
+              borderRadius: 22,
+              padding: 24,
+              width: '100%',
+              maxWidth: 420,
             }}
-            activeOpacity={0.85}
           >
-            <ShoppingCart size={18} color="#ffffff" style={{ marginEnd: 8 }} />
-            <Text style={{ color: '#ffffff', fontWeight: '700', fontSize: 16 }}>
-              {totalItems > 0
-                ? isArabic
-                  ? `عرض السلة (${totalItems})`
-                  : `View cart (${totalItems})`
-                : isArabic
-                  ? `الذهاب للدفع (${selectedMilestoneIds.size} مكافأة)`
-                  : `Checkout (${selectedMilestoneIds.size} reward${selectedMilestoneIds.size === 1 ? '' : 's'})`}
+            <TouchableOpacity
+              onPress={() => setConfirmTarget(null)}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={{ position: 'absolute', top: 14, end: 14 }}
+            >
+              <X size={20} color="#94a3b8" />
+            </TouchableOpacity>
+
+            {confirmTarget?.reward_image_url ? (
+              <Image
+                source={{ uri: confirmTarget.reward_image_url }}
+                style={{
+                  width: 88,
+                  height: 88,
+                  borderRadius: 44,
+                  alignSelf: 'center',
+                  marginBottom: 14,
+                }}
+                resizeMode="cover"
+              />
+            ) : (
+              <View
+                style={{
+                  width: 88,
+                  height: 88,
+                  borderRadius: 44,
+                  alignSelf: 'center',
+                  backgroundColor: `${primaryColor}25`,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: 14,
+                }}
+              >
+                <Gift size={40} color={primaryColor} />
+              </View>
+            )}
+
+            <Text
+              style={{
+                color: textColor,
+                fontSize: 18,
+                fontWeight: '700',
+                textAlign: 'center',
+                marginBottom: 6,
+              }}
+            >
+              {isArabic
+                ? `استبدال ${confirmTarget?.reward_name ?? ''}؟`
+                : `Redeem ${confirmTarget?.reward_name ?? ''}?`}
             </Text>
-          </TouchableOpacity>
+            <Text
+              style={{ color: textColor, opacity: 0.7, textAlign: 'center', marginBottom: 18 }}
+            >
+              {isArabic
+                ? `سيتم خصم ${confirmTarget?.points_threshold ?? 0} نقطة من رصيدك.`
+                : `${confirmTarget?.points_threshold ?? 0} points will be deducted from your balance.`}
+            </Text>
+
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                onPress={() => setConfirmTarget(null)}
+                style={{
+                  flex: 1,
+                  paddingVertical: 14,
+                  borderRadius: 14,
+                  backgroundColor: '#f1f5f9',
+                  alignItems: 'center',
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={{ color: '#475569', fontWeight: '700' }}>
+                  {isArabic ? 'إلغاء' : 'Cancel'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleConfirmRedeem}
+                style={{
+                  flex: 1,
+                  paddingVertical: 14,
+                  borderRadius: 14,
+                  backgroundColor: primaryColor,
+                  alignItems: 'center',
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={{ color: '#ffffff', fontWeight: '700' }}>
+                  {isArabic ? 'تأكيد الاستبدال' : 'Confirm redeem'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Toast */}
+      {toast && (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            left: 24,
+            right: 24,
+            bottom: 48,
+            paddingVertical: 14,
+            paddingHorizontal: 20,
+            borderRadius: 18,
+            backgroundColor: 'rgba(15,23,42,0.92)',
+            alignItems: 'center',
+          }}
+        >
+          <Text style={{ color: '#ffffff', fontWeight: '600', textAlign: 'center' }}>{toast}</Text>
         </View>
       )}
     </View>

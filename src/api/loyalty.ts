@@ -36,7 +36,17 @@ export interface LoyaltyBalance {
   stampRewardDescription: string;
   stamps: number;
   completedCards: number;
-  stampMilestones: Array<{ id: string; stamp_number: number; reward_name: string; foodics_product_ids: string[] }>;
+  stampMilestones: Array<{
+    id: string;
+    /** Phase 3 canonical points-redemption cost. */
+    points_threshold?: number;
+    /** Legacy alias mirroring points_threshold; populated for back-compat. */
+    stamp_number: number;
+    reward_name: string;
+    reward_description?: string | null;
+    reward_image_url?: string | null;
+    foodics_product_ids: string[];
+  }>;
   availableRedemptions: Array<{ id: string; milestone_id: string; stamp_number: number }>;
   // Wallet card
   walletCardBgColor: string | null;
@@ -92,6 +102,45 @@ export interface LoyaltyConfig {
   wallet_card_logo_scale?: number | null;
 }
 
+/**
+ * Phase 3 milestone redemption result.
+ *
+ * `success` and `newBalance` are the only fields the UI hard-depends on;
+ * `redemptionId` is logged for support, `milestoneRewardName` flows into
+ * the toast/confirmation, and `foodicsProductIds` is what the rewards
+ * screen turns into 0-priced cart lines on success.
+ *
+ * `deduplicated` is set to true when an identical idempotencyKey was
+ * replayed (the server returned the prior result instead of re-charging).
+ * Clients use this to skip "added!" animations on retries.
+ */
+export type RedemptionResult = {
+  success: boolean;
+  newBalance: number;
+  redemptionId: string;
+  milestoneRewardName: string;
+  foodicsProductIds: string[];
+  deduplicated?: boolean;
+};
+
+/**
+ * Phase 3 milestone catalog item — surfaced by GET /api/loyalty/stamp-milestones.
+ * Mirrors the server-side row shape after the rename (points_threshold
+ * replaces the legacy stamp_number).
+ */
+export type LoyaltyMilestone = {
+  id: string;
+  /** Phase 3 canonical field. Mirrors stamp_number for back-compat below. */
+  points_threshold: number;
+  /** Back-compat alias kept by the server so older clients keep compiling. */
+  stamp_number: number;
+  reward_name: string;
+  reward_description: string | null;
+  reward_image_url: string | null;
+  foodics_product_ids: string[];
+  is_active: boolean;
+};
+
 export const loyaltyApi = {
   getBalance: (customerId: string, merchantId?: string) =>
     api.get<LoyaltyBalance>(
@@ -128,6 +177,11 @@ export const loyaltyApi = {
       { customerId, amountSar, orderId, merchantId }
     ),
 
+  /**
+   * @deprecated use redeemMilestone — kept temporarily so any in-flight
+   * builds still compile. The server route is now an alias of the new
+   * /redeem-milestone path; both share the same handler.
+   */
   redeemStampMilestone: (
     customerId: string,
     merchantId: string,
@@ -137,6 +191,33 @@ export const loyaltyApi = {
     api.post<{ success: boolean; rewardName: string; stampsDeducted: number; newStamps: number }>(
       '/api/loyalty/redeem-stamp-milestone',
       { customerId, merchantId, milestoneId, via: 'app', orderId: orderId ?? null }
+    ),
+
+  /**
+   * Phase 3 milestone redemption — points deduction model.
+   *
+   * The caller MUST generate a stable idempotencyKey per redemption
+   * attempt (a client-side UUID is the standard pattern). If the user
+   * double-taps the confirm button, the second call returns the same
+   * RedemptionResult as the first one — no double-deduction — with
+   * deduplicated=true so the UI can suppress duplicate animations.
+   */
+  redeemMilestone: (
+    merchantId: string,
+    customerId: string,
+    milestoneId: string,
+    idempotencyKey: string,
+  ) =>
+    api.post<RedemptionResult>('/api/loyalty/redeem-milestone', {
+      customerId,
+      merchantId,
+      milestoneId,
+      idempotencyKey,
+    }),
+
+  getMilestones: (merchantId: string) =>
+    api.get<{ milestones: LoyaltyMilestone[] }>(
+      `/api/loyalty/stamp-milestones?merchantId=${encodeURIComponent(merchantId)}`
     ),
 
   getHistory: (customerId: string, merchantId?: string) =>
