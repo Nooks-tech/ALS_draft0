@@ -69,6 +69,7 @@ import { reportCartEvent } from '../src/api/cartEvents';
 import { useMenu } from '../src/hooks/useMenu';
 import { readCache, writeCache } from '../src/lib/persistentCache';
 import { openMapToLocation } from '../src/lib/openMaps';
+import { useQrLanding } from '../src/context/QrLandingContext';
 
 // Wallet is no longer one of these — it's a redeemable credit
 // applied via the useWallet toggle (see the cashback-style row in
@@ -92,6 +93,7 @@ export default function CheckoutScreen() {
     removeFromCart,
     clearCart } = useCart();
   const { merchantId } = useMerchant();
+  const { landing: qrLanding } = useQrLanding();
   const { addOrder } = useOrders();
   const { profile } = useProfile();
   const { isClosed, isBusy, isPickupOnly } = useOperations();
@@ -735,6 +737,8 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
+          qrCodeId: qrLanding.qrCodeId,
+          guests: orderType === 'dine_in' ? 1 : null,
           carDetails:
             orderType === 'drivethru'
               ? {
@@ -798,6 +802,8 @@ export default function CheckoutScreen() {
             promoDiscountSar: promoApplied ? promoDiscount : null,
             promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
+          qrCodeId: qrLanding.qrCodeId,
+          guests: orderType === 'dine_in' ? 1 : null,
             carDetails:
               orderType === 'drivethru'
                 ? {
@@ -849,6 +855,8 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : undefined,
           promoScope: promoApplied ? promoScope : undefined,
           customerNote: orderNote.trim() || undefined,
+          qrCodeId: qrLanding.qrCodeId ?? undefined,
+          guests: orderType === 'dine_in' ? 1 : undefined,
           customerName: profile.fullName || undefined,
           customerPhone: profile.phone || undefined,
           customerEmail: profile.email || undefined,
@@ -1140,6 +1148,8 @@ export default function CheckoutScreen() {
           promoDiscountSar: promoApplied ? promoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
+          qrCodeId: qrLanding.qrCodeId,
+          guests: orderType === 'dine_in' ? 1 : null,
           carDetails:
             orderType === 'drivethru'
               ? {
@@ -1208,6 +1218,8 @@ export default function CheckoutScreen() {
             promoDiscountSar: promoApplied ? promoDiscount : undefined,
             promoScope: promoApplied ? promoScope : undefined,
             customerNote: orderNote.trim() || undefined,
+          qrCodeId: qrLanding.qrCodeId ?? undefined,
+          guests: orderType === 'dine_in' ? 1 : undefined,
             customerName: profile.fullName || undefined,
             customerPhone: profile.phone || undefined,
             customerEmail: profile.email || undefined,
@@ -1294,6 +1306,8 @@ export default function CheckoutScreen() {
             promoDiscountSar: promoApplied ? promoDiscount : null,
             promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
+          qrCodeId: qrLanding.qrCodeId,
+          guests: orderType === 'dine_in' ? 1 : null,
             carDetails:
               orderType === 'drivethru'
                 ? {

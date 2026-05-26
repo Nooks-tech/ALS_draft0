@@ -167,6 +167,18 @@ export type CommitOrderPayload = {
     model: string;
     color: string;
   } | null;
+  /**
+   * QR + dine-in attribution. Server is the source of truth: when
+   * qrCodeId is supplied the server resolves branch_id +
+   * foodics_table_id + foodics_table_name from the QR row and
+   * ignores any client-supplied tableId/foodicsTableName values.
+   * For dine_in orders, qrCodeId MUST resolve to an active QR
+   * whose foodics_table_id is set, otherwise the commit 400s.
+   */
+  qrCodeId?: string | null;
+  tableId?: string | null;
+  foodicsTableName?: string | null;
+  guests?: number | null;
   relayToNooks?: boolean;
 };
 

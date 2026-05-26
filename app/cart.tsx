@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { ArrowLeft, ArrowRight, Bike, Car, ChevronLeft, ChevronRight, Map, Minus, Pencil, Plus, Store, Trash2 } from 'lucide-react-native';
+import { ArrowLeft, ArrowRight, Bike, Car, ChevronLeft, ChevronRight, Map, Minus, Pencil, Plus, Store, Trash2, Utensils } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -8,6 +8,7 @@ import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useMerchant } from '../src/context/MerchantContext';
+import { useQrLanding } from '../src/context/QrLandingContext';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
 import { reportCartEvent } from '../src/api/cartEvents';
 import { openMapToLocation } from '../src/lib/openMaps';
@@ -16,6 +17,7 @@ export default function CartScreen() {
   const { i18n } = useTranslation();
   const { primaryColor } = useMerchantBranding();
   const { merchantId } = useMerchant();
+  const { landing } = useQrLanding();
   const isArabic = i18n.language === 'ar';
   const rowDirection = isArabic ? 'row-reverse' : 'row';
   const {
@@ -64,7 +66,10 @@ export default function CartScreen() {
       router.push('/order-type');
       return;
     }
-    if (!selectedBranch?.id) {
+    // Dine-in: the QR landing is authoritative — if it carried a
+    // qrCodeId, the server resolves branch_id from it at commit time.
+    // No branch picker.
+    if (!selectedBranch?.id && orderType !== 'dine_in') {
       router.push('/order-type');
       return;
     }
@@ -155,6 +160,7 @@ export default function CartScreen() {
             // is shared between pickup and drivethru since both need
             // the customer to physically arrive at a branch.
             const isPickupLike = orderType === 'pickup' || orderType === 'drivethru';
+            const isDineIn = orderType === 'dine_in';
             const branchLat = (selectedBranch as { latitude?: number } | null)?.latitude;
             const branchLng = (selectedBranch as { longitude?: number } | null)?.longitude;
             const canOpenMap =
@@ -163,14 +169,18 @@ export default function CartScreen() {
               ? (isArabic ? 'التوصيل إلى' : 'Delivering to')
               : orderType === 'drivethru'
                 ? (isArabic ? 'استلام في السيارة' : 'Receive in car at')
-                : (isArabic ? 'الاستلام من' : 'Picking up from');
+                : isDineIn
+                  ? (isArabic ? 'تناول الطعام في' : 'Dining at')
+                  : (isArabic ? 'الاستلام من' : 'Picking up from');
             return (
               <View className="items-center p-4 bg-slate-50 rounded-3xl mb-8 border border-slate-100" style={{ flexDirection: 'row' }}>
-                <View style={[orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : undefined, { marginEnd: 16 }]} className={orderType === 'delivery' ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
+                <View style={[orderType === 'delivery' ? { backgroundColor: `${primaryColor}20` } : isDineIn ? { backgroundColor: `${primaryColor}20` } : undefined, { marginEnd: 16 }]} className={orderType === 'delivery' || isDineIn ? 'p-3 rounded-2xl' : 'bg-orange-100 p-3 rounded-2xl'}>
                   {orderType === 'delivery' ? (
                     <Bike size={24} color={primaryColor} />
                   ) : orderType === 'drivethru' ? (
                     <Car size={24} color="#F59E0B" />
+                  ) : isDineIn ? (
+                    <Utensils size={24} color={primaryColor} />
                   ) : (
                     <Store size={24} color="#F59E0B" />
                   )}
@@ -193,7 +203,9 @@ export default function CartScreen() {
                   >
                     {orderType === 'delivery'
                       ? deliveryAddress?.address || (isArabic ? 'أضف عنوان التوصيل' : 'Add delivery address')
-                      : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch')}
+                      : isDineIn
+                        ? landing.tableName || selectedBranch?.name || (isArabic ? 'الطاولة' : 'Table')
+                        : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch')}
                   </Text>
                 </View>
                 {canOpenMap && (
@@ -207,9 +219,16 @@ export default function CartScreen() {
                     <Map size={18} color={primaryColor} />
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity onPress={() => router.push('/order-type')}>
-                  <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? 'تغيير' : 'Change'}</Text>
-                </TouchableOpacity>
+                {/* Dine-in: no Change button. The customer is at the
+                    table — the QR they scanned IS the order context.
+                    Switching branch/type here would invalidate the
+                    QR-attribution chain that lets the cashier see
+                    "Table 5" on the receipt. */}
+                {!isDineIn && (
+                  <TouchableOpacity onPress={() => router.push('/order-type')}>
+                    <Text className="font-bold" style={{ color: primaryColor }}>{isArabic ? 'تغيير' : 'Change'}</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             );
           })()}

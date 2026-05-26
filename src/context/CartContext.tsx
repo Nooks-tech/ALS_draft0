@@ -81,9 +81,12 @@ type PersistedCart = {
   expiresAt?: number | null;
 };
 
+import { useQrLanding } from './QrLandingContext';
+
 export const CartProvider = ({ children }: { children: ReactNode }) => {
   const { user, initialized } = useAuth();
   const { merchantId } = useMerchant();
+  const { landing } = useQrLanding();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [orderType, setOrderTypeState] = useState<'delivery' | 'pickup' | 'drivethru' | 'dine_in'>('pickup');
   const [selectedBranch, setSelectedBranchState] = useState<{ id: string; name: string; address: string; distance?: string; oto_warehouse_id?: string; latitude?: number; longitude?: number } | null>(null);
@@ -238,6 +241,16 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       }
     })();
   }, [CART_CACHE_KEY, hydrated, initialized, uid, merchantId]);
+
+  // QR landing: when the entry URL carries an order_type override,
+  // apply it AFTER cache hydration so the QR's intent wins over a
+  // stale persisted "pickup". Branch selection lands at commit time
+  // via the qrCodeId → server-side branch_id resolution (no
+  // optimistic UI for branch here — the QR row is server truth).
+  useEffect(() => {
+    if (!hydrated || !landing.orderType) return;
+    setOrderTypeState(landing.orderType);
+  }, [hydrated, landing.orderType]);
 
   useEffect(() => {
     if (!hydrated) return;

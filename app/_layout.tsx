@@ -88,6 +88,7 @@ import { FavoritesProvider } from '../src/context/FavoritesContext';
 import { MenuProvider } from '../src/context/MenuContext';
 import { OrdersProvider } from '../src/context/OrdersContext';
 import { ProfileProvider } from '../src/context/ProfileContext';
+import { QrLandingProvider } from '../src/context/QrLandingContext';
 import { SavedAddressesProvider } from '../src/context/SavedAddressesContext';
 import { useAuth } from '../src/context/AuthContext';
 import { useMerchant } from '../src/context/MerchantContext';
@@ -279,6 +280,12 @@ export default function RootLayout() {
             a fan-out of background fetches. */}
         <AuthProvider>
         <MerchantProvider>
+        {/* QrLanding sits ABOVE every consumer that reads URL-derived
+            attribution (CartContext for branch/order_type, the cart
+            screen for the "Dining at" header). Pure URL-param parser
+            on mount; native builds with no URL just get an empty
+            landing payload. */}
+        <QrLandingProvider>
         {/* WarmupRunner needs both auth + merchant contexts. Renders
             null; just fires the prefetch fan-out so the splash time
             window does double-duty as a warmup window for every
@@ -350,6 +357,7 @@ export default function RootLayout() {
         </MenuProvider>
         </LanguageSwitchProvider>
         </MerchantBrandingWrapper>
+        </QrLandingProvider>
         </MerchantProvider>
         </AuthProvider>
       </SafeAreaProvider>

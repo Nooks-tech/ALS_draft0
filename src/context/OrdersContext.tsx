@@ -64,6 +64,15 @@ export type PlacedOrder = {
   // arrival ping has no destination.
   customerArrivedAt?: string | null;
   foodicsOrderId?: string | null;
+  // QR + dine-in attribution. Populated when the customer arrived
+  // via a scanned QR. foodicsTableId is the Foodics table UUID;
+  // foodicsTableName is the human-readable label cached on the
+  // order row so the customer's order list can render "Table 5"
+  // without joining merchant_qr_codes.
+  qrCodeId?: string | null;
+  foodicsTableId?: string | null;
+  foodicsTableName?: string | null;
+  guests?: number | null;
 };
 
 export type OrdersContextType = {
@@ -162,6 +171,10 @@ function rowToOrder(row: OrderRow): PlacedOrder {
     promoCode: row.promo_code ?? undefined,
     customerArrivedAt: (row as { customer_arrived_at?: string | null }).customer_arrived_at ?? null,
     foodicsOrderId: (row as { foodics_order_id?: string | null }).foodics_order_id ?? null,
+    qrCodeId: (row as { qr_code_id?: string | null }).qr_code_id ?? null,
+    foodicsTableId: (row as { foodics_table_id?: string | null }).foodics_table_id ?? null,
+    foodicsTableName: (row as { foodics_table_name?: string | null }).foodics_table_name ?? null,
+    guests: (row as { guests?: number | null }).guests ?? null,
   };
 }
 
