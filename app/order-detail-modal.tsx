@@ -186,8 +186,17 @@ export default function OrderDetailModal() {
 
   const handleReorder = useCallback(() => {
     if (!order) return;
+    // Strip milestone reward items — they were 0-priced because the
+    // customer redeemed points on the original order. Letting them
+    // reorder would hand out the freebie a second time with no
+    // points deducted. The customer can still re-redeem from
+    // /rewards if they have enough points; the catalog is one tap
+    // away from the cart screen.
+    const eligibleItems = (order.items ?? []).filter(
+      (it) => !it.rewardMilestoneId && !it.rewardRedemptionId,
+    );
     setCartFromOrder({
-      items: order.items,
+      items: eligibleItems,
       orderType: order.orderType,
       branchId: order.branchId,
       branchName: order.branchName,
