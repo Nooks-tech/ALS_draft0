@@ -27,6 +27,7 @@ import {
   StatusBar,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useCart } from '../../context/CartContext';
@@ -53,6 +54,7 @@ export default function PolaroidMenuScreen() {
     deliveryAddress,
     addToCart,
   } = useCart();
+  const { width: windowWidth } = useWindowDimensions();
   const { products, categories, loading } = useMenuContext();
   const { layoutColors, logoUrl } = useMerchantBranding();
   const { merchantId } = useMerchant();
@@ -292,9 +294,11 @@ export default function PolaroidMenuScreen() {
           contentContainerStyle={{
             paddingHorizontal: 10,
             paddingTop: 8,
-            // Bottom padding stacks: tab bar (~96 ios) + floating
-            // rewards FAB (~64) + cart bar (~70) when present.
-            paddingBottom: totalItems > 0 ? 240 : 180,
+            // Bottom padding only needs to clear what sits at the
+            // bottom — the rewards badge is right-anchored so the
+            // grid scrolls past it on the left. With cart present:
+            // tab bar (~96) + cart bar (~70) + buffer.
+            paddingBottom: totalItems > 0 ? 200 : 140,
           }}
           refreshControl={
             <RefreshControl
@@ -305,50 +309,55 @@ export default function PolaroidMenuScreen() {
             />
           }
         >
-          {/* Banner slider — polaroid-styled horizontal carousel of
-              merchant-uploaded slider banners. Concept mirrors the
-              classic menu slider but rendered as rotated polaroid
-              cards on the kraft board. */}
-          {sliderBanners.length > 0 && (
-            <View style={{ marginBottom: 16, marginHorizontal: -2 }}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}
-                snapToAlignment="start"
-                decelerationRate="fast"
-              >
-                {sliderBanners.map((b, i) => (
-                  <View key={b.id} style={{ width: 260, marginEnd: 14 }}>
-                    <PolaroidCard
-                      rotation={rotationForIndex(i)}
-                      large
-                      style={{ padding: 6, paddingBottom: 12 }}
-                    >
-                      <Image
-                        source={{ uri: b.image_url! }}
-                        style={{ width: '100%', aspectRatio: 16 / 10, backgroundColor: '#e7e2d6', borderRadius: 2 }}
-                        resizeMode="cover"
-                      />
-                      {!!b.title && (
-                        <MonoText
-                          size={11}
-                          tracking={0.4}
-                          weight="700"
-                          align="center"
-                          color={colors.textOnSurface}
-                          style={{ marginTop: 8 }}
-                          numberOfLines={1}
-                        >
-                          {b.title}
-                        </MonoText>
-                      )}
-                    </PolaroidCard>
-                  </View>
-                ))}
-              </ScrollView>
-            </View>
-          )}
+          {/* Banner slider — ONE banner takes the full screen width
+              at a time. Paging snap so the next swipe lands on the
+              next banner cleanly. Cards keep the polaroid look but
+              fill the viewport. */}
+          {sliderBanners.length > 0 && (() => {
+            const bannerWidth = windowWidth - 20; // matches scroll's horizontal padding
+            return (
+              <View style={{ marginBottom: 18, marginHorizontal: -10 }}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}
+                  pagingEnabled
+                  snapToInterval={bannerWidth}
+                  decelerationRate="fast"
+                  snapToAlignment="start"
+                >
+                  {sliderBanners.map((b, i) => (
+                    <View key={b.id} style={{ width: bannerWidth, paddingHorizontal: 4 }}>
+                      <PolaroidCard
+                        rotation={rotationForIndex(i)}
+                        large
+                        style={{ padding: 6, paddingBottom: 12 }}
+                      >
+                        <Image
+                          source={{ uri: b.image_url! }}
+                          style={{ width: '100%', aspectRatio: 16 / 9, backgroundColor: '#e7e2d6', borderRadius: 2 }}
+                          resizeMode="cover"
+                        />
+                        {!!b.title && (
+                          <MonoText
+                            size={12}
+                            tracking={0.4}
+                            weight="700"
+                            align="center"
+                            color={colors.textOnSurface}
+                            style={{ marginTop: 10, paddingHorizontal: 8 }}
+                            numberOfLines={1}
+                          >
+                            {b.title}
+                          </MonoText>
+                        )}
+                      </PolaroidCard>
+                    </View>
+                  ))}
+                </ScrollView>
+              </View>
+            );
+          })()}
 
           {groupedProducts.map((section, sIdx) => (
             <View key={section.category} style={{ marginBottom: sIdx === groupedProducts.length - 1 ? 0 : 18 }}>
@@ -477,66 +486,75 @@ export default function PolaroidMenuScreen() {
         </ScrollView>
       )}
 
-      {/* Floating Rewards FAB — always anchored just above the tab
-          bar. When the cart bar appears it stacks on top, so the
-          rewards button stays the visible floor. */}
+      {/* Compact polaroid Rewards badge — a small rotated white
+          polaroid card pinned to the right side, ABOVE the cart bar.
+          Visually distinctive (rotated, photo-style), not just a
+          fat pill. When the cart appears it slides down toward the
+          tab bar; rewards badge stays anchored higher. */}
       <View
         style={{
           position: 'absolute',
-          left: 14,
           right: 14,
-          bottom: Platform.OS === 'ios' ? 110 : 92,
-          zIndex: 40,
+          // When cart is on screen the badge climbs to make room for
+          // the cart bar below it; otherwise it sits just above the
+          // tab bar.
+          bottom: totalItems > 0
+            ? (Platform.OS === 'ios' ? 180 : 162)
+            : (Platform.OS === 'ios' ? 108 : 90),
+          zIndex: 60,
         }}
         pointerEvents="box-none"
       >
         <TouchableOpacity
           onPress={() => router.push('/rewards' as never)}
-          activeOpacity={0.88}
+          activeOpacity={0.85}
           accessibilityLabel={isArabic ? 'مسار النقاط' : 'Rewards roadmap'}
-          style={{
-            backgroundColor: colors.accent,
-            borderRadius: 999,
-            paddingVertical: 12,
-            paddingHorizontal: 18,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            shadowColor: '#000',
-            shadowOpacity: 0.4,
-            shadowRadius: 12,
-            shadowOffset: { width: 0, height: 6 },
-            elevation: 10,
-          }}
         >
-          <View
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 999,
-              backgroundColor: '#ffffff22',
-              alignItems: 'center',
-              justifyContent: 'center',
-              marginEnd: 10,
-            }}
+          <PolaroidCard
+            rotation="-4deg"
+            large
+            style={{ paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, alignItems: 'center', width: 96 }}
           >
-            <MonoText size={14} weight="800" color="#ffffff">★</MonoText>
-          </View>
-          <MonoText size={12} tracking={2.2} uppercase weight="800" color="#ffffff">
-            {isArabic ? 'مسار المكافآت' : 'Rewards Roadmap'}
-          </MonoText>
+            <View
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 999,
+                backgroundColor: colors.accent,
+                alignItems: 'center',
+                justifyContent: 'center',
+                shadowColor: '#000',
+                shadowOpacity: 0.25,
+                shadowRadius: 4,
+                shadowOffset: { width: 0, height: 2 },
+              }}
+            >
+              <MonoText size={22} weight="800" color="#ffffff">★</MonoText>
+            </View>
+            <MonoText
+              size={8}
+              tracking={2}
+              uppercase
+              weight="800"
+              align="center"
+              color={colors.textOnSurface}
+              style={{ marginTop: 6 }}
+            >
+              {isArabic ? 'مكافآت' : 'Rewards'}
+            </MonoText>
+          </PolaroidCard>
         </TouchableOpacity>
       </View>
 
-      {/* Sticky polaroid cart bar — sits ABOVE the rewards FAB.
-          Bottom offset = tab bar height + FAB height + margin. */}
+      {/* Sticky polaroid cart bar — sits BELOW the rewards badge,
+          anchored just above the tab bar (closer to thumb). */}
       {totalItems > 0 && (
         <View
           style={{
             position: 'absolute',
             left: 12,
             right: 12,
-            bottom: Platform.OS === 'ios' ? 175 : 155,
+            bottom: Platform.OS === 'ios' ? 108 : 90,
             zIndex: 50,
           }}
           pointerEvents="box-none"

@@ -69,22 +69,49 @@ export default function OrderTypeScreen() {
       <SwipeableBottomSheet
         onDismiss={() => router.back()}
         height={modalHeight}
-        style={{ position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: 'white', borderTopLeftRadius: 40, borderTopRightRadius: 40, overflow: 'hidden', paddingBottom: insets.bottom }}
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          backgroundColor: isPolaroid ? polaroid.bg : 'white',
+          borderTopLeftRadius: isPolaroid ? 28 : 40,
+          borderTopRightRadius: isPolaroid ? 28 : 40,
+          overflow: 'hidden',
+          paddingBottom: insets.bottom,
+        }}
       >
-        <View className="px-5 py-4 flex-row items-center justify-between border-b border-slate-100">
+        <View
+          className={isPolaroid ? "px-5 py-4 flex-row items-center justify-between" : "px-5 py-4 flex-row items-center justify-between border-b border-slate-100"}
+          style={isPolaroid ? { borderBottomWidth: 1, borderBottomColor: `${polaroid.text}1A` } : undefined}
+        >
         <TouchableOpacity
           onPress={() => {
             if (step === 'choice') router.back();
             else if (step === 'map' && orderType === 'delivery') setStep('branch');
             else setStep('choice');
           }}
-          className="bg-slate-100 p-2 rounded-full"
+          className={isPolaroid ? "p-2 rounded-full" : "bg-slate-100 p-2 rounded-full"}
+          style={isPolaroid ? { backgroundColor: `${polaroid.text}14`, borderWidth: 1, borderColor: `${polaroid.text}22` } : undefined}
         >
-          <ArrowLeft size={22} color="#334155" />
+          <ArrowLeft size={22} color={isPolaroid ? polaroid.text : '#334155'} />
         </TouchableOpacity>
-        <Text className="text-lg font-bold text-slate-800">
-          {step === 'choice' ? (isArabic ? 'نوع الطلب' : 'Order Type') : step === 'branch' ? (isArabic ? 'اختر الفرع' : 'Select Branch') : (isArabic ? 'عنوان التوصيل' : 'Delivery Address')}
-        </Text>
+        {isPolaroid ? (
+          <Text
+            style={{
+              fontFamily: POLAROID_FONT.serif,
+              fontStyle: 'italic',
+              fontSize: 18,
+              color: polaroid.text,
+            }}
+          >
+            {step === 'choice' ? (isArabic ? 'نوع الطلب' : 'Order Type') : step === 'branch' ? (isArabic ? 'اختر الفرع' : 'Select Branch') : (isArabic ? 'عنوان التوصيل' : 'Delivery Address')}
+          </Text>
+        ) : (
+          <Text className="text-lg font-bold text-slate-800">
+            {step === 'choice' ? (isArabic ? 'نوع الطلب' : 'Order Type') : step === 'branch' ? (isArabic ? 'اختر الفرع' : 'Select Branch') : (isArabic ? 'عنوان التوصيل' : 'Delivery Address')}
+          </Text>
+        )}
         <View className="w-10" />
       </View>
       {step === 'map' ? (
@@ -317,23 +344,11 @@ export default function OrderTypeScreen() {
 
 type PolaroidColors = ReturnType<typeof resolvePolaroidColors>;
 
-function PolaroidPanel({ polaroid, children }: { polaroid: PolaroidColors; children: React.ReactNode }) {
-  return (
-    <View
-      style={{
-        backgroundColor: polaroid.bg,
-        marginHorizontal: -20,
-        marginTop: -16,
-        paddingHorizontal: 20,
-        paddingTop: 20,
-        paddingBottom: 24,
-        borderTopLeftRadius: 24,
-        borderTopRightRadius: 24,
-      }}
-    >
-      {children}
-    </View>
-  );
+function PolaroidPanel({ children }: { polaroid: PolaroidColors; children: React.ReactNode }) {
+  // The sheet chrome itself is already polaroid bg (set on
+  // SwipeableBottomSheet's style), so the inner body just needs
+  // breathing room — no nested kraft layer.
+  return <View>{children}</View>;
 }
 
 function PolaroidChoice({
