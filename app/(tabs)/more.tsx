@@ -35,8 +35,19 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { API_URL } from '../../src/api/config';
 import { supabase } from '../../src/api/supabase';
+import PolaroidMoreScreen from './_layouts/polaroid/PolaroidMoreScreen';
 
 export default function MoreScreen() {
+  // Layout switcher — branding hook first to keep hook order
+  // stable across layout flips.
+  const { menuLayout } = useMerchantBranding();
+  if (menuLayout === 'polaroid') {
+    return <PolaroidMoreScreen />;
+  }
+  return <ClassicMoreScreen />;
+}
+
+function ClassicMoreScreen() {
   const { i18n } = useTranslation();
   const router = useRouter();
   const { primaryColor, backgroundColor, menuCardColor, textColor, appName, cafeName, logoUrl, appIconUrl } = useMerchantBranding();

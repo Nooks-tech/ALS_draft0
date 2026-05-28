@@ -51,6 +51,7 @@ import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
 import { AppleWalletAddPassButton } from '../../src/components/apple-wallet/AppleWalletAddPassButton';
 import { loyaltyEvents } from '../../src/lib/loyaltyEvents';
+import PolaroidOffersScreen from './_layouts/polaroid/PolaroidOffersScreen';
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/.exec(hex);
@@ -241,6 +242,16 @@ async function addPassToAppleWallet(base64: string): Promise<unknown> {
 }
 
 export default function OffersScreen() {
+  // Layout switcher — see menu.tsx for the rationale on putting
+  // this BEFORE every other hook so hook order stays stable.
+  const { menuLayout } = useMerchantBranding();
+  if (menuLayout === 'polaroid') {
+    return <PolaroidOffersScreen />;
+  }
+  return <ClassicOffersScreen />;
+}
+
+function ClassicOffersScreen() {
   const router = useRouter();
   const { i18n } = useTranslation();
   const { merchantId } = useMerchant();

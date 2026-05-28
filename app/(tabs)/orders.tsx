@@ -5,8 +5,19 @@ import { useTranslation } from 'react-i18next';
 import { OrderCard } from '../../src/components/order/OrderCard';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useOrders } from '../../src/context/OrdersContext';
+import PolaroidOrdersScreen from './_layouts/polaroid/PolaroidOrdersScreen';
 
 export default function OrdersScreen() {
+  // Layout switcher — keep this hook above every other so the
+  // hook order stays stable when branding flips.
+  const { menuLayout } = useMerchantBranding();
+  if (menuLayout === 'polaroid') {
+    return <PolaroidOrdersScreen />;
+  }
+  return <ClassicOrdersScreen />;
+}
+
+function ClassicOrdersScreen() {
   const { t, i18n } = useTranslation();
   const router = useRouter();
   const { orders, loading } = useOrders();

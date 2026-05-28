@@ -41,6 +41,7 @@ import { useCart } from '../../src/context/CartContext';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useMenuContext } from '../../src/context/MenuContext';
+import PolaroidMenuScreen from './_layouts/polaroid/PolaroidMenuScreen';
 
 type SliderItem = { id: string; image: string; title: string; subtitle: string };
 
@@ -115,6 +116,19 @@ function SliderBannerImage({
 }
 
 export default function MenuScreen() {
+  // Layout switcher MUST come before any other hooks so the hook
+  // order stays consistent across renders even when menuLayout
+  // flips (e.g. 'classic' default → 'polaroid' after branding
+  // fetch). Each branch mounts its own subtree and React tracks
+  // hooks per-component, not per-parent.
+  const { menuLayout } = useMerchantBranding();
+  if (menuLayout === 'polaroid') {
+    return <PolaroidMenuScreen />;
+  }
+  return <ClassicMenuScreen />;
+}
+
+function ClassicMenuScreen() {
   const { i18n } = useTranslation();
   const { totalItems, totalPrice, orderType, selectedBranch, deliveryAddress } = useCart();
   const { merchantId } = useMerchant();

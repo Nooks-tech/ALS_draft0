@@ -43,6 +43,22 @@ export type MerchantBranding = {
   accentColor: string;
   backgroundColor: string;
   menuCardColor: string;
+  /**
+   * Merchant-chosen design system. 'classic' renders the existing
+   * (pre-layout-system) UI. The 4 others are bespoke design languages
+   * with their own typography, color, and spacing rules. See the
+   * Claude Design HTML reference at nooksweb/tmp/layouts-cleaned.html
+   * for the exact visual specs.
+   */
+  menuLayout: 'classic' | 'type-first' | 'neg-space' | 'polaroid' | 'split';
+  /**
+   * Per-layout color tokens, fully merged server-side (defaults +
+   * merchant overrides). Keys vary per layout — at minimum every
+   * layout exposes: bg, surface, text, textMuted (or textOnSurface
+   * for polaroid), accent. Split also exposes headerBg + accentTint.
+   * The mobile renderer reads only the tokens its layout needs.
+   */
+  layoutColors: Record<string, string>;
   textColor: string;
   tabTextColor: string;
   /** Display name from app_config.app_name (dashboard "App name") */
@@ -79,6 +95,14 @@ const DEFAULT_BRANDING: MerchantBranding = {
   accentColor: '#0D9488',
   backgroundColor: '#f5f5f4',
   menuCardColor: '#f5f5f4',
+  menuLayout: 'classic',
+  layoutColors: {
+    bg: '#f5f5f4',
+    surface: '#ffffff',
+    text: '#1f2937',
+    textMuted: '#6b7280',
+    accent: '#0f766e',
+  },
   textColor: '#1f2937',
   tabTextColor: '#ffffff',
   appName: null,
@@ -142,6 +166,10 @@ function getBuildTimeBranding(): MerchantBranding {
     accentColor: accent,
     backgroundColor: bg,
     menuCardColor: card,
+    menuLayout: 'classic',
+    layoutColors: {
+      bg, surface: card, text, textMuted: text, accent: accent,
+    },
     textColor: text,
     tabTextColor: tabText,
     appName: buildAppName,
@@ -194,6 +222,22 @@ function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding 
     accentColor: normalizeColor(data.accentColor) ?? normalizeColor(data.accent_color) ?? DEFAULT_BRANDING.accentColor,
     backgroundColor: normalizeColor(data.backgroundColor) ?? normalizeColor(data.background_color) ?? DEFAULT_BRANDING.backgroundColor,
     menuCardColor: normalizeColor(data.menuCardColor) ?? normalizeColor(data.menu_card_color) ?? DEFAULT_BRANDING.menuCardColor,
+    menuLayout: (() => {
+      const raw = typeof data.menuLayout === 'string' ? data.menuLayout : '';
+      const allowed = ['classic', 'type-first', 'neg-space', 'polaroid', 'split'] as const;
+      return (allowed as readonly string[]).includes(raw)
+        ? (raw as MerchantBranding['menuLayout'])
+        : 'classic';
+    })(),
+    layoutColors: (() => {
+      const raw = (data as { layoutColors?: Record<string, unknown> }).layoutColors;
+      if (!raw || typeof raw !== 'object') return DEFAULT_BRANDING.layoutColors;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        if (typeof v === 'string' && v.trim()) out[k] = v.trim();
+      }
+      return Object.keys(out).length > 0 ? out : DEFAULT_BRANDING.layoutColors;
+    })(),
     textColor: normalizeColor(data.textColor) ?? normalizeColor(data.text_color) ?? DEFAULT_BRANDING.textColor,
     tabTextColor: normalizeColor(data.tabTextColor) ?? normalizeColor(data.tab_text_color) ?? DEFAULT_BRANDING.tabTextColor,
     appName:
