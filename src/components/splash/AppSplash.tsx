@@ -15,11 +15,12 @@
  * in both contexts.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Modal, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, Modal, Platform, StyleSheet, Text, View } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { MerchantLogoImage } from '../branding/MerchantLogoImage';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 import { useMenuContext } from '../../context/MenuContext';
+import { resolvePolaroidColors } from '../../layouts/polaroid/styles';
 
 // How long the cold-start splash stays on screen at minimum.
 // 2000 ms reads as a deliberate splash and gives the merchant
@@ -118,14 +119,104 @@ export function AppSplash({ mode, visible }: AppSplashProps) {
 
   if (!isVisible) return null;
 
-  const splashBg = backgroundColor || '#0d9488';
-  const dotColor = primaryColor || textColor || tabTextColor || '#ffffff';
+  const isPolaroid = branding.menuLayout === 'polaroid';
+  const polaroidColors = resolvePolaroidColors(branding.layoutColors);
+
+  const splashBg = isPolaroid ? polaroidColors.bg : (backgroundColor || '#0d9488');
+  const dotColor = isPolaroid
+    ? polaroidColors.accent
+    : (primaryColor || textColor || tabTextColor || '#ffffff');
   const splashLogoUri = appIconUrl || logoUrl;
   // surfaceColor = the rounded tile's color. Prefer the merchant's
   // explicit app-icon-bg; fall back to primary so the tile reads as
   // 'their brand' instead of being colorless.
   const surfaceColor = branding.appIconBgColor || primaryColor || '#0D9488';
   const tileLogoScale = Math.min(1.12, Math.max(0.64, (launcherIconScale ?? 100) / 100));
+  const brandName = appName?.trim() || cafeName?.trim() || '';
+
+  const polaroidStage = (
+    <View style={polaroidStyles.stage}>
+      <View
+        style={[
+          polaroidStyles.card,
+          {
+            backgroundColor: polaroidColors.surface,
+            transform: [{ rotate: '-2.2deg' }],
+          },
+        ]}
+      >
+        {splashLogoUri ? (
+          <View style={polaroidStyles.photo}>
+            <MerchantLogoImage
+              uri={splashLogoUri}
+              sizeDp={120}
+              scaleFactor={tileLogoScale}
+              accessibilityLabel="Logo"
+            />
+          </View>
+        ) : (
+          <View style={[polaroidStyles.photo, { backgroundColor: polaroidColors.bg }]}>
+            <Text style={[polaroidStyles.placeholderLetter, { color: polaroidColors.surface }]}>
+              {brandName.slice(0, 1).toUpperCase() || '·'}
+            </Text>
+          </View>
+        )}
+        <Text
+          style={[
+            polaroidStyles.caption,
+            {
+              color: polaroidColors.textOnSurface,
+              fontFamily: Platform.select({ ios: 'Georgia', android: 'serif', default: 'serif' }),
+            },
+          ]}
+          numberOfLines={1}
+        >
+          {brandName || 'Welcome'}
+        </Text>
+        <Text
+          style={[
+            polaroidStyles.tagline,
+            {
+              color: polaroidColors.textOnSurface,
+              fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
+            },
+          ]}
+        >
+          POLAROID EDITION
+        </Text>
+      </View>
+    </View>
+  );
+
+  const classicStage = splashLogoUri ? (
+    // Rounded merchant-colored tile with a soft glow ring,
+    // logo centered inside. Matches the language-change
+    // splash visual exactly so the cold-start splash and the
+    // language-switch splash are identical.
+    <View style={styles.logoStage}>
+      <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
+      <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
+        <MerchantLogoImage
+          uri={splashLogoUri}
+          sizeDp={94}
+          scaleFactor={tileLogoScale}
+          accessibilityLabel="Logo"
+        />
+      </View>
+    </View>
+  ) : (
+    <Text
+      style={{
+        color: textColor || tabTextColor || '#ffffff',
+        fontSize: 26,
+        fontWeight: '700',
+        textAlign: 'center',
+        paddingHorizontal: 32,
+      }}
+    >
+      {brandName}
+    </Text>
+  );
 
   const body = (
     <Animated.View
@@ -140,35 +231,7 @@ export function AppSplash({ mode, visible }: AppSplashProps) {
         },
       ]}
     >
-      {splashLogoUri ? (
-        // Rounded merchant-colored tile with a soft glow ring,
-        // logo centered inside. Matches the language-change
-        // splash visual exactly so the cold-start splash and the
-        // language-switch splash are identical.
-        <View style={styles.logoStage}>
-          <View style={[styles.logoGlow, { backgroundColor: surfaceColor }]} />
-          <View style={[styles.logoTile, { backgroundColor: surfaceColor }]}>
-            <MerchantLogoImage
-              uri={splashLogoUri}
-              sizeDp={94}
-              scaleFactor={tileLogoScale}
-              accessibilityLabel="Logo"
-            />
-          </View>
-        </View>
-      ) : (
-        <Text
-          style={{
-            color: textColor || tabTextColor || '#ffffff',
-            fontSize: 26,
-            fontWeight: '700',
-            textAlign: 'center',
-            paddingHorizontal: 32,
-          }}
-        >
-          {appName?.trim() || cafeName?.trim() || ''}
-        </Text>
-      )}
+      {isPolaroid ? polaroidStage : classicStage}
       <View style={styles.dots}>
         <PulsingDots color={dotColor} />
       </View>
@@ -256,4 +319,41 @@ const styles = StyleSheet.create({
   dots: { position: 'absolute', bottom: '19%', left: 0, right: 0, alignItems: 'center' },
   dotRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   dot: { width: 6, height: 6, borderRadius: 3 },
+});
+
+const polaroidStyles = StyleSheet.create({
+  stage: { alignItems: 'center', justifyContent: 'center' },
+  card: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 28,
+    shadowColor: '#000',
+    shadowOpacity: 0.45,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 12,
+    width: 220,
+  },
+  photo: {
+    width: 192,
+    height: 192,
+    backgroundColor: '#e7e2d6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  placeholderLetter: { fontSize: 96, fontWeight: '700' },
+  caption: {
+    marginTop: 14,
+    fontSize: 22,
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  tagline: {
+    marginTop: 4,
+    fontSize: 9,
+    letterSpacing: 2.5,
+    textAlign: 'center',
+    opacity: 0.55,
+  },
 });

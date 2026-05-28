@@ -1,17 +1,15 @@
 /**
  * Polaroid offers screen.
  *
- * Layout (matches `.po-offer-*` classes):
- *  - dark kraft background
- *  - large white polaroid card per offer, rotated -0.8deg
- *    with a 4:3 image up top, mono caption below, terracotta
- *    discount badge
- *  - "Your points" balance card in mono caps
- *  - terracotta polaroid CTA for Add to Apple Wallet
+ * Two segments:
+ *  - Promos: banner + promo polaroid cards (the discount images
+ *    and codes), nothing loyalty-related.
+ *  - Loyalty: points balance polaroid + Apple Wallet pass preview
+ *    + the Add-to-Apple-Wallet CTA. Tapping the CTA routes to
+ *    /loyalty-modal which holds the actual PKPass add flow.
  *
- * Heavy lifting (banner / promo / loyalty fetches) is handled by
- * the same APIs the classic offers.tsx uses. We just intercept
- * the rendering layer.
+ * Heavy data lifting is delegated to the same fetchers the classic
+ * offers.tsx uses (banners / promos / loyalty balance).
  */
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -44,15 +42,18 @@ type OfferEntry = {
   badge?: string | null;
 };
 
+type Segment = 'promos' | 'loyalty';
+
 export default function PolaroidOffersScreen() {
   const { i18n } = useTranslation();
   const router = useRouter();
   const isArabic = i18n.language === 'ar' || I18nManager.isRTL;
   const { merchantId } = useMerchant();
   const { user } = useAuth();
-  const { layoutColors, appName, cafeName } = useMerchantBranding();
+  const { layoutColors, appName, cafeName, logoUrl } = useMerchantBranding();
   const colors = useMemo(() => resolvePolaroidColors(layoutColors), [layoutColors]);
 
+  const [segment, setSegment] = useState<Segment>('promos');
   const [banners, setBanners] = useState<NooksBanner[]>([]);
   const [promos, setPromos] = useState<Array<{
     id: string; code: string; name: string; description?: string;
@@ -73,9 +74,6 @@ export default function PolaroidOffersScreen() {
         fetchNooksPromos(merchantId).catch(() => []),
       ]);
       setBanners(b);
-      // Promo entries may use either snake_case or camelCase from
-      // the API normalization helper; we coerce to a flat shape
-      // for rendering.
       setPromos(p as typeof promos);
 
       if (user?.id) {
@@ -83,7 +81,7 @@ export default function PolaroidOffersScreen() {
           const bal = await loyaltyApi.getBalance(user.id, merchantId);
           setBalance(bal);
         } catch {
-          // best-effort — points card is optional
+          // best-effort
         }
       }
     } finally {
@@ -121,14 +119,14 @@ export default function PolaroidOffersScreen() {
   }, [banners, promos]);
 
   const brandTitle = appName || cafeName || 'Offers';
-
-  // -- Render -------------------------------------------------------
+  const pointsValue = balance?.points ?? 0;
+  const lifetimeValue = balance?.lifetimePoints ?? 0;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
 
-      <View style={{ paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 8 }}>
+      <View style={{ paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 10 }}>
         <MonoText
           size={22}
           tracking={-0.3}
@@ -143,9 +141,53 @@ export default function PolaroidOffersScreen() {
           uppercase
           color={`${colors.text}66`}
           style={{ marginTop: 2 }}
+          numberOfLines={1}
         >
           {brandTitle}
         </MonoText>
+
+        {/* Segment switcher — Promos / Loyalty */}
+        <View
+          style={{
+            marginTop: 14,
+            flexDirection: 'row',
+            backgroundColor: `${colors.text}11`,
+            borderRadius: 999,
+            padding: 4,
+            borderWidth: 1,
+            borderColor: `${colors.text}1F`,
+          }}
+        >
+          {(['promos', 'loyalty'] as const).map((key) => {
+            const active = segment === key;
+            return (
+              <TouchableOpacity
+                key={key}
+                onPress={() => setSegment(key)}
+                activeOpacity={0.8}
+                style={{
+                  flex: 1,
+                  paddingVertical: 8,
+                  borderRadius: 999,
+                  backgroundColor: active ? colors.accent : 'transparent',
+                  alignItems: 'center',
+                }}
+              >
+                <MonoText
+                  size={10}
+                  tracking={2}
+                  uppercase
+                  weight="800"
+                  color={active ? '#ffffff' : `${colors.text}88`}
+                >
+                  {key === 'promos'
+                    ? (isArabic ? 'العروض' : 'Promos')
+                    : (isArabic ? 'الولاء' : 'Loyalty')}
+                </MonoText>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
       <ScrollView
@@ -163,201 +205,366 @@ export default function PolaroidOffersScreen() {
           />
         }
       >
-        {/* Points balance card (only for signed-in customers) */}
-        {balance && balance.loyaltyType !== 'cashback' && (
-          <View style={{ marginBottom: 16 }}>
-            <PolaroidCard rotation="-1.2deg" large style={{ paddingVertical: 18, paddingHorizontal: 18 }}>
-              <TouchableOpacity activeOpacity={0.85} onPress={() => router.push('/loyalty-modal' as never)}>
-                <MonoText
-                  size={9}
-                  tracking={2}
-                  uppercase
-                  weight="700"
-                  align="center"
-                  color={`${colors.textOnSurface}80`}
-                >
-                  {isArabic ? 'نقاطك' : 'Your Points'}
-                </MonoText>
-                <MonoText
-                  size={36}
-                  tracking={-0.5}
-                  weight="800"
-                  align="center"
-                  color={colors.textOnSurface}
-                  style={{ marginTop: 4 }}
-                >
-                  {balance.points ?? 0}
-                </MonoText>
-                <MonoText
-                  size={9}
-                  tracking={1.5}
-                  uppercase
-                  align="center"
-                  color={`${colors.textOnSurface}66`}
-                  style={{ marginTop: 4 }}
-                >
-                  {isArabic
-                    ? `${balance.lifetimePoints ?? 0} نقطة مكتسبة`
-                    : `${balance.lifetimePoints ?? 0} lifetime`}
-                </MonoText>
-              </TouchableOpacity>
-            </PolaroidCard>
-          </View>
-        )}
-
-        {/* Cashback balance variant */}
-        {balance && balance.loyaltyType === 'cashback' && (
-          <View style={{ marginBottom: 16 }}>
-            <PolaroidCard rotation="-1.2deg" large style={{ paddingVertical: 18, paddingHorizontal: 18 }}>
-              <TouchableOpacity activeOpacity={0.85} onPress={() => router.push('/loyalty-modal' as never)}>
-                <MonoText
-                  size={9}
-                  tracking={2}
-                  uppercase
-                  weight="700"
-                  align="center"
-                  color={`${colors.textOnSurface}80`}
-                >
-                  {isArabic ? 'كاش باك' : 'Cashback'}
-                </MonoText>
-                <MonoText
-                  size={28}
-                  tracking={-0.3}
-                  weight="800"
-                  align="center"
-                  color={colors.textOnSurface}
-                  style={{ marginTop: 4 }}
-                >
-                  {(balance.cashbackBalance ?? 0).toFixed(2)} {isArabic ? 'ر.س' : 'SAR'}
-                </MonoText>
-              </TouchableOpacity>
-            </PolaroidCard>
-          </View>
-        )}
-
-        {/* Add to Apple Wallet CTA — terracotta polaroid */}
-        {user?.id && balance && (
-          <View style={{ marginBottom: 18 }}>
-            <PolaroidCard
-              rotation="0.9deg"
-              large
-              surfaceColor={colors.accent}
-              style={{ paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center' }}
-            >
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={() => router.push('/loyalty-modal' as never)}
-              >
-                <MonoText
-                  size={10}
-                  tracking={2}
-                  uppercase
-                  weight="800"
-                  color="#ffffff"
-                  align="center"
-                >
-                  {isArabic ? 'أضف للمحفظة' : 'Add to Apple Wallet'}
-                </MonoText>
-              </TouchableOpacity>
-            </PolaroidCard>
-          </View>
-        )}
-
-        {/* Offers list */}
-        {loading && offerEntries.length === 0 ? (
-          <View style={{ paddingVertical: 60, alignItems: 'center' }}>
-            <ActivityIndicator color={colors.accent} />
-          </View>
-        ) : offerEntries.length === 0 ? (
-          <View style={{ paddingVertical: 60, alignItems: 'center' }}>
-            <MonoText
-              size={11}
-              tracking={1.5}
-              uppercase
-              color={`${colors.text}66`}
-            >
-              {isArabic ? 'لا توجد عروض الآن' : 'No offers right now'}
-            </MonoText>
-          </View>
+        {segment === 'promos' ? (
+          <PromosTab
+            loading={loading}
+            entries={offerEntries}
+            colors={colors}
+            isArabic={isArabic}
+          />
         ) : (
-          offerEntries.map((offer, idx) => (
-            <View key={offer.id} style={{ marginBottom: 16 }}>
-              <PolaroidCard
-                rotation={rotationForIndex(idx + 1)}
-                large
-                style={{ padding: 6, paddingBottom: 16 }}
-              >
-                {offer.image ? (
-                  <Image
-                    source={{ uri: offer.image }}
-                    style={{
-                      width: '100%',
-                      aspectRatio: 4 / 3,
-                      backgroundColor: '#e7e2d6',
-                      borderRadius: 2,
-                    }}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View
-                    style={{
-                      width: '100%',
-                      aspectRatio: 4 / 3,
-                      backgroundColor: colors.stampRed,
-                      borderRadius: 2,
-                    }}
-                  />
-                )}
-                {!!offer.title && (
-                  <MonoText
-                    size={13}
-                    tracking={0.4}
-                    weight="700"
-                    align="center"
-                    color={colors.textOnSurface}
-                    style={{ marginTop: 10 }}
-                  >
-                    {offer.title}
-                  </MonoText>
-                )}
-                {!!offer.subtitle && (
-                  <MonoText
-                    size={10}
-                    tracking={0.4}
-                    align="center"
-                    color={`${colors.textOnSurface}88`}
-                    style={{ marginTop: 4 }}
-                  >
-                    {offer.subtitle}
-                  </MonoText>
-                )}
-                {!!offer.badge && (
-                  <View style={{ alignItems: 'center', marginTop: 8 }}>
-                    <View
-                      style={{
-                        backgroundColor: colors.stampRed,
-                        paddingHorizontal: 10,
-                        paddingVertical: 4,
-                        borderRadius: 2,
-                      }}
-                    >
-                      <MonoText
-                        size={10}
-                        tracking={2}
-                        uppercase
-                        weight="800"
-                        color="#ffffff"
-                      >
-                        {offer.badge}
-                      </MonoText>
-                    </View>
-                  </View>
-                )}
-              </PolaroidCard>
-            </View>
-          ))
+          <LoyaltyTab
+            balance={balance}
+            pointsValue={pointsValue}
+            lifetimeValue={lifetimeValue}
+            colors={colors}
+            isArabic={isArabic}
+            brandTitle={brandTitle}
+            logoUrl={logoUrl}
+            onAddToWallet={() => router.push('/loyalty-modal' as never)}
+            onOpenRoadmap={() => router.push('/rewards' as never)}
+            signedIn={!!user?.id}
+          />
         )}
       </ScrollView>
     </View>
+  );
+}
+
+/* ─────────────────────────── Promos tab ─────────────────────────── */
+
+function PromosTab({
+  loading,
+  entries,
+  colors,
+  isArabic,
+}: {
+  loading: boolean;
+  entries: OfferEntry[];
+  colors: ReturnType<typeof resolvePolaroidColors>;
+  isArabic: boolean;
+}) {
+  if (loading && entries.length === 0) {
+    return (
+      <View style={{ paddingVertical: 60, alignItems: 'center' }}>
+        <ActivityIndicator color={colors.accent} />
+      </View>
+    );
+  }
+  if (entries.length === 0) {
+    return (
+      <View style={{ paddingVertical: 60, alignItems: 'center' }}>
+        <MonoText size={11} tracking={1.5} uppercase color={`${colors.text}66`}>
+          {isArabic ? 'لا توجد عروض الآن' : 'No promos right now'}
+        </MonoText>
+      </View>
+    );
+  }
+  return (
+    <>
+      {entries.map((offer, idx) => (
+        <View key={offer.id} style={{ marginBottom: 16 }}>
+          <PolaroidCard
+            rotation={rotationForIndex(idx + 1)}
+            large
+            style={{ padding: 6, paddingBottom: 16 }}
+          >
+            {/* Bounded image — `cover` + a fixed aspect ratio so
+                wide source images don't blow out the polaroid frame
+                (was causing the cropped "Versio…" text earlier). */}
+            {offer.image ? (
+              <Image
+                source={{ uri: offer.image }}
+                style={{
+                  width: '100%',
+                  aspectRatio: 4 / 3,
+                  backgroundColor: '#e7e2d6',
+                  borderRadius: 2,
+                }}
+                resizeMode="cover"
+              />
+            ) : (
+              <View
+                style={{
+                  width: '100%',
+                  aspectRatio: 4 / 3,
+                  backgroundColor: colors.stampRed,
+                  borderRadius: 2,
+                }}
+              />
+            )}
+            {!!offer.title && (
+              <MonoText
+                size={13}
+                tracking={0.4}
+                weight="700"
+                align="center"
+                color={colors.textOnSurface}
+                style={{ marginTop: 10, paddingHorizontal: 8 }}
+                numberOfLines={2}
+              >
+                {offer.title}
+              </MonoText>
+            )}
+            {!!offer.subtitle && (
+              <MonoText
+                size={10}
+                tracking={0.4}
+                align="center"
+                color={`${colors.textOnSurface}88`}
+                style={{ marginTop: 4, paddingHorizontal: 8 }}
+                numberOfLines={3}
+              >
+                {offer.subtitle}
+              </MonoText>
+            )}
+            {!!offer.badge && (
+              <View style={{ alignItems: 'center', marginTop: 8 }}>
+                <View
+                  style={{
+                    backgroundColor: colors.stampRed,
+                    paddingHorizontal: 12,
+                    paddingVertical: 5,
+                    borderRadius: 2,
+                  }}
+                >
+                  <MonoText
+                    size={11}
+                    tracking={2.2}
+                    uppercase
+                    weight="800"
+                    color="#ffffff"
+                  >
+                    {offer.badge}
+                  </MonoText>
+                </View>
+              </View>
+            )}
+          </PolaroidCard>
+        </View>
+      ))}
+    </>
+  );
+}
+
+/* ─────────────────────────── Loyalty tab ─────────────────────────── */
+
+function LoyaltyTab({
+  balance,
+  pointsValue,
+  lifetimeValue,
+  colors,
+  isArabic,
+  brandTitle,
+  logoUrl,
+  onAddToWallet,
+  onOpenRoadmap,
+  signedIn,
+}: {
+  balance: LoyaltyBalance | null;
+  pointsValue: number;
+  lifetimeValue: number;
+  colors: ReturnType<typeof resolvePolaroidColors>;
+  isArabic: boolean;
+  brandTitle: string;
+  logoUrl: string | null;
+  onAddToWallet: () => void;
+  onOpenRoadmap: () => void;
+  signedIn: boolean;
+}) {
+  if (!signedIn) {
+    return (
+      <View style={{ paddingVertical: 60, alignItems: 'center' }}>
+        <MonoText size={11} tracking={1.5} uppercase color={`${colors.text}66`} align="center">
+          {isArabic ? 'سجل الدخول لعرض ولاؤك' : 'Sign in to view your loyalty'}
+        </MonoText>
+      </View>
+    );
+  }
+  const isCashback = balance?.loyaltyType === 'cashback';
+
+  return (
+    <>
+      {/* Points / cashback balance polaroid */}
+      <View style={{ marginBottom: 16 }}>
+        <PolaroidCard rotation="-1.2deg" large style={{ paddingVertical: 18, paddingHorizontal: 18 }}>
+          <MonoText
+            size={9}
+            tracking={2}
+            uppercase
+            weight="700"
+            align="center"
+            color={`${colors.textOnSurface}80`}
+          >
+            {isCashback
+              ? (isArabic ? 'كاش باك' : 'Cashback')
+              : (isArabic ? 'نقاطك' : 'Your Points')}
+          </MonoText>
+          <MonoText
+            size={isCashback ? 28 : 36}
+            tracking={-0.5}
+            weight="800"
+            align="center"
+            color={colors.textOnSurface}
+            style={{ marginTop: 4 }}
+          >
+            {isCashback
+              ? `${(balance?.cashbackBalance ?? 0).toFixed(2)} ${isArabic ? 'ر.س' : 'SAR'}`
+              : pointsValue}
+          </MonoText>
+          {!isCashback && (
+            <MonoText
+              size={9}
+              tracking={1.5}
+              uppercase
+              align="center"
+              color={`${colors.textOnSurface}66`}
+              style={{ marginTop: 4 }}
+            >
+              {isArabic
+                ? `${lifetimeValue} نقطة مكتسبة`
+                : `${lifetimeValue} lifetime`}
+            </MonoText>
+          )}
+        </PolaroidCard>
+      </View>
+
+      {/* Wallet pass preview — looks like the actual pass laid on
+          the kraft board, so the merchant can see what they're
+          adding before they tap. */}
+      <View style={{ marginBottom: 16 }}>
+        <PolaroidCard
+          rotation="0.8deg"
+          large
+          surfaceColor={colors.accent}
+          style={{ padding: 14 }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
+            {logoUrl ? (
+              <Image
+                source={{ uri: logoUrl }}
+                style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: '#ffffff22', marginEnd: 10 }}
+                resizeMode="contain"
+              />
+            ) : null}
+            <View style={{ flex: 1 }}>
+              <MonoText size={9} tracking={2} uppercase weight="700" color="#ffffff" style={{ opacity: 0.7 }}>
+                {isArabic ? 'بطاقة الولاء' : 'Loyalty Pass'}
+              </MonoText>
+              <MonoText size={13} weight="800" color="#ffffff" numberOfLines={1}>
+                {brandTitle}
+              </MonoText>
+            </View>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+            <View>
+              <MonoText size={8} tracking={2} uppercase color="#ffffff" style={{ opacity: 0.7 }}>
+                {isCashback ? (isArabic ? 'الرصيد' : 'Balance') : (isArabic ? 'النقاط' : 'Points')}
+              </MonoText>
+              <MonoText size={22} weight="800" color="#ffffff" style={{ marginTop: 2 }}>
+                {isCashback
+                  ? `${(balance?.cashbackBalance ?? 0).toFixed(0)}`
+                  : pointsValue}
+              </MonoText>
+            </View>
+            {/* Barcode placeholder bars — purely cosmetic. The real
+                wallet pass renders an actual scannable code. */}
+            <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 32 }}>
+              {[3, 1, 2, 1, 4, 2, 1, 3, 2, 1, 3].map((w, i) => (
+                <View
+                  key={i}
+                  style={{
+                    width: w,
+                    height: '100%',
+                    backgroundColor: '#ffffff',
+                    marginEnd: 1,
+                    opacity: 0.85,
+                  }}
+                />
+              ))}
+            </View>
+          </View>
+        </PolaroidCard>
+      </View>
+
+      {/* Add to Apple Wallet CTA — terracotta polaroid */}
+      <View style={{ marginBottom: 14 }}>
+        <PolaroidCard
+          rotation="-0.6deg"
+          large
+          surfaceColor={colors.surface}
+          style={{ paddingVertical: 14, paddingHorizontal: 16 }}
+        >
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={onAddToWallet}
+            style={{
+              backgroundColor: '#000000',
+              paddingVertical: 12,
+              borderRadius: 8,
+              alignItems: 'center',
+              flexDirection: 'row',
+              justifyContent: 'center',
+              gap: 8,
+            }}
+          >
+            <MonoText size={14} color="#ffffff" weight="700">▸</MonoText>
+            <MonoText size={11} tracking={1.5} uppercase weight="800" color="#ffffff">
+              {isArabic ? 'أضف إلى Apple Wallet' : 'Add to Apple Wallet'}
+            </MonoText>
+          </TouchableOpacity>
+          <MonoText
+            size={9}
+            tracking={1.2}
+            uppercase
+            align="center"
+            color={`${colors.textOnSurface}66`}
+            style={{ marginTop: 8 }}
+          >
+            {isArabic
+              ? 'احتفظ ببطاقتك في جوالك'
+              : 'Keep your card on your phone'}
+          </MonoText>
+        </PolaroidCard>
+      </View>
+
+      {/* Rewards roadmap shortcut */}
+      <View style={{ marginBottom: 14 }}>
+        <PolaroidCard
+          rotation="1deg"
+          large
+          style={{ paddingVertical: 12, paddingHorizontal: 16 }}
+        >
+          <TouchableOpacity activeOpacity={0.85} onPress={onOpenRoadmap}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <View
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 999,
+                  backgroundColor: colors.accent,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginEnd: 12,
+                }}
+              >
+                <MonoText size={16} color="#ffffff">★</MonoText>
+              </View>
+              <View style={{ flex: 1 }}>
+                <MonoText size={11} tracking={1.5} uppercase weight="800" color={colors.textOnSurface}>
+                  {isArabic ? 'مسار المكافآت' : 'Rewards roadmap'}
+                </MonoText>
+                <MonoText size={9} color={`${colors.textOnSurface}77`} style={{ marginTop: 2 }}>
+                  {isArabic
+                    ? 'تتبع كل معلم في طريقك'
+                    : 'See every milestone on the way'}
+                </MonoText>
+              </View>
+              <MonoText size={16} color={`${colors.textOnSurface}77`}>›</MonoText>
+            </View>
+          </TouchableOpacity>
+        </PolaroidCard>
+      </View>
+    </>
   );
 }

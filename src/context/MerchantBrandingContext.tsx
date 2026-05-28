@@ -425,7 +425,30 @@ export function MerchantBrandingProvider({ children }: { children: ReactNode }) 
     return () => sub.remove();
   }, []);
 
-  const value = useMemo(() => ({ ...branding, loading }), [branding, loading]);
+  // Polaroid override: when the merchant has picked the Polaroid
+  // layout, repaint the classic color slots (primary / background /
+  // card / text / tab text) using the polaroid layout tokens so
+  // EVERY existing screen that reads useMerchantBranding() — the
+  // wallet, the rewards catalog, the order detail, the product
+  // modal, etc. — paints with the polaroid palette instead of the
+  // merchant's classic-era green. Layout consumers keep reading the
+  // raw layoutColors object; that's untouched.
+  const themed = useMemo(() => {
+    if (branding.menuLayout !== 'polaroid') return branding;
+    const lc = branding.layoutColors || {};
+    const accent = lc.accent ?? '#e07b3a';
+    return {
+      ...branding,
+      primaryColor: accent,
+      accentColor: accent,
+      backgroundColor: lc.bg ?? '#1e1508',
+      menuCardColor: lc.surface ?? '#ffffff',
+      textColor: lc.text ?? '#f0e2c8',
+      tabTextColor: lc.tabBarActive ?? accent,
+    };
+  }, [branding]);
+
+  const value = useMemo(() => ({ ...themed, loading }), [themed, loading]);
 
   return (
     <MerchantBrandingContext.Provider value={value}>
