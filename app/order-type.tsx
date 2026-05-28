@@ -10,6 +10,8 @@ import { useMenuContext } from '../src/context/MenuContext';
 import { useOperations } from '../src/context/OperationsContext';
 import { useSavedAddresses } from '../src/context/SavedAddressesContext';
 import { SwipeableBottomSheet } from '../src/components/common/SwipeableBottomSheet';
+import { MonoText, PolaroidCard } from '../src/layouts/polaroid/PolaroidCard';
+import { POLAROID_FONT, resolvePolaroidColors, rotationForIndex } from '../src/layouts/polaroid/styles';
 
 const SCREEN_HEIGHT = Dimensions.get('window').height;
 
@@ -17,7 +19,9 @@ export default function OrderTypeScreen() {
   const router = useRouter();
   const { i18n } = useTranslation();
   const insets = useSafeAreaInsets();
-  const { primaryColor } = useMerchantBranding();
+  const { primaryColor, menuLayout, layoutColors } = useMerchantBranding();
+  const isPolaroid = menuLayout === 'polaroid';
+  const polaroid = useMemo(() => resolvePolaroidColors(layoutColors), [layoutColors]);
   const { orderType, setOrderType, selectedBranch, setSelectedBranch, setDeliveryAddress } = useCart();
   const { branches } = useMenuContext();
   const { isClosed, isBusy, isPickupOnly, deliveryEnabled, pickupEnabled, drivethruEnabled } = useOperations();
@@ -173,7 +177,22 @@ export default function OrderTypeScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {step === 'choice' && (
+        {step === 'choice' && isPolaroid && (
+          <PolaroidChoice
+            polaroid={polaroid}
+            isArabic={isArabic}
+            isClosed={isClosed}
+            isBusy={isBusy}
+            isPickupOnly={isPickupOnly}
+            deliveryEnabled={deliveryEnabled}
+            pickupEnabled={pickupEnabled}
+            drivethruEnabled={drivethruEnabled}
+            onDelivery={handleDelivery}
+            onPickup={() => { setOrderType('pickup'); setStep('branch'); }}
+            onDrivethru={() => { setOrderType('drivethru'); setStep('branch'); }}
+          />
+        )}
+        {step === 'choice' && !isPolaroid && (
           <View>
             <Text className="text-2xl font-bold text-slate-900 mb-6">{isArabic ? 'كيف تود استلامه؟' : "How'll you have it?"}</Text>
             {(isClosed || isBusy) && (
@@ -255,7 +274,16 @@ export default function OrderTypeScreen() {
           </View>
         )}
 
-        {step === 'branch' && (
+        {step === 'branch' && isPolaroid && (
+          <PolaroidBranches
+            polaroid={polaroid}
+            isArabic={isArabic}
+            branches={sortedBranches}
+            selectedId={selectedBranch?.id ?? null}
+            onPick={handleSelectBranch}
+          />
+        )}
+        {step === 'branch' && !isPolaroid && (
           <View className="pb-8">
             <Text className="text-2xl font-bold mb-6">{isArabic ? 'اختر الفرع' : 'Select Branch'}</Text>
             {sortedBranches.map((b) => (
@@ -282,5 +310,204 @@ export default function OrderTypeScreen() {
       )}
       </SwipeableBottomSheet>
     </KeyboardAvoidingView>
+  );
+}
+
+/* ────────── Polaroid bottom-sheet body ────────── */
+
+type PolaroidColors = ReturnType<typeof resolvePolaroidColors>;
+
+function PolaroidPanel({ polaroid, children }: { polaroid: PolaroidColors; children: React.ReactNode }) {
+  return (
+    <View
+      style={{
+        backgroundColor: polaroid.bg,
+        marginHorizontal: -20,
+        marginTop: -16,
+        paddingHorizontal: 20,
+        paddingTop: 20,
+        paddingBottom: 24,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+      }}
+    >
+      {children}
+    </View>
+  );
+}
+
+function PolaroidChoice({
+  polaroid,
+  isArabic,
+  isClosed,
+  isBusy,
+  isPickupOnly,
+  deliveryEnabled,
+  pickupEnabled,
+  drivethruEnabled,
+  onDelivery,
+  onPickup,
+  onDrivethru,
+}: {
+  polaroid: PolaroidColors;
+  isArabic: boolean;
+  isClosed: boolean;
+  isBusy: boolean;
+  isPickupOnly: boolean;
+  deliveryEnabled: boolean;
+  pickupEnabled: boolean;
+  drivethruEnabled: boolean;
+  onDelivery: () => void;
+  onPickup: () => void;
+  onDrivethru: () => void;
+}) {
+  const disabled = isClosed || isBusy;
+  const rows: Array<{ key: string; show: boolean; emoji: string; titleEn: string; titleAr: string; subEn: string; subAr: string; onPress: () => void }> = [
+    { key: 'pickup', show: pickupEnabled, emoji: '🥡', titleEn: 'In-Store Pickup', titleAr: 'استلام من الفرع', subEn: 'Skip the line', subAr: 'تجاوز الانتظار', onPress: onPickup },
+    { key: 'delivery', show: !isPickupOnly && deliveryEnabled, emoji: '🛵', titleEn: 'Delivery', titleAr: 'التوصيل', subEn: 'To your doorstep', subAr: 'حتى باب منزلك', onPress: onDelivery },
+    { key: 'drivethru', show: drivethruEnabled, emoji: '🚗', titleEn: 'From the car', titleAr: 'استلام من السيارة', subEn: 'Curbside pickup', subAr: 'استلام أمام الفرع', onPress: onDrivethru },
+  ].filter((r) => r.show);
+
+  return (
+    <PolaroidPanel polaroid={polaroid}>
+      <MonoText size={22} color={polaroid.text} style={{ fontFamily: POLAROID_FONT.serif, fontStyle: 'italic' }}>
+        {isArabic ? 'كيف تود استلامه؟' : "How'll you have it?"}
+      </MonoText>
+      <MonoText size={9} tracking={1.8} uppercase color={`${polaroid.text}66`} style={{ marginTop: 4 }}>
+        {isArabic ? 'اختر طريقة الاستلام' : 'Pick a pickup style'}
+      </MonoText>
+
+      {disabled && (
+        <View style={{ marginTop: 14 }}>
+          <PolaroidCard rotation="-0.6deg" surfaceColor={polaroid.stampRed} style={{ paddingVertical: 12, paddingHorizontal: 14 }}>
+            <MonoText size={10} tracking={1.8} uppercase weight="800" color="#ffffff">
+              {isClosed ? (isArabic ? 'المتجر مغلق' : 'Store closed') : (isArabic ? 'المتجر مشغول' : 'Store busy')}
+            </MonoText>
+            <MonoText size={9} color="#ffffff" style={{ marginTop: 4, opacity: 0.85 }}>
+              {isClosed
+                ? (isArabic ? 'تصفح القائمة الآن، والطلبات تفتح عند إعادة الافتتاح' : 'Browse now; orders reopen when we do')
+                : (isArabic ? 'الطلبات الجديدة متوقفة مؤقتاً' : 'New orders paused briefly')}
+            </MonoText>
+          </PolaroidCard>
+        </View>
+      )}
+
+      <View style={{ marginTop: 18 }}>
+        {rows.map((r, i) => (
+          <View key={r.key} style={{ marginBottom: 14, opacity: disabled ? 0.55 : 1 }}>
+            <PolaroidCard rotation={rotationForIndex(i)} large style={{ padding: 12 }}>
+              <TouchableOpacity activeOpacity={0.85} onPress={disabled ? undefined : r.onPress} disabled={disabled}>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <View
+                    style={{
+                      width: 56,
+                      height: 56,
+                      backgroundColor: '#e7e2d6',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginEnd: 14,
+                    }}
+                  >
+                    <MonoText size={32} color={polaroid.textOnSurface}>{r.emoji}</MonoText>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <MonoText size={13} weight="700" tracking={0.4} color={polaroid.textOnSurface}>
+                      {isArabic ? r.titleAr : r.titleEn}
+                    </MonoText>
+                    <MonoText size={9} tracking={1.4} uppercase color={`${polaroid.textOnSurface}88`} style={{ marginTop: 4 }}>
+                      {isArabic ? r.subAr : r.subEn}
+                    </MonoText>
+                  </View>
+                  <View
+                    style={{
+                      width: 32, height: 32, borderRadius: 999,
+                      backgroundColor: polaroid.accent,
+                      alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    <MonoText size={14} color="#ffffff" weight="800">›</MonoText>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            </PolaroidCard>
+          </View>
+        ))}
+
+        {rows.length === 0 && (
+          <PolaroidCard rotation="0.4deg" surfaceColor={polaroid.stampRed} style={{ padding: 14 }}>
+            <MonoText size={11} tracking={1.4} uppercase weight="800" color="#ffffff">
+              {isArabic ? 'لا توجد طرق طلب متاحة' : 'No order types available'}
+            </MonoText>
+          </PolaroidCard>
+        )}
+      </View>
+    </PolaroidPanel>
+  );
+}
+
+function PolaroidBranches({
+  polaroid,
+  isArabic,
+  branches,
+  selectedId,
+  onPick,
+}: {
+  polaroid: PolaroidColors;
+  isArabic: boolean;
+  branches: Array<{ id: string; name: string; address: string; distance?: string }>;
+  selectedId: string | null;
+  onPick: (b: { id: string; name: string; address: string; distance?: string }) => void;
+}) {
+  return (
+    <PolaroidPanel polaroid={polaroid}>
+      <MonoText size={22} color={polaroid.text} style={{ fontFamily: POLAROID_FONT.serif, fontStyle: 'italic' }}>
+        {isArabic ? 'اختر الفرع' : 'Pick a branch'}
+      </MonoText>
+      <MonoText size={9} tracking={1.8} uppercase color={`${polaroid.text}66`} style={{ marginTop: 4 }}>
+        {isArabic ? 'ادرس المسافة' : 'Closest first'}
+      </MonoText>
+
+      <View style={{ marginTop: 18 }}>
+        {branches.map((b, i) => {
+          const isOn = b.id === selectedId;
+          return (
+            <View key={b.id} style={{ marginBottom: 12 }}>
+              <PolaroidCard
+                rotation={rotationForIndex(i)}
+                surfaceColor={isOn ? polaroid.accent : polaroid.surface}
+                style={{ padding: 12 }}
+              >
+                <TouchableOpacity activeOpacity={0.85} onPress={() => onPick(b)}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <View
+                      style={{
+                        width: 36, height: 36, borderRadius: 999,
+                        backgroundColor: isOn ? '#ffffff22' : `${polaroid.textOnSurface}11`,
+                        alignItems: 'center', justifyContent: 'center', marginEnd: 12,
+                      }}
+                    >
+                      <MapPin size={18} color={isOn ? '#ffffff' : polaroid.textOnSurface} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <MonoText size={13} weight="700" color={isOn ? '#ffffff' : polaroid.textOnSurface} numberOfLines={1}>
+                        {b.name}
+                      </MonoText>
+                      <MonoText size={9} tracking={1.2} uppercase color={isOn ? '#ffffffaa' : `${polaroid.textOnSurface}88`} style={{ marginTop: 2 }} numberOfLines={1}>
+                        {b.address}
+                      </MonoText>
+                    </View>
+                    {!!b.distance && (
+                      <MonoText size={10} tracking={1.4} weight="800" color={isOn ? '#ffffff' : polaroid.accent}>
+                        {b.distance}
+                      </MonoText>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              </PolaroidCard>
+            </View>
+          );
+        })}
+      </View>
+    </PolaroidPanel>
   );
 }

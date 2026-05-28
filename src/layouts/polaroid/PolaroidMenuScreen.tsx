@@ -15,7 +15,7 @@
  * this screen is purely a visual swap of the classic menu.tsx.
  */
 import { useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -31,7 +31,9 @@ import {
 } from 'react-native';
 import { useCart } from '../../context/CartContext';
 import { useMenuContext } from '../../context/MenuContext';
+import { useMerchant } from '../../context/MerchantContext';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
+import { fetchNooksBanners, type NooksBanner } from '../../api/nooksBanners';
 import { MonoText, PolaroidCard } from './PolaroidCard';
 import { POLAROID_FONT, resolvePolaroidColors, rotationForIndex } from './styles';
 
@@ -52,12 +54,25 @@ export default function PolaroidMenuScreen() {
     addToCart,
   } = useCart();
   const { products, categories, loading } = useMenuContext();
-  const { layoutColors, appName, cafeName, logoUrl } = useMerchantBranding();
+  const { layoutColors, logoUrl } = useMerchantBranding();
+  const { merchantId } = useMerchant();
   const colors = useMemo(() => resolvePolaroidColors(layoutColors), [layoutColors]);
 
   const displayCategories = useMemo(() => categories.filter((c) => c !== 'All'), [categories]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [banners, setBanners] = useState<NooksBanner[]>([]);
+
+  useEffect(() => {
+    if (!merchantId) return;
+    fetchNooksBanners(merchantId).then(setBanners).catch(() => setBanners([]));
+  }, [merchantId]);
+
+  const sliderBanners = useMemo(
+    () => banners.filter((b) => b.placement === 'slider' && b.image_url),
+    [banners],
+  );
 
   // Group products by category — we show ALL categories as sections
   // on the same page now (no single-category filter). Search narrows
@@ -112,7 +127,6 @@ export default function PolaroidMenuScreen() {
     [addToCart, openProduct, products],
   );
 
-  const brandTitle = appName || cafeName || 'Menu';
   const headerLocation = orderType === 'delivery'
     ? deliveryAddress?.address || (isArabic ? 'أضف عنواناً' : 'Add address')
     : selectedBranch?.name || (isArabic ? 'اختر الفرع' : 'Select branch');
@@ -123,101 +137,104 @@ export default function PolaroidMenuScreen() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
 
-      {/* Top header band — in-app logo + brand + location */}
-      <View style={{ paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 10 }}>
+      {/* Top header — logo (left), location dropdown, search icon (right). No brand text. */}
+      <View style={{ paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 8 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           {logoUrl ? (
             <Image
               source={{ uri: logoUrl }}
-              style={{ width: 42, height: 42, borderRadius: 10, marginEnd: 12, backgroundColor: '#ffffff10' }}
+              style={{ width: 44, height: 44, borderRadius: 10, marginEnd: 12, backgroundColor: '#ffffff10' }}
               resizeMode="contain"
             />
           ) : null}
-          <View style={{ flex: 1 }}>
+          <TouchableOpacity
+            onPress={() => router.push('/order-type')}
+            activeOpacity={0.7}
+            style={{ flex: 1 }}
+          >
             <MonoText
-              size={22}
-              tracking={-0.3}
-              color={colors.text}
-              style={{ fontFamily: POLAROID_FONT.serif, fontStyle: 'italic' }}
+              size={11}
+              tracking={2}
+              uppercase
+              weight="700"
+              color={`${colors.text}aa`}
               numberOfLines={1}
             >
-              {brandTitle}
+              {headerLocation} ▾
             </MonoText>
-            <TouchableOpacity onPress={() => router.push('/order-type')} activeOpacity={0.7}>
-              <MonoText
-                size={10}
-                tracking={2}
-                uppercase
-                color={`${colors.text}80`}
-                style={{ marginTop: 2 }}
-                numberOfLines={1}
-              >
-                {headerLocation} ▾
-              </MonoText>
-            </TouchableOpacity>
-          </View>
-          {/* Rewards roadmap CTA */}
+          </TouchableOpacity>
+          {/* Search icon button — taps toggle inline search field below */}
           <TouchableOpacity
-            onPress={() => router.push('/rewards' as never)}
+            onPress={() => {
+              setSearchOpen((v) => {
+                if (v) setSearchQuery('');
+                return !v;
+              });
+            }}
             activeOpacity={0.8}
-            accessibilityLabel={isArabic ? 'مسار النقاط' : 'Rewards roadmap'}
+            accessibilityLabel={isArabic ? 'بحث' : 'Search'}
             style={{
-              backgroundColor: colors.accent,
-              paddingHorizontal: 10,
-              paddingVertical: 7,
+              width: 40,
+              height: 40,
               borderRadius: 999,
-              marginStart: 8,
-              flexDirection: 'row',
+              backgroundColor: searchOpen ? colors.accent : `${colors.text}14`,
               alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: 1,
+              borderColor: searchOpen ? colors.accent : `${colors.text}22`,
+              marginStart: 8,
             }}
           >
-            <MonoText size={12} weight="700" color="#ffffff" style={{ marginEnd: 4 }}>★</MonoText>
-            <MonoText size={9} tracking={1.4} uppercase weight="700" color="#ffffff">
-              {isArabic ? 'مكافآت' : 'Rewards'}
+            <MonoText size={16} weight="700" color={searchOpen ? '#ffffff' : colors.text}>
+              {searchOpen ? '✕' : '⌕'}
             </MonoText>
           </TouchableOpacity>
         </View>
 
-        {/* Search bar */}
-        <View
-          style={{
-            marginTop: 12,
-            flexDirection: 'row',
-            alignItems: 'center',
-            backgroundColor: `${colors.text}10`,
-            borderRadius: 12,
-            paddingHorizontal: 12,
-            height: 38,
-            borderWidth: 1,
-            borderColor: `${colors.text}1F`,
-          }}
-        >
-          <MonoText size={13} color={`${colors.text}88`} style={{ marginEnd: 8 }}>⌕</MonoText>
-          <TextInput
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder={isArabic ? 'ابحث في القائمة' : 'Search menu'}
-            placeholderTextColor={`${colors.text}55`}
+        {/* Inline search field — only visible when toggled */}
+        {searchOpen && (
+          <View
             style={{
-              flex: 1,
-              color: colors.text,
-              fontFamily: POLAROID_FONT.mono,
-              fontSize: 12,
-              padding: 0,
-              textAlign: isArabic ? 'right' : 'left',
+              marginTop: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: `${colors.text}10`,
+              borderRadius: 12,
+              paddingHorizontal: 12,
+              height: 40,
+              borderWidth: 1,
+              borderColor: `${colors.text}1F`,
             }}
-            autoCorrect={false}
-            returnKeyType="search"
-          />
-          {searchQuery.length > 0 ? (
-            <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <MonoText size={12} color={`${colors.text}99`}>✕</MonoText>
-            </TouchableOpacity>
-          ) : null}
-        </View>
+          >
+            <MonoText size={13} color={`${colors.text}88`} style={{ marginEnd: 8 }}>⌕</MonoText>
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder={isArabic ? 'ابحث في القائمة' : 'Search menu'}
+              placeholderTextColor={`${colors.text}55`}
+              autoFocus
+              style={{
+                flex: 1,
+                color: colors.text,
+                fontFamily: POLAROID_FONT.mono,
+                fontSize: 13,
+                padding: 0,
+                textAlign: isArabic ? 'right' : 'left',
+              }}
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+            {searchQuery.length > 0 ? (
+              <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <MonoText size={12} color={`${colors.text}99`}>✕</MonoText>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        )}
 
-        {/* Order-type chips (rotated mini polaroids) */}
-        <View style={{ flexDirection: 'row', marginTop: 14, marginHorizontal: -3 }}>
+        {/* Order-type chips (rotated mini polaroids) — pushed up
+            since the search row is collapsed by default. */}
+        <View style={{ flexDirection: 'row', marginTop: 12, marginHorizontal: -3 }}>
           {orderTypeChips.map((chip, idx) => {
             const active = orderType === chip.key;
             return (
@@ -274,8 +291,10 @@ export default function PolaroidMenuScreen() {
         <ScrollView
           contentContainerStyle={{
             paddingHorizontal: 10,
-            paddingTop: 14,
-            paddingBottom: totalItems > 0 ? 200 : 140,
+            paddingTop: 8,
+            // Bottom padding stacks: tab bar (~96 ios) + floating
+            // rewards FAB (~64) + cart bar (~70) when present.
+            paddingBottom: totalItems > 0 ? 240 : 180,
           }}
           refreshControl={
             <RefreshControl
@@ -286,6 +305,51 @@ export default function PolaroidMenuScreen() {
             />
           }
         >
+          {/* Banner slider — polaroid-styled horizontal carousel of
+              merchant-uploaded slider banners. Concept mirrors the
+              classic menu slider but rendered as rotated polaroid
+              cards on the kraft board. */}
+          {sliderBanners.length > 0 && (
+            <View style={{ marginBottom: 16, marginHorizontal: -2 }}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}
+                snapToAlignment="start"
+                decelerationRate="fast"
+              >
+                {sliderBanners.map((b, i) => (
+                  <View key={b.id} style={{ width: 260, marginEnd: 14 }}>
+                    <PolaroidCard
+                      rotation={rotationForIndex(i)}
+                      large
+                      style={{ padding: 6, paddingBottom: 12 }}
+                    >
+                      <Image
+                        source={{ uri: b.image_url! }}
+                        style={{ width: '100%', aspectRatio: 16 / 10, backgroundColor: '#e7e2d6', borderRadius: 2 }}
+                        resizeMode="cover"
+                      />
+                      {!!b.title && (
+                        <MonoText
+                          size={11}
+                          tracking={0.4}
+                          weight="700"
+                          align="center"
+                          color={colors.textOnSurface}
+                          style={{ marginTop: 8 }}
+                          numberOfLines={1}
+                        >
+                          {b.title}
+                        </MonoText>
+                      )}
+                    </PolaroidCard>
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
           {groupedProducts.map((section, sIdx) => (
             <View key={section.category} style={{ marginBottom: sIdx === groupedProducts.length - 1 ? 0 : 18 }}>
               <View
@@ -413,14 +477,66 @@ export default function PolaroidMenuScreen() {
         </ScrollView>
       )}
 
-      {/* Sticky polaroid cart bar */}
+      {/* Floating Rewards FAB — always anchored just above the tab
+          bar. When the cart bar appears it stacks on top, so the
+          rewards button stays the visible floor. */}
+      <View
+        style={{
+          position: 'absolute',
+          left: 14,
+          right: 14,
+          bottom: Platform.OS === 'ios' ? 110 : 92,
+          zIndex: 40,
+        }}
+        pointerEvents="box-none"
+      >
+        <TouchableOpacity
+          onPress={() => router.push('/rewards' as never)}
+          activeOpacity={0.88}
+          accessibilityLabel={isArabic ? 'مسار النقاط' : 'Rewards roadmap'}
+          style={{
+            backgroundColor: colors.accent,
+            borderRadius: 999,
+            paddingVertical: 12,
+            paddingHorizontal: 18,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOpacity: 0.4,
+            shadowRadius: 12,
+            shadowOffset: { width: 0, height: 6 },
+            elevation: 10,
+          }}
+        >
+          <View
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 999,
+              backgroundColor: '#ffffff22',
+              alignItems: 'center',
+              justifyContent: 'center',
+              marginEnd: 10,
+            }}
+          >
+            <MonoText size={14} weight="800" color="#ffffff">★</MonoText>
+          </View>
+          <MonoText size={12} tracking={2.2} uppercase weight="800" color="#ffffff">
+            {isArabic ? 'مسار المكافآت' : 'Rewards Roadmap'}
+          </MonoText>
+        </TouchableOpacity>
+      </View>
+
+      {/* Sticky polaroid cart bar — sits ABOVE the rewards FAB.
+          Bottom offset = tab bar height + FAB height + margin. */}
       {totalItems > 0 && (
         <View
           style={{
             position: 'absolute',
             left: 12,
             right: 12,
-            bottom: Platform.OS === 'ios' ? 110 : 92,
+            bottom: Platform.OS === 'ios' ? 175 : 155,
             zIndex: 50,
           }}
           pointerEvents="box-none"

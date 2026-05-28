@@ -31,6 +31,8 @@ import { loyaltyApi, type LoyaltyBalance } from '../../api/loyalty';
 import { useAuth } from '../../context/AuthContext';
 import { useMerchant } from '../../context/MerchantContext';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
+import { useAppleWalletPass } from '../../hooks/useAppleWalletPass';
+import { AppleWalletAddPassButton } from '../../components/apple-wallet/AppleWalletAddPassButton';
 import { MonoText, PolaroidCard } from './PolaroidCard';
 import { POLAROID_FONT, resolvePolaroidColors, rotationForIndex } from './styles';
 
@@ -221,7 +223,8 @@ export default function PolaroidOffersScreen() {
             isArabic={isArabic}
             brandTitle={brandTitle}
             logoUrl={logoUrl}
-            onAddToWallet={() => router.push('/loyalty-modal' as never)}
+            merchantId={merchantId}
+            userId={user?.id ?? null}
             onOpenRoadmap={() => router.push('/rewards' as never)}
             signedIn={!!user?.id}
           />
@@ -357,7 +360,8 @@ function LoyaltyTab({
   isArabic,
   brandTitle,
   logoUrl,
-  onAddToWallet,
+  merchantId,
+  userId,
   onOpenRoadmap,
   signedIn,
 }: {
@@ -368,10 +372,16 @@ function LoyaltyTab({
   isArabic: boolean;
   brandTitle: string;
   logoUrl: string | null;
-  onAddToWallet: () => void;
+  merchantId: string | null;
+  userId: string | null;
   onOpenRoadmap: () => void;
   signedIn: boolean;
 }) {
+  const { available: walletAvailable, loading: walletLoading, addPass } = useAppleWalletPass({
+    merchantId,
+    userId,
+    configUpdatedAt: balance?.configUpdatedAt ?? null,
+  });
   if (!signedIn) {
     return (
       <View style={{ paddingVertical: 60, alignItems: 'center' }}>
@@ -487,46 +497,44 @@ function LoyaltyTab({
         </PolaroidCard>
       </View>
 
-      {/* Add to Apple Wallet CTA — terracotta polaroid */}
-      <View style={{ marginBottom: 14 }}>
-        <PolaroidCard
-          rotation="-0.6deg"
-          large
-          surfaceColor={colors.surface}
-          style={{ paddingVertical: 14, paddingHorizontal: 16 }}
-        >
-          <TouchableOpacity
-            activeOpacity={0.85}
-            onPress={onAddToWallet}
-            style={{
-              backgroundColor: '#000000',
-              paddingVertical: 12,
-              borderRadius: 8,
-              alignItems: 'center',
-              flexDirection: 'row',
-              justifyContent: 'center',
-              gap: 8,
-            }}
+      {/* Real Apple Wallet add — native PKAddPassButton via the
+          same hook the classic offers screen uses, so the pass is
+          guaranteed to render correctly. iOS dedupes by pass type
+          id + serial, so tapping after the pass is already added
+          just re-opens it; tapping after deletion adds it back. */}
+      {walletAvailable && userId && merchantId && Platform.OS === 'ios' && (
+        <View style={{ marginBottom: 14 }}>
+          <PolaroidCard
+            rotation="-0.6deg"
+            large
+            surfaceColor={colors.surface}
+            style={{ paddingVertical: 14, paddingHorizontal: 16 }}
           >
-            <MonoText size={14} color="#ffffff" weight="700">▸</MonoText>
-            <MonoText size={11} tracking={1.5} uppercase weight="800" color="#ffffff">
-              {isArabic ? 'أضف إلى Apple Wallet' : 'Add to Apple Wallet'}
+            <View style={{ minHeight: 48, alignItems: 'center', justifyContent: 'center' }}>
+              {walletLoading ? (
+                <ActivityIndicator size="small" color={colors.accent} />
+              ) : (
+                <AppleWalletAddPassButton
+                  style={{ width: '100%', maxWidth: 320, height: 48, alignSelf: 'center' }}
+                  onWalletButtonPress={() => { void addPass(); }}
+                />
+              )}
+            </View>
+            <MonoText
+              size={9}
+              tracking={1.2}
+              uppercase
+              align="center"
+              color={`${colors.textOnSurface}66`}
+              style={{ marginTop: 8 }}
+            >
+              {isArabic
+                ? 'احتفظ ببطاقتك في جوالك'
+                : 'Keep your card on your phone'}
             </MonoText>
-          </TouchableOpacity>
-          <MonoText
-            size={9}
-            tracking={1.2}
-            uppercase
-            align="center"
-            color={`${colors.textOnSurface}66`}
-            style={{ marginTop: 8 }}
-          >
-            {isArabic
-              ? 'احتفظ ببطاقتك في جوالك'
-              : 'Keep your card on your phone'}
-          </MonoText>
-        </PolaroidCard>
-      </View>
+          </PolaroidCard>
+        </View>
+      )}
 
       {/* Rewards roadmap shortcut */}
       <View style={{ marginBottom: 14 }}>
