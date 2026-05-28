@@ -41,7 +41,7 @@ import { useCart } from '../../src/context/CartContext';
 import { useMerchant } from '../../src/context/MerchantContext';
 import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useMenuContext } from '../../src/context/MenuContext';
-import PolaroidMenuScreen from './_layouts/polaroid/PolaroidMenuScreen';
+import PolaroidMenuScreen from '../../src/layouts/polaroid/PolaroidMenuScreen';
 
 type SliderItem = { id: string; image: string; title: string; subtitle: string };
 

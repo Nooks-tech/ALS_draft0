@@ -27,12 +27,12 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { fetchNooksBanners, type NooksBanner } from '../../../../src/api/nooksBanners';
-import { fetchNooksPromos } from '../../../../src/api/nooksPromos';
-import { loyaltyApi, type LoyaltyBalance } from '../../../../src/api/loyalty';
-import { useAuth } from '../../../../src/context/AuthContext';
-import { useMerchant } from '../../../../src/context/MerchantContext';
-import { useMerchantBranding } from '../../../../src/context/MerchantBrandingContext';
+import { fetchNooksBanners, type NooksBanner } from '../../api/nooksBanners';
+import { fetchNooksPromos } from '../../api/nooksPromos';
+import { loyaltyApi, type LoyaltyBalance } from '../../api/loyalty';
+import { useAuth } from '../../context/AuthContext';
+import { useMerchant } from '../../context/MerchantContext';
+import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 import { MonoText, PolaroidCard } from './PolaroidCard';
 import { POLAROID_FONT, resolvePolaroidColors, rotationForIndex } from './styles';
 

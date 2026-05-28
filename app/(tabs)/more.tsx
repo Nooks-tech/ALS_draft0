@@ -35,7 +35,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { API_URL } from '../../src/api/config';
 import { supabase } from '../../src/api/supabase';
-import PolaroidMoreScreen from './_layouts/polaroid/PolaroidMoreScreen';
+import PolaroidMoreScreen from '../../src/layouts/polaroid/PolaroidMoreScreen';
 
 export default function MoreScreen() {
   // Layout switcher — branding hook first to keep hook order

@@ -51,7 +51,7 @@ import { useMerchantBranding } from '../../src/context/MerchantBrandingContext';
 import { useAuth } from '../../src/context/AuthContext';
 import { AppleWalletAddPassButton } from '../../src/components/apple-wallet/AppleWalletAddPassButton';
 import { loyaltyEvents } from '../../src/lib/loyaltyEvents';
-import PolaroidOffersScreen from './_layouts/polaroid/PolaroidOffersScreen';
+import PolaroidOffersScreen from '../../src/layouts/polaroid/PolaroidOffersScreen';
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})/.exec(hex);

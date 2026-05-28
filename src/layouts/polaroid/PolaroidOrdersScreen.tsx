@@ -25,9 +25,9 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useCart } from '../../../../src/context/CartContext';
-import { useMerchantBranding } from '../../../../src/context/MerchantBrandingContext';
-import { useOrders, type PlacedOrder } from '../../../../src/context/OrdersContext';
+import { useCart } from '../../context/CartContext';
+import { useMerchantBranding } from '../../context/MerchantBrandingContext';
+import { useOrders, type PlacedOrder } from '../../context/OrdersContext';
 import { MonoText, PolaroidCard } from './PolaroidCard';
 import { POLAROID_FONT, resolvePolaroidColors, rotationForIndex } from './styles';
 

@@ -22,10 +22,10 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useAuth } from '../../../../src/context/AuthContext';
-import { useLanguageSwitch } from '../../../../src/context/LanguageSwitchContext';
-import { useMerchantBranding } from '../../../../src/context/MerchantBrandingContext';
-import { useProfile } from '../../../../src/context/ProfileContext';
+import { useAuth } from '../../context/AuthContext';
+import { useLanguageSwitch } from '../../context/LanguageSwitchContext';
+import { useMerchantBranding } from '../../context/MerchantBrandingContext';
+import { useProfile } from '../../context/ProfileContext';
 import { MonoText, PolaroidCard } from './PolaroidCard';
 import { POLAROID_FONT, resolvePolaroidColors, rotationForIndex } from './styles';
 
