@@ -14,6 +14,7 @@
  *
  * Fire-and-forget from the caller — never throw.
  */
+import crypto from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 function normaliseSaudiPhone(raw: string): string | null {
@@ -27,6 +28,23 @@ function normaliseSaudiPhone(raw: string): string | null {
   return `+966${digits}`;
 }
 
+/**
+ * Mirror of nooksweb/lib/phone-identity.ts. Both sides MUST hash the
+ * same way or merge results will be inconsistent. If you change the
+ * namespace string in one, change it in the other.
+ */
+function derivePhoneCustomerId(phone: string): string {
+  const hash = crypto
+    .createHash('sha256')
+    .update(`nooks-phone-v1:${phone}`)
+    .digest();
+  const bytes = Buffer.from(hash.slice(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 export async function mergeWalkInProfiles(
   supabase: SupabaseClient,
   authUserId: string,
@@ -35,25 +53,35 @@ export async function mergeWalkInProfiles(
   const phone = normaliseSaudiPhone(phoneRaw);
   if (!phone || !authUserId) return { merged: 0, merchantIds: [] };
 
+  // Sweep both shapes: legacy NULL customer_id rows AND new walk-ins
+  // that used the deterministic phone-derived UUID.
+  const phoneDerivedId = derivePhoneCustomerId(phone);
+
   try {
     const { data: matchingRows, error: selectErr } = await supabase
       .from('loyalty_member_profiles')
-      .select('id, merchant_id')
+      .select('id, merchant_id, customer_id')
       .eq('phone_number', phone)
-      .is('customer_id', null);
+      .or(`customer_id.is.null,customer_id.eq.${phoneDerivedId}`);
     if (selectErr) {
       console.warn('[walk-in-merge] select failed:', selectErr.message);
       return { merged: 0, merchantIds: [] };
     }
-    const rows = (matchingRows ?? []) as Array<{ id: string; merchant_id: string }>;
+    const rows = (matchingRows ?? []) as Array<{
+      id: string;
+      merchant_id: string;
+      customer_id: string | null;
+    }>;
     if (rows.length === 0) return { merged: 0, merchantIds: [] };
+    // Idempotency: skip if everything already points at authUserId
+    if (rows.every((r) => r.customer_id === authUserId)) return { merged: 0, merchantIds: [] };
 
     const nowIso = new Date().toISOString();
     const { data: updated, error: updateErr } = await supabase
       .from('loyalty_member_profiles')
       .update({ customer_id: authUserId, updated_at: nowIso })
       .eq('phone_number', phone)
-      .is('customer_id', null)
+      .or(`customer_id.is.null,customer_id.eq.${phoneDerivedId}`)
       .select('id, merchant_id');
     if (updateErr) {
       console.warn('[walk-in-merge] update failed:', updateErr.message);
