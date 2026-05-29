@@ -322,15 +322,16 @@ function PromosTab({
             large
             style={{ padding: 6, paddingBottom: 16 }}
           >
-            {/* Bounded image — `cover` + a fixed aspect ratio so
+            {/* Bounded image — `cover` + a short aspect ratio so
                 wide source images don't blow out the polaroid frame
-                (was causing the cropped "Versio…" text earlier). */}
+                AND so promos without uploaded images don't render
+                as 600x600 solid color blocks. */}
             {offer.image ? (
               <Image
                 source={{ uri: offer.image }}
                 style={{
                   width: '100%',
-                  aspectRatio: 4 / 3,
+                  aspectRatio: 24 / 9,
                   backgroundColor: '#e7e2d6',
                   borderRadius: 2,
                 }}
@@ -340,7 +341,7 @@ function PromosTab({
               <View
                 style={{
                   width: '100%',
-                  aspectRatio: 4 / 3,
+                  aspectRatio: 24 / 9,
                   backgroundColor: colors.stampRed,
                   borderRadius: 2,
                 }}

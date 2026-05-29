@@ -27,11 +27,17 @@ export type PolaroidColors = {
   stampRed: string;
 };
 
-/** Read polaroid color tokens from MerchantBranding.layoutColors with defaults. */
+/** Read polaroid color tokens from MerchantBranding.layoutColors with defaults.
+ *
+ *  `surface` (the polaroid photo-paper color) is intentionally LOCKED to
+ *  white. It's a core part of the polaroid design language — the iconic
+ *  white instant-photo frame. Letting merchants edit it produced blue
+ *  "broken" polaroid cards in field testing. Other tokens (bg, text,
+ *  accent, etc.) remain fully customizable. */
 export function resolvePolaroidColors(layoutColors: Record<string, string>): PolaroidColors {
   return {
     bg: layoutColors.bg ?? POLAROID_DEFAULT_COLORS.bg,
-    surface: layoutColors.surface ?? POLAROID_DEFAULT_COLORS.surface,
+    surface: POLAROID_DEFAULT_COLORS.surface,
     text: layoutColors.text ?? POLAROID_DEFAULT_COLORS.text,
     textOnSurface: layoutColors.textOnSurface ?? POLAROID_DEFAULT_COLORS.textOnSurface,
     accent: layoutColors.accent ?? POLAROID_DEFAULT_COLORS.accent,
