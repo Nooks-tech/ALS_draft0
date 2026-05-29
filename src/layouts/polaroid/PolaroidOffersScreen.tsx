@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
+  Alert,
   I18nManager,
   Image,
   Platform,
@@ -27,7 +28,7 @@ import {
 } from 'react-native';
 import { fetchNooksBanners, type NooksBanner } from '../../api/nooksBanners';
 import { fetchNooksPromos } from '../../api/nooksPromos';
-import { loyaltyApi, type LoyaltyBalance } from '../../api/loyalty';
+import { loyaltyApi, type LoyaltyBalance, type LoyaltyReward } from '../../api/loyalty';
 import { useAuth } from '../../context/AuthContext';
 import { useMerchant } from '../../context/MerchantContext';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
@@ -62,6 +63,8 @@ export default function PolaroidOffersScreen() {
     valid_until?: string; image_url?: string | null; imageUrl?: string | null;
   }>>([]);
   const [balance, setBalance] = useState<LoyaltyBalance | null>(null);
+  const [rewards, setRewards] = useState<LoyaltyReward[]>([]);
+  const [redeemingId, setRedeemingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -86,10 +89,57 @@ export default function PolaroidOffersScreen() {
           // best-effort
         }
       }
+      try {
+        const r = await loyaltyApi.getRewards(merchantId);
+        setRewards(r.rewards ?? []);
+      } catch {
+        setRewards([]);
+      }
     } finally {
       setLoading(false);
     }
   }, [merchantId, user?.id]);
+
+  const handleRedeem = useCallback(async (reward: LoyaltyReward) => {
+    if (!user?.id || !merchantId) return;
+    if ((balance?.points ?? 0) < reward.points_cost) {
+      Alert.alert(
+        isArabic ? 'النقاط غير كافية' : 'Not enough points',
+        isArabic
+          ? `تحتاج ${reward.points_cost} نقطة ولديك ${balance?.points ?? 0}.`
+          : `You need ${reward.points_cost} points; you have ${balance?.points ?? 0}.`,
+      );
+      return;
+    }
+    Alert.alert(
+      isArabic ? 'استبدال المكافأة' : 'Redeem reward',
+      isArabic
+        ? `استبدال ${reward.points_cost} نقطة مقابل "${reward.name}"؟`
+        : `Spend ${reward.points_cost} pts on "${reward.name}"?`,
+      [
+        { text: isArabic ? 'إلغاء' : 'Cancel', style: 'cancel' },
+        {
+          text: isArabic ? 'استبدال' : 'Redeem',
+          onPress: async () => {
+            setRedeemingId(reward.id);
+            try {
+              await loyaltyApi.redeemReward(user.id, reward.id, merchantId);
+              const bal = await loyaltyApi.getBalance(user.id, merchantId);
+              setBalance(bal);
+              Alert.alert(
+                isArabic ? 'تم الاستبدال' : 'Redeemed',
+                isArabic ? 'اعرض هذا للموظف' : 'Show this to the cashier',
+              );
+            } catch {
+              Alert.alert(isArabic ? 'خطأ' : 'Error', isArabic ? 'تعذر الاستبدال' : 'Could not redeem');
+            } finally {
+              setRedeemingId(null);
+            }
+          },
+        },
+      ],
+    );
+  }, [user?.id, merchantId, balance?.points, isArabic]);
 
   useEffect(() => {
     load();
@@ -217,16 +267,16 @@ export default function PolaroidOffersScreen() {
         ) : (
           <LoyaltyTab
             balance={balance}
+            rewards={rewards}
+            redeemingId={redeemingId}
             pointsValue={pointsValue}
             lifetimeValue={lifetimeValue}
             colors={colors}
             isArabic={isArabic}
-            brandTitle={brandTitle}
-            logoUrl={logoUrl}
             merchantId={merchantId}
             userId={user?.id ?? null}
-            onOpenRoadmap={() => router.push('/rewards' as never)}
             signedIn={!!user?.id}
+            onRedeem={handleRedeem}
           />
         )}
       </ScrollView>
@@ -354,28 +404,28 @@ function PromosTab({
 
 function LoyaltyTab({
   balance,
+  rewards,
+  redeemingId,
   pointsValue,
   lifetimeValue,
   colors,
   isArabic,
-  brandTitle,
-  logoUrl,
   merchantId,
   userId,
-  onOpenRoadmap,
   signedIn,
+  onRedeem,
 }: {
   balance: LoyaltyBalance | null;
+  rewards: LoyaltyReward[];
+  redeemingId: string | null;
   pointsValue: number;
   lifetimeValue: number;
   colors: ReturnType<typeof resolvePolaroidColors>;
   isArabic: boolean;
-  brandTitle: string;
-  logoUrl: string | null;
   merchantId: string | null;
   userId: string | null;
-  onOpenRoadmap: () => void;
   signedIn: boolean;
+  onRedeem: (r: LoyaltyReward) => void;
 }) {
   const { available: walletAvailable, loading: walletLoading, addPass } = useAppleWalletPass({
     merchantId,
@@ -439,71 +489,10 @@ function LoyaltyTab({
         </PolaroidCard>
       </View>
 
-      {/* Wallet pass preview — looks like the actual pass laid on
-          the kraft board, so the merchant can see what they're
-          adding before they tap. */}
-      <View style={{ marginBottom: 16 }}>
-        <PolaroidCard
-          rotation="0.8deg"
-          large
-          surfaceColor={colors.accent}
-          style={{ padding: 14 }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12 }}>
-            {logoUrl ? (
-              <Image
-                source={{ uri: logoUrl }}
-                style={{ width: 36, height: 36, borderRadius: 8, backgroundColor: '#ffffff22', marginEnd: 10 }}
-                resizeMode="contain"
-              />
-            ) : null}
-            <View style={{ flex: 1 }}>
-              <MonoText size={9} tracking={2} uppercase weight="700" color="#ffffff" style={{ opacity: 0.7 }}>
-                {isArabic ? 'بطاقة الولاء' : 'Loyalty Pass'}
-              </MonoText>
-              <MonoText size={13} weight="800" color="#ffffff" numberOfLines={1}>
-                {brandTitle}
-              </MonoText>
-            </View>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-            <View>
-              <MonoText size={8} tracking={2} uppercase color="#ffffff" style={{ opacity: 0.7 }}>
-                {isCashback ? (isArabic ? 'الرصيد' : 'Balance') : (isArabic ? 'النقاط' : 'Points')}
-              </MonoText>
-              <MonoText size={22} weight="800" color="#ffffff" style={{ marginTop: 2 }}>
-                {isCashback
-                  ? `${(balance?.cashbackBalance ?? 0).toFixed(0)}`
-                  : pointsValue}
-              </MonoText>
-            </View>
-            {/* Barcode placeholder bars — purely cosmetic. The real
-                wallet pass renders an actual scannable code. */}
-            <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 32 }}>
-              {[3, 1, 2, 1, 4, 2, 1, 3, 2, 1, 3].map((w, i) => (
-                <View
-                  key={i}
-                  style={{
-                    width: w,
-                    height: '100%',
-                    backgroundColor: '#ffffff',
-                    marginEnd: 1,
-                    opacity: 0.85,
-                  }}
-                />
-              ))}
-            </View>
-          </View>
-        </PolaroidCard>
-      </View>
-
-      {/* Real Apple Wallet add — native PKAddPassButton via the
-          same hook the classic offers screen uses, so the pass is
-          guaranteed to render correctly. iOS dedupes by pass type
-          id + serial, so tapping after the pass is already added
-          just re-opens it; tapping after deletion adds it back. */}
+      {/* Real Apple Wallet add — native PKAddPassButton, same flow
+          as classic. Sits high so the user always sees it. */}
       {walletAvailable && userId && merchantId && Platform.OS === 'ios' && (
-        <View style={{ marginBottom: 14 }}>
+        <View style={{ marginBottom: 16 }}>
           <PolaroidCard
             rotation="-0.6deg"
             large
@@ -528,51 +517,193 @@ function LoyaltyTab({
               color={`${colors.textOnSurface}66`}
               style={{ marginTop: 8 }}
             >
-              {isArabic
-                ? 'احتفظ ببطاقتك في جوالك'
-                : 'Keep your card on your phone'}
+              {isArabic ? 'احتفظ ببطاقتك في جوالك' : 'Keep your card on your phone'}
             </MonoText>
           </PolaroidCard>
         </View>
       )}
 
-      {/* Rewards roadmap shortcut */}
-      <View style={{ marginBottom: 14 }}>
-        <PolaroidCard
-          rotation="1deg"
-          large
-          style={{ paddingVertical: 12, paddingHorizontal: 16 }}
-        >
-          <TouchableOpacity activeOpacity={0.85} onPress={onOpenRoadmap}>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <View
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 999,
-                  backgroundColor: colors.accent,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginEnd: 12,
-                }}
-              >
-                <MonoText size={16} color="#ffffff">★</MonoText>
+      {/* Stamp milestones — only for stamps loyalty type. Same
+          data shape as classic: balance.stampMilestones[]. */}
+      {balance?.loyaltyType === 'stamps' && (balance?.stampMilestones?.length ?? 0) > 0 && (
+        <View style={{ marginBottom: 18 }}>
+          <MonoText
+            size={11}
+            tracking={2}
+            uppercase
+            weight="800"
+            color={colors.text}
+            style={{ marginHorizontal: 4, marginBottom: 10 }}
+          >
+            {isArabic ? 'المعالم' : 'Milestones'}
+          </MonoText>
+          <PolaroidCard rotation="0.5deg" large style={{ padding: 14 }}>
+            {(balance?.stampMilestones ?? [])
+              .filter((m) => (m.reward_name || '').trim().length > 0)
+              .slice()
+              .sort((a, b) => a.stamp_number - b.stamp_number)
+              .map((m) => {
+                const filled = (balance?.stamps ?? 0) >= m.stamp_number;
+                return (
+                  <View
+                    key={m.stamp_number}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      paddingVertical: 8,
+                      borderBottomWidth: 1,
+                      borderBottomColor: `${colors.textOnSurface}11`,
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: 999,
+                        backgroundColor: filled ? colors.accent : `${colors.textOnSurface}11`,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        marginEnd: 12,
+                      }}
+                    >
+                      <MonoText size={11} weight="800" color={filled ? '#ffffff' : colors.textOnSurface}>
+                        {m.stamp_number}
+                      </MonoText>
+                    </View>
+                    <MonoText
+                      size={11}
+                      weight="600"
+                      color={filled ? colors.textOnSurface : `${colors.textOnSurface}99`}
+                      style={{ flex: 1 }}
+                      numberOfLines={1}
+                    >
+                      {m.reward_name}
+                    </MonoText>
+                    {filled && (
+                      <MonoText size={9} tracking={1.6} uppercase weight="800" color={colors.accent}>
+                        {isArabic ? 'متاح' : 'Ready'}
+                      </MonoText>
+                    )}
+                  </View>
+                );
+              })}
+          </PolaroidCard>
+        </View>
+      )}
+
+      {/* Rewards catalog — actual list of catalog rewards
+          (loyaltyApi.getRewards). Same content as classic, polaroid
+          chrome. Tapping a card with enough points fires onRedeem. */}
+      {rewards.length > 0 && (
+        <View style={{ marginBottom: 18 }}>
+          <MonoText
+            size={11}
+            tracking={2}
+            uppercase
+            weight="800"
+            color={colors.text}
+            style={{ marginHorizontal: 4, marginBottom: 10 }}
+          >
+            {isArabic ? 'المكافآت' : 'Rewards Catalog'}
+          </MonoText>
+          {rewards.map((r, i) => {
+            const affordable = (balance?.points ?? 0) >= r.points_cost;
+            const isRedeeming = redeemingId === r.id;
+            return (
+              <View key={r.id} style={{ marginBottom: 12 }}>
+                <PolaroidCard
+                  rotation={rotationForIndex(i + 2)}
+                  large
+                  style={{ padding: 12, opacity: affordable ? 1 : 0.7 }}
+                >
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    disabled={!affordable || isRedeeming}
+                    onPress={() => onRedeem(r)}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      {r.image_url ? (
+                        <Image
+                          source={{ uri: r.image_url }}
+                          style={{ width: 56, height: 56, marginEnd: 12, backgroundColor: '#e7e2d6' }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View
+                          style={{
+                            width: 56,
+                            height: 56,
+                            marginEnd: 12,
+                            backgroundColor: `${colors.accent}22`,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <MonoText size={26} color={colors.accent}>★</MonoText>
+                        </View>
+                      )}
+                      <View style={{ flex: 1 }}>
+                        <MonoText
+                          size={12}
+                          weight="700"
+                          color={colors.textOnSurface}
+                          numberOfLines={1}
+                        >
+                          {r.name}
+                        </MonoText>
+                        {!!r.description && (
+                          <MonoText
+                            size={9}
+                            color={`${colors.textOnSurface}88`}
+                            style={{ marginTop: 2 }}
+                            numberOfLines={2}
+                          >
+                            {r.description}
+                          </MonoText>
+                        )}
+                        <MonoText
+                          size={10}
+                          tracking={1.4}
+                          uppercase
+                          weight="800"
+                          color={affordable ? colors.accent : `${colors.textOnSurface}66`}
+                          style={{ marginTop: 4 }}
+                        >
+                          {r.points_cost} {isArabic ? 'نقطة' : 'pts'}
+                        </MonoText>
+                      </View>
+                      <View
+                        style={{
+                          paddingHorizontal: 10,
+                          paddingVertical: 6,
+                          borderRadius: 999,
+                          backgroundColor: affordable ? colors.accent : `${colors.textOnSurface}22`,
+                          minWidth: 60,
+                          alignItems: 'center',
+                        }}
+                      >
+                        {isRedeeming ? (
+                          <ActivityIndicator size="small" color="#ffffff" />
+                        ) : (
+                          <MonoText
+                            size={9}
+                            tracking={1.4}
+                            uppercase
+                            weight="800"
+                            color={affordable ? '#ffffff' : colors.textOnSurface}
+                          >
+                            {affordable ? (isArabic ? 'استبدل' : 'Redeem') : (isArabic ? 'مقفل' : 'Locked')}
+                          </MonoText>
+                        )}
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                </PolaroidCard>
               </View>
-              <View style={{ flex: 1 }}>
-                <MonoText size={11} tracking={1.5} uppercase weight="800" color={colors.textOnSurface}>
-                  {isArabic ? 'مسار المكافآت' : 'Rewards roadmap'}
-                </MonoText>
-                <MonoText size={9} color={`${colors.textOnSurface}77`} style={{ marginTop: 2 }}>
-                  {isArabic
-                    ? 'تتبع كل معلم في طريقك'
-                    : 'See every milestone on the way'}
-                </MonoText>
-              </View>
-              <MonoText size={16} color={`${colors.textOnSurface}77`}>›</MonoText>
-            </View>
-          </TouchableOpacity>
-        </PolaroidCard>
-      </View>
+            );
+          })}
+        </View>
+      )}
     </>
   );
 }

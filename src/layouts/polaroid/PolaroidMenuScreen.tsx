@@ -335,7 +335,7 @@ export default function PolaroidMenuScreen() {
                       >
                         <Image
                           source={{ uri: b.image_url! }}
-                          style={{ width: '100%', aspectRatio: 16 / 9, backgroundColor: '#e7e2d6', borderRadius: 2 }}
+                          style={{ width: '100%', aspectRatio: 24 / 9, backgroundColor: '#e7e2d6', borderRadius: 2 }}
                           resizeMode="cover"
                         />
                         {!!b.title && (
