@@ -18,7 +18,7 @@ import { Router } from 'express';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { cancelPayment, verifyPaidPayment } from '../services/payment';
 import { sendOrderReceipt } from '../services/receipt';
-import { earnPoints, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
+import { consumeOrderMilestones, earnPoints, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { enforceLimits } from '../utils/rateLimit';
@@ -871,6 +871,41 @@ ordersRouter.post('/commit', async (req, res) => {
           return res.status(500).json({ error: e?.message || 'Wallet debit failed' });
         }
       }
+
+      // ─── Free-reward milestone redemption (server-authoritative) ───
+      // The mobile app used to fire a deprecated /redeem-stamp-milestone call
+      // AFTER commit with no idempotencyKey, so it 400'd and the customer's
+      // points were NEVER deducted — a free item they could re-claim forever.
+      // Deduct here instead, keyed to this order so a retried commit can't
+      // double-deduct. Non-blocking: a failure (not enough points / inactive /
+      // race) is logged, never blocks the order. The cancel path reverses
+      // these via restoreStampMilestonesForRefund.
+      if (claimedMilestones.length > 0) {
+        try {
+          const r = await consumeOrderMilestones(user.id, merchantId, claimedMilestones, id);
+          if (r.failed.length > 0) {
+            console.warn('[Orders] Some milestone redemptions did not deduct', {
+              merchantId,
+              customerId: user.id,
+              orderId: id,
+              failed: r.failed,
+            });
+          }
+        } catch (e: any) {
+          console.error('[Orders] consumeOrderMilestones threw (non-blocking)', {
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+            error: e?.message,
+          });
+          captureError(e, {
+            component: 'orders.commit.milestoneConsume',
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+          });
+        }
+      }
     } else {
       // First commit: register the wallet payment id placeholder for
       // wallet-only orders so payload.payment_id below stays sensible.
@@ -1549,8 +1584,10 @@ async function refundOrderToWallet(
     }
   }
 
-  // ─── Stamp reversal ───
-  if (milestoneIds.length > 0 && stampsConsumed > 0) {
+  // ─── Milestone reversal ───
+  // Gate on milestoneIds only — points-based milestones leave stamps_consumed=0,
+  // so the old `&& stampsConsumed > 0` skipped their reversal entirely.
+  if (milestoneIds.length > 0) {
     try {
       const r = await restoreStampMilestonesForRefund({
         customerId: order.customer_id,

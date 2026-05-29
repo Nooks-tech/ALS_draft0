@@ -1463,14 +1463,189 @@ export async function restoreCashbackForRefund(params: {
  * zeroed result. The function is kept exported (instead of deleted) so
  * Phase 2's cancellation refactor can land before this is removed.
  */
-export async function restoreStampMilestonesForRefund(_params: {
+/**
+ * Server-authoritative redemption of free-reward (points) milestones for an
+ * order. Called from /commit so the deduction can't be skipped by a broken or
+ * malicious client (the app previously fired a deprecated, key-less redeem call
+ * that 400'd, so points were NEVER deducted → infinitely re-claimable freebie).
+ *
+ * Idempotent per (order, milestone): a retried commit finds the prior redeem
+ * row and skips. Non-throwing per milestone — collects failures (insufficient
+ * points / inactive / race) so the caller can keep the change non-blocking.
+ */
+export async function consumeOrderMilestones(
+  customerId: string,
+  merchantId: string,
+  milestoneIds: string[],
+  orderId: string,
+): Promise<{ redeemed: string[]; deduplicated: string[]; failed: { milestoneId: string; reason: string }[] }> {
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  const redeemed: string[] = [];
+  const deduplicated: string[] = [];
+  const failed: { milestoneId: string; reason: string }[] = [];
+
+  for (const milestoneId of milestoneIds) {
+    try {
+      // Idempotency: one redemption per (order, milestone).
+      const { data: prior } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .select('id')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .eq('order_id', orderId)
+        .eq('type', 'redeem')
+        .eq('reference_type', 'milestone')
+        .eq('reference_id', milestoneId)
+        .maybeSingle();
+      if (prior) { deduplicated.push(milestoneId); continue; }
+
+      const { data: milestone } = await supabaseAdmin
+        .from('loyalty_milestones')
+        .select('id, points_threshold, reward_name, is_active')
+        .eq('id', milestoneId)
+        .eq('merchant_id', merchantId)
+        .maybeSingle();
+      if (!milestone || !milestone.is_active) {
+        failed.push({ milestoneId, reason: 'milestone_not_found_or_inactive' });
+        continue;
+      }
+      const threshold = Number(milestone.points_threshold);
+      if (!Number.isFinite(threshold) || threshold <= 0) {
+        failed.push({ milestoneId, reason: 'invalid_threshold' });
+        continue;
+      }
+
+      const { data: bal } = await supabaseAdmin
+        .from('loyalty_points')
+        .select('points')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .maybeSingle();
+      const current = Number(bal?.points ?? 0);
+      if (current < threshold) {
+        failed.push({ milestoneId, reason: 'insufficient_points' });
+        continue;
+      }
+
+      // Ledger row first (audit anchor), then atomic .gte() deduct so a
+      // concurrent redeem can't overdraw.
+      const { data: txRow, error: txErr } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .insert({
+          customer_id: customerId,
+          merchant_id: merchantId,
+          order_id: orderId,
+          type: 'redeem',
+          loyalty_type: 'points',
+          points: -threshold,
+          description: `Redeemed milestone: ${milestone.reward_name ?? ''}`,
+          source: 'app',
+          reference_type: 'milestone',
+          reference_id: milestoneId,
+          metadata: { idempotency_key: `order:${orderId}:${milestoneId}`, milestone_name: milestone.reward_name ?? '' },
+        })
+        .select('id')
+        .single();
+      if (txErr || !txRow) { failed.push({ milestoneId, reason: txErr?.message ?? 'tx_insert_failed' }); continue; }
+
+      const { data: updated } = await supabaseAdmin
+        .from('loyalty_points')
+        .update({ points: current - threshold, updated_at: new Date().toISOString() })
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .gte('points', threshold)
+        .select('points')
+        .maybeSingle();
+      if (!updated) {
+        // Balance changed under us (concurrent redeem) — undo the ledger row.
+        await supabaseAdmin.from('loyalty_transactions').delete().eq('id', txRow.id);
+        failed.push({ milestoneId, reason: 'balance_changed' });
+        continue;
+      }
+      redeemed.push(milestoneId);
+    } catch (e: any) {
+      failed.push({ milestoneId, reason: e?.message ?? 'error' });
+    }
+  }
+
+  if (redeemed.length > 0) notifyPassUpdateSafe(customerId, merchantId);
+  return { redeemed, deduplicated, failed };
+}
+
+/**
+ * Reverse the milestone point deductions consumeOrderMilestones made for an
+ * order (cancellation / refund). Idempotent: a 'milestone-refund' marker row
+ * per milestone stops a double-restore. Returns the total points given back
+ * (kept under the legacy stampsRestored field name for the caller).
+ */
+export async function restoreStampMilestonesForRefund(params: {
   customerId: string;
   merchantId: string;
   milestoneIds: string[];
   stampsConsumed: number;
   orderId: string;
 }): Promise<{ stampsRestored: number; milestonesCleared: string[]; alreadyRestored: boolean }> {
-  return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  const cleared: string[] = [];
+  let pointsRestored = 0;
+  let anyAlready = false;
+
+  const { data: redeems } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id, reference_id, points')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .eq('order_id', params.orderId)
+    .eq('type', 'redeem')
+    .eq('reference_type', 'milestone');
+  if (!redeems || redeems.length === 0) {
+    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
+  }
+
+  for (const row of redeems as Array<{ id: string; reference_id: string; points: number }>) {
+    // Idempotency: skip if we already restored this milestone for this order.
+    const { data: priorRestore } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('id')
+      .eq('customer_id', params.customerId)
+      .eq('merchant_id', params.merchantId)
+      .eq('order_id', params.orderId)
+      .eq('type', 'earn')
+      .eq('reference_type', 'milestone-refund')
+      .eq('reference_id', row.reference_id)
+      .maybeSingle();
+    if (priorRestore) { anyAlready = true; cleared.push(String(row.reference_id)); continue; }
+
+    const giveBack = Math.abs(Number(row.points) || 0);
+    if (giveBack <= 0) continue;
+
+    const { error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
+      p_customer_id: params.customerId,
+      p_merchant_id: params.merchantId,
+      p_points: giveBack,
+      p_config_version: 1,
+    });
+    if (incErr) { console.warn('[restoreMilestones] increment_loyalty_points failed:', incErr.message); continue; }
+
+    await supabaseAdmin.from('loyalty_transactions').insert({
+      customer_id: params.customerId,
+      merchant_id: params.merchantId,
+      order_id: params.orderId,
+      type: 'earn',
+      loyalty_type: 'points',
+      points: giveBack,
+      description: 'Milestone refund (order cancelled)',
+      source: 'app',
+      reference_type: 'milestone-refund',
+      reference_id: row.reference_id,
+      metadata: { idempotency_key: `refund:order:${params.orderId}:${row.reference_id}` },
+    });
+    pointsRestored += giveBack;
+    cleared.push(String(row.reference_id));
+  }
+
+  if (pointsRestored > 0) notifyPassUpdateSafe(params.customerId, params.merchantId);
+  return { stampsRestored: pointsRestored, milestonesCleared: cleared, alreadyRestored: anyAlready && pointsRestored === 0 };
 }
 
 /** POST /api/loyalty/redeem-cashback — redeem cashback SAR at checkout or via Foodics adapter */
