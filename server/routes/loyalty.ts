@@ -882,15 +882,25 @@ export async function earnPoints(
   // (RLS edge case — see [[feedback_rls_service_role]] memory note).
   // The RPC does INSERT…ON CONFLICT in a single SQL statement, so it
   // can never miss writes regardless of project policy state.
-  const { error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
+  const { data: incData, error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
     p_customer_id: customerId,
     p_merchant_id: merchantId,
     p_points: pointsEarned,
     p_config_version: config?.config_version ?? 1,
   });
   if (incErr) {
+    // Fatal: the balance write failed. Do NOT fall through to insert a ledger
+    // row — an 'earn' transaction with no matching balance bump is split-brain,
+    // and the idempotency check at the top would then short-circuit every retry
+    // as "already earned", permanently losing the points. Surface to the caller
+    // (order-completion sites swallow this via .catch; the /earn route 500s).
     console.error('[earnPoints] increment_loyalty_points RPC failed:', incErr.message);
+    throw new Error(`Loyalty points increment failed: ${incErr.message}`);
   }
+  const rpcNewBalance =
+    Array.isArray(incData) && incData[0] && typeof (incData[0] as { points?: unknown }).points === 'number'
+      ? (incData[0] as { points: number }).points
+      : null;
 
   await supabaseAdmin.from('loyalty_transactions').insert({
     customer_id: customerId,
@@ -916,7 +926,10 @@ export async function earnPoints(
   return {
     success: true,
     pointsEarned,
-    newBalance: (existing?.points ?? 0) + pointsEarned,
+    // Prefer the balance the RPC actually wrote (authoritative) over an
+    // optimistic local calc, which was wrong for brand-new customers whose
+    // loyalty_points row did not exist at read time.
+    newBalance: rpcNewBalance ?? (existing?.points ?? 0) + pointsEarned,
   };
 }
 
