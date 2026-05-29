@@ -9,7 +9,8 @@
  */
 import React from 'react';
 import { Platform, StyleProp, Text, TextStyle, View, ViewStyle } from 'react-native';
-import { POLAROID_FONT, POLAROID_SHADOW, POLAROID_SHADOW_LG } from './styles';
+import { useMerchantBranding } from '../../context/MerchantBrandingContext';
+import { POLAROID_DEFAULT_COLORS, POLAROID_FONT, POLAROID_SHADOW, POLAROID_SHADOW_LG, resolvePolaroidColors } from './styles';
 
 export type PolaroidCardProps = {
   children: React.ReactNode;
@@ -17,6 +18,9 @@ export type PolaroidCardProps = {
   rotation?: string;
   /** Use a heavier shadow (for hero cards). */
   large?: boolean;
+  /** Explicit override (e.g. order-type uses accent). When omitted,
+   *  reads from the merchant's polaroid `surface` token so merchants
+   *  can color-customize the photo paper through layout_colors_override. */
   surfaceColor?: string;
   style?: StyleProp<ViewStyle>;
 };
@@ -25,14 +29,17 @@ export function PolaroidCard({
   children,
   rotation = '0deg',
   large = false,
-  surfaceColor = '#ffffff',
+  surfaceColor,
   style,
 }: PolaroidCardProps) {
+  const branding = useMerchantBranding();
+  const themed = resolvePolaroidColors(branding.layoutColors || {});
+  const bg = surfaceColor ?? themed.surface ?? POLAROID_DEFAULT_COLORS.surface;
   return (
     <View
       style={[
         {
-          backgroundColor: surfaceColor,
+          backgroundColor: bg,
           borderRadius: 4,
           transform: [{ rotate: rotation }],
         },
