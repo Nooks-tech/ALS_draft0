@@ -1220,7 +1220,29 @@ ordersRouter.post('/commit', async (req, res) => {
         // refund_status set so the merchant dashboard's filter
         // (foodics_order_id IS NOT NULL) still hides it.
         try {
-          await refundOrderToWallet(id, 'system', 'Foodics relay failed');
+          const refundResult = await refundOrderToWallet(id, 'system', 'Foodics relay failed');
+          if (!refundResult.ok) {
+            // refundOrderToWallet returns {ok:false} WITHOUT throwing on
+            // partial failure (e.g. wallet credit failed mid-reversal). Don't
+            // let that look like success — surface it loudly. The order is left
+            // visible/Placed and only partially reversed; the abandoned-payment
+            // sweep cron will retry refundOrderToWallet, which is now idempotent
+            // at the DB level (credit_customer_wallet dedupes on order_id), so
+            // the retry completes the refund without double-crediting.
+            console.error('[Orders] Cleanup refund after Foodics failure returned not-ok', {
+              merchantId,
+              customerId: user.id,
+              orderId: id,
+              refundError: refundResult.error,
+              refundStatus: refundResult.status,
+            });
+            captureError(new Error(`Incomplete cleanup refund: ${refundResult.error}`), {
+              component: 'orders.commit.foodicsRelay.cleanupRefund.notOk',
+              merchantId,
+              customerId: user.id,
+              orderId: id,
+            });
+          }
         } catch (refundErr: any) {
           console.error('[Orders] Cleanup refund after Foodics failure also failed', {
             merchantId,
