@@ -1722,7 +1722,7 @@ async function refundOrderToWallet(
         ? walletCreditSar
         : 0;
 
-  const { error: updateErr } = await supabaseAdmin
+  const { data: updatedRows, error: updateErr } = await supabaseAdmin
     .from('customer_orders')
     .update({
       status: 'Cancelled',
@@ -1743,8 +1743,27 @@ async function refundOrderToWallet(
       // marks it 'invoiced'.
       updated_at: new Date().toISOString(),
     })
-    .eq('id', orderId);
+    .eq('id', orderId)
+    // #10: CAS guard. Don't clobber a terminal state the order reached
+    // concurrently (e.g. a Foodics 'Delivered' webhook landing mid-refund) —
+    // the top-of-function check guards Delivered/Cancelled only at read time.
+    // The money side-effects already ran, so on a 0-row miss we surface it for
+    // reconciliation rather than fail (which could trigger a retry).
+    .neq('status', 'Delivered')
+    .neq('status', 'Cancelled')
+    .select('id');
   if (updateErr) return { ok: false, error: updateErr.message, status: 500 };
+  if (!updatedRows || updatedRows.length === 0) {
+    console.error('[Orders] Refund status update matched 0 rows — order reached a terminal state mid-refund', {
+      orderId,
+      cancelledBy,
+      refundMethod,
+    });
+    captureError(new Error('Refund status CAS miss: order terminal mid-refund'), {
+      component: 'refundOrderToWallet.statusCAS',
+      orderId,
+    });
+  }
 
   // Give the promo slot back to the merchant's quota. unredeem_promo
   // deletes the promo_redemptions row tied to this order_id and
