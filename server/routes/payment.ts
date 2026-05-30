@@ -734,7 +734,7 @@ paymentRouter.post('/token-pay', async (req, res) => {
     // Look up the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, wallet_paid_sar')
+      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, wallet_paid_sar, payment_id')
       .eq('id', orderId)
       .eq('merchant_id', scopedMerchantId)
       .eq('customer_id', user.id)
@@ -747,6 +747,17 @@ paymentRouter.post('/token-pay', async (req, res) => {
     }
     if (order.status === 'Cancelled' || order.status === 'Delivered') {
       return res.status(400).json({ error: `Cannot pay for order status: ${order.status}` });
+    }
+
+    // #8: local idempotency guard. If this order already carries a real card
+    // payment id, a prior /token-pay already charged it — return that instead
+    // of creating a second Moyasar charge. Moyasar's deterministic given_id
+    // also dedups, but this avoids the redundant call + a payment_id rewrite.
+    // Wallet placeholder ids ('wallet:...') are not real card charges.
+    const existingPaymentId = (order as { payment_id?: unknown }).payment_id;
+    if (typeof existingPaymentId === 'string' && existingPaymentId && !existingPaymentId.startsWith('wallet:')) {
+      console.log('[TokenPay] Order already has a card payment_id — returning it (idempotent):', existingPaymentId);
+      return res.json({ id: existingPaymentId, status: 'paid', reused: true });
     }
 
     // Wallet intent on the order row. The first /commit stores
