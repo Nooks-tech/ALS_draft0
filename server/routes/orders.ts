@@ -532,6 +532,56 @@ ordersRouter.post('/commit', async (req, res) => {
         error: `Order total ${totalSar} is implausibly low for ${items.length} item(s) with floor ${computedItemFloor.toFixed(2)} SAR; refusing to commit.`,
       });
     }
+
+    // #11: menu-authoritative price validation. The floor above is built from
+    // CLIENT-supplied basePrice, which a tampered client can understate. Cross-
+    // check each non-reward item's unit price against the merchant's actual menu
+    // (products table, honoring per-branch overrides) and reject anything priced
+    // BELOW the menu price — the "client lies about item prices to underpay"
+    // vector the older comment flagged as pending nooksweb integration. Items
+    // not found in the menu (just-synced / edge) fall back to the floor checks
+    // above rather than hard-rejecting, to avoid false rejections.
+    {
+      const productItemIds = Array.from(new Set(
+        (items as Array<{ id?: unknown; uniqueId?: unknown }>)
+          .filter((it) => !(typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')))
+          .map((it) => (typeof it.id === 'string' ? (it.id as string) : null))
+          .filter((v): v is string => !!v),
+      ));
+      if (productItemIds.length > 0) {
+        const { data: menuRows } = await supabaseAdmin
+          .from('products')
+          .select('id, price, branch_prices_json')
+          .eq('merchant_id', merchantId)
+          .in('id', productItemIds);
+        const priceById = new Map<string, number>();
+        for (const p of (menuRows ?? []) as Array<{ id: string; price: number | null; branch_prices_json: Record<string, unknown> | null }>) {
+          const override = p.branch_prices_json && typeof p.branch_prices_json === 'object'
+            ? Number((p.branch_prices_json as Record<string, unknown>)[branchId as string])
+            : NaN;
+          const authoritative = Number.isFinite(override) && override > 0 ? override : Number(p.price ?? 0);
+          if (Number.isFinite(authoritative) && authoritative > 0) priceById.set(p.id, authoritative);
+        }
+        for (const it of items as Array<{ id?: unknown; basePrice?: unknown; price?: unknown; uniqueId?: unknown; name?: unknown }>) {
+          if (typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')) continue;
+          const pid = typeof it.id === 'string' ? (it.id as string) : null;
+          if (!pid) continue;
+          const authoritative = priceById.get(pid);
+          if (authoritative == null) continue; // not in menu — defer to floor checks above
+          const claimed = Number(it.basePrice ?? it.price ?? 0);
+          if (claimed < authoritative - 0.01) {
+            console.warn('[Orders] Item price understated vs menu — refusing', {
+              merchantId, orderId: id, productId: pid, claimed, authoritative,
+            });
+            return res.status(400).json({
+              error: `Item "${typeof it.name === 'string' ? it.name : pid}" is priced below the menu price; refusing to commit.`,
+              code: 'ITEM_PRICE_TAMPERED',
+            });
+          }
+        }
+      }
+    }
+
     if (orderType !== 'delivery' && orderType !== 'pickup' && orderType !== 'drivethru') {
       return res.status(400).json({ error: 'orderType must be delivery, pickup, or drivethru' });
     }
