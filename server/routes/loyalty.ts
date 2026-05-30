@@ -869,19 +869,53 @@ export async function earnPoints(
     ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
     : null;
 
-  let existQuery = supabaseAdmin
-    .from('loyalty_points')
-    .select('points, lifetime_points')
-    .eq('customer_id', customerId)
-    .eq('merchant_id', merchantId);
-  if (programId) existQuery = existQuery.eq('program_id', programId);
-  const { data: existing } = await existQuery.single();
+  // Insert the ledger row FIRST so the partial unique index
+  // idx_loyalty_transactions_app_earn_unique arbitrates the double-earn
+  // race (e.g. Foodics firing the order webhook twice — the cashback
+  // incident on 2026-05-15). The race-loser's INSERT fails with 23505 and
+  // we short-circuit WITHOUT calling the increment RPC, so the balance is
+  // credited exactly once. (The SELECT idempotency check above is a fast
+  // path for the common already-earned case; this is the atomic backstop.)
+  const ledger = await supabaseAdmin
+    .from('loyalty_transactions')
+    .insert({
+      customer_id: customerId,
+      merchant_id: merchantId,
+      order_id: orderId,
+      type: 'earn',
+      loyalty_type: 'points',
+      points: pointsEarned,
+      description: `Earned ${pointsEarned} points`,
+      expires_at: expiresAt,
+      branch_id: normalizeOptionalString(context?.branchId),
+      source: normalizeOptionalString(context?.source) ?? 'app',
+      actor_user_id: normalizeOptionalString(context?.actorUserId),
+      actor_role: normalizeOptionalString(context?.actorRole),
+      reference_type: normalizeOptionalString(context?.referenceType),
+      reference_id: normalizeOptionalString(context?.referenceId),
+      metadata: context?.metadata ?? {},
+      ...(programId ? { program_id: programId } : {}),
+    })
+    .select('id')
+    .maybeSingle();
+  if (ledger.error) {
+    if ((ledger.error as { code?: string }).code === '23505') {
+      // Race-loser / retry — already earned for this order. Return the
+      // current balance without crediting again.
+      let balQuery = supabaseAdmin
+        .from('loyalty_points')
+        .select('points')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId);
+      if (programId) balQuery = balQuery.eq('program_id', programId);
+      const { data: bal } = await balQuery.maybeSingle();
+      return { success: true, pointsEarned: 0, newBalance: bal?.points ?? 0 };
+    }
+    throw new Error(ledger.error.message);
+  }
 
-  // Atomic increment via SECURITY DEFINER RPC. The read-then-update
-  // pattern silently dropped writes on some Supabase project configs
-  // (RLS edge case — see [[feedback_rls_service_role]] memory note).
-  // The RPC does INSERT…ON CONFLICT in a single SQL statement, so it
-  // can never miss writes regardless of project policy state.
+  // Won the slot — credit the balance atomically via the SECURITY DEFINER
+  // RPC (INSERT…ON CONFLICT; immune to the RLS read-then-update edge case).
   const { data: incData, error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
     p_customer_id: customerId,
     p_merchant_id: merchantId,
@@ -889,11 +923,10 @@ export async function earnPoints(
     p_config_version: config?.config_version ?? 1,
   });
   if (incErr) {
-    // Fatal: the balance write failed. Do NOT fall through to insert a ledger
-    // row — an 'earn' transaction with no matching balance bump is split-brain,
-    // and the idempotency check at the top would then short-circuit every retry
-    // as "already earned", permanently losing the points. Surface to the caller
-    // (order-completion sites swallow this via .catch; the /earn route 500s).
+    // Roll back the ledger row so a retry can re-earn (no split-brain).
+    if (ledger.data?.id) {
+      await supabaseAdmin.from('loyalty_transactions').delete().eq('id', ledger.data.id);
+    }
     console.error('[earnPoints] increment_loyalty_points RPC failed:', incErr.message);
     throw new Error(`Loyalty points increment failed: ${incErr.message}`);
   }
@@ -902,34 +935,13 @@ export async function earnPoints(
       ? (incData[0] as { points: number }).points
       : null;
 
-  await supabaseAdmin.from('loyalty_transactions').insert({
-    customer_id: customerId,
-    merchant_id: merchantId,
-    order_id: orderId,
-    type: 'earn',
-    loyalty_type: 'points',
-    points: pointsEarned,
-    description: `Earned ${pointsEarned} points`,
-    expires_at: expiresAt,
-    branch_id: normalizeOptionalString(context?.branchId),
-    source: normalizeOptionalString(context?.source) ?? 'app',
-    actor_user_id: normalizeOptionalString(context?.actorUserId),
-    actor_role: normalizeOptionalString(context?.actorRole),
-    reference_type: normalizeOptionalString(context?.referenceType),
-    reference_id: normalizeOptionalString(context?.referenceId),
-    metadata: context?.metadata ?? {},
-    ...(programId ? { program_id: programId } : {}),
-  });
-
   notifyPassUpdateSafe(customerId, merchantId);
 
   return {
     success: true,
     pointsEarned,
-    // Prefer the balance the RPC actually wrote (authoritative) over an
-    // optimistic local calc, which was wrong for brand-new customers whose
-    // loyalty_points row did not exist at read time.
-    newBalance: rpcNewBalance ?? (existing?.points ?? 0) + pointsEarned,
+    // The RPC returns the authoritative post-credit balance.
+    newBalance: rpcNewBalance ?? pointsEarned,
   };
 }
 
@@ -1546,7 +1558,13 @@ export async function consumeOrderMilestones(
         })
         .select('id')
         .single();
-      if (txErr || !txRow) { failed.push({ milestoneId, reason: txErr?.message ?? 'tx_insert_failed' }); continue; }
+      if (txErr || !txRow) {
+        // 23505 = the partial unique index caught a concurrent/duplicate
+        // redemption for this (order, milestone) — already consumed, no-op.
+        if ((txErr as { code?: string } | null)?.code === '23505') { deduplicated.push(milestoneId); continue; }
+        failed.push({ milestoneId, reason: txErr?.message ?? 'tx_insert_failed' });
+        continue;
+      }
 
       const { data: updated } = await supabaseAdmin
         .from('loyalty_points')
@@ -1634,8 +1652,8 @@ export async function restoreStampMilestonesForRefund(params: {
       type: 'earn',
       loyalty_type: 'points',
       points: giveBack,
-      description: 'Milestone refund (order cancelled)',
-      source: 'app',
+      description: 'Refunded milestone (order cancelled)',
+      source: 'refund',
       reference_type: 'milestone-refund',
       reference_id: row.reference_id,
       metadata: { idempotency_key: `refund:order:${params.orderId}:${row.reference_id}` },

@@ -847,6 +847,20 @@ ordersRouter.post('/commit', async (req, res) => {
               });
             } catch (_e) { /* non-fatal */ }
           }
+          // #7: cashback is redeemed via a separate /redeem-cashback call
+          // BEFORE commit. The catch previously reversed promo but NOT
+          // cashback, so a wallet-debit failure burned the customer's
+          // cashback. Give it back (idempotent — no-ops if already restored).
+          if (validatedCashbackSar > 0) {
+            try {
+              await restoreCashbackForRefund({
+                customerId: user.id,
+                merchantId,
+                amountSar: validatedCashbackSar,
+                orderId: id,
+              });
+            } catch (_e) { /* non-fatal */ }
+          }
           if (e?.message === 'INSUFFICIENT_WALLET_BALANCE') {
             return res.status(400).json({ error: 'INSUFFICIENT_WALLET_BALANCE' });
           }
