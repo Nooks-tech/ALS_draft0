@@ -140,7 +140,7 @@ export default function PolaroidMenuScreen() {
       <StatusBar barStyle="light-content" />
 
       {/* Top header — logo (left), location dropdown, search icon (right). No brand text. */}
-      <View style={{ paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 8 }}>
+      <View style={{ backgroundColor: colors.headerBg, paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 8 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           {logoUrl ? (
             <Image

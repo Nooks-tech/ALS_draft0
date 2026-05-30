@@ -11,6 +11,7 @@ import { Platform, TextStyle, ViewStyle } from 'react-native';
 
 export const POLAROID_DEFAULT_COLORS = {
   bg: '#1e1508',            // dark kraft paper
+  headerBg: '#140d04',      // top header bar (matches bottom tab bar by default)
   surface: '#ffffff',       // white polaroid card
   text: '#f0e2c8',          // cream text on dark bg
   textOnSurface: 'rgba(26,14,6,0.7)', // dark mono text on white cards
@@ -20,6 +21,7 @@ export const POLAROID_DEFAULT_COLORS = {
 
 export type PolaroidColors = {
   bg: string;
+  headerBg: string;
   surface: string;
   text: string;
   textOnSurface: string;
@@ -31,6 +33,7 @@ export type PolaroidColors = {
 export function resolvePolaroidColors(layoutColors: Record<string, string>): PolaroidColors {
   return {
     bg: layoutColors.bg ?? POLAROID_DEFAULT_COLORS.bg,
+    headerBg: layoutColors.headerBg ?? layoutColors.tabBarBg ?? layoutColors.bg ?? POLAROID_DEFAULT_COLORS.headerBg,
     surface: layoutColors.surface ?? POLAROID_DEFAULT_COLORS.surface,
     text: layoutColors.text ?? POLAROID_DEFAULT_COLORS.text,
     textOnSurface: layoutColors.textOnSurface ?? POLAROID_DEFAULT_COLORS.textOnSurface,

@@ -81,7 +81,7 @@ export default function PolaroidOrdersScreen() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle="light-content" />
 
-      <View style={{ paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 14 }}>
+      <View style={{ backgroundColor: colors.headerBg, paddingTop: Platform.OS === 'ios' ? 58 : 36, paddingHorizontal: 18, paddingBottom: 14 }}>
         <MonoText
           size={22}
           tracking={-0.3}
