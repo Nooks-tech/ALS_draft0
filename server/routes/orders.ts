@@ -845,7 +845,22 @@ ordersRouter.post('/commit', async (req, res) => {
                 p_merchant_id: merchantId,
                 p_order_id: id,
               });
-            } catch (_e) { /* non-fatal */ }
+            } catch (unredeemErr: any) {
+              // #15: was a silent catch. A failed unredeem burns the promo
+              // slot (usage_count stays incremented, the redemption row
+              // lingers) with zero visibility — surface it so ops can fix it.
+              console.error('[Orders] unredeem_promo failed after wallet-debit failure (promo slot may be stuck)', {
+                merchantId,
+                orderId: id,
+                error: unredeemErr?.message,
+              });
+              captureError(unredeemErr, {
+                component: 'orders.commit.unredeemPromo',
+                merchantId,
+                customerId: user.id,
+                orderId: id,
+              });
+            }
           }
           // #7: cashback is redeemed via a separate /redeem-cashback call
           // BEFORE commit. The catch previously reversed promo but NOT
@@ -1667,6 +1682,9 @@ async function refundOrderToWallet(
       refund_amount: refundedSarHeadline,
       refund_fee: 0,
       refund_method: refundMethod,
+      // #14: stamp when the refund happened so the timeline is recoverable
+      // for disputes/reconciliation (refund_status alone carried no time).
+      refunded_at: refundMethod === 'none' ? null : new Date().toISOString(),
       // Note: do NOT flip commission_status to 'cancelled' here.
       // Moyasar still charged Nooks for the original payment
       // attempt regardless of the refund, so the platform fee

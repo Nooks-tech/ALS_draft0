@@ -38,12 +38,18 @@ export function buildPaymentWebhookUpdates(params: {
   } else if (params.status === 'refunded') {
     updates.refund_status = 'refunded';
     updates.refund_id = params.paymentId;
+    updates.refunded_at = new Date().toISOString();
   } else if (params.status === 'voided') {
     updates.refund_status = 'voided';
+    updates.refunded_at = new Date().toISOString();
   } else if (params.status === 'failed') {
     updates.status = 'Cancelled';
     updates.cancellation_reason = 'Payment failed';
     updates.cancelled_by = 'system';
+    // #14: a failed payment was never captured — nothing to refund. Set a
+    // terminal refund_status so the row isn't left 'Cancelled' + null
+    // (which reads as "refund forgotten" in reconciliation).
+    updates.refund_status = 'not_required';
   }
 
   return updates;
@@ -270,7 +276,7 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
     if (Object.keys(updates).length > 1) {
       let lookup = supabaseAdmin
         .from('customer_orders')
-        .select('id, total_sar, customer_id')
+        .select('id, total_sar, customer_id, refund_status, status')
         .eq('merchant_id', merchantId)
         .limit(1);
 
@@ -308,6 +314,23 @@ paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
       if (!order) {
         console.warn('[Payment Webhook] No order row matched webhook payload', { id, metaOrderId, merchantId });
         return res.status(409).json({ error: 'Order not found for webhook payload' });
+      }
+
+      // #9 state-machine guard: refunded/voided is terminal. A late or
+      // out-of-order 'paid'/'captured' webhook must NOT clobber it — that
+      // would leave payment_id set alongside refund_status='refunded', a
+      // contradictory state that breaks reconciliation. Ack with 2xx so
+      // Moyasar stops retrying, but skip the update.
+      if (
+        (status === 'paid' || status === 'captured') &&
+        (order.refund_status === 'refunded' || order.refund_status === 'voided')
+      ) {
+        console.warn('[Payment Webhook] Ignoring late paid/captured on already-' + order.refund_status + ' order', {
+          orderId: order.id,
+          paymentId: id,
+          merchantId,
+        });
+        return res.json({ received: true, ignored: 'terminal_refund_state' });
       }
 
       // Validate payment amount matches order total (prevent tampered webhooks).
