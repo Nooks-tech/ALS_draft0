@@ -211,7 +211,6 @@ export default function PolaroidOrdersScreen() {
                         position: 'absolute',
                         top: 8,
                         right: 8,
-                        transform: [{ rotate: '8deg' }],
                         borderWidth: 1.5,
                         borderColor: stamp.color,
                         paddingHorizontal: 8,

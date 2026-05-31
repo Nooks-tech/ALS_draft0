@@ -66,13 +66,12 @@ export const POLAROID_SHADOW_LG: ViewStyle = {
 };
 
 /**
- * Deterministic small rotation for a card based on its index.
- * Alternates between four angles so a 2-column grid never has
- * two adjacent cards at the same rotation.
+ * Card rotation by index. Tilt removed 2026-05-31 (founder request) — polaroid
+ * cards/boxes now sit straight & symmetrical. Helper + signature kept so every
+ * caller stays unchanged; it just always returns a no-tilt transform.
  */
-export function rotationForIndex(index: number): string {
-  const angles = ['-1.5deg', '1.2deg', '-0.8deg', '1deg'];
-  return angles[index % angles.length];
+export function rotationForIndex(_index: number): string {
+  return '0deg';
 }
 
 /** Caption / label mono text style preset. */
