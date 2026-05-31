@@ -14,7 +14,8 @@ import { POLAROID_DEFAULT_COLORS, POLAROID_FONT, POLAROID_SHADOW, POLAROID_SHADO
 
 export type PolaroidCardProps = {
   children: React.ReactNode;
-  /** Rotation in CSS degrees, e.g. "-1.5deg". Defaults to 0. */
+  /** No-op since 2026-05-31: polaroid cards are kept straight & symmetrical.
+   *  Retained so existing call sites compile; the value is ignored. */
   rotation?: string;
   /** Use a heavier shadow (for hero cards). */
   large?: boolean;
@@ -27,7 +28,6 @@ export type PolaroidCardProps = {
 
 export function PolaroidCard({
   children,
-  rotation = '0deg',
   large = false,
   surfaceColor,
   style,
@@ -41,7 +41,6 @@ export function PolaroidCard({
         {
           backgroundColor: bg,
           borderRadius: 4,
-          transform: [{ rotate: rotation }],
         },
         large ? POLAROID_SHADOW_LG : POLAROID_SHADOW,
         style,
