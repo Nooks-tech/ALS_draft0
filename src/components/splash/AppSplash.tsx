@@ -141,7 +141,6 @@ export function AppSplash({ mode, visible }: AppSplashProps) {
           polaroidStyles.card,
           {
             backgroundColor: polaroidColors.surface,
-            transform: [{ rotate: '-2.2deg' }],
           },
         ]}
       >
