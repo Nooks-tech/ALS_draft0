@@ -374,16 +374,16 @@ export default function PolaroidMenuScreen() {
                   tracking={2}
                   uppercase
                   weight="700"
-                  color={colors.text}
+                  color={colors.categoryText}
                   style={{ marginEnd: 8 }}
                 >
                   {section.category}
                 </MonoText>
-                <View style={{ flex: 1, height: 1, backgroundColor: `${colors.text}1F` }} />
+                <View style={{ flex: 1, height: 1, backgroundColor: `${colors.categoryText}1F` }} />
                 <MonoText
                   size={9}
                   tracking={1.2}
-                  color={`${colors.text}66`}
+                  color={`${colors.categoryText}66`}
                   style={{ marginStart: 8 }}
                 >
                   {section.items.length}
