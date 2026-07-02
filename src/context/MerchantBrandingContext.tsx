@@ -80,7 +80,7 @@ export type MerchantBranding = {
    * blocker. Defaults to "active" so a missing field never blocks an
    * otherwise-healthy merchant.
    */
-  subscriptionState: 'setup' | 'active' | 'grace_period' | 'suspended';
+  subscriptionState: 'setup' | 'active' | 'grace_period' | 'suspended' | 'billing_closed';
   orderIntakeEnabled: boolean;
   billingReason: string | null;
 };
@@ -263,7 +263,11 @@ function parseBrandingResponse(data: Record<string, unknown>): MerchantBranding 
         : null,
     subscriptionState: (() => {
       const raw = typeof data.subscriptionState === 'string' ? data.subscriptionState : '';
-      return raw === 'setup' || raw === 'active' || raw === 'grace_period' || raw === 'suspended'
+      // 'billing_closed' = lapsed billing, storefront stays browsable; the
+      // operations endpoint forces every branch to read closed, so the
+      // existing isClosed UX (browse but can't order) takes over. Only
+      // 'suspended' (never-activated billing) hard-blocks via SuspensionGate.
+      return raw === 'setup' || raw === 'active' || raw === 'grace_period' || raw === 'suspended' || raw === 'billing_closed'
         ? raw
         : 'active';
     })(),
