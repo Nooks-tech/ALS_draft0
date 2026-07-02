@@ -1112,6 +1112,24 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(500).json({ error: commitError?.message || 'Failed to commit order' });
     }
 
+    if (isFinalCommit) {
+      // Recovery stamping — the cart-abandonment cron (server/cron/
+      // cartAbandonment.ts) records abandoned carts but nothing marked
+      // them recovered until now. A confirmed order within 24h of the
+      // abandonment claims the most recent unrecovered rows.
+      try {
+        await supabaseAdmin
+          .from('abandoned_carts')
+          .update({ recovered_at: new Date().toISOString(), recovered_order_id: id })
+          .eq('merchant_id', merchantId)
+          .eq('customer_id', user.id)
+          .is('recovered_at', null)
+          .gte('abandoned_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+      } catch (recoveryErr) {
+        console.warn('[commit] abandoned-cart recovery stamping failed (non-fatal):', recoveryErr);
+      }
+    }
+
     let relayResult: unknown = null;
     if (relayToNooks === true && payload.payment_id) {
       // Re-verify the Moyasar payment IMMEDIATELY before relaying.
