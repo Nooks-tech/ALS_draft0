@@ -1,8 +1,15 @@
 /**
- * MadarSMS (Orbit Technology) – send SMS via api.mobile.net.sa
+ * MadarSMS (Orbit Technology) – send SMS via app.mobile.net.sa
+ *
+ * API per Madar's published Postman collection (served at
+ * https://api.mobile.net.sa — that host is the DOCS, not the API; POSTing
+ * there returns a CloudFront 404, which is what silently broke sends):
+ *   POST /api/v1/send      Authorization: Bearer <key>
+ *   body { number, senderName, sendAtOption: "NOW", messageBody, allow_duplicate }
+ *   200 → { status: "Success", message, data }
  */
 
-const MADAR_API_BASE = 'https://api.mobile.net.sa/api/v1';
+const MADAR_API_BASE = 'https://app.mobile.net.sa/api/v1';
 const MADAR_API_KEY = process.env.MADAR_SMS_API_KEY || '';
 const MADAR_SENDER = process.env.MADAR_SMS_SENDER || 'Nooks';
 
@@ -35,23 +42,31 @@ export async function sendSms(to: string, message: string): Promise<SendSmsResul
   }
 
   try {
-    const res = await fetch(`${MADAR_API_BASE}/SendSMS`, {
+    const res = await fetch(`${MADAR_API_BASE}/send`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${MADAR_API_KEY}`,
+      },
       body: JSON.stringify({
-        apiKey: MADAR_API_KEY,
-        numbers: to,
-        sender: MADAR_SENDER,
-        message,
+        number: to,
+        senderName: MADAR_SENDER,
+        sendAtOption: 'NOW',
+        messageBody: message,
+        // OTP resends legitimately repeat the same body to the same
+        // number within minutes — don't let Madar's dedup eat them.
+        allow_duplicate: true,
       }),
     });
 
     const data = await res.json().catch(() => null);
 
-    if (!res.ok || (data && data.ErrorCode)) {
+    if (!res.ok || (data && data.status && data.status !== 'Success')) {
       consecutiveFailures += 1;
-      const errorDescription: string = data?.ErrorDescription || `HTTP ${res.status}`;
-      const errorCode: string | number | undefined = data?.ErrorCode;
+      const errorDescription: string =
+        data?.message || data?.ErrorDescription || `HTTP ${res.status}`;
+      const errorCode: string | number | undefined = data?.ErrorCode ?? data?.status;
       console.error(
         '[SMS] MadarSMS error:',
         JSON.stringify({
@@ -83,7 +98,11 @@ export async function sendSms(to: string, message: string): Promise<SendSmsResul
       consecutiveFailures = 0;
     }
     console.log('[SMS] Sent to', to, '→', data);
-    return { ok: true, messageId: data?.MessageID || data?.messageId };
+    return {
+      ok: true,
+      messageId:
+        data?.data?.message_id || data?.data?.id || data?.MessageID || data?.messageId,
+    };
   } catch (err) {
     consecutiveFailures += 1;
     console.error('[SMS] Fetch error:', err);
