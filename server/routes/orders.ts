@@ -607,14 +607,28 @@ ordersRouter.post('/commit', async (req, res) => {
     }
 
     // Subscription enforcement: reject orders for suspended merchants
+    let merchantInTrial = false;
     if (supabaseAdmin) {
       const { data: merchantRow } = await supabaseAdmin
         .from('merchants')
-        .select('status')
+        .select('status, trial_ends_at')
         .eq('id', merchantId)
         .maybeSingle();
       if (merchantRow?.status === 'suspended') {
         return res.status(403).json({ error: 'Merchant is currently suspended. Orders cannot be placed.' });
+      }
+      // Trial merchants accrue NO payment-processing fee. Trial only ever
+      // applies to merchants without a subscription — the moment any
+      // subscription row exists (they subscribed mid-trial), fees resume.
+      const trialEndsAt = merchantRow?.trial_ends_at ? Date.parse(merchantRow.trial_ends_at) : NaN;
+      if (Number.isFinite(trialEndsAt) && trialEndsAt > Date.now()) {
+        const { data: anySub } = await supabaseAdmin
+          .from('subscriptions')
+          .select('id')
+          .eq('merchant_id', merchantId)
+          .limit(1)
+          .maybeSingle();
+        merchantInTrial = !anySub;
       }
     }
 
@@ -1088,10 +1102,11 @@ ordersRouter.post('/commit', async (req, res) => {
       // delivered orders flip to 'earned' downstream. Aggregated monthly
       // and invoiced to the merchant out-of-band. Pickup + delivery both
       // count; the customer-received handler only updates the status,
-      // not the amount.
-      commission_amount: 1,
+      // not the amount. Trial merchants accrue nothing ('trial' status
+      // keeps the Moyasar-webhook fallback from re-accruing later).
+      commission_amount: merchantInTrial ? 0 : 1,
       commission_rate: 0,
-      commission_status: 'pending',
+      commission_status: merchantInTrial ? 'trial' : 'pending',
       // Visibility gate: only orders with payment_confirmed_at + a
       // foodics_order_id appear in the customer app and merchant
       // dashboard. Confirmed only on the FINAL commit, after the
