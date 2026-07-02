@@ -124,7 +124,7 @@ export default function CheckoutScreen() {
   // vs "10 off your subtotal") and the Foodics order body (delivery
   // promos shrink charges[].amount, subtotal promos scale the line
   // unit_prices).
-  const [promoScope, setPromoScope] = useState<'total' | 'delivery'>('total');
+  const [promoScope, setPromoScope] = useState<'total' | 'delivery' | 'order_total'>('total');
   const [showCouponInput, setShowCouponInput] = useState(false);
   const [couponInput, setCouponInput] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
@@ -1940,6 +1940,15 @@ export default function CheckoutScreen() {
                 ) : (
                   <PriceWithSymbol amount={deliveryFee} iconSize={16} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700' }} />
                 )}
+              </View>
+            )}
+            {/* order_total promos discount the whole order (subtotal +
+                delivery) — attribute the saving on its own line above
+                Total instead of striking one component. */}
+            {promoApplied && promoScope === 'order_total' && discount > 0 && (
+              <View className="flex-row justify-between items-baseline mt-2">
+                <Text className="text-emerald-600 font-medium">{isArabic ? 'خصم الكود' : 'Promo discount'}</Text>
+                <Text className="text-emerald-600 font-bold">−{discount.toFixed(2)}</Text>
               </View>
             )}
             <View className="flex-row justify-between mt-4 pt-4 border-t border-slate-200">

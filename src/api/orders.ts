@@ -124,7 +124,7 @@ export type CommitOrderPayload = {
   customerEmail?: string | null;
   promoCode?: string | null;
   promoDiscountSar?: number | null;
-  promoScope?: 'total' | 'delivery' | null;
+  promoScope?: 'total' | 'delivery' | 'order_total' | null;
   customerNote?: string | null;
   /**
    * Wallet credit applied to the order (in SAR). Server debits the

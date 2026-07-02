@@ -719,7 +719,7 @@ ordersRouter.post('/commit', async (req, res) => {
     const trimmedPromoCode =
       typeof promoCode === 'string' && promoCode.trim() ? promoCode.trim().toUpperCase() : null;
     const promoScopeNormalized =
-      promoScope === 'delivery' || promoScope === 'total' ? promoScope : null;
+      promoScope === 'delivery' || promoScope === 'total' || promoScope === 'order_total' ? promoScope : null;
     const promoDiscountValue =
       typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
         ? promoDiscountSar
@@ -1061,7 +1061,7 @@ ordersRouter.post('/commit', async (req, res) => {
         typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
           ? Number(promoDiscountSar.toFixed(2))
           : null,
-      promo_scope: promoScope === 'delivery' || promoScope === 'total' ? promoScope : null,
+      promo_scope: promoScope === 'delivery' || promoScope === 'total' || promoScope === 'order_total' ? promoScope : null,
       car_details:
         orderType === 'drivethru' && carDetails && typeof carDetails === 'object'
           ? {
@@ -1192,7 +1192,7 @@ ordersRouter.post('/commit', async (req, res) => {
           typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
             ? promoDiscountSar
             : null,
-        promo_scope: promoScope === 'delivery' || promoScope === 'total' ? promoScope : null,
+        promo_scope: promoScope === 'delivery' || promoScope === 'total' || promoScope === 'order_total' ? promoScope : null,
         customer_note: typeof customerNote === 'string' ? customerNote.trim() || null : null,
         // R2 fix: send the server-validated cashback amount to Foodics,
         // not the raw client claim. validatedCashbackSar == the actual

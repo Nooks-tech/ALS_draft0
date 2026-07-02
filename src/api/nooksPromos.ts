@@ -12,7 +12,8 @@ const BASE_URL =
   process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL ||
   '';
 
-export type NooksPromoScope = 'total' | 'delivery';
+// 'total' = legacy name for SUBTOTAL-only; 'order_total' = subtotal + delivery fee.
+export type NooksPromoScope = 'total' | 'delivery' | 'order_total';
 
 export type NooksPromo = {
   id: string;
@@ -102,7 +103,7 @@ export async function validateNooksPromo(params: {
       code: String(data.code ?? code),
       type: (data.type as 'percent' | 'fixed') ?? 'fixed',
       value: Number(data.value ?? 0),
-      scope: (data.scope as 'total' | 'delivery') ?? 'total',
+      scope: (data.scope as NooksPromoScope) ?? 'total',
       discountAmount: Number(data.discount_amount ?? 0),
       newTotal: Number(data.new_total ?? 0),
     };
@@ -127,8 +128,8 @@ export function calculateNooksPromoDiscount(
 ): number {
   const rawType = String(promo.type ?? '').toLowerCase();
   const value = Number(promo.value ?? 0);
-  const scope: NooksPromoScope = promo.scope === 'delivery' ? 'delivery' : 'total';
-  const base = scope === 'delivery' ? deliveryFee : subtotal;
+  const scope: NooksPromoScope = promo.scope === 'delivery' || promo.scope === 'order_total' ? promo.scope : 'total';
+  const base = scope === 'delivery' ? deliveryFee : scope === 'order_total' ? subtotal + deliveryFee : subtotal;
   if (value <= 0 || base <= 0) return 0;
   if (rawType === 'percentage' || rawType === 'percent') {
     return Math.round(Math.min(base * (value / 100), base) * 100) / 100;
