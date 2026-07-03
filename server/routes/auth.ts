@@ -148,16 +148,27 @@ router.post('/send-otp', async (req, res) => {
       return res.status(429).json({ error: 'Too many verification attempts from this network. Please try again later.' });
     }
 
-    // Per-merchant cap on OTP sends — protects the merchant's SMS
-    // wallet from being drained by a distributed attack (per-phone +
-    // per-IP above don't bound the total across attackers). 100 SMS
-    // per hour per merchant is well above legitimate signup traffic
-    // even for the biggest merchant we'd onboard — anything over that
-    // is almost certainly abuse.
+    // OTP send is a BILLED action (debits the named merchant's prepaid SMS
+    // wallet) whose merchantId is client-asserted, so it needs anti-drain
+    // caps that hold across instances (Upstash-backed) and — crucially —
+    // that an attacker can't reset by rotating the merchantId. The
+    // in-memory per-phone/per-IP buckets above ARE keyed by merchantId, so
+    // they reset on rotation; these do not.
+    //   - merchant hourly 100 + daily 300 → bounds max drain to ~60 SAR/day
+    //   - global per-IP 20/hr (NOT merchant-scoped) → one attacker source
+    //     can't fan a drain across many merchants
+    //   - global per-phone 6/day → a real phone never needs more, across
+    //     all merchants combined
+    // (phone + ip are PII → hashKey'd per the rateLimit contract.)
     if (
       !(await enforceLimits(req, res, {
         endpoint: 'auth.send-otp',
-        keys: [{ dim: 'merchant', value: merchantId, max: 100, windowMs: 60 * 60_000 }],
+        keys: [
+          { dim: 'merchant', value: merchantId, max: 100, windowMs: 60 * 60_000 },
+          { dim: 'merchant', value: merchantId, max: 300, windowMs: 24 * 60 * 60_000 },
+          { dim: 'ip', value: hashKey(requestIp), max: 20, windowMs: 60 * 60_000 },
+          { dim: 'phone', value: hashKey(normalised), max: 6, windowMs: 24 * 60 * 60_000 },
+        ],
         supabaseAdmin: adminClient,
         merchantId,
       }))
@@ -308,10 +319,12 @@ router.post('/send-otp', async (req, res) => {
         },
       });
       console.warn('[Auth] SMS send failed:', smsResult.error);
-      // Keep the fallback log line — this is how the OTP gets read off
-      // Railway logs while the sender is pending re-approval.
-      console.log('[Auth] OTP for testing:', normalised, '→', code);
       if (ALLOW_OTP_FALLBACK) {
+        // Break-glass ONLY: the code reaches logs solely when the operator
+        // has explicitly enabled the fallback (currently: Madar sender name
+        // pending re-approval). With the fallback off, a send failure never
+        // leaks the code to logs.
+        console.log('[Auth] OTP (fallback enabled):', normalised, '→', code);
         trackOtpAttempt(phoneBucketKey, now);
         trackOtpAttempt(ipBucketKey, now);
         return res.json({ ok: true });
