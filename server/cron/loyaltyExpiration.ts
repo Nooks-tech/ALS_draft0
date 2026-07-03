@@ -14,6 +14,11 @@ const supabaseAdmin =
 
 const POLL_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
 const BATCH_LIMIT = 200;
+// Each expire/warn task loops batches until drained. Runs on a persistent
+// Railway worker (no serverless timeout), so the only cap is a runaway
+// backstop — normal termination is "batch shorter than BATCH_LIMIT".
+// Without the loop the whole PLATFORM was capped at 200 expirations/day.
+const MAX_BATCHES_PER_TICK = 1000;
 
 function sendPush(customerId: string, merchantId: string, title: string, body: string) {
   return sendPushScoped({ customerId, merchantId, title, body, channel: 'loyalty' });
@@ -24,6 +29,7 @@ function sendPush(customerId: string, merchantId: string, title: string, body: s
 async function expireStalePoints() {
   if (!supabaseAdmin) return;
 
+  for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch += 1) {
   const now = new Date().toISOString();
 
   const { data: expiredTxns, error } = await supabaseAdmin
@@ -98,6 +104,9 @@ async function expireStalePoints() {
     }
     console.log(`[Loyalty Cron] Expired ${group.totalPoints} points for customer ${group.customerId}`);
   }
+
+  if (expiredTxns.length < BATCH_LIMIT) break; // drained
+  }
 }
 
 // ── 1b. Expire stale cashback balances ──
@@ -105,6 +114,7 @@ async function expireStalePoints() {
 async function expireStaleCashback() {
   if (!supabaseAdmin) return;
 
+  for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch += 1) {
   // Find cashback transactions that have expired
   const now = new Date().toISOString();
   const { data: expiredCbTxns, error } = await supabaseAdmin
@@ -154,6 +164,9 @@ async function expireStaleCashback() {
 
     sendPush(group.customerId, group.merchantId, 'Cashback Expired', `${group.totalSar.toFixed(2)} SAR cashback has expired.`);
   }
+
+  if (expiredCbTxns.length < BATCH_LIMIT) break; // drained
+  }
 }
 
 // Stamp-specific expiration removed in Phase 1 — the underlying
@@ -202,6 +215,7 @@ async function cleanupRetiredPrograms() {
 async function warnUpcomingExpiry() {
   if (!supabaseAdmin) return;
 
+  for (let batch = 0; batch < MAX_BATCHES_PER_TICK; batch += 1) {
   const now = new Date();
   const sevenDaysOut = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -253,6 +267,9 @@ async function warnUpcomingExpiry() {
     } else {
       sendPush(group.customerId, group.merchantId, 'Points Expiring Soon', `You have ${group.totalPoints} points expiring in ${days}. Use them before they expire!`);
     }
+  }
+
+  if (soonExpiring.length < BATCH_LIMIT) break; // drained
   }
 }
 
