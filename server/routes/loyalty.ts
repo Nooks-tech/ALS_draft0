@@ -2080,6 +2080,11 @@ async function handleUnredeemMilestone(req: any, res: any) {
       return res.status(400).json({ error: 'customerId, merchantId, redemptionId required' });
     }
 
+    // AuthZ: bind to the verified Supabase user, same as redeem-milestone.
+    // Without this an unauthenticated caller could refund a milestone
+    // redemption into any (customer, merchant) balance (audit finding).
+    if (!(await requireMatchingCustomer(req, res, customerId))) return;
+
     // Same rate-limit family as redeem so a customer mashing add/remove
     // can't generate ledger spam. enforceLimits returns true on pass,
     // false when it has already sent a 429 — we just return early then.

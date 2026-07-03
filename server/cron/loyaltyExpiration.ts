@@ -273,6 +273,19 @@ async function warnUpcomingExpiry() {
   }
 }
 
+// ── Retention: prune the cron_runs heartbeat log ──
+// cron_runs is the highest-row table (heartbeats from every cron tick) and
+// was never pruned. This daily cron is the natural place to trim it — one
+// delete per day keeps ~30 days of history for the /ready health checks.
+const CRON_RUNS_RETENTION_DAYS = 30;
+
+async function pruneOldCronRuns() {
+  if (!supabaseAdmin) return;
+  const cutoff = new Date(Date.now() - CRON_RUNS_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await supabaseAdmin.from('cron_runs').delete().lt('started_at', cutoff);
+  if (error) console.warn('[Loyalty Cron] cron_runs prune failed:', error.message);
+}
+
 // ── Startup ──
 
 async function runLoyaltyTick() {
@@ -285,6 +298,7 @@ async function runLoyaltyTick() {
     ['expireStalePoints', expireStalePoints],
     ['expireStaleCashback', expireStaleCashback],
     ['cleanupRetiredPrograms', cleanupRetiredPrograms],
+    ['pruneOldCronRuns', pruneOldCronRuns],
   ];
   for (const [name, task] of tasks) {
     try {
