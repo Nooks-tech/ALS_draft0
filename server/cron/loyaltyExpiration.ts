@@ -37,6 +37,11 @@ async function expireStalePoints() {
     .select('id, customer_id, merchant_id, points, loyalty_type')
     .eq('type', 'earn')
     .eq('expired', false)
+    // Cashback earns are expired by expireStaleCashback (which decrements the
+    // SAR balance). Processing them here marked them expired=true first, which
+    // starved that pass — expired cashback stayed spendable forever. NULL-safe
+    // (legacy rows have loyalty_type = NULL).
+    .or('loyalty_type.is.null,loyalty_type.neq.cashback')
     .not('expires_at', 'is', null)
     .lt('expires_at', now)
     .limit(BATCH_LIMIT);
@@ -94,14 +99,7 @@ async function expireStalePoints() {
       source: 'system',
     });
 
-    // Type-aware push message
-    const loyaltyType = (expiredTxns.find(t => t.customer_id === group.customerId) as any)?.loyalty_type;
-    if (loyaltyType === 'cashback') {
-      const sarValue = (group.totalPoints * 0.1).toFixed(2); // approximate
-      sendPush(group.customerId, group.merchantId, 'Cashback Expired', `${sarValue} SAR cashback has expired.`);
-    } else {
-      sendPush(group.customerId, group.merchantId, 'Points Expired', `${group.totalPoints} loyalty points have expired.`);
-    }
+    sendPush(group.customerId, group.merchantId, 'Points Expired', `${group.totalPoints} loyalty points have expired.`);
     console.log(`[Loyalty Cron] Expired ${group.totalPoints} points for customer ${group.customerId}`);
   }
 

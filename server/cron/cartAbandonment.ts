@@ -73,11 +73,16 @@ type CartRow = {
 async function processNotifyBatch() {
   if (!supabaseAdmin) return 0;
   const cutoff = new Date(Date.now() - NOTIFY_AFTER_MS).toISOString();
+  // Carts already past the abandon cutoff belong to processAbandonBatch,
+  // which runs concurrently in the same tick — nudging a cart that's
+  // being deleted at the same moment is a wasted (and confusing) push.
+  const abandonCutoff = new Date(Date.now() - ABANDON_AFTER_MS).toISOString();
   const { data, error } = await supabaseAdmin
     .from('customer_carts')
     .select('merchant_id, customer_id, items, subtotal_sar, updated_at')
     .is('notified_at', null)
     .lt('updated_at', cutoff)
+    .gte('updated_at', abandonCutoff)
     .limit(BATCH_LIMIT);
   if (error) {
     console.warn('[cartAbandonment] notify select failed:', error.message);
@@ -133,12 +138,14 @@ async function processNotifyBatch() {
     // 30-min-after-notification abandon still fires for this row —
     // it just goes to abandoned_carts silently.
     if (inCooldown.has(`${row.merchant_id}:${row.customer_id}`)) {
-      const { error: stampErr } = await supabaseAdmin
+      const { data: cdClaimed, error: stampErr } = await supabaseAdmin
         .from('customer_carts')
         .update({ notified_at: new Date().toISOString() })
         .eq('merchant_id', row.merchant_id)
-        .eq('customer_id', row.customer_id);
-      if (!stampErr) {
+        .eq('customer_id', row.customer_id)
+        .is('notified_at', null)
+        .select('customer_id');
+      if (!stampErr && cdClaimed && cdClaimed.length > 0) {
         await supabaseAdmin.from('audit_log').insert({
           merchant_id: row.merchant_id,
           action: 'cart.notification_suppressed_cooldown',
@@ -152,54 +159,61 @@ async function processNotifyBatch() {
       continue;
     }
 
-    try {
-      await sendLocalizedPushScoped({
-        customerId: row.customer_id,
-        merchantId: row.merchant_id,
-        channel: 'orders',
-        // Single-line winky-face nudge — the founder's preferred copy
-        // 2026-05-23. The detail about how many items / how to finish
-        // ordering used to live on a second line but cluttered the
-        // lockscreen; the title is now the whole message.
-        copy: {
-          en: {
-            title: "Don't forget your cart 😉",
-            body:
-              itemCount === 1
-                ? 'There’s still an item waiting. Tap to finish.'
-                : `There are still ${itemCount} items waiting. Tap to finish.`,
-          },
-          ar: {
-            title: 'لا تنسى سلتك 😉',
-            body:
-              itemCount === 1
-                ? 'في منتج لسه ينتظرك. اضغط لإتمام الطلب.'
-                : `في ${itemCount} منتجات لسه تنتظرك. اضغط لإتمام الطلب.`,
-          },
-        },
-      });
-    } catch (err: any) {
-      // Phase E: enrich with (merchant, customer) so a sudden burst
-      // of push failures on one merchant (= APNS cert expired, FCM
-      // misconfigured) is queryable.
-      console.warn('[cartAbandonment] push send failed', {
-        merchantId: row.merchant_id,
-        customerId: row.customer_id,
-        itemCount,
-        error: err?.message,
-      });
-      // Push failure shouldn't block stamping — we don't want an
-      // infinite re-notify loop if Expo is down.
-    }
-
-    const { error: stampErr } = await supabaseAdmin
+    // Claim BEFORE sending: the conditional .is('notified_at', null)
+    // makes the stamp atomic, so a tick that outruns its 60s interval
+    // (or a second replica) matches 0 rows here and skips — the old
+    // send-then-stamp order double-pushed in that window. A push that
+    // fails after the claim stays stamped, which is the same trade the
+    // old code made ("don't re-notify forever if Expo is down").
+    const { data: claimed, error: stampErr } = await supabaseAdmin
       .from('customer_carts')
       .update({ notified_at: new Date().toISOString() })
       .eq('merchant_id', row.merchant_id)
-      .eq('customer_id', row.customer_id);
+      .eq('customer_id', row.customer_id)
+      .is('notified_at', null)
+      .select('customer_id');
     if (stampErr) {
       console.warn('[cartAbandonment] notified_at stamp failed:', stampErr.message);
+    } else if (!claimed || claimed.length === 0) {
+      // Another tick/replica claimed this row between our select and now.
     } else {
+      try {
+        await sendLocalizedPushScoped({
+          customerId: row.customer_id,
+          merchantId: row.merchant_id,
+          channel: 'orders',
+          // Single-line winky-face nudge — the founder's preferred copy
+          // 2026-05-23. The detail about how many items / how to finish
+          // ordering used to live on a second line but cluttered the
+          // lockscreen; the title is now the whole message.
+          copy: {
+            en: {
+              title: "Don't forget your cart 😉",
+              body:
+                itemCount === 1
+                  ? 'There’s still an item waiting. Tap to finish.'
+                  : `There are still ${itemCount} items waiting. Tap to finish.`,
+            },
+            ar: {
+              title: 'لا تنسى سلتك 😉',
+              body:
+                itemCount === 1
+                  ? 'في منتج لسه ينتظرك. اضغط لإتمام الطلب.'
+                  : `في ${itemCount} منتجات لسه تنتظرك. اضغط لإتمام الطلب.`,
+            },
+          },
+        });
+      } catch (err: any) {
+        // Phase E: enrich with (merchant, customer) so a sudden burst
+        // of push failures on one merchant (= APNS cert expired, FCM
+        // misconfigured) is queryable.
+        console.warn('[cartAbandonment] push send failed', {
+          merchantId: row.merchant_id,
+          customerId: row.customer_id,
+          itemCount,
+          error: err?.message,
+        });
+      }
       sent += 1;
       // Audit row so "did the cart-abandon push fire for customer X?"
       // is a one-line supabase query. The push helper itself logs
@@ -330,8 +344,19 @@ async function processAbandonBatch() {
   return abandoned;
 }
 
+// A tick that processes a full batch (push + ~4 DB ops per row) can
+// outrun the 60s interval; without this guard the next tick re-selects
+// every not-yet-stamped row mid-flight. The atomic claim above makes
+// that safe but wasteful — skip overlapping ticks entirely.
+let tickInFlight = false;
+
 async function tick() {
   if (!supabaseAdmin) return;
+  if (tickInFlight) {
+    console.warn('[cartAbandonment] previous tick still running — skipping this interval');
+    return;
+  }
+  tickInFlight = true;
   try {
     await runWithHeartbeat('cartAbandonment', async () => {
       const [notified, abandoned] = await Promise.all([
@@ -347,6 +372,8 @@ async function tick() {
     // runWithHeartbeat already shipped to Sentry + audit-stamped the
     // failure row. We swallow here so the setInterval keeps firing.
     console.warn('[cartAbandonment] tick error (heartbeat captured):', err?.message);
+  } finally {
+    tickInFlight = false;
   }
 }
 

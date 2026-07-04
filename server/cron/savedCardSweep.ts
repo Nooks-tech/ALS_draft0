@@ -27,20 +27,33 @@ const supabaseAdmin =
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h
 const BATCH_LIMIT = 500;
 const PER_TOKEN_DELAY_MS = 100;
+// Stop paginating if a sweep somehow runs this long — the next tick's
+// sweep starts over from the top and re-covers whatever was left.
+const SWEEP_BUDGET_MS = 2 * 60 * 60 * 1000;
 
 async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function checkOne(card: { id: string; customer_id: string; merchant_id: string; token: string }) {
+// One config fetch per merchant per sweep instead of per card — a
+// merchant with 500 saved cards was previously 500 identical lookups.
+type MerchantKeyCache = Map<string, string | null>;
+
+async function checkOne(
+  card: { id: string; customer_id: string; merchant_id: string; token: string },
+  keyCache: MerchantKeyCache,
+) {
   if (!supabaseAdmin) return;
-  let secretKey: string | null | undefined;
-  try {
-    const runtimeConfig = await getMerchantPaymentRuntimeConfig(card.merchant_id);
-    secretKey = runtimeConfig.secretKey;
-  } catch (err: any) {
-    console.warn('[SavedCardSweep] Could not load merchant config:', card.merchant_id, err?.message);
-    return;
+  let secretKey: string | null | undefined = keyCache.get(card.merchant_id);
+  if (secretKey === undefined) {
+    try {
+      const runtimeConfig = await getMerchantPaymentRuntimeConfig(card.merchant_id);
+      secretKey = runtimeConfig.secretKey ?? null;
+    } catch (err: any) {
+      console.warn('[SavedCardSweep] Could not load merchant config:', card.merchant_id, err?.message);
+      secretKey = null;
+    }
+    keyCache.set(card.merchant_id, secretKey);
   }
   if (!secretKey) return;
 
@@ -75,21 +88,53 @@ async function checkOne(card: { id: string; customer_id: string; merchant_id: st
   }
 }
 
+let sweepInFlight = false;
+
 async function runSweep() {
   if (!supabaseAdmin) return;
-  const { data, error } = await supabaseAdmin
-    .from('customer_saved_cards')
-    .select('id, customer_id, merchant_id, token')
-    .limit(BATCH_LIMIT);
-  if (error) {
-    console.warn('[SavedCardSweep] List query failed:', error.message);
+  if (sweepInFlight) {
+    console.warn('[SavedCardSweep] previous sweep still running — skipping this interval');
     return;
   }
-  if (!data?.length) return;
-  console.log(`[SavedCardSweep] Checking ${data.length} saved cards`);
-  for (const card of data as Array<{ id: string; customer_id: string; merchant_id: string; token: string }>) {
-    await checkOne(card);
-    await sleep(PER_TOKEN_DELAY_MS);
+  sweepInFlight = true;
+  try {
+    const startedAt = Date.now();
+    const keyCache: MerchantKeyCache = new Map();
+    // Keyset pagination ordered by id: the old single unordered
+    // .limit(500) fetched the same ~500 physical-order rows every tick,
+    // so cards 501+ were NEVER swept and dead tokens surfaced as
+    // "payment failed" at checkout.
+    let lastId = '';
+    let checked = 0;
+    for (;;) {
+      let query = supabaseAdmin
+        .from('customer_saved_cards')
+        .select('id, customer_id, merchant_id, token')
+        .order('id', { ascending: true })
+        .limit(BATCH_LIMIT);
+      if (lastId) query = query.gt('id', lastId);
+      const { data, error } = await query;
+      if (error) {
+        console.warn('[SavedCardSweep] List query failed:', error.message);
+        return;
+      }
+      if (!data?.length) break;
+      console.log(`[SavedCardSweep] Checking batch of ${data.length} saved cards (total so far: ${checked})`);
+      for (const card of data as Array<{ id: string; customer_id: string; merchant_id: string; token: string }>) {
+        await checkOne(card, keyCache);
+        checked += 1;
+        await sleep(PER_TOKEN_DELAY_MS);
+      }
+      lastId = String((data[data.length - 1] as { id: string }).id);
+      if (data.length < BATCH_LIMIT) break; // drained
+      if (Date.now() - startedAt > SWEEP_BUDGET_MS) {
+        console.warn(`[SavedCardSweep] budget exhausted after ${checked} cards — resuming next tick`);
+        break;
+      }
+    }
+    if (checked > 0) console.log(`[SavedCardSweep] Sweep complete — ${checked} cards checked`);
+  } finally {
+    sweepInFlight = false;
   }
 }
 
