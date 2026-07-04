@@ -39,15 +39,41 @@ const DEFAULT_CONFIG = {
   config_version: 1,
 };
 
+// 30s TTL cache — the earn path used to read loyalty_config twice per earn
+// (route handler + earnPoints/earnCashback), each a ~250ms Railway→Tokyo
+// round-trip inside the Foodics webhook's 3.5s budget. Config writes in
+// this file invalidate explicitly; dashboard-side writes are covered by
+// the TTL.
+const MERCHANT_CONFIG_TTL_MS = 30_000;
+const merchantConfigCache = new Map<string, { at: number; value: any }>();
+
+function invalidateMerchantConfigCache(merchantId: string) {
+  merchantConfigCache.delete(merchantId);
+}
+
 async function getMerchantConfig(merchantId: string) {
   if (!supabaseAdmin || !merchantId) return DEFAULT_CONFIG;
+  const cached = merchantConfigCache.get(merchantId);
+  if (cached && Date.now() - cached.at < MERCHANT_CONFIG_TTL_MS) return cached.value;
   const { data, error } = await supabaseAdmin
     .from('loyalty_config')
     .select('*')
     .eq('merchant_id', merchantId)
     .maybeSingle();
-  if (error) console.warn('[loyalty] getMerchantConfig error for', merchantId, ':', error.message);
-  return data ?? DEFAULT_CONFIG;
+  if (error) {
+    console.warn('[loyalty] getMerchantConfig error for', merchantId, ':', error.message);
+    // Don't cache transient failures — next call retries the DB.
+    return DEFAULT_CONFIG;
+  }
+  const value = data ?? DEFAULT_CONFIG;
+  merchantConfigCache.set(merchantId, { at: Date.now(), value });
+  if (merchantConfigCache.size > 2000) {
+    const cutoff = Date.now() - MERCHANT_CONFIG_TTL_MS;
+    for (const [k, v] of merchantConfigCache) {
+      if (v.at < cutoff) merchantConfigCache.delete(k);
+    }
+  }
+  return value;
 }
 
 /** Get or initialize the customer's active loyalty type from loyalty_member_profiles */
@@ -516,6 +542,7 @@ loyaltyRouter.put('/config', async (req, res) => {
       return res.status(500).json({ error: error.message, code: error.code, hint: error.hint });
     }
     console.log('[loyalty] upsert success:', JSON.stringify(data));
+    invalidateMerchantConfigCache(merchantId);
 
     // Cashback balance migration on config_version bump. When
     // loyalty_type or rates change we bump config_version so the
@@ -2340,6 +2367,7 @@ loyaltyRouter.post('/programs/retire-and-launch', async (req, res) => {
     await supabaseAdmin
       .from('loyalty_config')
       .upsert(configPayload, { onConflict: 'merchant_id' });
+    invalidateMerchantConfigCache(merchantId);
 
     res.json({
       success: true,

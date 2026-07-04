@@ -693,7 +693,13 @@ ordersRouter.post('/commit', async (req, res) => {
           ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
           : Number(totalSar);
     const expectedHalalsForVerify = Math.round(cardPortionSar * 100);
-    if (isMoyasarPaymentId && existing?.id !== id) {
+    // Final commits skip this entry verify: nothing between here and the
+    // hardened post-delay verify below has side effects, so that gate (plus
+    // the pre-relay one) still rejects unpaid payments before any money
+    // moves — running a third verify here just added a Moyasar round-trip
+    // to every checkout. First commits (relayToNooks=false) keep it as
+    // their only verification.
+    if (isMoyasarPaymentId && existing?.id !== id && relayToNooks !== true) {
       const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
       if (!verification.ok) {
         console.warn(

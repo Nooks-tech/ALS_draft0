@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 import { createClient, type User } from '@supabase/supabase-js';
 import type { Request, Response } from 'express';
 import { writeAudit } from './auditLog';
@@ -11,6 +13,109 @@ const authClient = SUPABASE_URL && SUPABASE_SERVICE_KEY
       auth: { autoRefreshToken: false, persistSession: false },
     })
   : null;
+
+// ── Local JWT verification ─────────────────────────────────────────────
+// Every authenticated request used to make an HTTP round-trip to Supabase
+// GoTrue (auth.getUser) just to validate the bearer token — a ~50-250ms
+// latency floor and a shared rate limit/single point of failure for the
+// whole customer API. The project signs access tokens with ES256 and
+// publishes the public key via JWKS, so we verify locally (exactly the
+// trust model PostgREST itself uses) and only fall back to the network
+// when local verification can't succeed (unknown kid after refresh, JWKS
+// unreachable, legacy HS256 token without SUPABASE_JWT_SECRET set).
+const JWKS_TTL_MS = 10 * 60 * 1000;
+const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET || '';
+
+let jwksKeys: Map<string, crypto.KeyObject> | null = null;
+let jwksFetchedAt = 0;
+let jwksFetchInFlight: Promise<void> | null = null;
+
+async function refreshJwks(): Promise<void> {
+  if (!SUPABASE_URL) return;
+  if (jwksFetchInFlight) return jwksFetchInFlight;
+  jwksFetchInFlight = (async () => {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`);
+      if (!res.ok) return;
+      const body: any = await res.json().catch(() => null);
+      const keys: any[] = Array.isArray(body?.keys) ? body.keys : [];
+      const next = new Map<string, crypto.KeyObject>();
+      for (const jwk of keys) {
+        if (!jwk?.kid) continue;
+        try {
+          next.set(String(jwk.kid), crypto.createPublicKey({ key: jwk, format: 'jwk' }));
+        } catch {
+          // Unsupported key type — skip; verification falls back to GoTrue.
+        }
+      }
+      if (next.size > 0) {
+        jwksKeys = next;
+        jwksFetchedAt = Date.now();
+      }
+    } catch {
+      // Network failure — keep any previously-cached keys.
+    } finally {
+      jwksFetchInFlight = null;
+    }
+  })();
+  return jwksFetchInFlight;
+}
+
+function claimsToUser(payload: jwt.JwtPayload): User {
+  return {
+    id: String(payload.sub ?? ''),
+    aud: typeof payload.aud === 'string' ? payload.aud : 'authenticated',
+    role: typeof (payload as any).role === 'string' ? (payload as any).role : undefined,
+    email: typeof (payload as any).email === 'string' ? (payload as any).email : undefined,
+    phone: typeof (payload as any).phone === 'string' ? (payload as any).phone : undefined,
+    app_metadata: (payload as any).app_metadata ?? {},
+    user_metadata: (payload as any).user_metadata ?? {},
+    is_anonymous: Boolean((payload as any).is_anonymous),
+    created_at: '',
+  } as User;
+}
+
+/**
+ * Verify the access token locally. Returns the user on success, or null
+ * when the caller should fall back to the GoTrue network check (so a key
+ * rotation or clock skew never locks real customers out — the fallback
+ * simply restores the old behavior for that request).
+ */
+async function verifyAccessTokenLocally(accessToken: string): Promise<User | null> {
+  let decoded: { header: jwt.JwtHeader; payload: jwt.JwtPayload } | null = null;
+  try {
+    decoded = jwt.decode(accessToken, { complete: true }) as any;
+  } catch {
+    return null;
+  }
+  if (!decoded?.header) return null;
+
+  const { alg, kid } = decoded.header;
+  try {
+    if (alg === 'ES256' || alg === 'RS256') {
+      if (!jwksKeys || Date.now() - jwksFetchedAt > JWKS_TTL_MS) await refreshJwks();
+      let key = kid ? jwksKeys?.get(kid) : undefined;
+      if (!key && kid) {
+        // Unknown kid — maybe a fresh rotation; force one refetch.
+        await refreshJwks();
+        key = jwksKeys?.get(kid);
+      }
+      if (!key) return null;
+      const payload = jwt.verify(accessToken, key, { algorithms: [alg] }) as jwt.JwtPayload;
+      if (!payload?.sub) return null;
+      return claimsToUser(payload);
+    }
+    if (alg === 'HS256' && SUPABASE_JWT_SECRET) {
+      const payload = jwt.verify(accessToken, SUPABASE_JWT_SECRET, { algorithms: ['HS256'] }) as jwt.JwtPayload;
+      if (!payload?.sub) return null;
+      return claimsToUser(payload);
+    }
+  } catch {
+    // Invalid/expired signature — let GoTrue give the authoritative answer.
+    return null;
+  }
+  return null;
+}
 
 // Re-OTP TTL — anything older than this on merchant_customers.verified_at
 // forces the customer to OTP again at that merchant. Configurable via
@@ -37,6 +142,11 @@ export async function requireAuthenticatedAppUser(req: Request, res: Response): 
     res.status(401).json({ error: 'Unauthorized' });
     return null;
   }
+
+  // Local ES256/JWKS verification first (no network); GoTrue only as the
+  // authoritative fallback when local verification can't decide.
+  const localUser = await verifyAccessTokenLocally(accessToken);
+  if (localUser) return localUser;
 
   const { data, error } = await authClient.auth.getUser(accessToken);
   if (error || !data.user) {

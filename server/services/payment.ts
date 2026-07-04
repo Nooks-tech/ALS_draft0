@@ -104,16 +104,24 @@ export async function verifyPaidPayment(
     return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: paymentId, reason: 'Moyasar secret key not configured' };
   }
   const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
-  const realPaymentId = await resolvePaymentId(paymentId, authHeader, expectedAmountHalals);
+  // resolvePayment already fetched the payment body during resolution —
+  // reuse it instead of re-GETting the same URL (the old resolve-then-
+  // verify shape cost 2 Moyasar round-trips per verify, ×3 verifies on
+  // the commit path).
+  const resolved = await resolvePayment(paymentId, authHeader, expectedAmountHalals);
+  const realPaymentId = resolved.id;
 
   try {
-    const res = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
-      headers: { Authorization: authHeader },
-    });
-    if (!res.ok) {
-      return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: realPaymentId, reason: `Moyasar HTTP ${res.status}` };
+    let payment = resolved.payment;
+    if (!payment) {
+      const res = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
+        headers: { Authorization: authHeader },
+      });
+      if (!res.ok) {
+        return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: realPaymentId, reason: `Moyasar HTTP ${res.status}` };
+      }
+      payment = await res.json();
     }
-    const payment = await res.json();
     const status = String(payment?.status ?? '').toLowerCase();
     const amountHalals = Number(payment?.amount ?? 0);
     if (status !== 'paid' && status !== 'captured') {
@@ -142,20 +150,25 @@ export async function verifyPaidPayment(
  * `amountHalals` is optional — omit for full refund/void.
  */
 /**
- * Resolve the real Moyasar payment ID from whatever ID we have stored.
- * If the stored ID is an invoice, fetch the invoice to get the payment ID.
+ * Resolve the real Moyasar payment from whatever ID we have stored.
+ * If the stored ID is an invoice, fetch the invoice to get the payment.
+ * Returns the payment BODY alongside the id whenever resolution already
+ * had it in hand, so callers don't pay a second Moyasar round-trip.
  */
-async function resolvePaymentId(
+async function resolvePayment(
   storedId: string,
   authHeader: string,
   expectedAmountHalals?: number,
-): Promise<string> {
+): Promise<{ id: string; payment: any | null }> {
   // First try to fetch as a payment — if it works, it's already correct
   try {
     const res = await fetch(`https://api.moyasar.com/v1/payments/${storedId}`, {
       headers: { Authorization: authHeader },
     });
-    if (res.ok) return storedId;
+    if (res.ok) {
+      const payment = await res.json().catch(() => null);
+      return { id: storedId, payment };
+    }
   } catch {}
 
   // If not a valid payment ID, try as an invoice and extract the right
@@ -184,7 +197,7 @@ async function resolvePaymentId(
             : null;
         if (amountMatch?.id) {
           console.log('[Payment] Resolved invoice', storedId, '-> payment (amount match)', amountMatch.id);
-          return amountMatch.id;
+          return { id: amountMatch.id, payment: amountMatch };
         }
         const sorted = [...succeeded].sort((a, b) => {
           const ta = Date.parse(a?.created_at ?? '') || 0;
@@ -193,13 +206,22 @@ async function resolvePaymentId(
         });
         if (sorted[0]?.id) {
           console.log('[Payment] Resolved invoice', storedId, '-> payment (most recent)', sorted[0].id);
-          return sorted[0].id;
+          return { id: sorted[0].id, payment: sorted[0] };
         }
       }
     }
   } catch {}
 
-  return storedId;
+  return { id: storedId, payment: null };
+}
+
+/** Back-compat id-only wrapper (cancel path re-fetches the payment anyway). */
+async function resolvePaymentId(
+  storedId: string,
+  authHeader: string,
+  expectedAmountHalals?: number,
+): Promise<string> {
+  return (await resolvePayment(storedId, authHeader, expectedAmountHalals)).id;
 }
 
 export async function cancelPayment(

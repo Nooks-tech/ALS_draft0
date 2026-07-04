@@ -116,9 +116,39 @@ async function createUniqueMemberCode(merchantId: string) {
   throw new Error('Failed to generate a unique loyalty member code');
 }
 
+// 5-min memo. The earn path calls ensureLoyaltyMemberProfile twice per
+// earn (route handler + earnPoints/earnCashback), and every ensure runs a
+// profile select + 3 further reads INCLUDING a GoTrue admin getUserById
+// HTTP call — all inside the Foodics webhook's 3.5s abort budget. A
+// profile refresh once per 5 minutes per (merchant, customer) is plenty:
+// the refresh only syncs display name / phone / email cosmetics.
+const PROFILE_MEMO_TTL_MS = 5 * 60 * 1000;
+const profileMemo = new Map<string, { at: number; value: LoyaltyMemberProfile }>();
+
+export function invalidateLoyaltyMemberProfileMemo(merchantId: string, customerId: string) {
+  profileMemo.delete(`${merchantId}:${customerId}`);
+}
+
 export async function ensureLoyaltyMemberProfile(merchantId: string, customerId: string) {
   if (!supabaseAdmin) throw new Error('Database not configured');
   if (!merchantId || !customerId) throw new Error('merchantId and customerId are required');
+
+  const memoKey = `${merchantId}:${customerId}`;
+  const memo = profileMemo.get(memoKey);
+  if (memo && Date.now() - memo.at < PROFILE_MEMO_TTL_MS) return memo.value;
+  const value = await ensureLoyaltyMemberProfileUncached(merchantId, customerId);
+  profileMemo.set(memoKey, { at: Date.now(), value });
+  if (profileMemo.size > 5000) {
+    const cutoff = Date.now() - PROFILE_MEMO_TTL_MS;
+    for (const [k, v] of profileMemo) {
+      if (v.at < cutoff) profileMemo.delete(k);
+    }
+  }
+  return value;
+}
+
+async function ensureLoyaltyMemberProfileUncached(merchantId: string, customerId: string) {
+  if (!supabaseAdmin) throw new Error('Database not configured');
 
   const existing = await supabaseAdmin
     .from('loyalty_member_profiles')

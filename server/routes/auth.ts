@@ -29,7 +29,9 @@ function maskPhone(p: string): string {
  * we don't want audit failures to fail the OTP request.
  */
 async function writeAudit(
-  client: { from: (tbl: string) => { insert: (row: Record<string, unknown>) => Promise<unknown> } } | null,
+  // PromiseLike, not Promise: supabase-js .insert() returns a thenable
+  // query builder, which structurally isn't a Promise (no catch/finally).
+  client: { from: (tbl: string) => { insert: (row: Record<string, unknown>) => PromiseLike<unknown> } } | null,
   row: { merchant_id?: string | null; action: string; payload: Record<string, unknown> },
 ) {
   if (!client) return;

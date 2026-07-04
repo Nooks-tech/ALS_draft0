@@ -50,7 +50,34 @@ export function getSupabaseAdminClient() {
   return supabaseAdmin;
 }
 
+// 60s TTL cache. The order-commit path verifies the payment up to three
+// times and each verify re-fetched merchant_payment_settings + merchants
+// (2 queries × ~250ms Railway→Tokyo RTT) for config that changes ~never.
+// Payment settings are edited on the nooksweb dashboard (a different
+// service), so a short TTL — not cross-service invalidation — is the
+// consistency model; 60s of staleness on a key rotation is acceptable.
+const PAYMENT_CONFIG_TTL_MS = 60_000;
+const paymentConfigCache = new Map<string, { at: number; value: MerchantPaymentRuntimeConfig }>();
+
 export async function getMerchantPaymentRuntimeConfig(
+  merchantId?: string | null
+): Promise<MerchantPaymentRuntimeConfig> {
+  const cacheKey = merchantId ?? '';
+  const cached = paymentConfigCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < PAYMENT_CONFIG_TTL_MS) return cached.value;
+  const value = await fetchMerchantPaymentRuntimeConfig(merchantId);
+  paymentConfigCache.set(cacheKey, { at: Date.now(), value });
+  // Opportunistic prune so one-time merchant ids can't grow the map forever.
+  if (paymentConfigCache.size > 2000) {
+    const cutoff = Date.now() - PAYMENT_CONFIG_TTL_MS;
+    for (const [k, v] of paymentConfigCache) {
+      if (v.at < cutoff) paymentConfigCache.delete(k);
+    }
+  }
+  return value;
+}
+
+async function fetchMerchantPaymentRuntimeConfig(
   merchantId?: string | null
 ): Promise<MerchantPaymentRuntimeConfig> {
   const fallback: MerchantPaymentRuntimeConfig = {
