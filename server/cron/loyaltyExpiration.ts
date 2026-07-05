@@ -284,6 +284,42 @@ async function pruneOldCronRuns() {
   if (error) console.warn('[Loyalty Cron] cron_runs prune failed:', error.message);
 }
 
+// ── Retention: the other unbounded append-only tables (audit H7) ──
+// audit_log grows 5-10 rows per order (relay steps, webhooks, telemetry,
+// rate-limit hits) ≈ 2-3.5M rows/yr per 1,000 orders/day; webhook_events
+// gets one row per Moyasar/Foodics/OTO event and its own header comment
+// promised a pruner that was never written; abandoned_carts is insert-only.
+// Financial / reconciliation trails are exempt from the audit_log prune —
+// recovery stamping looks back 24h and reports read one month, so 180d is
+// generous for everything else.
+async function pruneRetention() {
+  if (!supabaseAdmin) return;
+  const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
+
+  const { error: whErr } = await supabaseAdmin
+    .from('webhook_events')
+    .delete()
+    .lt('processed_at', daysAgo(30));
+  if (whErr) console.warn('[Loyalty Cron] webhook_events prune failed:', whErr.message);
+
+  const { error: alErr } = await supabaseAdmin
+    .from('audit_log')
+    .delete()
+    .lt('created_at', daysAgo(180))
+    .not('action', 'ilike', 'commission%')
+    .not('action', 'ilike', '%invoiced%')
+    .not('action', 'ilike', '%reversal%')
+    .not('action', 'ilike', '%refund%')
+    .not('action', 'ilike', 'wallet%');
+  if (alErr) console.warn('[Loyalty Cron] audit_log prune failed:', alErr.message);
+
+  const { error: acErr } = await supabaseAdmin
+    .from('abandoned_carts')
+    .delete()
+    .lt('abandoned_at', daysAgo(180));
+  if (acErr) console.warn('[Loyalty Cron] abandoned_carts prune failed:', acErr.message);
+}
+
 // ── Startup ──
 
 async function runLoyaltyTick() {
@@ -297,6 +333,7 @@ async function runLoyaltyTick() {
     ['expireStaleCashback', expireStaleCashback],
     ['cleanupRetiredPrograms', cleanupRetiredPrograms],
     ['pruneOldCronRuns', pruneOldCronRuns],
+    ['pruneRetention', pruneRetention],
   ];
   for (const [name, task] of tasks) {
     try {
@@ -310,6 +347,14 @@ async function runLoyaltyTick() {
 async function heartbeatTick() {
   // Imported here (not at top) to avoid a circular-import risk —
   // cronHeartbeat itself doesn't depend on this module.
+  const { tryClaimCronTick } = await import('../utils/cronLock');
+  // TTL 23h (< the 24h interval so cadence is unaffected). The tick's
+  // balance math is read-modify-write, so a second replica running it
+  // concurrently would double-deduct — this claim is the guard.
+  if (!(await tryClaimCronTick('loyaltyExpiration', 23 * 60 * 60))) {
+    console.log('[Loyalty Cron] tick claimed by another replica — skipping');
+    return;
+  }
   const { runWithHeartbeat } = await import('../utils/cronHeartbeat');
   await runWithHeartbeat('loyaltyExpiration', runLoyaltyTick);
 }

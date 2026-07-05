@@ -88,6 +88,17 @@ function phoneToEmail(phone: string): string {
 
 const otpAttemptBuckets = new Map<string, number[]>();
 
+// Entries were only re-filtered when the SAME key was touched again, so
+// one-time visitors' keys lived until the next deploy — monotonic memory
+// growth on a long-lived process. Same 5-min prune the other in-memory
+// limiters use.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamps] of otpAttemptBuckets) {
+    if (!timestamps.some((t) => now - t <= OTP_WINDOW_MS)) otpAttemptBuckets.delete(key);
+  }
+}, 5 * 60 * 1000).unref?.();
+
 function trackOtpAttempt(key: string, now: number) {
   const current = otpAttemptBuckets.get(key) ?? [];
   const fresh = current.filter((timestamp) => now - timestamp <= OTP_WINDOW_MS);

@@ -29,7 +29,7 @@ if (SENTRY_DSN) {
 
 import cors from 'cors';
 import express from 'express';
-import rateLimit from 'express-rate-limit';
+import { createCustomerAwareRateLimit } from './utils/rateLimit';
 import { accountRouter } from './routes/account';
 import { authRouter } from './routes/auth';
 import { buildRouter } from './routes/build';
@@ -93,23 +93,27 @@ app.use(
 );
 app.use(express.json());
 
-// Rate limiting for public-facing endpoints
-const orderLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests. Please try again shortly.' },
-});
-const paymentLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many payment attempts. Please try again shortly.' },
-});
-app.use('/api/orders/commit', orderLimiter);
-app.use('/api/payment/initiate', paymentLimiter);
+// Rate limiting for public-facing endpoints. Primary key = customer (JWT
+// sub), generous per-IP backstop — the old 10/min-per-IP caps false-429'd
+// Saudi carrier CGNAT traffic at ~5 concurrent paying customers. Upstash-
+// backed via enforceLimits, so limits hold across replicas and deploys.
+app.use(
+  '/api/orders/commit',
+  createCustomerAwareRateLimit({
+    endpoint: 'orders.commit',
+    // The app fires 2 commits per order → 10/min = 5 orders/min/customer.
+    perCustomer: { max: 10, windowMs: 60 * 1000 },
+    perIp: { max: 120, windowMs: 60 * 1000 },
+  }),
+);
+app.use(
+  '/api/payment/initiate',
+  createCustomerAwareRateLimit({
+    endpoint: 'payment.initiate',
+    perCustomer: { max: 6, windowMs: 60 * 1000 },
+    perIp: { max: 60, windowMs: 60 * 1000 },
+  }),
+);
 
 app.get('/', (_, res) => res.json({ status: 'ok' }));
 app.get('/health', (_, res) => res.json({ status: 'ok' }));

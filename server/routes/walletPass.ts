@@ -4,7 +4,8 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
+import { promisify } from 'util';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as http2 from 'http2';
@@ -12,6 +13,8 @@ import * as os from 'os';
 import * as path from 'path';
 import yazl from 'yazl';
 import * as zlib from 'zlib';
+
+const execFileAsync = promisify(execFile);
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { ensureLoyaltyMemberProfile } from '../services/loyaltyMembers';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
@@ -179,7 +182,22 @@ function hexToRgbValues(hex: string): { r: number; g: number; b: number } {
   };
 }
 
+// Strip PNGs are pure functions of (size, color) and cost a ~550KB pixel
+// loop + zlib.deflateSync of blocked event loop per render — memoize.
+// Merchants have one brand color, so this map stays tiny.
+const stripPngCache = new Map<string, Buffer>();
+
 function createStripPng(w: number, h: number, r: number, g: number, b: number): Buffer {
+  const cacheKey = `${w}x${h}:${r},${g},${b}`;
+  const cachedStrip = stripPngCache.get(cacheKey);
+  if (cachedStrip) return cachedStrip;
+  const result = createStripPngUncached(w, h, r, g, b);
+  if (stripPngCache.size > 200) stripPngCache.clear();
+  stripPngCache.set(cacheKey, result);
+  return result;
+}
+
+function createStripPngUncached(w: number, h: number, r: number, g: number, b: number): Buffer {
   const lineH = 3;
   /** Subtle bottom accent — avoid a harsh band on the wallet strip. */
   const lr = Math.min(255, Math.round(r + (255 - r) * 0.14));
@@ -354,7 +372,39 @@ const WALLET_LOGO_ARTWORK_WIDTH_RATIO = 0.95;
  * - keep the result inside Apple's slot, flush left, vertically centered so
  *   the logo's midline sits at the same Y where iOS renders the logoText
  */
+// 10-min memo keyed on (url, scale): every pass render used to re-fetch
+// the merchant logo over HTTP and re-run 3 sharp pipelines (libuv-pool
+// work) for artwork that changes ~never. Logo changes get a new storage
+// URL, so the key self-busts; same-URL re-uploads appear within the TTL.
+const LOGO_CACHE_TTL_MS = 10 * 60 * 1000;
+const logoBufferCache = new Map<
+  string,
+  { at: number; value: { logo1x: Buffer; logo2x: Buffer; logo3x: Buffer } | null }
+>();
+
 async function buildWalletLogoPngBuffers(
+  logoUrl: string,
+  scalePercent: number,
+): Promise<{ logo1x: Buffer; logo2x: Buffer; logo3x: Buffer } | null> {
+  const cacheKey = `${logoUrl}|${scalePercent}`;
+  const cachedLogo = logoBufferCache.get(cacheKey);
+  if (cachedLogo && Date.now() - cachedLogo.at < LOGO_CACHE_TTL_MS) return cachedLogo.value;
+  const value = await buildWalletLogoPngBuffersUncached(logoUrl, scalePercent);
+  // Don't memoize failures — a transient fetch error shouldn't blank the
+  // logo for 10 minutes.
+  if (value) {
+    logoBufferCache.set(cacheKey, { at: Date.now(), value });
+    if (logoBufferCache.size > 500) {
+      const cutoff = Date.now() - LOGO_CACHE_TTL_MS;
+      for (const [k, v] of logoBufferCache) {
+        if (v.at < cutoff) logoBufferCache.delete(k);
+      }
+    }
+  }
+  return value;
+}
+
+async function buildWalletLogoPngBuffersUncached(
   logoUrl: string,
   scalePercent: number,
 ): Promise<{ logo1x: Buffer; logo2x: Buffer; logo3x: Buffer } | null> {
@@ -684,8 +734,13 @@ function buildPassJson(opts: {
   return Buffer.from(JSON.stringify(pass));
 }
 
-function signWithOpenSSL(manifestBuf: Buffer): Buffer {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pkpass-'));
+// Async end-to-end: the old execFileSync + sync temp-file I/O blocked the
+// single Express event loop 30-110ms per pass — every merchant's checkout
+// queued behind one merchant's pass burst (iOS re-fetches passes on every
+// notifyPassUpdate). The openssl child process now runs detached from the
+// loop; concurrent renders just overlap in the OS.
+async function signWithOpenSSL(manifestBuf: Buffer): Promise<Buffer> {
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'pkpass-'));
   try {
     const certPath = path.join(tmpDir, 'signerCert.pem');
     const keyPath = path.join(tmpDir, 'signerKey.pem');
@@ -693,10 +748,12 @@ function signWithOpenSSL(manifestBuf: Buffer): Buffer {
     const manifestPath = path.join(tmpDir, 'manifest.json');
     const sigPath = path.join(tmpDir, 'signature');
 
-    fs.writeFileSync(certPath, SIGNER_CERT_PEM);
-    fs.writeFileSync(keyPath, SIGNER_KEY_PEM);
-    fs.writeFileSync(wwdrPath, APPLE_WWDR_G4_PEM);
-    fs.writeFileSync(manifestPath, manifestBuf);
+    await Promise.all([
+      fs.promises.writeFile(certPath, SIGNER_CERT_PEM),
+      fs.promises.writeFile(keyPath, SIGNER_KEY_PEM),
+      fs.promises.writeFile(wwdrPath, APPLE_WWDR_G4_PEM),
+      fs.promises.writeFile(manifestPath, manifestBuf),
+    ]);
 
     const args = [
       'smime', '-sign', '-binary',
@@ -708,10 +765,10 @@ function signWithOpenSSL(manifestBuf: Buffer): Buffer {
       '-certfile', wwdrPath,
     ];
 
-    execFileSync('openssl', args, { timeout: 10000 });
-    return fs.readFileSync(sigPath);
+    await execFileAsync('openssl', args, { timeout: 10000 });
+    return await fs.promises.readFile(sigPath);
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    await fs.promises.rm(tmpDir, { recursive: true, force: true });
   }
 }
 
@@ -721,7 +778,7 @@ async function createPassBuffer(files: Record<string, Buffer>): Promise<Buffer> 
     manifest[name] = sha1Hex(buf);
   }
   const manifestBuf = Buffer.from(JSON.stringify(manifest));
-  const signatureBuf = signWithOpenSSL(manifestBuf);
+  const signatureBuf = await signWithOpenSSL(manifestBuf);
 
   return new Promise<Buffer>((resolve, reject) => {
     const zip = new yazl.ZipFile();
@@ -887,6 +944,18 @@ walletPassRouter.get(
       if (!parts) return res.sendStatus(404);
       const [, merchantId, customerId] = parts;
 
+      // 304 check FIRST. iOS sends If-Modified-Since on every re-fetch;
+      // the old code ran the full ~12-query + sharp + openssl pipeline
+      // and THEN returned 304 — unchanged passes paid full generation.
+      const modTag = req.headers['if-modified-since'];
+      const { data: upd } = await supabaseAdmin
+        .from('wallet_pass_updates')
+        .select('last_updated')
+        .eq('serial_number', serialNumber)
+        .maybeSingle();
+      const lastMod = new Date((upd?.last_updated ?? Math.floor(Date.now() / 1000)) * 1000).toUTCString();
+      if (modTag && modTag === lastMod) return res.sendStatus(304);
+
       const { data: pointsData } = await supabaseAdmin
         .from('loyalty_points').select('points, lifetime_points, updated_at')
         .eq('customer_id', customerId).eq('merchant_id', merchantId).single();
@@ -1007,15 +1076,6 @@ walletPassRouter.get(
       });
 
       const pkpass = await createPassBuffer(files);
-      const modTag = req.headers['if-modified-since'];
-      const { data: upd } = await supabaseAdmin
-        .from('wallet_pass_updates')
-        .select('last_updated')
-        .eq('serial_number', serialNumber)
-        .maybeSingle();
-      const lastMod = new Date((upd?.last_updated ?? Math.floor(Date.now() / 1000)) * 1000).toUTCString();
-
-      if (modTag && modTag === lastMod) return res.sendStatus(304);
 
       res.set({
         'Content-Type': 'application/vnd.apple.pkpass',
@@ -1031,17 +1091,46 @@ walletPassRouter.get(
 );
 
 // ─── APNs Push ───
+//
+// One persistent HTTP/2 session, requests multiplexed over it. The old
+// shape opened (and tore down) a fresh TLS connection PER PUSH — Apple
+// explicitly documents connection churn as a throttling signal, and each
+// handshake cost ~200-500ms. The session self-heals: any error/close/
+// GOAWAY drops the cached client and the next push reconnects.
+
+let apnsSession: http2.ClientHttp2Session | null = null;
+
+function getApnsSession(): http2.ClientHttp2Session {
+  if (apnsSession && !apnsSession.closed && !apnsSession.destroyed) return apnsSession;
+  const session = http2.connect('https://api.push.apple.com:443', {
+    cert: SIGNER_CERT_PEM,
+    key: SIGNER_KEY_PEM,
+  });
+  const drop = () => {
+    if (apnsSession === session) apnsSession = null;
+    try { session.destroy(); } catch { /* already gone */ }
+  };
+  session.on('error', drop);
+  session.on('close', drop);
+  session.on('goaway', drop);
+  // Don't hold the process open for an idle APNs socket.
+  session.setTimeout?.(4 * 60 * 1000, () => { try { session.close(); } catch { /* closing */ } });
+  apnsSession = session;
+  return session;
+}
 
 async function sendApnsPush(pushToken: string): Promise<boolean> {
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok: boolean) => {
+      if (!settled) {
+        settled = true;
+        resolve(ok);
+      }
+    };
     try {
-      const client = http2.connect('https://api.push.apple.com:443', {
-        cert: SIGNER_CERT_PEM,
-        key: SIGNER_KEY_PEM,
-      });
-      client.on('error', () => { client.close(); resolve(false); });
-
-      const req = client.request({
+      const session = getApnsSession();
+      const req = session.request({
         ':method': 'POST',
         ':path': `/3/device/${pushToken}`,
         'apns-topic': PASS_TYPE_ID,
@@ -1049,18 +1138,26 @@ async function sendApnsPush(pushToken: string): Promise<boolean> {
         'apns-priority': '5',
       });
 
+      const timer = setTimeout(() => {
+        try { req.close(); } catch { /* already closed */ }
+        done(false);
+      }, 10000);
+
       req.end(JSON.stringify({}));
 
       req.on('response', (headers) => {
+        clearTimeout(timer);
         const status = headers[':status'];
-        client.close();
-        resolve(status === 200);
+        req.close();
+        done(status === 200);
       });
 
-      req.on('error', () => { client.close(); resolve(false); });
-      setTimeout(() => { try { client.close(); } catch {} resolve(false); }, 10000);
+      req.on('error', () => {
+        clearTimeout(timer);
+        done(false);
+      });
     } catch {
-      resolve(false);
+      done(false);
     }
   });
 }
@@ -1121,9 +1218,14 @@ export async function notifyPassUpdate(customerId: string, merchantId: string): 
 
   if (!regs || regs.length === 0) return;
 
+  // Parallel: pushes multiplex over the shared HTTP/2 session, so a
+  // customer with several registered devices no longer pays serial
+  // round-trips.
   const uniqueTokens = [...new Set(regs.map((r: any) => r.push_token))];
-  for (const token of uniqueTokens) {
-    const ok = await sendApnsPush(token);
+  const results = await Promise.all(
+    uniqueTokens.map(async (token) => ({ token, ok: await sendApnsPush(token) })),
+  );
+  for (const { token, ok } of results) {
     console.log(`[WalletPass] APNs push to ${token.substring(0, 8)}…: ${ok ? 'OK' : 'FAIL'}`);
   }
 }
@@ -1219,7 +1321,7 @@ walletPassRouter.get('/wallet-pass/debug', async (req, res) => {
 
     // Test signing
     const testManifest = Buffer.from('{"test":"ok"}');
-    const testSig = signWithOpenSSL(testManifest);
+    const testSig = await signWithOpenSSL(testManifest);
     info.testSigSize = testSig.length;
 
     // Generate test pass and inspect

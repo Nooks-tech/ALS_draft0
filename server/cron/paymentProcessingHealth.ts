@@ -55,6 +55,9 @@ type StuckOrderRow = {
   updated_at: string | null;
 };
 
+// Orders already alerted on (see dedupe note inside runScan).
+const alertedOrderIds = new Set<string>();
+
 async function runScan(): Promise<{ stuckCount: number; merchantsAffected: number }> {
   if (!supabaseAdmin) return { stuckCount: 0, merchantsAffected: 0 };
 
@@ -93,19 +96,36 @@ async function runScan(): Promise<{ stuckCount: number; merchantsAffected: numbe
   });
 
   if (stuck.length === 0) {
+    alertedOrderIds.clear();
     return { stuckCount: 0, merchantsAffected: 0 };
   }
 
+  // Only alert on orders we haven't already reported. A permanently-stuck
+  // order used to re-fire the log + Sentry + one audit row per merchant
+  // EVERY 30 minutes forever — 48 audit rows/day per stuck order feeding
+  // the unbounded audit_log. In-memory is fine: a restart re-alerting
+  // once is acceptable, and the cron-lock keeps this single-runner.
+  const newlyStuck = stuck.filter((o) => !alertedOrderIds.has(o.id));
+  for (const o of newlyStuck) alertedOrderIds.add(o.id);
+  // Forget orders that resolved so a relapse re-alerts.
+  const currentIds = new Set(stuck.map((o) => o.id));
+  for (const id of alertedOrderIds) {
+    if (!currentIds.has(id)) alertedOrderIds.delete(id);
+  }
+  if (newlyStuck.length === 0) {
+    return { stuckCount: stuck.length, merchantsAffected: 0 };
+  }
+
   const byMerchant = new Map<string, number>();
-  for (const o of stuck) {
+  for (const o of newlyStuck) {
     if (o.merchant_id) byMerchant.set(o.merchant_id, (byMerchant.get(o.merchant_id) ?? 0) + 1);
   }
 
   // Loud log line for Railway — one summary plus details.
   console.error(
-    `[paymentProcessingHealth] ⚠️  ${stuck.length} stuck orders detected across ${byMerchant.size} merchant(s) — Moyasar webhook never accrued the platform fee.`,
+    `[paymentProcessingHealth] ⚠️  ${newlyStuck.length} NEW stuck orders (${stuck.length} total outstanding) across ${byMerchant.size} merchant(s) — Moyasar webhook never accrued the platform fee.`,
     {
-      sampleIds: stuck.slice(0, 5).map((o) => ({
+      sampleIds: newlyStuck.slice(0, 5).map((o) => ({
         order_id: o.id,
         merchant_id: o.merchant_id,
         status: o.status,
@@ -120,13 +140,14 @@ async function runScan(): Promise<{ stuckCount: number; merchantsAffected: numbe
   // per-merchant tags so the issue page is filterable. Per-order
   // captures would flood Sentry on a wide outage.
   captureError(
-    new Error(`payment-processing-stuck: ${stuck.length} orphan orders`),
+    new Error(`payment-processing-stuck: ${newlyStuck.length} new orphan orders`),
     {
       component: 'cron.paymentProcessingHealth',
       extra: {
-        stuck_count: stuck.length,
+        new_stuck_count: newlyStuck.length,
+        total_outstanding: stuck.length,
         merchants_affected: byMerchant.size,
-        sample_orders: stuck.slice(0, 10).map((o) => o.id),
+        sample_orders: newlyStuck.slice(0, 10).map((o) => o.id),
       },
     },
   );
@@ -141,7 +162,7 @@ async function runScan(): Promise<{ stuckCount: number; merchantsAffected: numbe
       payload: {
         stuck_count: count,
         scan_cutoff: cutoff,
-        sample_order_ids: stuck
+        sample_order_ids: newlyStuck
           .filter((o) => o.merchant_id === merchantId)
           .slice(0, 10)
           .map((o) => o.id),
@@ -190,6 +211,11 @@ export async function getPaymentProcessingHealth(): Promise<{
 async function tick() {
   if (!supabaseAdmin) return;
   try {
+    const { tryClaimCronTick } = await import('../utils/cronLock');
+    if (!(await tryClaimCronTick('paymentProcessingHealth', 25 * 60))) {
+      console.log('[paymentProcessingHealth] tick claimed by another replica — skipping');
+      return;
+    }
     await runWithHeartbeat('paymentProcessingHealth', runScan);
   } catch (err: any) {
     console.warn('[paymentProcessingHealth] tick error (heartbeat captured):', err?.message);

@@ -358,6 +358,13 @@ async function tick() {
   }
   tickInFlight = true;
   try {
+    // Cross-replica claim (TTL < interval so cadence is unaffected). The
+    // per-row notified_at claims above make overlap safe; this makes it
+    // not-wasteful when Railway runs 2+ replicas.
+    const { tryClaimCronTick } = await import('../utils/cronLock');
+    if (!(await tryClaimCronTick('cartAbandonment', 55))) {
+      return;
+    }
     await runWithHeartbeat('cartAbandonment', async () => {
       const [notified, abandoned] = await Promise.all([
         processNotifyBatch(),

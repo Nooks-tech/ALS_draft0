@@ -139,6 +139,11 @@ async function runSweep() {
 }
 
 async function heartbeatTick() {
+  const { tryClaimCronTick } = await import('../utils/cronLock');
+  if (!(await tryClaimCronTick('savedCardSweep', 5.5 * 60 * 60))) {
+    console.log('[SavedCardSweep] tick claimed by another replica — skipping');
+    return;
+  }
   const { runWithHeartbeat } = await import('../utils/cronHeartbeat');
   await runWithHeartbeat('savedCardSweep', runSweep);
 }

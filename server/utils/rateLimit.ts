@@ -278,3 +278,50 @@ export function ipFromReq(req: Request): string {
   const fwd = req.headers['x-forwarded-for'];
   return (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]) || req.socket.remoteAddress || 'unknown';
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   Customer-aware middleware (scalability audit H3, 2026-07-05).
+
+   The old express-rate-limit middlewares keyed ONLY on IP with tight
+   caps (commit 10/min, payment-initiate 5/min). Saudi carriers (STC/
+   Mobily/Zain) put hundreds of customers behind one CGNAT egress IP, so
+   ~5 concurrent paying customers behind one carrier IP started eating
+   429s — the limit fired at tens of USERS, not at abuse. This keys the
+   primary limit on the JWT `sub` (per-customer) with a generous per-IP
+   backstop, and rides enforceLimits so Upstash makes it replica-safe.
+
+   jwt.decode WITHOUT verification is deliberate: a forged sub only
+   splits an attacker across buckets, and the IP backstop still applies;
+   the route's real auth verifies the signature right after.
+   ════════════════════════════════════════════════════════════════════ */
+
+import { decode as jwtDecode } from 'jsonwebtoken';
+
+function bearerSub(req: Request): string | null {
+  try {
+    const raw = typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+    const match = raw.match(/^Bearer\s+(.+)$/i);
+    if (!match) return null;
+    const payload = jwtDecode(match[1]) as { sub?: unknown } | null;
+    return typeof payload?.sub === 'string' && payload.sub ? payload.sub : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createCustomerAwareRateLimit(opts: {
+  endpoint: string;
+  perCustomer: { max: number; windowMs: number };
+  perIp: { max: number; windowMs: number };
+}) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const keys: LimitKey[] = [];
+    const sub = bearerSub(req);
+    if (sub) {
+      keys.push({ dim: 'customer', value: sub, max: opts.perCustomer.max, windowMs: opts.perCustomer.windowMs });
+    }
+    keys.push({ dim: 'ip', value: ipFromReq(req), max: opts.perIp.max, windowMs: opts.perIp.windowMs });
+    if (!(await enforceLimits(req, res, { endpoint: opts.endpoint, keys }))) return;
+    next();
+  };
+}

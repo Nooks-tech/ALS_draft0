@@ -92,6 +92,11 @@ async function escalateStaleComplaints() {
 }
 
 async function heartbeatTick() {
+  const { tryClaimCronTick } = await import('../utils/cronLock');
+  if (!(await tryClaimCronTick('complaintEscalation', 25 * 60))) {
+    console.log('[Complaint Cron] tick claimed by another replica — skipping');
+    return;
+  }
   const { runWithHeartbeat } = await import('../utils/cronHeartbeat');
   await runWithHeartbeat('complaintEscalation', escalateStaleComplaints);
 }
