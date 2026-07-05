@@ -206,13 +206,14 @@ export default function LoyaltyModal() {
       if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
       reloadDebounceRef.current = setTimeout(() => { void loadLoyalty(); }, 500);
     };
+    // Two bindings, not three: the old loyalty_transactions binding never
+    // fired (the table isn't in the realtime publication) and was redundant
+    // anyway — every earn/redeem also updates loyalty_points or
+    // loyalty_cashback_balances, which are the bindings that do fire. Each
+    // binding costs a per-WAL-change evaluation server-side, so we keep
+    // only the live ones.
     const channel = sb
       .channel(`loyalty-${user.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'loyalty_transactions', filter: `customer_id=eq.${user.id}` },
-        scheduleReload,
-      )
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'loyalty_cashback_balances', filter: `customer_id=eq.${user.id}` },
