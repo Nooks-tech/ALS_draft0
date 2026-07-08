@@ -232,8 +232,68 @@ type LoyaltyActionContext = {
   actorRole?: string | null;
   referenceType?: string | null;
   referenceId?: string | null;
+  // Phase H8: Foodics order uuid bridging the app earn (keyed on
+  // customer_orders.id) and the branch/kiosk earn (keyed on
+  // branch-sale:<foodics-order-uuid>) for the same physical purchase.
+  foodicsOrderRef?: string | null;
   metadata?: Record<string, unknown>;
 };
+
+// ── Phase H8: cross-channel double-earn guard (app ↔ branch) ──
+// One physical purchase can earn twice because the two channels key
+// idempotency on different ids. Rollout is gated by
+// CROSS_CHANNEL_EARN_GUARD: 'off' = no behavior change, no logging;
+// 'shadow' (default) = log the dedup decision only — earns EXACTLY as
+// today and never writes foodics_order_ref (the partial unique index
+// idx_loyalty_foodics_purchase_earn_unique stays dormant/empty);
+// 'enforce' = skip/redirect duplicates AND stamp foodics_order_ref on
+// earn inserts so the unique index is the atomic backstop.
+type CrossChannelGuardMode = 'off' | 'shadow' | 'enforce';
+function crossChannelGuardMode(): CrossChannelGuardMode {
+  const raw = (process.env.CROSS_CHANNEL_EARN_GUARD ?? '').trim();
+  return raw === 'off' || raw === 'enforce' ? raw : 'shadow';
+}
+
+const FOODICS_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolve the Foodics order uuid for an earn and detect a prior earn from
+ * the OTHER channel (branch) for the same physical purchase. Shared by
+ * earnPoints and earnCashback. Returns the resolved ref (null when the
+ * guard is off or no ref exists) and whether a prior branch earn exists.
+ * Deliberately does NOT filter the prior-earn lookup by customer_id — a
+ * pre-merge identity split can put the branch earn on a different
+ * customer row for the same person.
+ */
+async function resolveCrossChannelEarnGuard(params: {
+  mode: CrossChannelGuardMode;
+  merchantId: string;
+  orderId: string;
+  contextRef?: string | null;
+}): Promise<{ foodicsRef: string | null; priorBranchEarn: boolean }> {
+  if (params.mode === 'off' || !supabaseAdmin) return { foodicsRef: null, priorBranchEarn: false };
+  let foodicsRef = normalizeOptionalString(params.contextRef);
+  if (!foodicsRef) {
+    const { data: orderRow } = await supabaseAdmin
+      .from('customer_orders')
+      .select('foodics_order_id')
+      .eq('id', params.orderId)
+      .eq('merchant_id', params.merchantId)
+      .maybeSingle();
+    foodicsRef = normalizeOptionalString(orderRow?.foodics_order_id);
+  }
+  if (!foodicsRef) return { foodicsRef: null, priorBranchEarn: false };
+  const { data: branchEarn } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id')
+    .eq('merchant_id', params.merchantId)
+    .eq('type', 'earn')
+    .eq('source', 'branch')
+    .eq('reference_id', foodicsRef)
+    .limit(1)
+    .maybeSingle();
+  return { foodicsRef, priorBranchEarn: Boolean(branchEarn) };
+}
 
 function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -886,6 +946,29 @@ export async function earnPoints(
     };
   }
 
+  // Phase H8: cross-channel dedup — has the OTHER channel (branch/kiosk)
+  // already earned for this physical purchase? See crossChannelGuardMode.
+  const guardMode = crossChannelGuardMode();
+  const { foodicsRef, priorBranchEarn } = await resolveCrossChannelEarnGuard({
+    mode: guardMode,
+    merchantId,
+    orderId,
+    contextRef: context?.foodicsOrderRef,
+  });
+  if (priorBranchEarn) {
+    if (guardMode === 'enforce') {
+      let balQuery = supabaseAdmin
+        .from('loyalty_points')
+        .select('points')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId);
+      if (programId) balQuery = balQuery.eq('program_id', programId);
+      const { data: bal } = await balQuery.maybeSingle();
+      return { success: true, pointsEarned: 0, newBalance: bal?.points ?? 0 };
+    }
+    console.log('[cross-channel-dedup] would_skip', { merchantId, foodicsRef, orderId });
+  }
+
   const config = await getMerchantConfig(merchantId);
 
   const pointsEarned = config.earn_mode === 'per_order'
@@ -922,6 +1005,9 @@ export async function earnPoints(
       reference_id: normalizeOptionalString(context?.referenceId),
       metadata: context?.metadata ?? {},
       ...(programId ? { program_id: programId } : {}),
+      // Phase H8: stamped ONLY in enforce mode — in off/shadow the column
+      // stays null so idx_loyalty_foodics_purchase_earn_unique stays dormant.
+      ...(guardMode === 'enforce' && foodicsRef ? { foodics_order_ref: foodicsRef } : {}),
     })
     .select('id')
     .maybeSingle();
@@ -1189,14 +1275,59 @@ loyaltyRouter.post('/branch/earn', async (req, res) => {
     const member = await findLoyaltyMemberByLookup(merchantId, lookup);
     if (!member) return res.status(404).json({ error: 'Loyalty member not found for this merchant' });
 
-    const orderId = buildBranchReference('branch-sale', referenceId);
-    const result = await earnPoints(member.customer_id, orderId, amountSar, merchantId, {
+    // ── Phase H8: cross-channel double-earn guard (walk-in capture) ──
+    // Kiosk poll-sync passes the Foodics order uuid as referenceId. When
+    // that Foodics order was actually placed through the app
+    // (customer_orders has a matching foodics_order_id), the app lifecycle
+    // owns the earn — earning here too would double-earn one purchase.
+    const guardMode = crossChannelGuardMode();
+    const isFoodicsUuidRef = FOODICS_UUID_RE.test(referenceId);
+    let redirectTo: { id: string; customer_id: string } | null = null;
+    if (guardMode !== 'off' && isFoodicsUuidRef && supabaseAdmin) {
+      const { data: appOrder } = await supabaseAdmin
+        .from('customer_orders')
+        .select('id, customer_id, status')
+        .eq('merchant_id', merchantId)
+        .eq('foodics_order_id', referenceId)
+        .maybeSingle();
+      if (appOrder) {
+        if (appOrder.status === 'Cancelled') {
+          if (guardMode === 'enforce') {
+            return res.status(409).json({ error: 'Cannot earn loyalty on a cancelled app order' });
+          }
+          console.log('[cross-channel-dedup] would_skip', { merchantId, foodicsRef: referenceId, orderId: appOrder.id });
+        } else if (appOrder.status === 'Delivered') {
+          // Delivered — the app earn (if any) is keyed on the app order id.
+          // Redirect this branch earn onto the same order id + customer so
+          // the order-level idempotency in earnPoints plus the foodics
+          // unique index dedup the two channels atomically.
+          if (guardMode === 'enforce' && appOrder.customer_id) {
+            redirectTo = { id: String(appOrder.id), customer_id: String(appOrder.customer_id) };
+          } else if (guardMode !== 'enforce') {
+            console.log('[cross-channel-dedup] would_redirect', { merchantId, foodicsRef: referenceId, orderId: appOrder.id });
+          }
+        } else {
+          // App order exists but is still mid-lifecycle — it earns when it
+          // reaches Delivered; earning here now would double it then.
+          if (guardMode === 'enforce') {
+            return res.json({ success: true, pointsEarned: 0, skipped: 'app_order_owns_earn' });
+          }
+          console.log('[cross-channel-dedup] would_skip', { merchantId, foodicsRef: referenceId, orderId: appOrder.id });
+        }
+      }
+    }
+
+    const orderId = redirectTo ? redirectTo.id : buildBranchReference('branch-sale', referenceId);
+    const result = await earnPoints(redirectTo ? redirectTo.customer_id : member.customer_id, orderId, amountSar, merchantId, {
       source: 'branch',
       branchId,
       actorUserId,
       actorRole,
       referenceType: 'branch_sale',
       referenceId,
+      // Phase H8: only forwarded in enforce mode (and earnPoints only
+      // writes foodics_order_ref in enforce) so shadow stays non-mutating.
+      ...(guardMode === 'enforce' && isFoodicsUuidRef ? { foodicsOrderRef: referenceId } : {}),
       metadata: {
         note: normalizeOptionalString(req.body?.note),
         amount_sar: amountSar,
@@ -1335,7 +1466,7 @@ loyaltyRouter.get('/history', async (req, res) => {
    ═══════════════════════════════════════════════════════════════════ */
 
 /** Earn cashback on a completed order */
-async function earnCashback(merchantId: string, customerId: string, orderId: string, orderSubtotal: number) {
+async function earnCashback(merchantId: string, customerId: string, orderId: string, orderSubtotal: number, context?: LoyaltyActionContext) {
   if (!supabaseAdmin) throw new Error('Database not configured');
   const config = await getMerchantConfig(merchantId);
   const percent = config.cashback_percent ?? 5;
@@ -1354,6 +1485,25 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
       .select('balance_sar').eq('customer_id', customerId).eq('merchant_id', merchantId)
       .order('config_version', { ascending: false }).limit(1).maybeSingle();
     return { success: true, cashbackEarned: 0, newBalance: bal?.balance_sar ?? 0, alreadyEarned: true };
+  }
+
+  // Phase H8: cross-channel dedup — has the branch/kiosk channel already
+  // earned for this physical purchase? See crossChannelGuardMode.
+  const guardMode = crossChannelGuardMode();
+  const { foodicsRef, priorBranchEarn } = await resolveCrossChannelEarnGuard({
+    mode: guardMode,
+    merchantId,
+    orderId,
+    contextRef: context?.foodicsOrderRef,
+  });
+  if (priorBranchEarn) {
+    if (guardMode === 'enforce') {
+      const { data: bal } = await supabaseAdmin.from('loyalty_cashback_balances')
+        .select('balance_sar').eq('customer_id', customerId).eq('merchant_id', merchantId)
+        .order('config_version', { ascending: false }).limit(1).maybeSingle();
+      return { success: true, cashbackEarned: 0, newBalance: bal?.balance_sar ?? 0, alreadyEarned: true };
+    }
+    console.log('[cross-channel-dedup] would_skip', { merchantId, foodicsRef, orderId });
   }
 
   const { data: balRow } = await supabaseAdmin.from('loyalty_cashback_balances')
@@ -1381,6 +1531,9 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
     type: 'earn', loyalty_type: 'cashback', amount_sar: cashbackSar,
     points: 0, description: `Earned ${cashbackSar} SAR cashback`,
     source: 'app', expires_at: expiresAt, config_version: currentVersion,
+    // Phase H8: stamped ONLY in enforce mode — in off/shadow the column
+    // stays null so idx_loyalty_foodics_purchase_earn_unique stays dormant.
+    ...(guardMode === 'enforce' && foodicsRef ? { foodics_order_ref: foodicsRef } : {}),
   });
   if (txInsert.error) {
     if ((txInsert.error as { code?: string }).code === '23505') {

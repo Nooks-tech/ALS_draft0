@@ -44,6 +44,12 @@ const RECOMMENDED_VARS = [
   'NOOKS_INTERNAL_HMAC_KEY',
 ] as const;
 
+// Phase H8 (cross-channel earn dedup): rollout mode for the guard in
+// routes/loyalty.ts. Unset defaults to 'shadow' (log-only, non-mutating).
+// An invalid value aborts startup — a typo like 'enfroce' silently
+// degrading to shadow would defeat the guard without anyone noticing.
+const CROSS_CHANNEL_EARN_GUARD_MODES = ['off', 'shadow', 'enforce'] as const;
+
 export function validateEnv(): void {
   const missing = REQUIRED_VARS.filter((k) => !(process.env[k] ?? '').trim());
   if (missing.length > 0) {
@@ -53,6 +59,18 @@ export function validateEnv(): void {
         "\nSet them in the deployment environment and restart. Aborting.",
     );
     process.exit(1);
+  }
+  const guardMode = (process.env.CROSS_CHANNEL_EARN_GUARD ?? '').trim();
+  if (guardMode && !(CROSS_CHANNEL_EARN_GUARD_MODES as readonly string[]).includes(guardMode)) {
+    console.error(
+      `[startup] CROSS_CHANNEL_EARN_GUARD must be one of ${CROSS_CHANNEL_EARN_GUARD_MODES.join(
+        ', ',
+      )} (got "${guardMode}"). Unset it to use the default 'shadow'. Aborting.`,
+    );
+    process.exit(1);
+  }
+  if (!guardMode) {
+    console.log("[startup] CROSS_CHANNEL_EARN_GUARD not set — defaulting to 'shadow' (log-only).");
   }
   const missingRecommended = RECOMMENDED_VARS.filter((k) => !(process.env[k] ?? '').trim());
   if (missingRecommended.length > 0) {
