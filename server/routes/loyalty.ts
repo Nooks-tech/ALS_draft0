@@ -1460,6 +1460,36 @@ export async function restoreCashbackForRefund(params: {
   const configVersion = balRow?.config_version ?? 1;
   const newBalance = +(((balRow?.balance_sar ?? 0) as number) + amount).toFixed(2);
 
+  // M14 fix (2026-07-08): insert the reversal marker FIRST, under the partial
+  // unique index loyalty_tx_cashback_restore_per_order
+  // (customer_id, merchant_id, order_id) WHERE type='earn' AND
+  // loyalty_type='cashback' AND source='refund'. If it conflicts, a prior or
+  // concurrent restore already credited this order, so we credit nothing. This
+  // mirrors earnCashback's insert-first ordering and closes the check-then-insert
+  // double-credit race (the priorReverse SELECT above is only a fast path now).
+  const { error: reversalInsertErr } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .insert({
+      customer_id: params.customerId,
+      merchant_id: params.merchantId,
+      order_id: params.orderId,
+      type: 'earn',
+      loyalty_type: 'cashback',
+      amount_sar: amount,
+      points: 0,
+      description: `Refunded cashback from cancelled order ${params.orderId.slice(-8)}`,
+      source: 'refund',
+      config_version: configVersion,
+    });
+  if (reversalInsertErr) {
+    if ((reversalInsertErr as { code?: string }).code === '23505') {
+      // Lost the race / retry — the reversal already exists. Credit nothing.
+      return { restoredSar: amount, alreadyRestored: true };
+    }
+    throw reversalInsertErr;
+  }
+
+  // We won the reversal insert — now credit the balance exactly once.
   if (balRow) {
     await supabaseAdmin
       .from('loyalty_cashback_balances')
@@ -1475,19 +1505,6 @@ export async function restoreCashbackForRefund(params: {
       config_version: 1,
     });
   }
-
-  await supabaseAdmin.from('loyalty_transactions').insert({
-    customer_id: params.customerId,
-    merchant_id: params.merchantId,
-    order_id: params.orderId,
-    type: 'earn',
-    loyalty_type: 'cashback',
-    amount_sar: amount,
-    points: 0,
-    description: `Refunded cashback from cancelled order ${params.orderId.slice(-8)}`,
-    source: 'refund',
-    config_version: configVersion,
-  });
 
   notifyPassUpdateSafe(params.customerId, params.merchantId);
   return { restoredSar: amount, alreadyRestored: false };

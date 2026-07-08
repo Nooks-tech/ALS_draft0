@@ -187,9 +187,14 @@ walletRouter.post('/topup-initiate', async (req: Request, res: Response) => {
  * body: { paymentId: string, merchantId: string }
  *
  * Verifies the Moyasar payment is paid + tagged as a wallet topup, then
- * idempotently credits the wallet. Idempotency comes from the unique
- * (customer_id, merchant_id, payment_id) check on the transactions
- * table — calling finalize twice for the same payment is a no-op.
+ * idempotently credits the wallet. Idempotency is layered: the fast-path
+ * SELECT below short-circuits an already-credited payment, and the
+ * credit_customer_wallet RPC inserts the topup row under the partial unique
+ * index customer_wallet_tx_topup_per_payment
+ * (customer_id, merchant_id, payment_id) WHERE entry_type='topup' with
+ * ON CONFLICT DO NOTHING — so even two concurrent finalizes that both pass
+ * the SELECT credit the wallet exactly once. (H7 fix, 2026-07-08: the index
+ * and ON CONFLICT were added; before that this comment was aspirational.)
  */
 walletRouter.post('/topup-finalize', async (req: Request, res: Response) => {
   try {
