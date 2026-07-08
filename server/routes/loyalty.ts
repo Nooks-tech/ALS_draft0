@@ -889,6 +889,12 @@ loyaltyRouter.post('/earn', async (req, res) => {
     const customerType = await initCustomerLoyaltyType(merchantId || '', customerId, config.loyalty_type);
     const loyaltyType = customerType;
 
+    // M15 canonical earn base = net-of-loyalty. Callers here are server-side
+    // (nooksweb webhook / POS relay) and pass the net sale amount as
+    // orderSubtotal — POS sales carry no in-app wallet/cashback funding, so
+    // it is already net. The app-commit path computes the same base via
+    // netOfLoyaltyEarnBase() in orders.ts, so one purchase earns identically
+    // regardless of channel.
     if (loyaltyType === 'cashback') {
       const result = await earnCashback(merchantId || '', customerId, orderId, Number(orderSubtotal));
       return res.json(result);

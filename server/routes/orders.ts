@@ -204,6 +204,26 @@ async function sendPushToCustomer(
 import { debitWalletForOrder } from './wallet';
 import { captureError, tagSentry } from '../utils/sentryContext';
 
+/**
+ * M15 canonical loyalty earn base: net-of-loyalty. Earn only on the new money
+ * the customer actually paid — exclude the wallet- and redeemed-cashback-funded
+ * portions (total_sar = card_paid + wallet_paid + cashback_paid, verified to sum).
+ * Promo discounts are already reflected in total_sar (marketing, not loyalty) so
+ * they stay in the base. This matches the walk-in and internal /earn paths, which
+ * pass net POS amounts — so one physical purchase earns on the same base regardless
+ * of channel. Clamped ≥ 0.
+ */
+function netOfLoyaltyEarnBase(order: {
+  total_sar?: number | null;
+  wallet_paid_sar?: number | null;
+  cashback_paid_sar?: number | null;
+}): number {
+  const total = Number(order.total_sar ?? 0);
+  const wallet = Number(order.wallet_paid_sar ?? 0);
+  const cashback = Number(order.cashback_paid_sar ?? 0);
+  return Math.max(0, Number((total - wallet - cashback).toFixed(2)));
+}
+
 async function relayOrderToNooks(
   payload: Record<string, unknown>,
   options: { customerJwt?: string | null } = {},
@@ -2409,7 +2429,7 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
     const orderId = req.params.id;
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, status, order_type, ready_at, total_sar, merchant_id')
+      .select('id, customer_id, status, order_type, ready_at, total_sar, wallet_paid_sar, cashback_paid_sar, merchant_id')
       .eq('id', orderId)
       .eq('customer_id', user.id)
       .maybeSingle();
@@ -2457,7 +2477,7 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
 
     // Fire loyalty earn (idempotency is enforced by the loyalty route itself).
     if (order.customer_id && order.merchant_id) {
-      earnPoints(order.customer_id, order.id, order.total_sar ?? 0, order.merchant_id).catch(
+      earnPoints(order.customer_id, order.id, netOfLoyaltyEarnBase(order), order.merchant_id).catch(
         (e: any) => console.warn('[orders] customer-received loyalty earn failed:', e?.message),
       );
     }
@@ -2598,7 +2618,7 @@ ordersRouter.patch('/:id/status', async (req, res) => {
 
     const { data: order } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, status, total_sar, merchant_id')
+      .select('id, customer_id, status, total_sar, wallet_paid_sar, cashback_paid_sar, merchant_id')
       .eq('id', orderId)
       .single();
 
@@ -2665,7 +2685,7 @@ ordersRouter.patch('/:id/status', async (req, res) => {
         sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.', mid);
       } else if (status === 'Delivered') {
         sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!', mid);
-        earnPoints(order.customer_id, orderId, order.total_sar ?? 0, order.merchant_id ?? '').catch(
+        earnPoints(order.customer_id, orderId, netOfLoyaltyEarnBase(order), order.merchant_id ?? '').catch(
           (e: any) => console.warn('[Orders] Auto-earn loyalty failed:', e?.message),
         );
       }
