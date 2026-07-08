@@ -238,11 +238,11 @@ walletRouter.post('/topup-finalize', async (req: Request, res: Response) => {
 
     // Verify the Moyasar payment server-side. Never trust the mobile
     // app's claim that "this payment is paid" — they could send any id.
-    // Resolve the secret key from the per-merchant config first (the
-    // standard place every other Moyasar call reads from); only fall
-    // back to the env var for legacy single-merchant deployments.
+    // L6: the secret key comes from the per-merchant config ONLY — the
+    // old platform-level MOYASAR_SECRET_KEY fallback could verify a
+    // top-up against the wrong Moyasar account.
     const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantIdStr);
-    const secretKey = runtimeConfig.secretKey || process.env.MOYASAR_SECRET_KEY;
+    const secretKey = runtimeConfig.secretKey;
     if (!secretKey) {
       return res.status(503).json({
         error: 'Moyasar secret key is not configured for this merchant — wallet finalize cannot verify the payment.',
@@ -251,6 +251,7 @@ walletRouter.post('/topup-finalize', async (req: Request, res: Response) => {
     const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
     const moyasarRes = await fetch(`https://api.moyasar.com/v1/payments/${encodeURIComponent(paymentIdStr)}`, {
       headers: { Authorization: authHeader },
+      signal: AbortSignal.timeout(5000), // M13: don't hang the finalize on a slow Moyasar.
     });
     if (!moyasarRes.ok) {
       const text = await moyasarRes.text().catch(() => '');

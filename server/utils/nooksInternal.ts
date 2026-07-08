@@ -160,7 +160,11 @@ export function requireNooksInternalRequest(req: Request, res: Response): boolea
       warnedMissingSecret = true;
       console.warn('[InternalAuth] NOOKS_INTERNAL_SECRET is not configured; only local/private-network calls are allowed.');
     }
-    if (isLocalOnlyRequest(req)) {
+    // In production an unset secret FAILS CLOSED — the private-IP
+    // fallback relies on x-forwarded-for, which is spoofable enough
+    // that it must never gate a remotely reachable deployment. The
+    // local/private-network path remains for development only.
+    if (process.env.NODE_ENV !== 'production' && isLocalOnlyRequest(req)) {
       return true;
     }
     res.status(503).json({ error: 'Internal auth is not configured' });

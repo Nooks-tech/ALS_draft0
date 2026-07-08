@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import path from 'path';
 import dotenv from 'dotenv';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
+import { captureError } from '../utils/sentryContext';
 
 /**
  * Moyasar's `given_id` field must be a valid UUID — it rejects our
@@ -76,7 +77,23 @@ export type CancelPaymentResult = {
 
 export type VerifyPaymentResult =
   | { ok: true; status: 'paid' | 'captured'; amountHalals: number; moyasarId: string }
-  | { ok: false; status: string; amountHalals: number; moyasarId: string; reason: string };
+  | {
+      ok: false;
+      status: string;
+      amountHalals: number;
+      moyasarId: string;
+      reason: string;
+      /**
+       * M9: true when the failure is a transient upstream problem
+       * (Moyasar HTTP 429/5xx, network error, timeout) — the payment may
+       * well be paid, so callers should ask the client to RETRY instead
+       * of declining the order. Absent/false = genuine verification
+       * failure (unpaid / amount mismatch / 4xx).
+       */
+      retryable?: boolean;
+      /** Moyasar Retry-After header value, when present on a 429/5xx. */
+      retryAfter?: string;
+    };
 
 /**
  * Server-side verification that a Moyasar payment really cleared before
@@ -116,8 +133,24 @@ export async function verifyPaidPayment(
     if (!payment) {
       const res = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
         headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
+        // M9: 429 / 5xx are transient upstream errors — the payment may
+        // actually be paid, so surface a retryable outcome instead of a
+        // hard verification failure. Other 4xx stay hard failures.
+        if (res.status === 429 || res.status >= 500) {
+          const retryAfter = res.headers.get('retry-after');
+          return {
+            ok: false,
+            status: 'unknown',
+            amountHalals: 0,
+            moyasarId: realPaymentId,
+            reason: `Moyasar HTTP ${res.status}`,
+            retryable: true,
+            ...(retryAfter ? { retryAfter } : {}),
+          };
+        }
         return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: realPaymentId, reason: `Moyasar HTTP ${res.status}` };
       }
       payment = await res.json();
@@ -141,7 +174,11 @@ export async function verifyPaidPayment(
     }
     return { ok: true, status: status as 'paid' | 'captured', amountHalals, moyasarId: realPaymentId };
   } catch (e: any) {
-    return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: realPaymentId, reason: e?.message || 'network error' };
+    // M12: ship verify network errors (incl. AbortSignal timeouts) to
+    // Sentry. M9: a network error means we DON'T know the payment state
+    // — mark retryable so callers don't decline a possibly-paid order.
+    captureError(e, { component: 'payment.verify' });
+    return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: realPaymentId, reason: e?.message || 'network error', retryable: true };
   }
 }
 
@@ -164,6 +201,7 @@ async function resolvePayment(
   try {
     const res = await fetch(`https://api.moyasar.com/v1/payments/${storedId}`, {
       headers: { Authorization: authHeader },
+      signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {
       const payment = await res.json().catch(() => null);
@@ -183,6 +221,7 @@ async function resolvePayment(
   try {
     const res = await fetch(`https://api.moyasar.com/v1/invoices/${storedId}`, {
       headers: { Authorization: authHeader },
+      signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {
       const invoice = await res.json();
@@ -254,6 +293,7 @@ export async function cancelPayment(
   try {
     const statusRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
       headers: { Authorization: authHeader },
+      signal: AbortSignal.timeout(8000),
     });
     if (statusRes.ok) {
       const payment = await statusRes.json();
@@ -279,6 +319,7 @@ export async function cancelPayment(
       const voidRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}/void`, {
         method: 'POST',
         headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(8000),
       });
       if (voidRes.ok) {
         const data = await voidRes.json();
@@ -302,6 +343,7 @@ export async function cancelPayment(
       method: 'POST',
       headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
     });
     const refundData = await refundRes.json();
     if (refundRes.ok) {
@@ -309,9 +351,12 @@ export async function cancelPayment(
       return { method: 'refund', fee: REFUND_FEE_SAR, moyasarId: refundData?.id ?? realPaymentId };
     }
     console.error('[Payment] Refund failed:', refundRes.status, refundData);
+    // M12: refund failures are money-path incidents — ship to Sentry.
+    captureError(new Error(refundData?.message || `Refund HTTP ${refundRes.status}`), { component: 'payment.refund' });
     return { method: 'failed', fee: 0, error: refundData?.message || `Refund HTTP ${refundRes.status}` };
   } catch (e: any) {
     console.error('[Payment] Refund request error:', e?.message);
+    captureError(e, { component: 'payment.refund' });
     return { method: 'failed', fee: 0, error: e?.message };
   }
 }
@@ -373,6 +418,7 @@ export const paymentService = {
         Authorization: `Bearer ${TAP_SECRET_KEY}`,
         'Content-Type': 'application/json',
       },
+      signal: AbortSignal.timeout(8000),
       body: JSON.stringify({
         amount: req.amount * 100,
         currency: req.currency || 'SAR',
@@ -447,6 +493,7 @@ export const paymentService = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
     });
     const data = await res.json();
 
@@ -519,6 +566,7 @@ export const paymentService = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
     });
     const data = await res.json();
 
@@ -615,6 +663,7 @@ export const paymentService = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(8000),
     });
     const data = await res.json();
 

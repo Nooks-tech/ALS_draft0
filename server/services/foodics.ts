@@ -22,6 +22,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       'Content-Type': 'application/json',
       ...options?.headers,
     },
+    signal: AbortSignal.timeout(8000),
   });
 
   const data = await res.json().catch(() => ({}));

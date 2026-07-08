@@ -41,7 +41,7 @@ async function sendPushToCustomer(
   customerId: string,
   title: string,
   body: string,
-  merchantId?: string,
+  merchantId: string,
 ) {
   if (!supabaseAdmin) return;
   try {
@@ -52,11 +52,14 @@ async function sendPushToCustomer(
     // "Order Cancelled" push for a Mafasa order fans out to both apps
     // — confused customer, duplicate notifications, brand confusion.
     //
-    // merchantId is optional only because a few legacy callers haven't
-    // been updated yet. Always pass it when you know it.
-    let q = supabaseAdmin.from('push_subscriptions').select('expo_push_token').eq('customer_id', customerId);
-    if (merchantId) q = q.eq('merchant_id', merchantId);
-    const { data: subs } = await q;
+    // L5: merchantId is REQUIRED and the filter always applies —
+    // an unscoped call is now a compile error instead of a silent
+    // cross-brand fan-out.
+    const { data: subs } = await supabaseAdmin
+      .from('push_subscriptions')
+      .select('expo_push_token')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId);
     const tokens = (subs ?? []).map((s: any) => s.expo_push_token).filter(Boolean);
 
     // 2026-05-22: detailed observability. Pre-fix, this function was a
@@ -702,6 +705,21 @@ ordersRouter.post('/commit', async (req, res) => {
     if (isMoyasarPaymentId && existing?.id !== id && relayToNooks !== true) {
       const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
       if (!verification.ok) {
+        // M9: transient Moyasar error (429/5xx/timeout/network) — the
+        // payment may well be paid; ask the client to retry instead of
+        // declining a possibly-paid order with a 402.
+        if (verification.retryable) {
+          console.warn(
+            '[Orders] Verify hit transient Moyasar error — asking client to retry:',
+            trimmedPaymentId,
+            verification.reason,
+          );
+          return res.status(503).json({
+            error: 'Payment verification is temporarily unavailable. Please retry in a moment — you have not been charged twice.',
+            retryable: true,
+            ...(verification.retryAfter ? { retryAfter: verification.retryAfter } : {}),
+          });
+        }
         console.warn(
           '[Orders] Rejecting commit — Moyasar payment not paid:',
           trimmedPaymentId,
@@ -829,6 +847,20 @@ ordersRouter.post('/commit', async (req, res) => {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         const hardenedVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
         if (!hardenedVerify.ok) {
+          // M9: transient Moyasar error — no side effects have run yet,
+          // so a retry is safe. Don't 402-decline a possibly-paid order.
+          if (hardenedVerify.retryable) {
+            console.warn(
+              '[Orders] Hardened verify hit transient Moyasar error — asking client to retry:',
+              trimmedPaymentId,
+              hardenedVerify.reason,
+            );
+            return res.status(503).json({
+              error: 'Payment verification is temporarily unavailable. Please retry in a moment — you have not been charged twice.',
+              retryable: true,
+              ...(hardenedVerify.retryAfter ? { retryAfter: hardenedVerify.retryAfter } : {}),
+            });
+          }
           console.warn(
             '[Orders] Hardened verify (post-delay) failed — refusing side effects:',
             trimmedPaymentId,

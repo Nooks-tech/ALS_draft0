@@ -9,6 +9,8 @@
  *   200 → { status: "Success", message, data }
  */
 
+import { captureError } from '../utils/sentryContext';
+
 const MADAR_API_BASE = 'https://app.mobile.net.sa/api/v1';
 const MADAR_API_KEY = process.env.MADAR_SMS_API_KEY || '';
 const MADAR_SENDER = process.env.MADAR_SMS_SENDER || 'Nooks';
@@ -58,6 +60,7 @@ export async function sendSms(to: string, message: string): Promise<SendSmsResul
         // number within minutes — don't let Madar's dedup eat them.
         allow_duplicate: true,
       }),
+      signal: AbortSignal.timeout(8000),
     });
 
     const data = await res.json().catch(() => null);
@@ -76,11 +79,17 @@ export async function sendSms(to: string, message: string): Promise<SendSmsResul
           errorDescription,
         }),
       );
+      // M12: SMS delivery failures were console-only — ship to Sentry.
+      captureError(new Error(`MadarSMS send failed: ${errorDescription}`), { component: 'sms.madar' });
       if (consecutiveFailures === FAILURE_ALERT_THRESHOLD) {
         console.error(
           `[SMS] ALERT — ${FAILURE_ALERT_THRESHOLD} consecutive Madar failures. ` +
             `Sender "${MADAR_SENDER}" is likely revoked or API key rotated. ` +
             `Check Madar portal, rotate MADAR_SMS_SENDER or set ALLOW_OTP_FALLBACK=true to keep users unblocked.`,
+        );
+        captureError(
+          new Error(`MadarSMS: ${FAILURE_ALERT_THRESHOLD} consecutive send failures — sender likely revoked or key rotated`),
+          { component: 'sms.madar' },
         );
       }
       return {
@@ -106,6 +115,9 @@ export async function sendSms(to: string, message: string): Promise<SendSmsResul
   } catch (err) {
     consecutiveFailures += 1;
     console.error('[SMS] Fetch error:', err);
+    // M12: network-level Madar failures (incl. AbortSignal timeouts)
+    // also go to Sentry.
+    captureError(err, { component: 'sms.madar' });
     return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
   }
 }
