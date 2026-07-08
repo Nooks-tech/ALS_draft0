@@ -290,8 +290,8 @@ async function pruneOldCronRuns() {
 // gets one row per Moyasar/Foodics/OTO event and its own header comment
 // promised a pruner that was never written; abandoned_carts is insert-only.
 // Financial / reconciliation trails are exempt from the audit_log prune —
-// recovery stamping looks back 24h and reports read one month, so 180d is
-// generous for everything else.
+// recovery stamping looks back 24h and reports read one month, so 60d is
+// generous for everything else (M10: was 180d, shrunk to keep the table lean).
 async function pruneRetention() {
   if (!supabaseAdmin) return;
   const daysAgo = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
@@ -305,13 +305,25 @@ async function pruneRetention() {
   const { error: alErr } = await supabaseAdmin
     .from('audit_log')
     .delete()
-    .lt('created_at', daysAgo(180))
+    .lt('created_at', daysAgo(60))
     .not('action', 'ilike', 'commission%')
     .not('action', 'ilike', '%invoiced%')
     .not('action', 'ilike', '%reversal%')
     .not('action', 'ilike', '%refund%')
     .not('action', 'ilike', 'wallet%');
   if (alErr) console.warn('[Loyalty Cron] audit_log prune failed:', alErr.message);
+
+  // M5: unclaimed walk-in (kiosk) orders. The kiosk writes customer_orders
+  // rows with a claim window (claim_expires_at); if the customer never
+  // claims them the rows are dead weight forever. 48h past expiry they can
+  // no longer be claimed — delete them. Claimed rows (claimed_at set) and
+  // app orders (claim_expires_at NULL, so .lt never matches) are untouched.
+  const { error: woErr } = await supabaseAdmin
+    .from('customer_orders')
+    .delete()
+    .is('claimed_at', null)
+    .lt('claim_expires_at', daysAgo(2));
+  if (woErr) console.warn('[Loyalty Cron] unclaimed walk-in orders prune failed:', woErr.message);
 
   const { error: acErr } = await supabaseAdmin
     .from('abandoned_carts')
