@@ -23,11 +23,17 @@ export type DriverLocationSnapshot = {
  * customerId is now required by the public endpoint (defense-in-depth
  * after the audit's Tier 1 #9 finding). Pass auth.uid; the server
  * row-level matches it against customer_orders.customer_id.
+ *
+ * accessToken (L3): when available, the Supabase session JWT is sent as
+ * `Authorization: Bearer` — the server's preferred auth path. We keep
+ * sending the customer_id query param too for transition compatibility
+ * until the server drops its legacy param fallback.
  */
 export async function fetchDriverLocation(
   merchantId: string,
   orderId: string,
   customerId: string,
+  accessToken?: string,
 ): Promise<DriverLocationSnapshot | null> {
   if (!BASE_URL.trim() || !merchantId || !orderId || !customerId) return null;
   try {
@@ -36,7 +42,10 @@ export async function fetchDriverLocation(
         merchantId,
       )}/orders/${encodeURIComponent(orderId)}/driver-location` +
       `?customer_id=${encodeURIComponent(customerId)}`;
-    const res = await fetch(url, { method: 'GET' });
+    const res = await fetch(url, {
+      method: 'GET',
+      ...(accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : {}),
+    });
     if (!res.ok) return null;
     const data = (await res.json().catch(() => null)) as DriverLocationSnapshot | null;
     return data;

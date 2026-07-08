@@ -168,7 +168,18 @@ export default function OrderDetailModal() {
     const customerId = user.id;
     let cancelled = false;
     const poll = async () => {
-      const snap = await fetchDriverLocation(String(order.merchantId), String(orderId), customerId);
+      // L3: send the Supabase JWT so the server can verify identity
+      // properly; the customer_id param stays for transition compat.
+      // If no session is available, the param-only call still works.
+      let accessToken: string | undefined;
+      try {
+        accessToken = supabase
+          ? (await supabase.auth.getSession()).data.session?.access_token
+          : undefined;
+      } catch {
+        accessToken = undefined;
+      }
+      const snap = await fetchDriverLocation(String(order.merchantId), String(orderId), customerId, accessToken);
       if (cancelled) return;
       setDriverLat(snap?.driver_lat ?? null);
       setDriverLng(snap?.driver_lng ?? null);
