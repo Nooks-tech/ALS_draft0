@@ -5,6 +5,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { sendPushScoped } from '../utils/push';
+import { captureError } from '../utils/sentryContext';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -334,6 +335,36 @@ async function pruneRetention() {
 
 // ── Startup ──
 
+// L11: nightly wallet balance-vs-ledger reconciliation alert. Catches a
+// balance that diverged from SUM(customer_wallet_transactions.amount_halalas)
+// — i.e. a direct balance write that bypassed credit_/debit_customer_wallet
+// (like the phantom test grant reconciled 2026-07-08). Wallet is the one
+// balance with no expiry, so its ledger sum is exact — no false positives.
+// (Points/cashback reconciliation needs expiry-aware logic — separate follow-up.)
+async function reconcileWalletBalances() {
+  if (!supabaseAdmin) return;
+  const { data, error } = await supabaseAdmin.rpc('wallet_balance_mismatches');
+  if (error) {
+    console.warn('[Loyalty Cron] wallet reconciliation query failed:', error.message);
+    captureError(new Error(`wallet_balance_mismatches rpc failed: ${error.message}`), {
+      component: 'cron.reconcileWalletBalances',
+    });
+    return;
+  }
+  const mismatches = (data ?? []) as Array<{
+    customer_id: string;
+    merchant_id: string;
+    balance_halalas: number;
+    ledger_halalas: number;
+  }>;
+  if (mismatches.length === 0) return;
+  console.error(`[Loyalty Cron] ALERT — ${mismatches.length} wallet balance(s) diverge from their ledger:`, mismatches);
+  captureError(
+    new Error(`Wallet balance/ledger reconciliation found ${mismatches.length} mismatch(es)`),
+    { component: 'cron.reconcileWalletBalances', extra: { mismatches } },
+  );
+}
+
 async function runLoyaltyTick() {
   // Each task is wrapped independently so one failure doesn't skip the
   // rest. Top-level try/catch is for paranoia — anything that escapes
@@ -346,6 +377,7 @@ async function runLoyaltyTick() {
     ['cleanupRetiredPrograms', cleanupRetiredPrograms],
     ['pruneOldCronRuns', pruneOldCronRuns],
     ['pruneRetention', pruneRetention],
+    ['reconcileWalletBalances', reconcileWalletBalances],
   ];
   for (const [name, task] of tasks) {
     try {
