@@ -30,6 +30,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { StoreStatusBanner } from '../../components/common/StoreStatusBanner';
 import { useCart } from '../../context/CartContext';
 import { useMenuContext } from '../../context/MenuContext';
 import { useMerchant } from '../../context/MerchantContext';
@@ -273,6 +274,11 @@ export default function PolaroidMenuScreen() {
           })}
         </View>
       </View>
+
+      {/* Closed / busy / outside-hours banner for the selected branch
+          (merchant aggregate before one is picked). Browsing stays
+          available; ordering is gated at cart/checkout/server. */}
+      <StoreStatusBanner />
 
       {/* All-categories scroll — each category becomes its own
           section header followed by a 2-column polaroid grid. */}

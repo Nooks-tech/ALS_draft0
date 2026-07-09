@@ -16,6 +16,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
+import { checkBranchOrderable } from '../lib/storeGate';
 import { cancelPayment, verifyPaidPayment } from '../services/payment';
 import { sendOrderReceipt } from '../services/receipt';
 import { consumeOrderMilestones, earnForOrder, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
@@ -25,6 +26,32 @@ import { enforceLimits } from '../utils/rateLimit';
 import { creditWalletForRefund } from './wallet';
 
 export const ordersRouter = Router();
+
+/**
+ * Best-effort void of a verified card charge when a FINAL commit is
+ * rejected by a policy gate (store closed / loyalty misuse). At that
+ * point the customer has already paid between the two commits; without
+ * this the money sits captured until the abandoned-payments sweep.
+ * Failures only log — the sweep remains the backstop.
+ */
+async function voidChargeOnRejectedFinalCommit(
+  paymentId: unknown,
+  merchantId: string,
+  context: string,
+): Promise<void> {
+  const pid = typeof paymentId === 'string' ? paymentId.trim() : '';
+  if (!pid || pid.startsWith('wallet:') || pid.startsWith('reward:')) return;
+  try {
+    const result = await cancelPayment(pid, undefined, merchantId);
+    if (result.method === 'failed') {
+      console.error(`[Orders] ${context}: void of Moyasar payment ${pid} failed:`, result.error);
+    } else {
+      console.warn(`[Orders] ${context}: ${result.method} Moyasar payment ${pid} after rejecting final commit`);
+    }
+  } catch (e: any) {
+    console.error(`[Orders] ${context}: void of Moyasar payment ${pid} threw:`, e?.message);
+  }
+}
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -724,6 +751,31 @@ ordersRouter.post('/commit', async (req, res) => {
       }
     }
 
+    // ─── Branch effectively-closed gate ───
+    // Manual close / busy timer / outside scheduled hours all reject the
+    // order HERE, on BOTH commits. The first commit (relayToNooks=false)
+    // runs before the card charge, so a customer at a closed branch is
+    // blocked before paying. The final commit re-checks (store may have
+    // closed mid-checkout); since the card was charged between the two
+    // commits, a final-commit rejection voids the charge first. This
+    // lookup also closes the old hole where branchId was never verified
+    // to belong to the merchant. Billing closure is handled by the REG-1
+    // gate above.
+    if (supabaseAdmin) {
+      const storeGate = await checkBranchOrderable(supabaseAdmin, { merchantId, branchId, orderType });
+      if (!storeGate.ok) {
+        if (relayToNooks === true) {
+          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, `store gate (${storeGate.code})`);
+        }
+        return res.status(storeGate.status).json({
+          error: storeGate.error,
+          code: storeGate.code,
+          ...(storeGate.closedReason ? { closed_reason: storeGate.closedReason } : {}),
+          ...(storeGate.reopensAt !== undefined ? { reopens_at: storeGate.reopensAt } : {}),
+        });
+      }
+    }
+
     // Default to 'Placed' so the stepper's first step is active the moment the
     // row lands. Foodics webhooks then advance it: 2 (Active) → 'Accepted'.
     const normalizedStatus =
@@ -879,32 +931,62 @@ ordersRouter.post('/commit', async (req, res) => {
       typeof loyaltyDiscountSar === 'number' && loyaltyDiscountSar > 0 ? Number(loyaltyDiscountSar) : 0,
     );
     let validatedCashbackSar = 0;
-    if (isFinalCommit) {
-      const { data: redeemTxn } = await supabaseAdmin
-        .from('loyalty_transactions')
-        .select('amount_sar')
-        .eq('customer_id', user.id)
-        .eq('merchant_id', merchantId)
-        .eq('order_id', id)
-        .eq('type', 'redeem')
-        .eq('loyalty_type', 'cashback')
-        .maybeSingle();
-      const actualRedeemedSar = redeemTxn ? Math.abs(Number(redeemTxn.amount_sar ?? 0)) : 0;
-      if (Math.abs(claimedCashbackSar - actualRedeemedSar) > 0.01) {
+    let loyaltyCfgConfigVersion: number | null = null;
+    if (claimedCashbackSar > 0.009) {
+      // ─── Loyalty-type gate ───
+      // A SAR money-discount at checkout is a CASHBACK feature. Points
+      // merchants' customers redeem points for reward ITEMS (milestones)
+      // only — the old app had a toggle that converted points into a cash
+      // discount at point_value_sar; the server now refuses that outright
+      // on BOTH commits (the first commit runs before the card charge, so
+      // stale clients are blocked before paying). The one legitimate
+      // exception: a customer still draining a legacy cashback balance
+      // after the merchant switched cashback→points — their member
+      // profile keeps active_loyalty_type='cashback' until it drains.
+      const [{ data: loyaltyCfg }, { data: memberProfile }] = await Promise.all([
+        supabaseAdmin
+          .from('loyalty_config')
+          .select('loyalty_type, max_cashback_per_order_sar, config_version')
+          .eq('merchant_id', merchantId)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('loyalty_member_profiles')
+          .select('active_loyalty_type')
+          .eq('merchant_id', merchantId)
+          .eq('customer_id', user.id)
+          .maybeSingle(),
+      ]);
+      const cashbackAllowed =
+        loyaltyCfg?.loyalty_type === 'cashback' || memberProfile?.active_loyalty_type === 'cashback';
+      if (!cashbackAllowed) {
+        if (isFinalCommit) {
+          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'loyalty-type gate');
+        }
         return res.status(400).json({
           error:
-            actualRedeemedSar === 0
-              ? `Cashback amount mismatch: order claims ${claimedCashbackSar.toFixed(2)} SAR but no cashback was redeemed for this order. Call /redeem-cashback first.`
-              : `Cashback amount mismatch: order claims ${claimedCashbackSar.toFixed(2)} SAR but /redeem-cashback recorded ${actualRedeemedSar.toFixed(2)} SAR.`,
-          code: 'CASHBACK_MISMATCH',
+            'Points can only be redeemed for rewards from the loyalty page — not as a cash discount. Remove the discount and try again.',
+          code: 'LOYALTY_CASH_DISCOUNT_NOT_ALLOWED',
         });
       }
-      validatedCashbackSar = actualRedeemedSar;
-    } else {
-      // First commit: no validation yet (the customer may call
-      // /redeem-cashback between the two commits). Trust the client
-      // claim for the payload only; the final commit will enforce.
-      validatedCashbackSar = claimedCashbackSar;
+      const capSar =
+        loyaltyCfg?.max_cashback_per_order_sar != null ? Number(loyaltyCfg.max_cashback_per_order_sar) : null;
+      if (capSar != null && Number.isFinite(capSar) && capSar > 0 && claimedCashbackSar - capSar > 0.01) {
+        if (isFinalCommit) {
+          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'cashback cap gate');
+        }
+        return res.status(400).json({
+          error: `Maximum cashback per order is ${capSar} SAR.`,
+          code: 'CASHBACK_OVER_CAP',
+        });
+      }
+
+      // Gates passed. The actual atomic deduction happens further down,
+      // AFTER the hardened Moyasar re-verify (no side effects may run
+      // before it) — see the "active server-side cashback redemption"
+      // block. First commits never deduct.
+      validatedCashbackSar = +claimedCashbackSar.toFixed(2);
+      loyaltyCfgConfigVersion =
+        typeof loyaltyCfg?.config_version === 'number' ? loyaltyCfg.config_version : null;
     }
 
     if (isFinalCommit) {
@@ -986,6 +1068,82 @@ ordersRouter.post('/commit', async (req, res) => {
             error: `Payment not confirmed (${hardenedVerify.reason}). The order was not created.`,
             moyasarStatus: hardenedVerify.status,
           });
+        }
+      }
+
+      // ─── Active server-side cashback redemption ───
+      // Replaces the old passive "a /redeem-cashback ledger row must
+      // already exist" match: the app fires /redeem-cashback only AFTER
+      // a successful final commit, so requiring the row here deadlocked
+      // every cashback order — and a client that skipped the call kept
+      // both the discount and the balance. The commit itself now performs
+      // the atomic deduction via the same idempotent RPC /redeem-cashback
+      // uses (partial unique index per order), so old clients' post-commit
+      // call dedupes and commit retries are safe. Runs after the hardened
+      // verify (first side effect); reversal on downstream failure remains
+      // restoreCashbackForRefund (amount-based) — unchanged. The loyalty-
+      // type + cap gates already ran pre-charge on both commits.
+      if (validatedCashbackSar > 0.009) {
+        const { data: balRow } = await supabaseAdmin
+          .from('loyalty_cashback_balances')
+          .select('balance_sar, config_version')
+          .eq('customer_id', user.id)
+          .eq('merchant_id', merchantId)
+          .order('config_version', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('redeem_loyalty_cashback', {
+          p_customer_id: user.id,
+          p_merchant_id: merchantId,
+          p_amount_sar: validatedCashbackSar,
+          p_order_id: id,
+          p_reference_type: null,
+          p_reference_id: null,
+          p_source: 'app',
+          p_description: `Used ${validatedCashbackSar} SAR cashback`,
+          p_config_version: balRow?.config_version ?? loyaltyCfgConfigVersion,
+          p_branch_id: branchId,
+        });
+        if (rpcErr) {
+          // Nothing else has been deducted yet — a retry is safe and the
+          // RPC is idempotent per order.
+          console.error('[Orders] redeem_loyalty_cashback RPC error:', rpcErr.message);
+          return res.status(503).json({
+            error: 'Could not apply the cashback discount. Please retry in a moment.',
+            retryable: true,
+          });
+        }
+        const cashbackRpcResult = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
+          | { status?: string }
+          | null;
+        if (cashbackRpcResult?.status === 'insufficient') {
+          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'cashback insufficient');
+          return res.status(400).json({
+            error: 'Insufficient cashback balance for the claimed discount. The card payment was reversed.',
+            code: 'INSUFFICIENT_CASHBACK',
+          });
+        }
+        if (cashbackRpcResult?.status === 'duplicate') {
+          // A redemption for this order already exists (client pre-redeem
+          // or a commit retry). Amounts must agree — otherwise the claim
+          // and the ledger diverge and Foodics would show a ghost line.
+          const { data: redeemTxn } = await supabaseAdmin
+            .from('loyalty_transactions')
+            .select('amount_sar')
+            .eq('customer_id', user.id)
+            .eq('merchant_id', merchantId)
+            .eq('order_id', id)
+            .eq('type', 'redeem')
+            .eq('loyalty_type', 'cashback')
+            .maybeSingle();
+          const actualRedeemedSar = redeemTxn ? Math.abs(Number(redeemTxn.amount_sar ?? 0)) : 0;
+          if (Math.abs(validatedCashbackSar - actualRedeemedSar) > 0.01) {
+            await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'cashback mismatch');
+            return res.status(400).json({
+              error: `Cashback amount mismatch: order claims ${validatedCashbackSar.toFixed(2)} SAR but ${actualRedeemedSar.toFixed(2)} SAR was redeemed. The card payment was reversed.`,
+              code: 'CASHBACK_MISMATCH',
+            });
+          }
         }
       }
 

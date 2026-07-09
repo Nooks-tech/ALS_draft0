@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Router } from 'express';
 import { calculateCommission, calculateMoyasarFee, normalizeMerchantId, paymentService } from '../services/payment';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
+import { checkBranchOrderable } from '../lib/storeGate';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
 import { paymentRateLimit, webhookRateLimit, enforceLimits } from '../utils/rateLimit';
@@ -734,7 +735,7 @@ paymentRouter.post('/token-pay', async (req, res) => {
     // Look up the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, wallet_paid_sar, payment_id')
+      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, wallet_paid_sar, payment_id, branch_id, order_type')
       .eq('id', orderId)
       .eq('merchant_id', scopedMerchantId)
       .eq('customer_id', user.id)
@@ -756,6 +757,28 @@ paymentRouter.post('/token-pay', async (req, res) => {
     const tokenPayRuntime = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
     if (!tokenPayRuntime.customerPaymentsEnabled) {
       return res.status(403).json({ error: 'Payments are not enabled for this merchant' });
+    }
+
+    // Branch effectively-closed gate: the saved-card charge fires between
+    // the two commits, so if the branch closed (manual / busy timer /
+    // outside hours) after the draft commit, refuse BEFORE charging —
+    // the final /commit would reject it anyway and we'd be voiding a
+    // fresh charge for nothing.
+    const draftBranchId = (order as { branch_id?: unknown }).branch_id;
+    if (typeof draftBranchId === 'string' && draftBranchId) {
+      const storeGate = await checkBranchOrderable(supabaseAdmin, {
+        merchantId: scopedMerchantId,
+        branchId: draftBranchId,
+        orderType: (order as { order_type?: string | null }).order_type ?? null,
+      });
+      if (!storeGate.ok) {
+        return res.status(storeGate.status).json({
+          error: storeGate.error,
+          code: storeGate.code,
+          ...(storeGate.closedReason ? { closed_reason: storeGate.closedReason } : {}),
+          ...(storeGate.reopensAt !== undefined ? { reopens_at: storeGate.reopensAt } : {}),
+        });
+      }
     }
 
     // #8: local idempotency guard. If this order already carries a real card

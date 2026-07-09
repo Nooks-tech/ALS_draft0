@@ -1128,6 +1128,17 @@ loyaltyRouter.post('/redeem', async (req, res) => {
     const hasInternalSecret = hasValidInternalSecret(req);
     if (!hasInternalSecret) {
       if (!await requireMatchingCustomer(req, res, customerId)) return;
+      // Points are NOT cash. Customer-facing points redemption happens
+      // only through reward items (/redeem-reward, /redeem-milestone) —
+      // this endpoint converts points into a SAR discount at
+      // point_value_sar, which the checkout used to expose as a
+      // cashback-style toggle for points customers. Internal-secret
+      // callers (nooksweb Foodics adapter / branch tools) keep access;
+      // the customer app gets a hard refusal BEFORE any deduction.
+      return res.status(403).json({
+        error: 'Points can only be redeemed for rewards.',
+        code: 'POINTS_CASH_REDEMPTION_DISABLED',
+      });
     }
     if (!supabaseAdmin) return res.status(500).json({ error: 'Database not configured' });
     const result = await redeemPointsFromBalance({

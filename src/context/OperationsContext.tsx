@@ -1,13 +1,18 @@
 /**
  * Merchant operations from Nooks: store_status, prep_time_minutes, delivery_mode.
  * Uses Supabase Realtime on app_config for instant updates, with API polling as fallback.
+ *
+ * The server now returns a unified closed state (effective_status /
+ * closed_reason / reopens_at) covering manual close, the busy timer,
+ * scheduled hours, and billing closure. `effectivelyClosed` is what
+ * screens should gate on; `isClosed`/`isBusy` remain for display.
  */
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../api/supabase';
-import { fetchNooksOperations, type NooksOperations } from '../api/nooksOperations';
+import { fetchNooksOperations, type ClosedReason, type NooksOperations } from '../api/nooksOperations';
 import { useCart } from './CartContext';
 import { useMerchant } from './MerchantContext';
 
@@ -18,6 +23,16 @@ type OperationsContextType = {
   isClosed: boolean;
   isBusy: boolean;
   isPickupOnly: boolean;
+  // Unified closed state — true when the branch cannot take orders for
+  // ANY reason (manual close, busy timer, outside hours, billing).
+  // This is the flag checkout/cart/order-type must gate on.
+  effectivelyClosed: boolean;
+  closedReason: ClosedReason | null;
+  reopensAt: string | null;
+  // Ticking countdown to reopens_at (0 when unknown/none). When it
+  // crosses zero the context refetches so the store flips open without
+  // waiting for the next poll.
+  reopenSecondsLeft: number;
   // Per-order-type enable flags resolved per selected branch.
   // Default true when the server didn't return a value (pre-migration
   // branches) — the customer can still pick the type; server gates
@@ -43,6 +58,10 @@ const OperationsContext = createContext<OperationsContextType>({
   isClosed: false,
   isBusy: false,
   isPickupOnly: false,
+  effectivelyClosed: false,
+  closedReason: null,
+  reopensAt: null,
+  reopenSecondsLeft: 0,
   deliveryEnabled: true,
   pickupEnabled: true,
   drivethruEnabled: true,
@@ -52,8 +71,21 @@ const OperationsContext = createContext<OperationsContextType>({
 
 const POLL_MS = 15 * 1000;
 
+function deriveReopenSeconds(ops: NooksOperations | null): number {
+  if (!ops) return 0;
+  if (typeof ops.reopens_at === 'string') {
+    const at = Date.parse(ops.reopens_at);
+    if (Number.isFinite(at)) return Math.max(0, Math.floor((at - Date.now()) / 1000));
+  }
+  return deriveBusySeconds(ops);
+}
+
 function deriveBusySeconds(ops: NooksOperations | null): number {
   if (!ops || ops.store_status !== 'busy') return 0;
+  if (typeof ops.busy_until === 'string') {
+    const until = Date.parse(ops.busy_until);
+    if (Number.isFinite(until)) return Math.max(0, Math.floor((until - Date.now()) / 1000));
+  }
   if (typeof ops.busy_seconds_left === 'number' && Number.isFinite(ops.busy_seconds_left)) {
     return Math.max(0, Math.floor(ops.busy_seconds_left));
   }
@@ -73,7 +105,10 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const [operations, setOperations] = useState<NooksOperations | null>(null);
   const [loading, setLoading] = useState(false);
   const [busySecondsLeft, setBusySecondsLeft] = useState(0);
+  const [reopenSecondsLeft, setReopenSecondsLeft] = useState(0);
   const channelRef = useRef<RealtimeChannel | null>(null);
+  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const expiryRefetchedRef = useRef(false);
   const selectedBranchId = selectedBranch?.id?.trim() || '';
   const cacheKey = `@als_operations_${merchantId || 'default'}_${selectedBranchId || 'merchant'}`;
 
@@ -86,6 +121,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         if (!cached || typeof cached !== 'object') return;
         setOperations(cached);
         setBusySecondsLeft(deriveBusySeconds(cached));
+        setReopenSecondsLeft(deriveReopenSeconds(cached));
       })
       .catch(() => {});
   }, [merchantId, cacheKey]);
@@ -98,10 +134,13 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       const next = data ?? defaultOps;
       setOperations(next);
       setBusySecondsLeft(deriveBusySeconds(next));
+      setReopenSecondsLeft(deriveReopenSeconds(next));
+      expiryRefetchedRef.current = false;
       AsyncStorage.setItem(cacheKey, JSON.stringify(next)).catch(() => {});
     } catch {
       setOperations(defaultOps);
       setBusySecondsLeft(0);
+      setReopenSecondsLeft(0);
     } finally {
       setLoading(false);
     }
@@ -131,31 +170,46 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           table: 'app_config',
           filter: `merchant_id=eq.${merchantId}`,
         },
-        (payload) => {
-          const row = payload.new as Record<string, unknown>;
-          const realtimeOps: NooksOperations = {
-            store_status: (row.store_status as NooksOperations['store_status']) ?? 'open',
-            prep_time_minutes: typeof row.prep_time_minutes === 'number' ? row.prep_time_minutes : 0,
-            delivery_mode: (row.delivery_mode as NooksOperations['delivery_mode']) ?? 'delivery_and_pickup',
-            busy_started_at: typeof row.busy_started_at === 'string' ? row.busy_started_at : null,
-            busy_seconds_left: null,
-          };
-          AsyncStorage.setItem(cacheKey, JSON.stringify(realtimeOps)).catch(() => {});
-          setOperations(realtimeOps);
-          setBusySecondsLeft(deriveBusySeconds(realtimeOps));
+        () => {
+          // Don't build operations from the raw row — that bypassed the
+          // server-computed state (hours, busy timer, billing closure,
+          // per-branch aggregation). Use the event purely as a "something
+          // changed" signal and refetch, debounced against bursts.
+          if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+          realtimeDebounceRef.current = setTimeout(() => {
+            realtimeDebounceRef.current = null;
+            void refetch();
+          }, 500);
         }
       )
       .subscribe();
 
     return () => {
+      if (realtimeDebounceRef.current) {
+        clearTimeout(realtimeDebounceRef.current);
+        realtimeDebounceRef.current = null;
+      }
       channelRef.current?.unsubscribe();
       channelRef.current = null;
     };
-  }, [merchantId, cacheKey, selectedBranchId]);
+  }, [merchantId, selectedBranchId, refetch]);
 
   const isClosed = operations?.store_status === 'closed';
   const isBusy = operations?.store_status === 'busy';
   const isPickupOnly = operations?.delivery_mode === 'pickup_only';
+  // Unified gate: trust the server field when present, otherwise fall
+  // back to the legacy statuses (old servers / cached responses).
+  const effectivelyClosed = operations
+    ? operations.effective_status === 'open'
+      ? false
+      : operations.effective_status === 'closed'
+        ? true
+        : isClosed || isBusy
+    : false;
+  const closedReason = effectivelyClosed
+    ? (operations?.closed_reason ?? (isBusy ? 'busy' : 'manual'))
+    : null;
+  const reopensAt = effectivelyClosed ? (operations?.reopens_at ?? operations?.busy_until ?? null) : null;
   // Resolve per-type flags from the server response. Treat missing
   // booleans as enabled — gracefully handles pre-migration branches.
   const deliveryEnabled =
@@ -169,18 +223,48 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const prepTimeMinutes = operations?.prep_time_minutes ?? 0;
 
   useEffect(() => {
-    if (!isBusy) {
-      setBusySecondsLeft(0);
+    if (!isBusy) setBusySecondsLeft(0);
+    if (!effectivelyClosed || !reopensAt) {
+      setReopenSecondsLeft(0);
       return;
     }
     const t = setInterval(() => {
-      setBusySecondsLeft((prev) => Math.max(0, prev - 1));
+      if (isBusy) setBusySecondsLeft((prev) => Math.max(0, prev - 1));
+      setReopenSecondsLeft((prev) => {
+        const next = Math.max(0, prev - 1);
+        // Timer ran out (busy ended / opening time reached) — confirm
+        // with the server once so the store flips open immediately
+        // instead of waiting for the next 15s poll.
+        if (next === 0 && prev > 0 && !expiryRefetchedRef.current) {
+          expiryRefetchedRef.current = true;
+          void refetch();
+        }
+        return next;
+      });
     }, 1000);
     return () => clearInterval(t);
-  }, [isBusy]);
+  }, [isBusy, effectivelyClosed, reopensAt, refetch]);
 
   return (
-    <OperationsContext.Provider value={{ operations, loading, refetch, isClosed, isBusy, isPickupOnly, deliveryEnabled, pickupEnabled, drivethruEnabled, prepTimeMinutes, busySecondsLeft }}>
+    <OperationsContext.Provider
+      value={{
+        operations,
+        loading,
+        refetch,
+        isClosed,
+        isBusy,
+        isPickupOnly,
+        effectivelyClosed,
+        closedReason,
+        reopensAt,
+        reopenSecondsLeft,
+        deliveryEnabled,
+        pickupEnabled,
+        drivethruEnabled,
+        prepTimeMinutes,
+        busySecondsLeft,
+      }}
+    >
       {children}
     </OperationsContext.Provider>
   );

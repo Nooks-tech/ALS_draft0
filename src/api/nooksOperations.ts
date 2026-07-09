@@ -14,6 +14,7 @@ const BASE_URL =
 
 export type StoreStatus = 'open' | 'busy' | 'closed';
 export type DeliveryMode = 'delivery_and_pickup' | 'pickup_only';
+export type ClosedReason = 'billing' | 'manual' | 'busy' | 'outside_hours';
 
 export type NooksOperations = {
   store_status: StoreStatus;
@@ -28,6 +29,14 @@ export type NooksOperations = {
   drivethru_enabled?: boolean;
   busy_started_at?: string | null;
   busy_seconds_left?: number | null;
+  // Unified server-computed closed state (absent on old servers —
+  // fall back to store_status). closed_reason explains WHY and
+  // reopens_at says when the closed state ends on its own (busy
+  // timer / next scheduled opening); null for manual/billing.
+  effective_status?: 'open' | 'closed' | null;
+  closed_reason?: ClosedReason | null;
+  reopens_at?: string | null;
+  busy_until?: string | null;
 };
 
 export async function fetchNooksOperations(merchantId: string, branchId?: string | null): Promise<NooksOperations | null> {
@@ -47,6 +56,17 @@ export async function fetchNooksOperations(merchantId: string, branchId?: string
   const drivethru_enabled = typeof data.drivethru_enabled === 'boolean' ? data.drivethru_enabled : true;
   const busy_started_at = typeof data.busy_started_at === 'string' ? data.busy_started_at : null;
   const busy_seconds_left = typeof data.busy_seconds_left === 'number' ? data.busy_seconds_left : null;
+  const effective_status =
+    data.effective_status === 'open' || data.effective_status === 'closed' ? data.effective_status : null;
+  const closed_reason =
+    data.closed_reason === 'billing' ||
+    data.closed_reason === 'manual' ||
+    data.closed_reason === 'busy' ||
+    data.closed_reason === 'outside_hours'
+      ? data.closed_reason
+      : null;
+  const reopens_at = typeof data.reopens_at === 'string' ? data.reopens_at : null;
+  const busy_until = typeof data.busy_until === 'string' ? data.busy_until : null;
   return {
     store_status,
     prep_time_minutes,
@@ -56,5 +76,9 @@ export async function fetchNooksOperations(merchantId: string, branchId?: string
     drivethru_enabled,
     busy_started_at,
     busy_seconds_left,
+    effective_status,
+    closed_reason,
+    reopens_at,
+    busy_until,
   };
 }

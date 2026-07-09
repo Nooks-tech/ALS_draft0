@@ -33,6 +33,11 @@ export type MenuBranch = {
   open_till?: string;
   pickup_promising_time?: number;
   delivery_promising_time?: number;
+  // Per-branch order-type availability (Live Ops toggles); missing =
+  // available. order-type.tsx filters the branch list by these.
+  delivery_available?: boolean;
+  pickup_available?: boolean;
+  drivethru_available?: boolean;
 };
 
 export function useMenu() {
@@ -105,6 +110,9 @@ export function useMenu() {
           open_till: b.open_till,
           pickup_promising_time: b.pickup_promising_time,
           delivery_promising_time: b.delivery_promising_time,
+          delivery_available: b.delivery_available,
+          pickup_available: b.pickup_available,
+          drivethru_available: b.drivethru_available,
         }));
         setBranches(nextBranches);
 

@@ -5,9 +5,11 @@ import { Alert, Image, ScrollView, Text, TouchableOpacity, View } from 'react-na
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
+import { StoreStatusBanner } from '../src/components/common/StoreStatusBanner';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useMerchant } from '../src/context/MerchantContext';
+import { useOperations } from '../src/context/OperationsContext';
 import { useQrLanding } from '../src/context/QrLandingContext';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
 import { reportCartEvent } from '../src/api/cartEvents';
@@ -28,6 +30,7 @@ export default function CartScreen() {
     orderType,
     selectedBranch,
     deliveryAddress } = useCart();
+  const { effectivelyClosed, closedReason, reopenSecondsLeft } = useOperations();
   const [zoneChecking, setZoneChecking] = useState(false);
 
   // Phase 5 — fire a cart.opened event the first time the cart screen
@@ -58,10 +61,23 @@ export default function CartScreen() {
   const ForwardIcon = isArabic ? ChevronLeft : ChevronRight;
 
   const handleCheckout = async () => {
-    // Branch open/busy status is now evaluated at checkout against the
-    // customer's chosen (pickup) or nearest (delivery) branch. Don't block
-    // here — let the customer proceed and see a branch-specific message
-    // on the checkout screen if needed.
+    // Unified closed-state gate: manual close, busy timer, outside
+    // hours, or billing closure all block checkout entry here. The
+    // checkout screen and the server /commit gate re-enforce this for
+    // stale states, but the customer should never reach checkout from
+    // a closed store.
+    if (effectivelyClosed) {
+      const busyMsg =
+        closedReason === 'busy' && reopenSecondsLeft > 0
+          ? isArabic
+            ? `المتجر مشغول مؤقتاً — يفتح بعد حوالي ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} دقيقة.`
+            : `The store is temporarily busy — reopens in about ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} min.`
+          : isArabic
+            ? 'المتجر مغلق حالياً ولا يمكن إتمام الطلب. يرجى المحاولة لاحقاً.'
+            : 'The store is currently closed and cannot take orders. Please try again later.';
+      Alert.alert(isArabic ? 'المتجر مغلق' : 'Store closed', busyMsg);
+      return;
+    }
     if (orderType === 'delivery' && !deliveryAddress?.address) {
       router.push('/order-type');
       return;
@@ -145,6 +161,10 @@ export default function CartScreen() {
         </TouchableOpacity>
         <Text className="text-xl font-bold text-slate-900">{isArabic ? 'سلتي' : 'My Basket'}</Text>
       </View>
+
+      {/* Closed / busy / outside-hours banner — the customer learns
+          before they even try the checkout button. */}
+      <StoreStatusBanner />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -443,7 +463,7 @@ export default function CartScreen() {
       {!!cartItems.length && (
         <View className="p-6 pt-4 pb-8 bg-white border-t border-slate-100">
           <TouchableOpacity
-            style={{ backgroundColor: primaryColor, flexDirection: 'row', opacity: zoneChecking ? 0.6 : 1 }}
+            style={{ backgroundColor: primaryColor, flexDirection: 'row', opacity: zoneChecking || effectivelyClosed ? 0.6 : 1 }}
             className="p-5 rounded-[28px] items-center shadow-xl"
             activeOpacity={0.9}
             onPress={handleCheckout}
@@ -455,7 +475,9 @@ export default function CartScreen() {
             <Text className="text-white font-bold text-xl">
               {zoneChecking
                 ? (isArabic ? 'جارٍ التحقق…' : 'Checking…')
-                : (isArabic ? 'المتابعة للدفع' : 'Proceed to Checkout')}
+                : effectivelyClosed
+                  ? (isArabic ? 'المتجر مغلق' : 'Store closed')
+                  : (isArabic ? 'المتابعة للدفع' : 'Proceed to Checkout')}
             </Text>
             {/* marginStart: 'auto' pushes the price + chevron to the
                 end side of the row regardless of RTL/LTR — same effect

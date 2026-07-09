@@ -24,7 +24,16 @@ export default function OrderTypeScreen() {
   const polaroid = useMemo(() => resolvePolaroidColors(layoutColors), [layoutColors]);
   const { orderType, setOrderType, selectedBranch, setSelectedBranch, setDeliveryAddress } = useCart();
   const { branches } = useMenuContext();
-  const { isClosed, isBusy, isPickupOnly, deliveryEnabled, pickupEnabled, drivethruEnabled } = useOperations();
+  const {
+    isPickupOnly,
+    deliveryEnabled,
+    pickupEnabled,
+    drivethruEnabled,
+    effectivelyClosed,
+    closedReason,
+    reopensAt,
+    reopenSecondsLeft,
+  } = useOperations();
   const { addresses: savedAddresses, setDefault, updateAddress, removeAddress } = useSavedAddresses();
   const [step, setStep] = useState<'choice' | 'branch' | 'map'>('choice');
   const isArabic = i18n.language === 'ar';
@@ -50,9 +59,59 @@ export default function OrderTypeScreen() {
     [branches],
   );
 
+  // Per-branch order-type availability (Live Ops toggles, carried on
+  // the branches payload). The branch picker only offers branches that
+  // actually serve the chosen type — a merchant disabling delivery at
+  // one branch keeps it selectable at the others.
+  const branchAllowsType = (
+    b: (typeof branches)[0],
+    type: 'delivery' | 'pickup' | 'drivethru',
+  ): boolean => {
+    const flag =
+      type === 'delivery'
+        ? (b as { delivery_available?: boolean }).delivery_available
+        : type === 'pickup'
+          ? (b as { pickup_available?: boolean }).pickup_available
+          : (b as { drivethru_available?: boolean }).drivethru_available;
+    return flag !== false;
+  };
+  const branchesForType = useMemo(() => {
+    if (orderType !== 'delivery' && orderType !== 'pickup' && orderType !== 'drivethru') {
+      return sortedBranches;
+    }
+    return sortedBranches.filter((b) => branchAllowsType(b, orderType));
+  }, [sortedBranches, orderType]);
+
+  // Reason-aware closed-state copy shared by the classic banner and
+  // the polaroid stamp card.
+  const closedTitle = effectivelyClosed
+    ? closedReason === 'busy'
+      ? isArabic ? 'المتجر مشغول حالياً' : 'Store is temporarily closed'
+      : isArabic ? 'المتجر مغلق حالياً' : 'Store is currently closed'
+    : '';
+  const reopenClock = (() => {
+    if (closedReason !== 'outside_hours' || !reopensAt) return null;
+    const at = Date.parse(reopensAt);
+    if (!Number.isFinite(at)) return null;
+    return new Date(at).toLocaleTimeString(isArabic ? 'ar-SA' : 'en-US', { hour: 'numeric', minute: '2-digit' });
+  })();
+  const closedBody = effectivelyClosed
+    ? closedReason === 'busy' && reopenSecondsLeft > 0
+      ? isArabic
+        ? `يفتح الطلب تلقائياً بعد حوالي ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} دقيقة. يمكنك تصفح القائمة الآن.`
+        : `Ordering reopens automatically in about ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} min. You can still browse the menu.`
+      : closedReason === 'outside_hours' && reopenClock
+        ? isArabic
+          ? `خارج ساعات العمل — يفتح الساعة ${reopenClock}. يمكنك تصفح القائمة الآن.`
+          : `Outside working hours — opens at ${reopenClock}. You can still browse the menu.`
+        : isArabic
+          ? 'يمكنك الاستمرار في تصفح القائمة، وستتوفر الطلبات عند إعادة الافتتاح.'
+          : 'You can still browse the menu. Orders will be available when we reopen.'
+    : '';
+
   const handleDelivery = () => {
     setOrderType('delivery');
-    const closest = sortedBranches[0];
+    const closest = sortedBranches.filter((b) => branchAllowsType(b, 'delivery'))[0];
     if (closest) setSelectedBranch(closest);
     setStep('map');
   };
@@ -208,8 +267,9 @@ export default function OrderTypeScreen() {
           <PolaroidChoice
             polaroid={polaroid}
             isArabic={isArabic}
-            isClosed={isClosed}
-            isBusy={isBusy}
+            effectivelyClosed={effectivelyClosed}
+            closedTitle={closedTitle}
+            closedBody={closedBody}
             isPickupOnly={isPickupOnly}
             deliveryEnabled={deliveryEnabled}
             pickupEnabled={pickupEnabled}
@@ -222,14 +282,10 @@ export default function OrderTypeScreen() {
         {step === 'choice' && !isPolaroid && (
           <View>
             <Text className="text-2xl font-bold text-slate-900 mb-6">{isArabic ? 'كيف تود استلامه؟' : "How'll you have it?"}</Text>
-            {(isClosed || isBusy) && (
+            {effectivelyClosed && (
               <View className="mb-4 p-4 rounded-2xl bg-amber-50 border border-amber-200">
-                <Text className="font-bold text-amber-800">{isClosed ? (isArabic ? 'المتجر مغلق حالياً' : 'Store is currently closed') : (isArabic ? 'المتجر مشغول حالياً' : 'Store is currently busy')}</Text>
-                <Text className="text-amber-700 text-sm mt-1">
-                  {isClosed
-                    ? (isArabic ? 'يمكنك الاستمرار في تصفح القائمة، وستتوفر الطلبات عند إعادة الافتتاح.' : 'You can still browse the menu. Orders will be available when we reopen.')
-                    : (isArabic ? 'يمكنك الاستمرار في تصفح القائمة، لكن الطلبات الجديدة متوقفة مؤقتاً.' : 'You can still browse the menu. New orders are temporarily paused.')}
-                </Text>
+                <Text className="font-bold text-amber-800">{closedTitle}</Text>
+                <Text className="text-amber-700 text-sm mt-1">{closedBody}</Text>
               </View>
             )}
             {/* Order-type options are gated by the merchant's per-branch
@@ -242,8 +298,8 @@ export default function OrderTypeScreen() {
             {!isPickupOnly && deliveryEnabled && (
               <TouchableOpacity
                 onPress={handleDelivery}
-                disabled={isClosed || isBusy}
-                className={`flex-row items-center p-5 rounded-[28px] mb-4 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'bg-slate-100 opacity-60' : 'bg-slate-50'}`}
+                disabled={effectivelyClosed}
+                className={`flex-row items-center p-5 rounded-[28px] mb-4 border border-slate-100 shadow-sm ${effectivelyClosed ? 'bg-slate-100 opacity-60' : 'bg-slate-50'}`}
               >
                 <View className="p-4 rounded-2xl" style={{ backgroundColor: `${primaryColor}20` }}><Bike size={28} color={primaryColor} /></View>
                 <View className="ms-4 flex-1">
@@ -255,8 +311,8 @@ export default function OrderTypeScreen() {
             {pickupEnabled && (
               <TouchableOpacity
                 onPress={() => { setOrderType('pickup'); setStep('branch'); }}
-                disabled={isClosed || isBusy}
-                className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm mb-4 ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
+                disabled={effectivelyClosed}
+                className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm mb-4 ${effectivelyClosed ? 'opacity-60' : ''}`}
               >
                 <View className="bg-orange-100 p-4 rounded-2xl"><Store size={28} color="#F59E0B" /></View>
                 <View className="ms-4 flex-1">
@@ -273,8 +329,8 @@ export default function OrderTypeScreen() {
             {drivethruEnabled && (
               <TouchableOpacity
                 onPress={() => { setOrderType('drivethru'); setStep('branch'); }}
-                disabled={isClosed || isBusy}
-                className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${(isClosed || isBusy) ? 'opacity-60' : ''}`}
+                disabled={effectivelyClosed}
+                className={`flex-row items-center p-5 rounded-[28px] bg-slate-50 border border-slate-100 shadow-sm ${effectivelyClosed ? 'opacity-60' : ''}`}
               >
                 <View className="bg-sky-100 p-4 rounded-2xl"><Car size={28} color="#0284c7" /></View>
                 <View className="ms-4 flex-1">
@@ -305,7 +361,7 @@ export default function OrderTypeScreen() {
           <PolaroidBranches
             polaroid={polaroid}
             isArabic={isArabic}
-            branches={sortedBranches}
+            branches={branchesForType}
             selectedId={selectedBranch?.id ?? null}
             onPick={handleSelectBranch}
           />
@@ -313,7 +369,17 @@ export default function OrderTypeScreen() {
         {step === 'branch' && !isPolaroid && (
           <View className="pb-8">
             <Text className="text-2xl font-bold mb-6">{isArabic ? 'اختر الفرع' : 'Select Branch'}</Text>
-            {sortedBranches.map((b) => (
+            {branchesForType.length === 0 && (
+              <View className="p-5 rounded-[28px] bg-amber-50 border border-amber-200">
+                <Text className="font-bold text-amber-800">
+                  {isArabic ? 'لا يوجد فرع يوفر هذا الخيار حالياً' : 'No branch currently offers this option'}
+                </Text>
+                <Text className="text-amber-700 text-sm mt-1">
+                  {isArabic ? 'جرّب نوع طلب آخر أو رجاء حاول لاحقاً.' : 'Try another order type or come back later.'}
+                </Text>
+              </View>
+            )}
+            {branchesForType.map((b) => (
                 <TouchableOpacity
                   key={b.id}
                   onPress={() => handleSelectBranch(b)}
@@ -354,8 +420,9 @@ function PolaroidPanel({ children }: { polaroid: PolaroidColors; children: React
 function PolaroidChoice({
   polaroid,
   isArabic,
-  isClosed,
-  isBusy,
+  effectivelyClosed,
+  closedTitle,
+  closedBody,
   isPickupOnly,
   deliveryEnabled,
   pickupEnabled,
@@ -366,8 +433,9 @@ function PolaroidChoice({
 }: {
   polaroid: PolaroidColors;
   isArabic: boolean;
-  isClosed: boolean;
-  isBusy: boolean;
+  effectivelyClosed: boolean;
+  closedTitle: string;
+  closedBody: string;
   isPickupOnly: boolean;
   deliveryEnabled: boolean;
   pickupEnabled: boolean;
@@ -376,7 +444,7 @@ function PolaroidChoice({
   onPickup: () => void;
   onDrivethru: () => void;
 }) {
-  const disabled = isClosed || isBusy;
+  const disabled = effectivelyClosed;
   const rows: Array<{ key: string; show: boolean; emoji: string; titleEn: string; titleAr: string; subEn: string; subAr: string; onPress: () => void }> = [
     { key: 'pickup', show: pickupEnabled, emoji: '🥡', titleEn: 'In-Store Pickup', titleAr: 'استلام من الفرع', subEn: 'Skip the line', subAr: 'تجاوز الانتظار', onPress: onPickup },
     { key: 'delivery', show: !isPickupOnly && deliveryEnabled, emoji: '🛵', titleEn: 'Delivery', titleAr: 'التوصيل', subEn: 'To your doorstep', subAr: 'حتى باب منزلك', onPress: onDelivery },
@@ -396,12 +464,10 @@ function PolaroidChoice({
         <View style={{ marginTop: 14 }}>
           <PolaroidCard rotation="-0.6deg" surfaceColor={polaroid.stampRed} style={{ paddingVertical: 12, paddingHorizontal: 14 }}>
             <MonoText size={10} tracking={1.8} uppercase weight="800" color="#ffffff">
-              {isClosed ? (isArabic ? 'المتجر مغلق' : 'Store closed') : (isArabic ? 'المتجر مشغول' : 'Store busy')}
+              {closedTitle}
             </MonoText>
             <MonoText size={9} color="#ffffff" style={{ marginTop: 4, opacity: 0.85 }}>
-              {isClosed
-                ? (isArabic ? 'تصفح القائمة الآن، والطلبات تفتح عند إعادة الافتتاح' : 'Browse now; orders reopen when we do')
-                : (isArabic ? 'الطلبات الجديدة متوقفة مؤقتاً' : 'New orders paused briefly')}
+              {closedBody}
             </MonoText>
           </PolaroidCard>
         </View>
@@ -483,6 +549,16 @@ function PolaroidBranches({
       </MonoText>
 
       <View style={{ marginTop: 18 }}>
+        {branches.length === 0 && (
+          <PolaroidCard rotation="0.4deg" surfaceColor={polaroid.stampRed} style={{ padding: 14 }}>
+            <MonoText size={11} tracking={1.4} uppercase weight="800" color="#ffffff">
+              {isArabic ? 'لا يوجد فرع يوفر هذا الخيار حالياً' : 'No branch offers this option right now'}
+            </MonoText>
+            <MonoText size={9} color="#ffffff" style={{ marginTop: 4, opacity: 0.85 }}>
+              {isArabic ? 'جرّب نوع طلب آخر أو حاول لاحقاً' : 'Try another order type or come back later'}
+            </MonoText>
+          </PolaroidCard>
+        )}
         {branches.map((b, i) => {
           const isOn = b.id === selectedId;
           return (

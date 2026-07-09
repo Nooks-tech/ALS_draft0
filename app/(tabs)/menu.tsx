@@ -36,6 +36,7 @@ import { fetchNooksBanners, type NooksBanner } from '../../src/api/nooksBanners'
 import { loyaltyApi, type LoyaltyBalance, type LoyaltyReward, type LoyaltyTransaction } from '../../src/api/loyalty';
 import { readCache, writeCache } from '../../src/lib/persistentCache';
 import { PriceWithSymbol } from '../../src/components/common/PriceWithSymbol';
+import { StoreStatusBanner } from '../../src/components/common/StoreStatusBanner';
 import { useAuth } from '../../src/context/AuthContext';
 import { useCart } from '../../src/context/CartContext';
 import { useMerchant } from '../../src/context/MerchantContext';
@@ -859,10 +860,10 @@ function ClassicMenuScreen() {
       {/* STICKY CATEGORY BAR */}
       {categoryBar}
 
-      {/* Store status is evaluated at checkout against the customer's
-          selected or nearest branch — not globally on the menu — so
-          merchants with one branch closed and another open don't confuse
-          browsing customers. */}
+      {/* Closed / busy / outside-hours banner for the selected branch
+          (merchant-wide aggregate before a branch is picked). Browsing
+          stays available; ordering is gated at cart/checkout/server. */}
+      <StoreStatusBanner />
 
       {/* MAIN LIST */}
       {error && sections.length === 0 ? (

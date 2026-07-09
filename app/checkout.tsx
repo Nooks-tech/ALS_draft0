@@ -96,7 +96,7 @@ export default function CheckoutScreen() {
   const { landing: qrLanding } = useQrLanding();
   const { addOrder } = useOrders();
   const { profile } = useProfile();
-  const { isClosed, isBusy, isPickupOnly } = useOperations();
+  const { isPickupOnly, effectivelyClosed, closedReason, reopensAt, reopenSecondsLeft } = useOperations();
   const {
     primaryColor,
     appName,
@@ -470,20 +470,21 @@ export default function CheckoutScreen() {
   // wallet's "Save up to Y" on the same cart.
   const itemsAfterPromo = Math.max(0, totalPrice - discount);
   const maxCashbackCap = loyaltyBalance?.maxCashbackPerOrderSar ?? null;
-  const maxPointsDiscountSar = loyaltyBalance
-    ? loyaltyType === 'cashback'
+  // Money discounts at checkout are a CASHBACK-ONLY feature. Points can
+  // NEVER convert into a SAR discount — they are redeemed exclusively
+  // for the reward items the merchant configured (the /rewards
+  // milestones flow). The old points branch here multiplied
+  // points × pointValueSar into a cash discount, which the server now
+  // rejects (LOYALTY_CASH_DISCOUNT_NOT_ALLOWED).
+  const maxPointsDiscountSar =
+    loyaltyBalance && loyaltyType === 'cashback'
       ? Math.min(
           +(loyaltyBalance.cashbackBalance ?? 0),
           ...(maxCashbackCap != null ? [maxCashbackCap] : []),
         )
-      : +(loyaltyBalance.points * loyaltyBalance.pointValueSar).toFixed(2)
-    : 0;
-  const pointsDiscount = usePoints ? Math.min(maxPointsDiscountSar, subtotalAfterPromo) : 0;
-  const pointsToRedeem = usePoints && loyaltyBalance
-    ? loyaltyType === 'cashback'
-      ? 0 // cashback is SAR-based, no points to redeem
-      : Math.min(loyaltyBalance.points, Math.ceil(pointsDiscount / loyaltyBalance.pointValueSar))
-    : 0;
+      : 0;
+  const pointsDiscount =
+    usePoints && loyaltyType === 'cashback' ? Math.min(maxPointsDiscountSar, subtotalAfterPromo) : 0;
 
   // Payment composition snapshot for the server's customer_orders row.
   // Used at cancel time to "rewind time" — each source returns to where
@@ -866,27 +867,17 @@ export default function CheckoutScreen() {
         // flashed the wrong badge until the Realtime UPDATE arrived.
         'Placed'
       );
-      // Promo + loyalty redemption run in the background too — the
-      // user doesn't need to wait for these before seeing their order
-      // confirmed. Idempotency is enforced server-side so retries are
-      // safe. Failures only log; the order is already placed.
-      //
       // Promo redemption is NO LONGER done here — Express /commit now
       // calls the atomic redeem_promo RPC before INSERT. The RPC
       // enforces expiry + usage_limit and writes the
       // promo_redemptions row idempotently. Calling consumeNooksPromo
       // here would double-increment the usage_count.
-      if (usePoints && user?.id && merchantId) {
-        if (loyaltyType === 'cashback' && pointsDiscount > 0) {
-          void loyaltyApi
-            .redeemCashback(user.id, pointsDiscount, orderId, merchantId)
-            .catch((e) => console.warn('[Checkout] Cashback redeem failed:', e?.message));
-        } else if (pointsToRedeem > 0) {
-          void loyaltyApi
-            .redeem(user.id, pointsToRedeem, orderId, merchantId)
-            .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
-        }
-      }
+      //
+      // Cashback redemption is ALSO server-side now: the final /commit
+      // performs the atomic deduction itself (idempotent per order), so
+      // the old post-commit redeemCashback call is gone — and the
+      // points→cash redeem call with it (points are reward-items only;
+      // the server rejects any points-as-discount claim).
       // LOY-2: milestone redemption is handled ATOMICALLY server-side during
       // commit (consumeOrderMilestones deducts the selected milestones and
       // dedups against any rewards-screen pre-redemption). The old post-commit
@@ -923,7 +914,7 @@ export default function CheckoutScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [cartItems, rewardItemsForOrder, selectedMilestoneIds, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsToRedeem, pointsDiscount, loyaltyType, router, user?.id, walletApplied]);
+  }, [cartItems, rewardItemsForOrder, selectedMilestoneIds, finalTotal, orderType, merchantId, selectedBranch, deliveryAddress, deliveryFee, paymentMethod, addOrder, promoApplied, promoCode, profile.fullName, profile.phone, profile.email, clearCart, usePoints, pointsDiscount, loyaltyType, router, user?.id, walletApplied]);
 
   const handlePaymentResult = useCallback(
     (result: unknown) => {
@@ -982,16 +973,16 @@ export default function CheckoutScreen() {
   const handlePay = async () => {
     const branchName = selectedBranch?.name
       ?? (isArabic ? 'هذا الفرع' : 'This branch');
-    if (isClosed || isBusy) {
+    if (effectivelyClosed) {
       Alert.alert(
         isArabic ? 'الطلب غير متاح' : 'Ordering Unavailable',
-        isClosed
+        closedReason === 'busy'
           ? (isArabic
-              ? `${branchName} مغلق حالياً.`
-              : `${branchName} is currently closed.`)
+              ? `${branchName} مشغول حالياً — يفتح الطلب بعد حوالي ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} دقيقة.`
+              : `${branchName} is temporarily busy — ordering reopens in about ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} min.`)
           : (isArabic
-              ? `${branchName} مشغول حالياً ولا يستقبل طلبات جديدة.`
-              : `${branchName} is currently busy and not accepting new orders.`),
+              ? `${branchName} مغلق حالياً.`
+              : `${branchName} is currently closed.`),
       );
       return;
     }
@@ -1160,24 +1151,10 @@ export default function CheckoutScreen() {
           loyaltyDiscountSar: pointsDiscount > 0 ? pointsDiscount : null,
           relayToNooks: true });
 
-        // All loyalty deductions run AFTER commit succeeded — if the
-        // commit threw, we never get here and balances stay intact.
-        // Cashback / points were previously only deducted in the card
-        // path (createOrderAfterPayment), so a wallet+cashback or
-        // cashback-covers-all order skipped the deduction entirely and
-        // any refund would have re-credited cashback the customer
-        // never actually paid.
-        if (usePoints && merchantId) {
-          if (loyaltyType === 'cashback' && pointsDiscount > 0) {
-            void loyaltyApi
-              .redeemCashback(user.id, pointsDiscount, walletOrderId, merchantId)
-              .catch((e) => console.warn('[Checkout] Cashback redeem failed:', e?.message));
-          } else if (pointsToRedeem > 0) {
-            void loyaltyApi
-              .redeem(user.id, pointsToRedeem, walletOrderId, merchantId)
-              .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
-          }
-        }
+        // Cashback deduction is server-side now: the final /commit above
+        // performed the atomic redemption itself (idempotent per order),
+        // so no post-commit redeemCashback call. Points never deduct as
+        // money — they only flow through reward items (milestones).
         // LOY-2: milestone consumption for this wallet order is handled
         // atomically server-side during commit (consumeOrderMilestones); the
         // deprecated post-commit redeemStampMilestone loop (which 400s without
@@ -1427,7 +1404,7 @@ export default function CheckoutScreen() {
               city). Customer must switch order type to Pickup or change
               their delivery address to one closer to a delivery-capable
               branch. */}
-          {orderType === 'delivery' && isPickupOnly && !isClosed && !isBusy && (
+          {orderType === 'delivery' && isPickupOnly && !effectivelyClosed && (
             <View
               className="mb-4 rounded-2xl p-4 flex-row items-start"
               style={{ backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a' }}
@@ -1455,53 +1432,70 @@ export default function CheckoutScreen() {
               busy, so they know before filling out the rest of checkout.
               We deliberately don't reroute to a different branch — some
               merchants' next-closest branch is in a different city. */}
-          {(isClosed || isBusy) && (
+          {effectivelyClosed && (() => {
+            const isBusyReason = closedReason === 'busy';
+            const opensAtClock = (() => {
+              if (closedReason !== 'outside_hours' || !reopensAt) return null;
+              const at = Date.parse(reopensAt);
+              if (!Number.isFinite(at)) return null;
+              return new Date(at).toLocaleTimeString(isArabic ? 'ar-SA' : 'en-US', { hour: 'numeric', minute: '2-digit' });
+            })();
+            return (
             <View
               className="mb-4 rounded-2xl p-4 flex-row items-start"
               style={{
-                backgroundColor: isClosed ? '#fef2f2' : '#fffbeb',
+                backgroundColor: isBusyReason ? '#fffbeb' : '#fef2f2',
                 borderWidth: 1,
-                borderColor: isClosed ? '#fecaca' : '#fde68a' }}
+                borderColor: isBusyReason ? '#fde68a' : '#fecaca' }}
             >
               <View style={{ marginTop: 2 }}>
-                {isClosed ? (
-                  <X size={20} color="#dc2626" />
-                ) : (
+                {isBusyReason ? (
                   <Clock size={20} color="#d97706" />
+                ) : (
+                  <X size={20} color="#dc2626" />
                 )}
               </View>
               <View className="ms-3 flex-1">
                 <Text
                   style={{
-                    color: isClosed ? '#991b1b' : '#92400e',
+                    color: isBusyReason ? '#92400e' : '#991b1b',
                     fontWeight: '700',
                     fontSize: 14 }}
                 >
-                  {isClosed
+                  {isBusyReason
                     ? (isArabic
-                        ? `${selectedBranch?.name ?? 'هذا الفرع'} مغلق حالياً`
-                        : `${selectedBranch?.name ?? 'This branch'} is currently closed`)
-                    : (isArabic
                         ? `${selectedBranch?.name ?? 'هذا الفرع'} مشغول حالياً`
-                        : `${selectedBranch?.name ?? 'This branch'} is currently busy`)}
+                        : `${selectedBranch?.name ?? 'This branch'} is temporarily busy`)
+                    : (isArabic
+                        ? `${selectedBranch?.name ?? 'هذا الفرع'} مغلق حالياً`
+                        : `${selectedBranch?.name ?? 'This branch'} is currently closed`)}
                 </Text>
                 <Text
                   style={{
-                    color: isClosed ? '#b91c1c' : '#a16207',
+                    color: isBusyReason ? '#a16207' : '#b91c1c',
                     fontSize: 12,
                     marginTop: 4 }}
                 >
-                  {orderType === 'delivery'
+                  {isBusyReason && reopenSecondsLeft > 0
                     ? (isArabic
-                        ? 'هذا هو الفرع الأقرب لعنوانك. لا يمكن استقبال الطلبات الآن.'
-                        : "This is the branch closest to your address. Orders can't be placed right now.")
-                    : (isArabic
-                        ? 'لا يمكن استقبال الطلبات من هذا الفرع الآن.'
-                        : "Orders can't be placed at this branch right now.")}
+                        ? `يفتح الطلب تلقائياً بعد حوالي ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} دقيقة.`
+                        : `Ordering reopens automatically in about ${Math.max(1, Math.ceil(reopenSecondsLeft / 60))} min.`)
+                    : opensAtClock
+                      ? (isArabic
+                          ? `خارج ساعات العمل — يفتح الساعة ${opensAtClock}.`
+                          : `Outside working hours — opens at ${opensAtClock}.`)
+                      : orderType === 'delivery'
+                        ? (isArabic
+                            ? 'هذا هو الفرع الأقرب لعنوانك. لا يمكن استقبال الطلبات الآن.'
+                            : "This is the branch closest to your address. Orders can't be placed right now.")
+                        : (isArabic
+                            ? 'لا يمكن استقبال الطلبات من هذا الفرع الآن.'
+                            : "Orders can't be placed at this branch right now.")}
                 </Text>
               </View>
             </View>
-          )}
+            );
+          })()}
 
           {/* Delivery & Order Details (display only, no change) */}
           <View className="bg-slate-50 rounded-[28px] border border-slate-100 overflow-hidden">
@@ -1694,9 +1688,12 @@ export default function CheckoutScreen() {
             )}
           </View>
 
-          {/* Loyalty Redemption Toggle (points or cashback) */}
-          {user?.id && loyaltyBalance && loyaltyType !== 'stamps' && (
-            (loyaltyType === 'cashback' ? (loyaltyBalance.cashbackBalance ?? 0) > 0 : loyaltyBalance.points > 0) && (
+          {/* Cashback Redemption Toggle — CASHBACK merchants only. A
+              money discount at checkout is a cashback feature; points
+              customers redeem their points for the merchant's reward
+              items on the Rewards screen (hint card below), never as
+              cash. The server enforces the same rule at /commit. */}
+          {user?.id && loyaltyBalance && loyaltyType === 'cashback' && (loyaltyBalance.cashbackBalance ?? 0) > 0 && (
             <TouchableOpacity
               onPress={() => setUsePoints(!usePoints)}
               className="mt-5 rounded-[28px] p-4 flex-row items-center justify-between"
@@ -1717,16 +1714,13 @@ export default function CheckoutScreen() {
                 </View>
                 <View className="ms-3 flex-1">
                   <Text className="font-bold text-slate-900">
-                    {loyaltyType === 'cashback'
-                      ? (isArabic ? `استخدم ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} ر.س كاش باك` : `Use ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} SAR cashback`)
-                      : (isArabic ? `استخدم ${loyaltyBalance.points} نقطة` : `Use ${loyaltyBalance.points} points`)
-                    }
+                    {isArabic ? `استخدم ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} ر.س كاش باك` : `Use ${(loyaltyBalance.cashbackBalance ?? 0).toFixed(2)} SAR cashback`}
                   </Text>
                   <View className="flex-row items-center flex-wrap mt-0.5">
                     <Text className="text-slate-500 text-xs">{isArabic ? 'وفّر حتى ' : 'Save up to '}</Text>
                     <PriceWithSymbol amount={Math.min(maxPointsDiscountSar, itemsAfterPromo)} iconSize={12} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 12 }} />
                   </View>
-                  {loyaltyType === 'cashback' && maxCashbackCap != null && (
+                  {maxCashbackCap != null && (
                     <Text className="text-amber-600 text-xs mt-0.5">
                       {isArabic ? `الحد الأقصى ${maxCashbackCap} ر.س لكل طلب` : `Max ${maxCashbackCap} SAR per order`}
                     </Text>
@@ -1750,7 +1744,37 @@ export default function CheckoutScreen() {
                 />
               </View>
             </TouchableOpacity>
-          ))}
+          )}
+
+          {/* Points hint — points customers see WHERE their points are
+              usable instead of a cash toggle. */}
+          {user?.id && loyaltyBalance && loyaltyType === 'points' && loyaltyBalance.points > 0 && (
+            <TouchableOpacity
+              onPress={() => router.push('/rewards' as never)}
+              className="mt-5 rounded-[28px] p-4 flex-row items-center"
+              style={{ borderWidth: 1, borderColor: '#e2e8f0', backgroundColor: '#f8fafc' }}
+              activeOpacity={0.7}
+            >
+              <View
+                style={{
+                  width: 36, height: 36, borderRadius: 18,
+                  backgroundColor: '#f1f5f9',
+                  alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Star size={18} color="#94a3b8" />
+              </View>
+              <View className="ms-3 flex-1">
+                <Text className="font-bold text-slate-900">
+                  {isArabic ? `لديك ${loyaltyBalance.points} نقطة` : `You have ${loyaltyBalance.points} points`}
+                </Text>
+                <Text className="text-slate-500 text-xs mt-0.5">
+                  {isArabic
+                    ? 'استبدل نقاطك بمكافآت من صفحة المكافآت — النقاط لا تُستخدم كخصم نقدي.'
+                    : 'Redeem them for rewards on the Rewards page — points can’t be used as a cash discount.'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          )}
 
           {/* Wallet credit toggle — mirrors the cashback redemption row.
               Wallet is NOT a payment method on its own; toggling this
@@ -1951,9 +1975,7 @@ export default function CheckoutScreen() {
             {usePoints && pointsDiscount > 0 && (
               <View className="flex-row justify-between mt-2">
                 <Text className="text-slate-900 font-medium">
-                  {loyaltyType === 'cashback'
-                    ? (isArabic ? 'رصيد الكاش باك' : 'Cashback credit')
-                    : (isArabic ? `النقاط (${pointsToRedeem} نقطة)` : `Points (${pointsToRedeem} pts)`)}
+                  {isArabic ? 'رصيد الكاش باك' : 'Cashback credit'}
                 </Text>
                 <PriceWithSymbol amount={pointsDiscount} prefix="- " iconSize={16} iconColor="#059669" textStyle={{ color: '#059669', fontWeight: '700' }} />
               </View>
@@ -2052,7 +2074,12 @@ export default function CheckoutScreen() {
               </Text>
               <PriceWithSymbol amount={chargeAmount} iconSize={24} iconColor="#0f172a" textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 24 }} />
             </View>
-          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 && !curbsideCarInfoMissing ? (
+          {/* The native ApplePayButton opens the payment sheet directly
+              and never runs handlePay — so it must NOT render while the
+              store is effectively closed, or a customer could be charged
+              at a closed branch. The fallback branch renders the regular
+              (disabled) button + banner instead. */}
+          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 && !curbsideCarInfoMissing && !effectivelyClosed ? (
             <View style={{ width: 180, height: 50 }}>
               <ApplePayButton
                 paymentConfig={paymentConfig}
@@ -2063,9 +2090,9 @@ export default function CheckoutScreen() {
           ) : (
             <TouchableOpacity
               onPress={handlePay}
-              disabled={submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing}
+              disabled={submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing || effectivelyClosed}
               className="px-6 py-4 rounded-[24px] min-w-[190px] items-center flex-row justify-center"
-              style={{ backgroundColor: primaryColor, opacity: (submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing) ? 0.5 : 1 }}
+              style={{ backgroundColor: primaryColor, opacity: (submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing || effectivelyClosed) ? 0.5 : 1 }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color="white" />

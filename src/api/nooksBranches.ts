@@ -24,6 +24,12 @@ export type NooksBranch = {
   open_till?: string;
   pickup_promising_time?: number;
   delivery_promising_time?: number;
+  // Per-branch order-type availability (merchant Live Ops toggles).
+  // Missing on old server responses → treated as available so a stale
+  // cache can't hide a type the merchant never disabled.
+  delivery_available?: boolean;
+  pickup_available?: boolean;
+  drivethru_available?: boolean;
   [key: string]: unknown;
 };
 
@@ -54,5 +60,8 @@ export async function fetchNooksBranches(merchantId: string): Promise<NooksBranc
     open_till: typeof b.open_till === 'string' ? b.open_till : undefined,
     pickup_promising_time: typeof b.pickup_promising_time === 'number' ? b.pickup_promising_time : undefined,
     delivery_promising_time: typeof b.delivery_promising_time === 'number' ? b.delivery_promising_time : undefined,
+    delivery_available: typeof b.delivery_available === 'boolean' ? b.delivery_available : true,
+    pickup_available: typeof b.pickup_available === 'boolean' ? b.pickup_available : true,
+    drivethru_available: typeof b.drivethru_available === 'boolean' ? b.drivethru_available : true,
   }));
 }
