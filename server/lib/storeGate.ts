@@ -62,14 +62,19 @@ export async function checkBranchOrderable(
 
   // Branch must exist, belong to this merchant, and be order-enabled.
   // /commit previously accepted any non-empty branchId string — this
-  // lookup doubles as that missing integrity check.
-  const { data: branch } = await supabaseAdmin
+  // lookup doubles as that missing integrity check. A QUERY error (DB
+  // blip) is not the same as "branch not found": fail OPEN like the
+  // other lookups below, so a transient 5xx can't abort a paid
+  // checkout with a spurious BRANCH_INVALID.
+  const { data: branch, error: branchLookupError } = await supabaseAdmin
     .from('branch_mappings')
     .select('id, nooks_enabled, receives_online_orders')
     .eq('merchant_id', merchantId)
     .eq('id', branchId)
     .maybeSingle();
-  if (!branch || branch.nooks_enabled === false || branch.receives_online_orders === false) {
+  if (branchLookupError) {
+    console.warn('[StoreGate] branch_mappings lookup failed — failing open:', branchLookupError.message);
+  } else if (!branch || branch.nooks_enabled === false || branch.receives_online_orders === false) {
     return {
       ok: false,
       status: 400,
@@ -150,12 +155,14 @@ export async function checkBranchOrderable(
     }
   }
 
+  // NOTE: messages make no claim about the payment — the caller knows
+  // whether a charge already happened (and voids it if so).
   if (storeStatus === 'closed') {
     return {
       ok: false,
       status: 409,
       code: 'STORE_CLOSED',
-      error: 'The store is currently closed. No payment was charged.',
+      error: 'The store is currently closed.',
       closedReason: 'manual',
       reopensAt: null,
     };
@@ -166,7 +173,7 @@ export async function checkBranchOrderable(
       ok: false,
       status: 409,
       code: 'STORE_CLOSED',
-      error: `The store is temporarily busy — reopens in about ${mins} min. No payment was charged.`,
+      error: `The store is temporarily busy — ordering reopens in about ${mins} min.`,
       closedReason: 'busy',
       reopensAt: busyUntil,
     };
@@ -176,7 +183,7 @@ export async function checkBranchOrderable(
       ok: false,
       status: 409,
       code: 'STORE_CLOSED',
-      error: 'The store is currently closed (outside working hours). No payment was charged.',
+      error: 'The store is currently closed (outside working hours).',
       closedReason: 'outside_hours',
       reopensAt: nextOpenAt,
     };

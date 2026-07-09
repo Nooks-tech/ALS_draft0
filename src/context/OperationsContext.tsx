@@ -224,17 +224,23 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isBusy) setBusySecondsLeft(0);
-    if (!effectivelyClosed || !reopensAt) {
-      setReopenSecondsLeft(0);
+    // Only the BUSY closure gets a 1 Hz countdown (its banner shows
+    // MM:SS). Outside-hours closures show a static "opens at HH:MM"
+    // and reopen via the 15s poll — ticking every consumer at 1 Hz for
+    // hours would be pure re-render churn. Old servers without
+    // reopens_at still tick: reopenSecondsLeft was seeded from the
+    // legacy busy fields at fetch time.
+    if (!effectivelyClosed || closedReason !== 'busy') {
+      if (!effectivelyClosed) setReopenSecondsLeft(0);
       return;
     }
     const t = setInterval(() => {
       if (isBusy) setBusySecondsLeft((prev) => Math.max(0, prev - 1));
       setReopenSecondsLeft((prev) => {
         const next = Math.max(0, prev - 1);
-        // Timer ran out (busy ended / opening time reached) — confirm
-        // with the server once so the store flips open immediately
-        // instead of waiting for the next 15s poll.
+        // Timer ran out (busy ended) — confirm with the server once so
+        // the store flips open immediately instead of waiting for the
+        // next 15s poll.
         if (next === 0 && prev > 0 && !expiryRefetchedRef.current) {
           expiryRefetchedRef.current = true;
           void refetch();
@@ -243,7 +249,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       });
     }, 1000);
     return () => clearInterval(t);
-  }, [isBusy, effectivelyClosed, reopensAt, refetch]);
+  }, [isBusy, effectivelyClosed, closedReason, refetch]);
 
   return (
     <OperationsContext.Provider

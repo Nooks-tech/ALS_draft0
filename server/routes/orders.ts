@@ -24,17 +24,22 @@ import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { enforceLimits } from '../utils/rateLimit';
 import { creditWalletForRefund } from './wallet';
+import { notifyPassUpdateSafe } from './walletPass';
 
 export const ordersRouter = Router();
 
 /**
- * Best-effort void of a verified card charge when a FINAL commit is
- * rejected by a policy gate (store closed / loyalty misuse). At that
- * point the customer has already paid between the two commits; without
- * this the money sits captured until the abandoned-payments sweep.
- * Failures only log — the sweep remains the backstop.
+ * Best-effort void of a card charge when a commit is rejected by a
+ * policy gate (store closed / loyalty misuse). Called on BOTH commits:
+ * the Apple Pay / SDK card paths charge BEFORE the first commit, so a
+ * first-commit rejection would otherwise strand a captured payment
+ * with NO customer_orders row — invisible even to the abandoned-
+ * payments sweep. No-ops when paymentId isn't a real Moyasar id
+ * (saved-card first commits carry none; wallet/reward sentinels skip).
+ * Failures only log — the sweep remains the backstop for orders that
+ * do have a row.
  */
-async function voidChargeOnRejectedFinalCommit(
+async function voidChargeOnRejectedCommit(
   paymentId: unknown,
   merchantId: string,
   context: string,
@@ -764,9 +769,10 @@ ordersRouter.post('/commit', async (req, res) => {
     if (supabaseAdmin) {
       const storeGate = await checkBranchOrderable(supabaseAdmin, { merchantId, branchId, orderType });
       if (!storeGate.ok) {
-        if (relayToNooks === true) {
-          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, `store gate (${storeGate.code})`);
-        }
+        // Both commits: Apple Pay / SDK card charges land BEFORE the
+        // first commit, so a first-commit rejection must void too (the
+        // helper no-ops when there's no real Moyasar payment id).
+        await voidChargeOnRejectedCommit(paymentId, merchantId, `store gate (${storeGate.code})`);
         return res.status(storeGate.status).json({
           error: storeGate.error,
           code: storeGate.code,
@@ -959,9 +965,9 @@ ordersRouter.post('/commit', async (req, res) => {
       const cashbackAllowed =
         loyaltyCfg?.loyalty_type === 'cashback' || memberProfile?.active_loyalty_type === 'cashback';
       if (!cashbackAllowed) {
-        if (isFinalCommit) {
-          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'loyalty-type gate');
-        }
+        // Both commits — see the store gate note (charge may precede
+        // the first commit on the Apple Pay / SDK card paths).
+        await voidChargeOnRejectedCommit(paymentId, merchantId, 'loyalty-type gate');
         return res.status(400).json({
           error:
             'Points can only be redeemed for rewards from the loyalty page — not as a cash discount. Remove the discount and try again.',
@@ -971,9 +977,7 @@ ordersRouter.post('/commit', async (req, res) => {
       const capSar =
         loyaltyCfg?.max_cashback_per_order_sar != null ? Number(loyaltyCfg.max_cashback_per_order_sar) : null;
       if (capSar != null && Number.isFinite(capSar) && capSar > 0 && claimedCashbackSar - capSar > 0.01) {
-        if (isFinalCommit) {
-          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'cashback cap gate');
-        }
+        await voidChargeOnRejectedCommit(paymentId, merchantId, 'cashback cap gate');
         return res.status(400).json({
           error: `Maximum cashback per order is ${capSar} SAR.`,
           code: 'CASHBACK_OVER_CAP',
@@ -1014,6 +1018,32 @@ ordersRouter.post('/commit', async (req, res) => {
           error: 'This order was reversed after a failed attempt. Please start a new order.',
           code: 'ORDER_ALREADY_REVERSED',
         });
+      }
+      // Same guard for cashback-covers-all orders (no wallet ledger row
+      // to catch them): the reversal machinery writes a cashback restore
+      // marker (type='earn', loyalty_type='cashback', source='refund').
+      // Without this, a retried commit of the SAME order id would hit the
+      // redeem RPC's 'duplicate' path (the original redeem row survives
+      // the reversal), sail through with a matching amount, and mint the
+      // discount a second time against a balance that was already
+      // restored — a free order funded by the merchant.
+      if (claimedCashbackSar > 0.009) {
+        const { data: priorCashbackRestore } = await supabaseAdmin
+          .from('loyalty_transactions')
+          .select('id')
+          .eq('customer_id', user.id)
+          .eq('merchant_id', merchantId)
+          .eq('order_id', id)
+          .eq('type', 'earn')
+          .eq('loyalty_type', 'cashback')
+          .eq('source', 'refund')
+          .maybeSingle();
+        if (priorCashbackRestore) {
+          return res.status(409).json({
+            error: 'This order was reversed after a failed attempt. Please start a new order.',
+            code: 'ORDER_ALREADY_REVERSED',
+          });
+        }
       }
 
       // ─── Phase 6: auto-enroll (customer, merchant) ───
@@ -1117,7 +1147,7 @@ ordersRouter.post('/commit', async (req, res) => {
           | { status?: string }
           | null;
         if (cashbackRpcResult?.status === 'insufficient') {
-          await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'cashback insufficient');
+          await voidChargeOnRejectedCommit(paymentId, merchantId, 'cashback insufficient');
           return res.status(400).json({
             error: 'Insufficient cashback balance for the claimed discount. The card payment was reversed.',
             code: 'INSUFFICIENT_CASHBACK',
@@ -1138,13 +1168,17 @@ ordersRouter.post('/commit', async (req, res) => {
             .maybeSingle();
           const actualRedeemedSar = redeemTxn ? Math.abs(Number(redeemTxn.amount_sar ?? 0)) : 0;
           if (Math.abs(validatedCashbackSar - actualRedeemedSar) > 0.01) {
-            await voidChargeOnRejectedFinalCommit(paymentId, merchantId, 'cashback mismatch');
+            await voidChargeOnRejectedCommit(paymentId, merchantId, 'cashback mismatch');
             return res.status(400).json({
               error: `Cashback amount mismatch: order claims ${validatedCashbackSar.toFixed(2)} SAR but ${actualRedeemedSar.toFixed(2)} SAR was redeemed. The card payment was reversed.`,
               code: 'CASHBACK_MISMATCH',
             });
           }
         }
+        // The balance changed outside /redeem-cashback (which used to
+        // notify) — push the Apple/Google Wallet pass so it doesn't show
+        // the stale pre-redemption cashback.
+        notifyPassUpdateSafe(user.id, merchantId);
       }
 
       // ─── Atomic promo redemption ───

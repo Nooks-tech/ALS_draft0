@@ -3,7 +3,7 @@ import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Dimensions, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Dimensions, KeyboardAvoidingView, Platform, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import { useCart } from '../src/context/CartContext';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { useMenuContext } from '../src/context/MenuContext';
@@ -110,8 +110,22 @@ export default function OrderTypeScreen() {
     : '';
 
   const handleDelivery = () => {
+    const deliverable = sortedBranches.filter((b) => branchAllowsType(b, 'delivery'));
+    // Every branch has delivery toggled off — say so instead of
+    // proceeding to the address step with a delivery-disabled (or no)
+    // branch selected. (Empty sortedBranches = branches not loaded yet;
+    // fall through and let the server gate.)
+    if (deliverable.length === 0 && sortedBranches.length > 0) {
+      Alert.alert(
+        isArabic ? 'التوصيل غير متاح' : 'Delivery unavailable',
+        isArabic
+          ? 'لا يوجد فرع يوفر التوصيل حالياً. جرّب الاستلام أو حاول لاحقاً.'
+          : 'No branch currently offers delivery. Try pickup instead, or come back later.',
+      );
+      return;
+    }
     setOrderType('delivery');
-    const closest = sortedBranches.filter((b) => branchAllowsType(b, 'delivery'))[0];
+    const closest = deliverable[0];
     if (closest) setSelectedBranch(closest);
     setStep('map');
   };
