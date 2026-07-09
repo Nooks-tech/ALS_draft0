@@ -24,6 +24,7 @@
 import { Router, Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
+import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { paymentService } from '../services/payment';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 
@@ -480,6 +481,151 @@ walletRouter.post('/topup-with-saved-card', async (req: Request, res: Response) 
 });
 
 /**
+ * POST /api/wallet/topup-reconcile
+ * body: { merchantId: string, lookbackHours?: number, maxPages?: number }
+ *
+ * PAY-9: server-side safety net for the "client died between pay and
+ * finalize" gap. topup-initiate / topup-with-saved-card charge Moyasar and
+ * rely on the client calling /topup-finalize to credit the wallet — if the
+ * app is killed after a successful charge, the money was taken but never
+ * credited, and (because we never persist the top-up intent locally) nothing
+ * on our side knows to fix it.
+ *
+ * This scans the merchant's own Moyasar account for PAID payments tagged
+ * metadata.type='wallet_topup' and credits any with no matching topup ledger
+ * row, using the SAME idempotent credit_customer_wallet path /topup-finalize
+ * uses (partial unique index customer_wallet_tx_topup_per_payment). Running it
+ * repeatedly is safe — already-credited top-ups are skipped and the RPC's
+ * ON CONFLICT DO NOTHING makes a concurrent finalize+reconcile land once.
+ *
+ * Internal/ops + cron only (requireNooksInternalRequest). BYOG means the scan
+ * is per-merchant (each merchant's own key), so a scheduler must invoke this
+ * once per active merchant — see the deploy REPORT for the cron wiring.
+ */
+walletRouter.post('/topup-reconcile', async (req: Request, res: Response) => {
+  try {
+    if (!requireNooksInternalRequest(req, res)) return;
+    if (!supabaseAdmin) return res.status(503).json({ error: 'Database not configured' });
+
+    const merchantId = String(req.body?.merchantId ?? '').trim();
+    if (!merchantId) return res.status(400).json({ error: 'merchantId required' });
+
+    const lookbackHours = Number.isFinite(Number(req.body?.lookbackHours))
+      ? Math.min(Math.max(Number(req.body.lookbackHours), 1), 24 * 14)
+      : 72;
+    const maxPages = Number.isFinite(Number(req.body?.maxPages))
+      ? Math.min(Math.max(Number(req.body.maxPages), 1), 40)
+      : 20;
+    const cutoffMs = Date.now() - lookbackHours * 60 * 60 * 1000;
+
+    // BYOG: verify against the merchant's OWN Moyasar key (never the platform
+    // fallback — that would scan the wrong account).
+    const runtimeConfig = await getMerchantPaymentRuntimeConfig(merchantId);
+    const secretKey = runtimeConfig.secretKey;
+    if (!secretKey) {
+      return res.status(503).json({ error: 'Moyasar secret key is not configured for this merchant.' });
+    }
+    const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
+
+    let scanned = 0;
+    let topupsSeen = 0;
+    let credited = 0;
+    let alreadyCredited = 0;
+    let creditedSar = 0;
+    let pagesScanned = 0;
+    const errors: string[] = [];
+
+    let page = 1;
+    let reachedCutoff = false;
+    while (page <= maxPages && !reachedCutoff) {
+      const listRes = await fetch(`https://api.moyasar.com/v1/payments?page=${page}`, {
+        headers: { Authorization: authHeader },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!listRes.ok) {
+        const text = await listRes.text().catch(() => '');
+        return res.status(502).json({ error: `Moyasar list failed (${listRes.status}): ${text.slice(0, 200)}` });
+      }
+      const body: any = await listRes.json();
+      const payments: any[] = Array.isArray(body?.payments) ? body.payments : [];
+      pagesScanned++;
+      if (payments.length === 0) break;
+
+      for (const payment of payments) {
+        scanned++;
+        // Moyasar lists newest-first: once we cross the lookback window, every
+        // remaining payment is older — stop after this page.
+        const createdMs = Date.parse(payment?.created_at ?? '') || 0;
+        if (createdMs && createdMs < cutoffMs) {
+          reachedCutoff = true;
+          continue;
+        }
+        const meta = payment?.metadata ?? {};
+        if (meta.type !== 'wallet_topup') continue;
+        if (String(payment?.status ?? '').toLowerCase() !== 'paid') continue;
+        // Defense in depth: the metadata must name THIS merchant + a customer.
+        if (String(meta.merchant_id ?? '') !== merchantId) continue;
+        const customerId = String(meta.customer_id ?? '').trim();
+        const paymentId = String(payment?.id ?? '').trim();
+        const amountHalalas = Number(payment?.amount);
+        if (!customerId || !paymentId || !Number.isFinite(amountHalalas) || amountHalalas <= 0) continue;
+        topupsSeen++;
+
+        // Fast path + accurate counts: skip already-credited top-ups. The RPC
+        // is idempotent regardless, but this avoids needless writes.
+        const { data: existing } = await supabaseAdmin
+          .from('customer_wallet_transactions')
+          .select('id')
+          .eq('customer_id', customerId)
+          .eq('merchant_id', merchantId)
+          .eq('payment_id', paymentId)
+          .eq('entry_type', 'topup')
+          .maybeSingle();
+        if (existing) {
+          alreadyCredited++;
+          continue;
+        }
+
+        const { error: rpcError } = await supabaseAdmin.rpc('credit_customer_wallet', {
+          p_customer_id: customerId,
+          p_merchant_id: merchantId,
+          p_amount_halalas: amountHalalas,
+          p_entry_type: 'topup',
+          p_payment_id: paymentId,
+          p_note: `Top-up reconciled (${payment?.source?.type ?? 'card'})`,
+        });
+        if (rpcError) {
+          errors.push(`${paymentId}: ${rpcError.message}`);
+          continue;
+        }
+        credited++;
+        creditedSar += halalasToSar(amountHalalas);
+      }
+
+      const nextPage = body?.meta?.next_page;
+      if (!nextPage) break;
+      page = Number(nextPage) || page + 1;
+    }
+
+    return res.json({
+      success: true,
+      merchantId,
+      lookbackHours,
+      pagesScanned,
+      scanned,
+      topupsSeen,
+      credited,
+      alreadyCredited,
+      credited_sar: creditedSar,
+      ...(errors.length ? { errors } : {}),
+    });
+  } catch (err: any) {
+    console.error('[Wallet] topup-reconcile error:', err?.message);
+    res.status(500).json({ error: err?.message || 'Failed to reconcile top-ups' });
+  }
+});
+
+/**
  * Internal helper used by the order commit path. NOT exposed as a
  * route — never trust client claims about wallet debits. Throws on
  * failure with the literal 'INSUFFICIENT_WALLET_BALANCE' message
@@ -533,12 +679,31 @@ export async function creditWalletForRefund(params: {
    *  from the complaint-resolve path. */
   complaintId: string | null;
   note?: string;
-}): Promise<{ newBalanceSar: number; transactionId: string }> {
+}): Promise<{ newBalanceSar: number; transactionId: string; credited: boolean }> {
   if (!supabaseAdmin) throw new Error('Database not configured');
   const amountHalalas = sarToHalalas(params.amountSar);
   if (amountHalalas <= 0) {
     throw new Error('Refund amount must be positive');
   }
+
+  // PAY-4: credit_customer_wallet is idempotent PER ORDER — it credits at most
+  // ONE 'refund' row per (customer, merchant, order_id). If a refund already
+  // exists for this order, the RPC is a NO-OP: it returns the existing row and
+  // moves no money. A second, legitimately-incremental partial refund would
+  // therefore be silently dropped. Detect the pre-existing refund up front and
+  // surface it via `credited` so callers never record a refund that never
+  // actually landed. (True incremental refunds need a per-refund-source
+  // idempotency key — see the REPORT / migration follow-up.)
+  const { data: priorRefund } = await supabaseAdmin
+    .from('customer_wallet_transactions')
+    .select('id')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .eq('order_id', params.orderId)
+    .eq('entry_type', 'refund')
+    .limit(1)
+    .maybeSingle();
+  const orderAlreadyRefunded = Boolean(priorRefund);
 
   const { data: rpcRows, error } = await supabaseAdmin.rpc('credit_customer_wallet', {
     p_customer_id: params.customerId,
@@ -555,5 +720,8 @@ export async function creditWalletForRefund(params: {
   return {
     newBalanceSar: halalasToSar(Number(row?.new_balance_halalas ?? 0)),
     transactionId: String(row?.transaction_id ?? ''),
+    // A fresh credit landed only when there was NO prior refund row for this
+    // order (the per-order unique index would otherwise have no-op'd the RPC).
+    credited: !orderAlreadyRefunded,
   };
 }

@@ -298,6 +298,28 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
         complaintId,
         note: merchant_notes ? String(merchant_notes).slice(0, 200) : undefined,
       });
+      // PAY-4: the wallet refund credit is idempotent PER ORDER. If this order
+      // already had a refund (merchant-refuse, system-cancel, or an earlier
+      // resolved complaint), the credit above is a NO-OP and NO money moved —
+      // even though maxRefundableSar said there was headroom. Marking the
+      // complaint 'refunded' here would claim a refund that never landed
+      // (silent under-refund). Refuse instead and leave the complaint pending
+      // so it can be handled manually until a per-refund-source idempotent
+      // credit path exists (see REPORT / migration follow-up).
+      if (!credit.credited) {
+        console.warn(
+          '[Complaints] Incremental refund dropped by per-order idempotency — order',
+          complaint.order_id,
+          'already has a wallet refund; not marking complaint refunded.',
+        );
+        return res.status(409).json({
+          error:
+            'This order already has a wallet refund, so an additional partial refund could not be applied automatically. Please issue the remaining refund manually.',
+          code: 'REFUND_NEEDS_MANUAL',
+          maxRefundableSar,
+          priorRefundedSar,
+        });
+      }
       complaintStatus = 'refunded';
       refundId = credit.transactionId;
       refundFee = 0;

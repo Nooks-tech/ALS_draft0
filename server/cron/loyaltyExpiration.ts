@@ -25,6 +25,67 @@ function sendPush(customerId: string, merchantId: string, title: string, body: s
   return sendPushScoped({ customerId, merchantId, title, body, channel: 'loyalty' });
 }
 
+// ── LOY-5 helpers: still-valid (not-yet-expired / never-expiring) earn totals ──
+// FIFO lot accounting expires only the part of the current balance that these
+// still-valid lots can NOT account for (see expireStalePoints / *Cashback).
+// Paginated so a customer with >1000 earn rows is never silently truncated
+// (truncation would undercount valid earns → over-expire, the LOY-5 bug).
+async function sumValidPointsEarns(customerId: string, merchantId: string, nowIso: string): Promise<number> {
+  if (!supabaseAdmin) return 0;
+  const PAGE = 1000;
+  let total = 0;
+  for (let page = 0; page < MAX_BATCHES_PER_TICK; page += 1) {
+    const from = page * PAGE;
+    const { data, error } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('points')
+      .eq('type', 'earn')
+      .eq('expired', false)
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      // points only (legacy rows have loyalty_type NULL)
+      .or('loyalty_type.is.null,loyalty_type.neq.cashback')
+      // still valid = no expiry set, or expiry still in the future
+      .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+      .range(from, from + PAGE - 1);
+    if (error) {
+      console.warn('[Loyalty Cron] valid points-earn sum failed:', error.message);
+      break;
+    }
+    if (!data?.length) break;
+    for (const r of data as Array<{ points: number }>) total += r.points ?? 0;
+    if (data.length < PAGE) break;
+  }
+  return total;
+}
+
+async function sumValidCashbackEarns(customerId: string, merchantId: string, nowIso: string): Promise<number> {
+  if (!supabaseAdmin) return 0;
+  const PAGE = 1000;
+  let total = 0;
+  for (let page = 0; page < MAX_BATCHES_PER_TICK; page += 1) {
+    const from = page * PAGE;
+    const { data, error } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('amount_sar')
+      .eq('type', 'earn')
+      .eq('loyalty_type', 'cashback')
+      .eq('expired', false)
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .or(`expires_at.is.null,expires_at.gt.${nowIso}`)
+      .range(from, from + PAGE - 1);
+    if (error) {
+      console.warn('[Loyalty Cron] valid cashback-earn sum failed:', error.message);
+      break;
+    }
+    if (!data?.length) break;
+    for (const r of data as Array<{ amount_sar?: number }>) total += Math.abs(r.amount_sar ?? 0);
+    if (data.length < PAGE) break;
+  }
+  return total;
+}
+
 // ── 1. Expire stale loyalty points ──
 
 async function expireStalePoints() {
@@ -67,41 +128,65 @@ async function expireStalePoints() {
 
   const groups = Array.from(grouped.values());
   for (const group of groups) {
-    // Mark transactions as expired
+    // Mark the expiring earn lots as expired FIRST (idempotency marker: a
+    // mid-loop failure must never let them be re-selected into a double expiry).
     await supabaseAdmin
       .from('loyalty_transactions')
       .update({ expired: true })
       .in('id', group.txnIds);
 
-    // Subtract from balance (floor at 0)
-    const { data: balance } = await supabaseAdmin
+    // LOY-5 — FIFO lot accounting. The old code subtracted the GROSS of the
+    // expiring lots from the balance, wiping still-valid points the customer
+    // still held after redemptions. Under FIFO, redemptions consume the OLDEST
+    // (= soonest-expiring) lots first, so still-valid lots are the last spent
+    // and remain intact until the customer has out-redeemed the expiring lots.
+    // Expire only the part of the CURRENT balance not backed by still-valid
+    // (not-yet-expired / never-expiring) earns, capped at the gross of the lots
+    // actually expiring now:
+    //   expirable = min( max(0, balance - stillValidEarns), grossExpiringLots )
+    // Conservative: if real consumption were LIFO we under-expire, never over.
+    const validEarns = await sumValidPointsEarns(group.customerId, group.merchantId, now);
+
+    const { data: balanceRow } = await supabaseAdmin
       .from('loyalty_points')
       .select('points')
       .eq('customer_id', group.customerId)
       .eq('merchant_id', group.merchantId)
-      .single();
+      .maybeSingle();
 
-    if (balance) {
-      const newPoints = Math.max(0, balance.points - group.totalPoints);
-      await supabaseAdmin
-        .from('loyalty_points')
-        .update({ points: newPoints, updated_at: now })
-        .eq('customer_id', group.customerId)
-        .eq('merchant_id', group.merchantId);
+    const currentBalance = balanceRow?.points ?? 0;
+    const expirable = Math.max(0, Math.min(currentBalance - validEarns, group.totalPoints));
+
+    if (expirable <= 0) {
+      console.log(`[Loyalty Cron] ${group.customerId} lots past expiry but already consumed — nothing to expire (gross ${group.totalPoints}, valid ${validEarns}, balance ${currentBalance})`);
+      continue;
     }
 
-    // Record expiration transaction for audit trail
+    // LOY-6 — atomic DB-side GREATEST(0, points - amount) decrement, replacing
+    // the read-modify-write absolute write that could clobber a concurrent live
+    // earn/redeem. The cron lock stops a second cron; this closes the live race.
+    const { data: newBalance, error: rpcErr } = await supabaseAdmin.rpc('expire_loyalty_points', {
+      p_customer_id: group.customerId,
+      p_merchant_id: group.merchantId,
+      p_amount: expirable,
+    });
+    if (rpcErr) {
+      console.warn(`[Loyalty Cron] expire_loyalty_points RPC failed for ${group.customerId}:`, rpcErr.message);
+      continue;
+    }
+
+    // Record expiration transaction for audit trail (actual amount removed).
     await supabaseAdmin.from('loyalty_transactions').insert({
       customer_id: group.customerId,
       merchant_id: group.merchantId,
       type: 'expire',
-      points: -group.totalPoints,
-      description: `${group.totalPoints} points expired`,
+      points: -expirable,
+      description: `${expirable} points expired`,
       source: 'system',
     });
 
-    sendPush(group.customerId, group.merchantId, 'Points Expired', `${group.totalPoints} loyalty points have expired.`);
-    console.log(`[Loyalty Cron] Expired ${group.totalPoints} points for customer ${group.customerId}`);
+    sendPush(group.customerId, group.merchantId, 'Points Expired', `${expirable} loyalty points have expired.`);
+    console.log(`[Loyalty Cron] Expired ${expirable} points for customer ${group.customerId} (gross ${group.totalPoints}, still-valid ${validEarns}, new balance ${newBalance})`);
   }
 
   if (expiredTxns.length < BATCH_LIMIT) break; // drained
@@ -141,27 +226,47 @@ async function expireStaleCashback() {
   }
 
   for (const group of grouped.values()) {
+    // Idempotency marker first (see expireStalePoints for rationale).
     await supabaseAdmin.from('loyalty_transactions').update({ expired: true }).in('id', group.txnIds);
 
-    // Subtract from cashback balance
+    // LOY-5 (cashback) — same FIFO lot accounting, in SAR. Expire only the part
+    // of the current balance not backed by still-valid cashback earns, capped at
+    // the gross of the lots expiring now.
+    const validCashback = await sumValidCashbackEarns(group.customerId, group.merchantId, now);
+
     const { data: bal } = await supabaseAdmin.from('loyalty_cashback_balances')
       .select('balance_sar, config_version')
       .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId)
       .order('config_version', { ascending: false }).limit(1).maybeSingle();
 
-    if (bal) {
-      await supabaseAdmin.from('loyalty_cashback_balances')
-        .update({ balance_sar: Math.max(0, +(bal.balance_sar - group.totalSar).toFixed(2)), updated_at: now })
-        .eq('customer_id', group.customerId).eq('merchant_id', group.merchantId).eq('config_version', bal.config_version);
+    const currentSar = bal?.balance_sar ?? 0;
+    const expirableSar = +Math.max(0, Math.min(currentSar - validCashback, group.totalSar)).toFixed(2);
+
+    if (expirableSar <= 0) {
+      console.log(`[Loyalty Cron] ${group.customerId} cashback past expiry but already consumed — nothing to expire (gross ${group.totalSar.toFixed(2)}, valid ${validCashback.toFixed(2)}, balance ${currentSar})`);
+      continue;
+    }
+
+    // LOY-6 — atomic DB-side GREATEST(0, balance_sar - amount) decrement,
+    // replacing the read-modify-write absolute write (closes the live race).
+    const { data: newSar, error: rpcErr } = await supabaseAdmin.rpc('expire_loyalty_cashback', {
+      p_customer_id: group.customerId,
+      p_merchant_id: group.merchantId,
+      p_amount_sar: expirableSar,
+    });
+    if (rpcErr) {
+      console.warn(`[Loyalty Cron] expire_loyalty_cashback RPC failed for ${group.customerId}:`, rpcErr.message);
+      continue;
     }
 
     await supabaseAdmin.from('loyalty_transactions').insert({
       customer_id: group.customerId, merchant_id: group.merchantId,
-      type: 'expire', loyalty_type: 'cashback', amount_sar: -group.totalSar,
-      points: 0, description: `${group.totalSar.toFixed(2)} SAR cashback expired`, source: 'system',
+      type: 'expire', loyalty_type: 'cashback', amount_sar: -expirableSar,
+      points: 0, description: `${expirableSar.toFixed(2)} SAR cashback expired`, source: 'system',
     });
 
-    sendPush(group.customerId, group.merchantId, 'Cashback Expired', `${group.totalSar.toFixed(2)} SAR cashback has expired.`);
+    sendPush(group.customerId, group.merchantId, 'Cashback Expired', `${expirableSar.toFixed(2)} SAR cashback has expired.`);
+    console.log(`[Loyalty Cron] Expired ${expirableSar.toFixed(2)} SAR cashback for ${group.customerId} (gross ${group.totalSar.toFixed(2)}, valid ${validCashback.toFixed(2)}, new balance ${newSar})`);
   }
 
   if (expiredCbTxns.length < BATCH_LIMIT) break; // drained
@@ -220,7 +325,7 @@ async function warnUpcomingExpiry() {
 
   const { data: soonExpiring, error } = await supabaseAdmin
     .from('loyalty_transactions')
-    .select('id, customer_id, merchant_id, points, expires_at, loyalty_type')
+    .select('id, customer_id, merchant_id, points, amount_sar, expires_at, loyalty_type')
     .eq('type', 'earn')
     .eq('expired', false)
     .eq('expiry_warned', false)
@@ -236,14 +341,28 @@ async function warnUpcomingExpiry() {
 
   console.log(`[Loyalty Cron] Found ${soonExpiring.length} transactions to warn about expiry`);
 
-  // Group by customer+merchant
-  type WarnGroup = { customerId: string; merchantId: string; totalPoints: number; txnIds: string[]; daysLeft: number };
+  // LOY-14 — points and cashback must be warned SEPARATELY. Cashback earn rows
+  // carry their value in amount_sar (points=0), so the old `points * 0.1` was
+  // always "0.00 SAR", and grouping the two together mixed the magnitudes. Group
+  // by (customer, merchant, loyalty_type) and use the right value + copy.
+  type WarnType = 'points' | 'cashback';
+  type WarnGroup = {
+    customerId: string;
+    merchantId: string;
+    type: WarnType;
+    totalPoints: number;
+    totalSar: number;
+    txnIds: string[];
+    daysLeft: number;
+  };
   const grouped = new Map<string, WarnGroup>();
-  for (const txn of soonExpiring as Array<{ id: string; customer_id: string; merchant_id: string; points: number; expires_at: string; loyalty_type?: string }>) {
-    const key = `${txn.customer_id}:${txn.merchant_id}`;
+  for (const txn of soonExpiring as Array<{ id: string; customer_id: string; merchant_id: string; points: number; amount_sar?: number; expires_at: string; loyalty_type?: string }>) {
+    const type: WarnType = txn.loyalty_type === 'cashback' ? 'cashback' : 'points';
+    const key = `${txn.customer_id}:${txn.merchant_id}:${type}`;
     const daysLeft = Math.ceil((new Date(txn.expires_at).getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-    const existing: WarnGroup = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, totalPoints: 0, txnIds: [], daysLeft };
-    existing.totalPoints += txn.points;
+    const existing: WarnGroup = grouped.get(key) ?? { customerId: txn.customer_id, merchantId: txn.merchant_id, type, totalPoints: 0, totalSar: 0, txnIds: [], daysLeft };
+    existing.totalPoints += txn.points ?? 0;
+    existing.totalSar += Math.abs(txn.amount_sar ?? 0);
     existing.txnIds.push(txn.id);
     existing.daysLeft = Math.min(existing.daysLeft, daysLeft);
     grouped.set(key, existing);
@@ -257,11 +376,10 @@ async function warnUpcomingExpiry() {
       .update({ expiry_warned: true })
       .in('id', group.txnIds);
 
-    // Type-aware warning push
-    const txnType = (soonExpiring.find(t => t.customer_id === group.customerId) as any)?.loyalty_type;
+    // Type-aware warning push (value from the correct column per type)
     const days = `${group.daysLeft} day${group.daysLeft === 1 ? '' : 's'}`;
-    if (txnType === 'cashback') {
-      const sarValue = (group.totalPoints * 0.1).toFixed(2);
+    if (group.type === 'cashback') {
+      const sarValue = group.totalSar.toFixed(2);
       sendPush(group.customerId, group.merchantId, 'Cashback Expiring Soon', `You have ${sarValue} SAR cashback expiring in ${days}. Use it before it expires!`);
     } else {
       sendPush(group.customerId, group.merchantId, 'Points Expiring Soon', `You have ${group.totalPoints} points expiring in ${days}. Use them before they expire!`);
@@ -314,17 +432,23 @@ async function pruneRetention() {
     .not('action', 'ilike', 'wallet%');
   if (alErr) console.warn('[Loyalty Cron] audit_log prune failed:', alErr.message);
 
-  // M5: unclaimed walk-in (kiosk) orders. The kiosk writes customer_orders
-  // rows with a claim window (claim_expires_at); if the customer never
-  // claims them the rows are dead weight forever. 48h past expiry they can
-  // no longer be claimed — delete them. Claimed rows (claimed_at set) and
-  // app orders (claim_expires_at NULL, so .lt never matches) are untouched.
+  // VIS-8: unclaimed walk-in (kiosk) orders past their 2-day claim window used
+  // to be hard-DELETEd (M5), which retroactively shrank prior-period GMV every
+  // night as historical rows vanished. TOMBSTONE instead — set ONLY
+  // walkin_expired_at and DO NOT change status. These rows carry a real
+  // foodics_order_id (a POS sale that rang up), so they must keep counting in
+  // historical GMV (isRealOrder stays true); setting status='Cancelled' would
+  // re-create the exact shrink this fix prevents. Live queues exclude them via
+  // `walkin_expired_at IS NOT NULL`. Same selection as before (unclaimed kiosk
+  // rows — claim_expires_at NULL app orders never match the .lt); the
+  // walkin_expired_at IS NULL guard stops re-processing tombstoned rows.
   const { error: woErr } = await supabaseAdmin
     .from('customer_orders')
-    .delete()
+    .update({ walkin_expired_at: new Date().toISOString() })
     .is('claimed_at', null)
+    .is('walkin_expired_at', null)
     .lt('claim_expires_at', daysAgo(2));
-  if (woErr) console.warn('[Loyalty Cron] unclaimed walk-in orders prune failed:', woErr.message);
+  if (woErr) console.warn('[Loyalty Cron] unclaimed walk-in orders tombstone failed:', woErr.message);
 
   const { error: acErr } = await supabaseAdmin
     .from('abandoned_carts')

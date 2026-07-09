@@ -18,7 +18,7 @@ import { Router } from 'express';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { cancelPayment, verifyPaidPayment } from '../services/payment';
 import { sendOrderReceipt } from '../services/receipt';
-import { consumeOrderMilestones, earnPoints, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
+import { consumeOrderMilestones, earnForOrder, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { enforceLimits } from '../utils/rateLimit';
@@ -629,29 +629,98 @@ ordersRouter.post('/commit', async (req, res) => {
       }
     }
 
-    // Subscription enforcement: reject orders for suspended merchants
+    // ─── Subscription enforcement (REG-1): effective order-intake policy ───
+    // This gate previously blocked only merchants whose raw merchants.status
+    // was literally 'suspended'. But billing state lives on the SUBSCRIPTION
+    // row, not merchants.status (which is only pending/active/suspended): a
+    // subscription that lapsed, expired, was cancelled past its period, or is
+    // past_due beyond its grace window leaves merchants.status untouched until
+    // a sync cron runs — so a merchant whose plan lapsed could keep taking
+    // mobile orders. Mirror nooksweb's canonical
+    // getMerchantSubscriptionPolicy.orderIntakeEnabled (lib/subscription-policy.ts)
+    // so the mobile commit path and the web storefront agree on who may order.
+    // Merchants that pass: in an active free trial, a healthy active
+    // subscription, cancelled/expired but still inside the paid period, or in
+    // the post-renewal grace window. Denied: deleted, suspended, expired
+    // trial with no sub, or a lapsed/past-due sub past grace.
     let merchantInTrial = false;
     if (supabaseAdmin) {
-      const { data: merchantRow } = await supabaseAdmin
-        .from('merchants')
-        .select('status, trial_ends_at')
-        .eq('id', merchantId)
-        .maybeSingle();
-      if (merchantRow?.status === 'suspended') {
-        return res.status(403).json({ error: 'Merchant is currently suspended. Orders cannot be placed.' });
-      }
-      // Trial merchants accrue NO payment-processing fee. Trial only ever
-      // applies to merchants without a subscription — the moment any
-      // subscription row exists (they subscribed mid-trial), fees resume.
-      const trialEndsAt = merchantRow?.trial_ends_at ? Date.parse(merchantRow.trial_ends_at) : NaN;
-      if (Number.isFinite(trialEndsAt) && trialEndsAt > Date.now()) {
-        const { data: anySub } = await supabaseAdmin
+      const SUBSCRIPTION_GRACE_MS = 2 * 24 * 60 * 60 * 1000; // SUBSCRIPTION_GRACE_PERIOD_DAYS (nooksweb)
+      const nowMs = Date.now();
+      const [{ data: merchantRow }, { data: latestSub }] = await Promise.all([
+        supabaseAdmin
+          .from('merchants')
+          .select('status, trial_ends_at, trial_started_at, deleted_at')
+          .eq('id', merchantId)
+          .maybeSingle(),
+        supabaseAdmin
           .from('subscriptions')
-          .select('id')
+          .select('status, current_period_end_at, expires_at')
           .eq('merchant_id', merchantId)
+          .order('current_period_end_at', { ascending: false })
+          .order('created_at', { ascending: false })
           .limit(1)
-          .maybeSingle();
-        merchantInTrial = !anySub;
+          .maybeSingle(),
+      ]);
+
+      const parseMs = (v: string | null | undefined): number | null => {
+        if (!v) return null;
+        const t = Date.parse(v);
+        return Number.isFinite(t) ? t : null;
+      };
+
+      // Only apply the gate when we actually resolved the merchant row. A
+      // null/failed merchant lookup falls through un-blocked (as before) so a
+      // transient read can't lock out a legitimately-active merchant; the
+      // order still validates the merchant/branch elsewhere.
+      if (merchantRow) {
+        const trialEndsMs = parseMs(merchantRow.trial_ends_at);
+        const trialActive = trialEndsMs != null && trialEndsMs > nowMs;
+
+        const merchantStatus =
+          typeof merchantRow.status === 'string' ? merchantRow.status.toLowerCase() : null;
+
+        let orderIntakeEnabled: boolean;
+        let inTrial = false;
+        if (merchantRow.deleted_at) {
+          // Soft-deleted merchant — terminal suspended.
+          orderIntakeEnabled = false;
+        } else if (merchantStatus === 'suspended') {
+          // Explicit admin/billing suspension — preserve the original hard
+          // block regardless of any lingering active subscription row.
+          orderIntakeEnabled = false;
+        } else if (!latestSub) {
+          // Never subscribed: fully open only while the free trial runs.
+          orderIntakeEnabled = trialActive;
+          inTrial = trialActive;
+        } else {
+          const subStatus = typeof latestSub.status === 'string' ? latestSub.status : '';
+          const periodEndMs =
+            parseMs(latestSub.current_period_end_at) ?? parseMs(latestSub.expires_at);
+          if (subStatus === 'cancelled' || subStatus === 'expired') {
+            // Auto-renew off / ended: valid until the paid period actually ends.
+            orderIntakeEnabled = periodEndMs != null && periodEndMs > nowMs;
+          } else if (
+            subStatus === 'past_due' ||
+            (subStatus === 'active' && periodEndMs != null && periodEndMs <= nowMs)
+          ) {
+            // Renewal failed or the period lapsed — allowed only within grace.
+            const graceEndMs = periodEndMs != null ? periodEndMs + SUBSCRIPTION_GRACE_MS : null;
+            orderIntakeEnabled = graceEndMs != null && nowMs <= graceEndMs;
+          } else {
+            // Healthy active subscription (period still open / renewed).
+            orderIntakeEnabled = true;
+          }
+        }
+
+        if (!orderIntakeEnabled) {
+          return res.status(403).json({ error: 'Merchant is currently suspended. Orders cannot be placed.' });
+        }
+
+        // Trial merchants accrue NO payment-processing fee. Trial only ever
+        // applies to merchants without any subscription row — the moment a
+        // subscription exists (they subscribed mid-trial), fees resume.
+        merchantInTrial = inTrial;
       }
     }
 
@@ -723,7 +792,7 @@ ordersRouter.post('/commit', async (req, res) => {
     // to every checkout. First commits (relayToNooks=false) keep it as
     // their only verification.
     if (isMoyasarPaymentId && existing?.id !== id && relayToNooks !== true) {
-      const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
+      const verification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId, id);
       if (!verification.ok) {
         // M9: transient Moyasar error (429/5xx/timeout/network) — the
         // payment may well be paid; ask the client to retry instead of
@@ -839,6 +908,32 @@ ordersRouter.post('/commit', async (req, res) => {
     }
 
     if (isFinalCommit) {
+      // ─── ORD-4 guard: refuse re-commit of an already-reversed order ───
+      // The final commit deducts wallet/promo/cashback/milestone below and
+      // only THEN upserts the confirmed row. If that upsert fails we reverse
+      // the deductions (see the commitError branch), which for wallet orders
+      // writes a compensating 'refund' entry. But the wallet spend is guarded
+      // by a per-order unique index, so a re-debit is impossible — re-committing
+      // the SAME order id after a reversal would reuse the netted-out spend and
+      // mint a $0 "free" order. The client keeps the same order id across a
+      // manual retry, so this is reachable. If a wallet refund already exists
+      // for this order, it was reversed: reject and make the customer start a
+      // fresh order (their balance was already restored).
+      const { data: priorReversal } = await supabaseAdmin
+        .from('customer_wallet_transactions')
+        .select('id')
+        .eq('customer_id', user.id)
+        .eq('merchant_id', merchantId)
+        .eq('order_id', id)
+        .eq('entry_type', 'refund')
+        .maybeSingle();
+      if (priorReversal) {
+        return res.status(409).json({
+          error: 'This order was reversed after a failed attempt. Please start a new order.',
+          code: 'ORDER_ALREADY_REVERSED',
+        });
+      }
+
       // ─── Phase 6: auto-enroll (customer, merchant) ───
       // Establish a row in merchant_customers so future code can rely
       // on a single source of truth for "is C enrolled at M". The
@@ -865,7 +960,7 @@ ordersRouter.post('/commit', async (req, res) => {
       // tampering still gets caught.
       if (isMoyasarPaymentId) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        const hardenedVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
+        const hardenedVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId, id);
         if (!hardenedVerify.ok) {
           // M9: transient Moyasar error — no side effects have run yet,
           // so a retry is safe. Don't 402-decline a possibly-paid order.
@@ -1182,6 +1277,147 @@ ordersRouter.post('/commit', async (req, res) => {
       .single();
 
     if (commitError || !savedOrder) {
+      console.error('[Orders] Order upsert failed during /commit', {
+        merchantId,
+        customerId: user.id,
+        orderId: id,
+        isFinalCommit,
+        error: commitError?.message,
+      });
+      captureError(commitError ?? new Error('Order upsert returned no row'), {
+        component: 'orders.commit.upsert',
+        merchantId,
+        customerId: user.id,
+        orderId: id,
+      });
+      // ─── ORD-4: reverse the deductions this failed commit already applied ───
+      // On the FINAL commit the promo redeem, wallet debit, milestone consume,
+      // and (pre-commit) cashback redeem — plus the card charge — all fire
+      // ABOVE this upsert. A failed upsert must NOT leave the customer's
+      // balances burned with no order (the reported ORD-4 loss). Reverse with
+      // the same helpers the refund path uses. Prefer refundOrderToWallet: it
+      // drives off the order row + the ACTUAL ledger (never phantom-credits)
+      // and is fully idempotent. For the two-commit card flow the draft row
+      // exists, so this reverses card+wallet+cashback+milestone+promo in one
+      // consistent path; a later retry is blocked because the Moyasar charge is
+      // now voided (verify → 402). For the SINGLE-commit wallet/reward flow the
+      // failing upsert WAS the row's own creation, so refundOrderToWallet 404s
+      // — fall back to reversing each applied deduction directly off the
+      // (customer, merchant, order_id) ledgers, which don't need the row. Each
+      // deduction is known to have succeeded (a failure would have returned
+      // before this upsert), so these credit-backs are exact, not phantom.
+      if (isFinalCommit) {
+        let reversedViaRow = false;
+        try {
+          const rev = await refundOrderToWallet(id, 'system', 'Order commit failed — reversing side effects');
+          if (rev.ok) {
+            reversedViaRow = true;
+          } else if (rev.status === 404) {
+            reversedViaRow = false; // row never landed — use the direct fallback below
+          } else {
+            // Row existed but the reversal only partially completed; it is
+            // idempotent and the abandoned-payment sweep will retry it. Do NOT
+            // also run the direct fallback (that would be a second pass over
+            // the same row).
+            reversedViaRow = true;
+            console.error('[Orders] commit-failure reversal via refundOrderToWallet returned not-ok', {
+              merchantId,
+              customerId: user.id,
+              orderId: id,
+              error: rev.error,
+              status: rev.status,
+            });
+            captureError(new Error(`commit-failure reversal not-ok: ${rev.error}`), {
+              component: 'orders.commit.upsertReversal',
+              merchantId,
+              customerId: user.id,
+              orderId: id,
+            });
+          }
+        } catch (revErr: any) {
+          reversedViaRow = false;
+          console.error('[Orders] commit-failure reversal via refundOrderToWallet threw', {
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+            error: revErr?.message,
+          });
+          captureError(revErr, {
+            component: 'orders.commit.upsertReversal',
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+          });
+        }
+
+        if (!reversedViaRow) {
+          // Direct, row-less reversal. Promo unredeem / cashback restore /
+          // milestone restore are self-guarding (they read the actual ledger
+          // by order_id and no-op if nothing was applied). The wallet credit
+          // is safe because reaching this branch with walletAppliedSar > 0
+          // implies a successful debit (walletPaymentId is set), and
+          // creditWalletForRefund is idempotent per order_id. The card, if any,
+          // is voided so the customer is whole and a retry is verify-blocked.
+          if (trimmedPromoCode) {
+            try {
+              await supabaseAdmin.rpc('unredeem_promo', { p_merchant_id: merchantId, p_order_id: id });
+            } catch (e: any) {
+              console.error('[Orders] commit-failure direct unredeem_promo failed', { merchantId, orderId: id, error: e?.message });
+              captureError(e, { component: 'orders.commit.upsertReversal.promo', merchantId, customerId: user.id, orderId: id });
+            }
+          }
+          if (
+            walletAppliedSar > 0 &&
+            typeof walletPaymentId === 'string' &&
+            walletPaymentId.startsWith('wallet:') &&
+            !walletPaymentId.startsWith('wallet:pending')
+          ) {
+            try {
+              await creditWalletForRefund({
+                customerId: user.id,
+                merchantId,
+                amountSar: walletAppliedSar,
+                orderId: id,
+                complaintId: null,
+                note: 'Order commit failed — wallet refund',
+              });
+            } catch (e: any) {
+              console.error('[Orders] commit-failure direct wallet credit failed', { merchantId, customerId: user.id, orderId: id, amountSar: walletAppliedSar, error: e?.message });
+              captureError(e, { component: 'orders.commit.upsertReversal.wallet', merchantId, customerId: user.id, orderId: id });
+            }
+          }
+          if (validatedCashbackSar > 0) {
+            try {
+              await restoreCashbackForRefund({ customerId: user.id, merchantId, amountSar: validatedCashbackSar, orderId: id });
+            } catch (e: any) {
+              console.warn('[Orders] commit-failure direct cashback restore failed (non-blocking)', { merchantId, customerId: user.id, orderId: id, error: e?.message });
+              captureError(e, { component: 'orders.commit.upsertReversal.cashback', merchantId, customerId: user.id, orderId: id });
+            }
+          }
+          if (claimedMilestones.length > 0) {
+            try {
+              await restoreStampMilestonesForRefund({
+                customerId: user.id,
+                merchantId,
+                milestoneIds: claimedMilestones,
+                stampsConsumed: typeof stampsConsumed === 'number' && stampsConsumed > 0 ? Math.floor(stampsConsumed) : 0,
+                orderId: id,
+              });
+            } catch (e: any) {
+              console.warn('[Orders] commit-failure direct milestone restore failed (non-blocking)', { merchantId, customerId: user.id, orderId: id, error: e?.message });
+              captureError(e, { component: 'orders.commit.upsertReversal.milestone', merchantId, customerId: user.id, orderId: id });
+            }
+          }
+          if (isMoyasarPaymentId) {
+            try {
+              await cancelPayment(trimmedPaymentId, undefined, merchantId);
+            } catch (e: any) {
+              console.error('[Orders] commit-failure direct card void failed', { merchantId, orderId: id, error: e?.message });
+              captureError(e, { component: 'orders.commit.upsertReversal.card', merchantId, customerId: user.id, orderId: id });
+            }
+          }
+        }
+      }
       return res.status(500).json({ error: commitError?.message || 'Failed to commit order' });
     }
 
@@ -1218,7 +1454,7 @@ ordersRouter.post('/commit', async (req, res) => {
       // Cancelled when it lands. Customer + dashboard query filters
       // exclude these rows (cancellation_reason='Payment failed').
       if (isMoyasarPaymentId) {
-        const relayVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId);
+        const relayVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId, id);
         if (!relayVerify.ok) {
           console.warn(
             '[Orders] Skipping Foodics relay — payment no longer paid:',
@@ -1365,11 +1601,30 @@ ordersRouter.post('/commit', async (req, res) => {
       // — the customer-app order list filter requires it to be
       // non-null, so a fire-and-forget update would mean the order
       // briefly disappeared from the list right after creation.
-      const relayData = relayResult as { foodics?: { ok?: boolean; foodicsOrderId?: string; error?: string; tableUnavailable?: boolean } } | null;
-      if (relayData?.foodics?.ok && relayData.foodics.foodicsOrderId) {
+      const relayData = relayResult as {
+        foodics?: {
+          ok?: boolean;
+          foodicsOrderId?: string | null;
+          error?: string;
+          tableUnavailable?: boolean;
+          skipped?: boolean;
+          reason?: string;
+        };
+      } | null;
+      const foodics = relayData?.foodics;
+      const producedFoodicsId =
+        foodics?.ok && typeof foodics.foodicsOrderId === 'string' && foodics.foodicsOrderId.trim()
+          ? foodics.foodicsOrderId.trim()
+          : null;
+      if (producedFoodicsId) {
         const { error: foodicsIdErr } = await supabaseAdmin
           .from('customer_orders')
-          .update({ foodics_order_id: relayData.foodics.foodicsOrderId })
+          .update({
+            foodics_order_id: producedFoodicsId,
+            foodics_relay_status: 'ok',
+            foodics_relay_error: null,
+            foodics_relay_last_attempt_at: new Date().toISOString(),
+          })
           .eq('id', id);
         if (foodicsIdErr) {
           console.warn('[Orders] Failed to store foodics_order_id:', foodicsIdErr.message);
@@ -1392,19 +1647,131 @@ ordersRouter.post('/commit', async (req, res) => {
             });
           } catch { /* audit never blocks the commit response */ }
         }
-      } else if (relayData?.foodics && relayData.foodics.ok === false) {
+      } else if (foodics && foodics.ok === false) {
         // Foodics relay returned a non-ok response (e.g., bad
         // modifier mapping, branch closed). For dine-in:
         // tableUnavailable=true means the merchant deleted the
         // Foodics table — surface that distinctly so the client
-        // shows "Ask staff" instead of a generic error.
-        if (relayData.foodics.tableUnavailable) {
+        // shows "Ask staff" instead of a generic error. Both throw
+        // into the catch below, which voids the charge + refunds.
+        if (foodics.tableUnavailable) {
           throw Object.assign(
             new Error('TABLE_UNAVAILABLE'),
             { code: 'TABLE_UNAVAILABLE' },
           );
         }
-        throw new Error(relayData.foodics.error || 'Foodics relay returned ok=false');
+        throw new Error(foodics.error || 'Foodics relay returned ok=false');
+      } else {
+        // ─── PAY-2: relay returned ok:true WITHOUT a foodics order id ───
+        // (a `skipped` outcome such as already_created / branch_not_enabled /
+        // foodics_not_connected, OR a success return whose id was unparseable).
+        // Previously this hit NEITHER branch above, so the row was left
+        // payment_confirmed_at + foodics_order_id null + not-Cancelled: a paid
+        // order invisible to everyone that nothing reversed. Disambiguate using
+        // the shared audit_log: nooksweb writes `foodics.order.created` (with the
+        // foodics_order_id) the moment an order actually reaches the POS, and
+        // returns reason='already_created' on a later relay for the same order.
+        //   • audit row found WITH an id  → the order IS in the POS. Backfill the
+        //     id so it becomes visible (covers already_created and an
+        //     id-unparseable success). Do NOT refund.
+        //   • audit row found WITHOUT an id → in the POS but id unrecoverable →
+        //     mark needs-attention, leave the money for reconciliation.
+        //   • no audit row → the order was genuinely skipped and never created
+        //     in the POS → treat as a relay failure: mark needs-attention, then
+        //     throw into the catch to reverse + refund (app-path policy).
+        const skipReason =
+          foodics && typeof foodics.reason === 'string' && foodics.reason
+            ? foodics.reason
+            : foodics
+              ? 'no_foodics_order_id'
+              : 'relay_no_order';
+        let loggedFoodicsId: string | null = null;
+        let auditRowFound = false;
+        try {
+          const { data: createdLog } = await supabaseAdmin
+            .from('audit_log')
+            .select('payload')
+            .eq('action', 'foodics.order.created')
+            .contains('payload', { internal_order_id: id })
+            .maybeSingle();
+          if (createdLog) {
+            auditRowFound = true;
+            const p = (createdLog.payload ?? null) as { foodics_order_id?: string | null } | null;
+            loggedFoodicsId =
+              p && typeof p.foodics_order_id === 'string' && p.foodics_order_id.trim()
+                ? p.foodics_order_id.trim()
+                : null;
+          }
+        } catch (e: any) {
+          console.warn('[Orders] relay-skip audit lookup failed', { orderId: id, error: e?.message });
+        }
+
+        if (loggedFoodicsId) {
+          // Order is in the POS — recover the id, mark relay ok, keep the money.
+          const { error: backfillErr } = await supabaseAdmin
+            .from('customer_orders')
+            .update({
+              foodics_order_id: loggedFoodicsId,
+              foodics_relay_status: 'ok',
+              foodics_relay_error: null,
+              foodics_relay_last_attempt_at: new Date().toISOString(),
+            })
+            .eq('id', id);
+          if (backfillErr) {
+            console.warn('[Orders] Failed to backfill foodics_order_id from audit_log:', backfillErr.message);
+          } else {
+            console.log(`[Orders] Backfilled foodics_order_id for ${id} (relay skip: ${skipReason})`);
+          }
+        } else if (auditRowFound) {
+          // Order reached the POS but we can't recover its id. Do NOT refund
+          // (that would cancel a real POS order). Surface for reconciliation.
+          await supabaseAdmin
+            .from('customer_orders')
+            .update({
+              foodics_relay_status: 'failed',
+              foodics_relay_error: `${skipReason}:foodics_id_unrecoverable`.slice(0, 300),
+              foodics_relay_attempts: 1,
+              foodics_relay_last_attempt_at: new Date().toISOString(),
+            })
+            .eq('id', id);
+          console.error('[Orders] Relay reached POS but foodics id unrecoverable — left for reconciliation', {
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+            reason: skipReason,
+          });
+          captureError(new Error(`Relay in-POS without recoverable foodics id (${skipReason})`), {
+            component: 'orders.commit.relaySkip.unrecoverableId',
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+          });
+        } else {
+          // Never reached the POS → relay failure. Stamp attention columns for
+          // diagnostics, then throw into the catch to void + refund (matches the
+          // ok===false and app-path auto-refund policy). The customer is made
+          // whole rather than left with a paid order that never existed.
+          try {
+            await supabaseAdmin
+              .from('customer_orders')
+              .update({
+                foodics_relay_status: 'failed',
+                foodics_relay_error: skipReason.slice(0, 300),
+                foodics_relay_attempts: 1,
+                foodics_relay_last_attempt_at: new Date().toISOString(),
+              })
+              .eq('id', id);
+          } catch (e: any) {
+            console.warn('[Orders] Failed to stamp relay-skip attention columns', { orderId: id, error: e?.message });
+          }
+          console.error('[Orders] Foodics relay produced no order — treating as failure', {
+            merchantId,
+            customerId: user.id,
+            orderId: id,
+            reason: skipReason,
+          });
+          throw new Error(`Foodics relay produced no order (${skipReason})`);
+        }
       }
       } catch (relayErr: any) {
         console.error('[Orders] Foodics relay failed — reversing side effects', {
@@ -2188,6 +2555,66 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
       // because: (a) Moyasar returns the card amount, (b) nothing
       // else was deducted to begin with.
       if (!order.payment_confirmed_at) {
+        // ─── ORD-4: verify the ledger before assuming nothing was deducted ───
+        // The "never-confirmed ⇒ no side effects" assumption holds for a clean
+        // abandoned draft, but a final commit that deducted wallet/cashback/
+        // promo and then died at the upsert (or was killed mid-flight) can leave
+        // a row that never got payment_confirmed_at yet whose ledgers ARE
+        // debited. Blindly marking such a row Cancelled + not_required would
+        // permanently burn the customer's balance (the exact ORD-4 loss). Check
+        // the actual ledgers first; if anything really moved, run the full
+        // idempotent reversal (refundOrderToWallet reads the ledger and never
+        // phantom-credits) instead of the skip-path.
+        let ledgerHadDeduction = false;
+        try {
+          const [{ data: walletSpend }, { data: loyaltyRedeem }] = await Promise.all([
+            supabaseAdmin
+              .from('customer_wallet_transactions')
+              .select('id')
+              .eq('order_id', order.id)
+              .eq('customer_id', order.customer_id)
+              .eq('merchant_id', order.merchant_id)
+              .eq('entry_type', 'spend')
+              .limit(1)
+              .maybeSingle(),
+            supabaseAdmin
+              .from('loyalty_transactions')
+              .select('id')
+              .eq('order_id', order.id)
+              .eq('customer_id', order.customer_id)
+              .eq('merchant_id', order.merchant_id)
+              .eq('type', 'redeem')
+              .limit(1)
+              .maybeSingle(),
+          ]);
+          ledgerHadDeduction = Boolean(walletSpend || loyaltyRedeem);
+        } catch (e: any) {
+          // On a lookup error, prefer the safe reversal path over the burn path:
+          // refundOrderToWallet only credits what the ledger actually holds, so
+          // a false positive is a no-op, whereas a false "nothing deducted" burns.
+          console.warn('[Orders] sweep Layer-2 ledger check failed — routing to reversal', { orderId: order.id, error: e?.message });
+          ledgerHadDeduction = true;
+        }
+
+        if (ledgerHadDeduction) {
+          try {
+            const result = await refundOrderToWallet(
+              order.id,
+              'system',
+              'Abandoned payment — reversing applied deductions',
+            );
+            if (result.ok) {
+              swept += 1;
+              results.push({ orderId: order.id, action: 'swept', reason: 'draft_never_confirmed_had_ledger' });
+            } else {
+              results.push({ orderId: order.id, action: 'error', reason: result.error });
+            }
+          } catch (e: any) {
+            results.push({ orderId: order.id, action: 'error', reason: e?.message || 'reverse threw' });
+          }
+          continue;
+        }
+
         let moyasarOutcome = 'skipped';
         if (!paymentId.startsWith('reward:')) {
           try {
@@ -2477,7 +2904,7 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
 
     // Fire loyalty earn (idempotency is enforced by the loyalty route itself).
     if (order.customer_id && order.merchant_id) {
-      earnPoints(order.customer_id, order.id, netOfLoyaltyEarnBase(order), order.merchant_id).catch(
+      earnForOrder(order.customer_id, order.id, netOfLoyaltyEarnBase(order), order.merchant_id).catch(
         (e: any) => console.warn('[orders] customer-received loyalty earn failed:', e?.message),
       );
     }
@@ -2685,7 +3112,7 @@ ordersRouter.patch('/:id/status', async (req, res) => {
         sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.', mid);
       } else if (status === 'Delivered') {
         sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!', mid);
-        earnPoints(order.customer_id, orderId, netOfLoyaltyEarnBase(order), order.merchant_id ?? '').catch(
+        earnForOrder(order.customer_id, orderId, netOfLoyaltyEarnBase(order), order.merchant_id ?? '').catch(
           (e: any) => console.warn('[Orders] Auto-earn loyalty failed:', e?.message),
         );
       }

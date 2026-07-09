@@ -113,6 +113,15 @@ export async function verifyPaidPayment(
   paymentId: string,
   expectedAmountHalals: number,
   merchantId?: string | null,
+  /**
+   * PAY-5 / ORD-6: when provided, the resolved Moyasar payment MUST carry
+   * `metadata.order_id === expectedOrderId` — otherwise a paid payment for a
+   * DIFFERENT order (or a replayed unrelated payment id) can't be smuggled in
+   * as proof of THIS order's payment. Optional + back-compatible: callers that
+   * don't pass it keep the prior amount/status-only behavior. The order-commit
+   * caller (server/routes/orders.ts) passes the committing order id here.
+   */
+  expectedOrderId?: string | null,
 ): Promise<VerifyPaymentResult> {
   const scopedMerchantId = normalizeMerchantId(merchantId);
   const config = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
@@ -160,6 +169,21 @@ export async function verifyPaidPayment(
     if (status !== 'paid' && status !== 'captured') {
       return { ok: false, status, amountHalals, moyasarId: realPaymentId, reason: `payment status is "${status}"` };
     }
+    // ORD-6: currency defense. Every ALS order is priced in SAR; a paid
+    // payment in any other currency (amount fields aren't comparable across
+    // currencies, so the amount check above wouldn't catch it) must never be
+    // accepted as proof of a SAR order. Missing currency defaults to SAR
+    // (Moyasar always returns it; our payments are SAR-only).
+    const currency = String(payment?.currency ?? 'SAR').toUpperCase();
+    if (currency !== 'SAR') {
+      return {
+        ok: false,
+        status,
+        amountHalals,
+        moyasarId: realPaymentId,
+        reason: `currency mismatch: payment is "${currency}", expected SAR`,
+      };
+    }
     // Amount mismatch defense: allow a 1-halala (0.01 SAR) drift for
     // rounding but reject anything larger. This blocks a tampered client
     // from passing a 5 SAR paid payment as proof of a 200 SAR order.
@@ -171,6 +195,39 @@ export async function verifyPaidPayment(
         moyasarId: realPaymentId,
         reason: `amount mismatch: paid ${amountHalals} halals, order expects ${expectedAmountHalals}`,
       };
+    }
+    // PAY-5: bind payment → order. Without this, a paid payment for one order
+    // (or a replayed unrelated payment) that happens to match the amount could
+    // stand in as proof of a DIFFERENT order's payment. Every initiate path
+    // stamps metadata.order_id: direct payments (STC/token) carry it on the
+    // payment itself; invoice checkouts carry it on the invoice (surfaced as
+    // resolved.invoiceOrderId since Moyasar doesn't always copy it down to the
+    // payment). We reject only on a DEFINITE mismatch — when we can resolve a
+    // bound order id and it differs from the committing order. A totally-absent
+    // order id (which our own flows never produce) does NOT reject, so this can
+    // never false-decline a legit order that merely lacks the metadata. Only
+    // enforced when the caller supplies expectedOrderId (back-compatible).
+    if (expectedOrderId != null && String(expectedOrderId).trim()) {
+      const boundOrderId = String(
+        payment?.metadata?.order_id ?? resolved.invoiceOrderId ?? '',
+      ).trim();
+      if (boundOrderId && boundOrderId !== String(expectedOrderId).trim()) {
+        return {
+          ok: false,
+          status,
+          amountHalals,
+          moyasarId: realPaymentId,
+          reason: `order mismatch: payment is bound to order "${boundOrderId}", commit is for "${expectedOrderId}"`,
+        };
+      }
+      if (!boundOrderId) {
+        console.warn(
+          '[Payment] verify: payment',
+          realPaymentId,
+          'has no resolvable order_id metadata — skipping order binding for commit',
+          expectedOrderId,
+        );
+      }
     }
     return { ok: true, status: status as 'paid' | 'captured', amountHalals, moyasarId: realPaymentId };
   } catch (e: any) {
@@ -196,7 +253,7 @@ async function resolvePayment(
   storedId: string,
   authHeader: string,
   expectedAmountHalals?: number,
-): Promise<{ id: string; payment: any | null }> {
+): Promise<{ id: string; payment: any | null; invoiceOrderId?: string | null }> {
   // First try to fetch as a payment — if it works, it's already correct
   try {
     const res = await fetch(`https://api.moyasar.com/v1/payments/${storedId}`, {
@@ -225,6 +282,11 @@ async function resolvePayment(
     });
     if (res.ok) {
       const invoice = await res.json();
+      // PAY-5: Moyasar does not reliably copy invoice `metadata` onto the
+      // individual payment objects, so carry the invoice's order_id out so the
+      // caller can still bind payment→order for the invoice-checkout flow.
+      const invoiceOrderId =
+        typeof invoice?.metadata?.order_id === 'string' ? invoice.metadata.order_id : null;
       const payments: any[] = Array.isArray(invoice?.payments) ? invoice.payments : [];
       const succeeded = payments.filter((p) => p?.status === 'paid' || p?.status === 'captured');
       if (succeeded.length === 0) {
@@ -236,7 +298,7 @@ async function resolvePayment(
             : null;
         if (amountMatch?.id) {
           console.log('[Payment] Resolved invoice', storedId, '-> payment (amount match)', amountMatch.id);
-          return { id: amountMatch.id, payment: amountMatch };
+          return { id: amountMatch.id, payment: amountMatch, invoiceOrderId };
         }
         const sorted = [...succeeded].sort((a, b) => {
           const ta = Date.parse(a?.created_at ?? '') || 0;
@@ -245,7 +307,7 @@ async function resolvePayment(
         });
         if (sorted[0]?.id) {
           console.log('[Payment] Resolved invoice', storedId, '-> payment (most recent)', sorted[0].id);
-          return { id: sorted[0].id, payment: sorted[0] };
+          return { id: sorted[0].id, payment: sorted[0], invoiceOrderId };
         }
       }
     }

@@ -283,12 +283,15 @@ async function resolveCrossChannelEarnGuard(params: {
     foodicsRef = normalizeOptionalString(orderRow?.foodics_order_id);
   }
   if (!foodicsRef) return { foodicsRef: null, priorBranchEarn: false };
+  // LOY-9: a prior earn for this physical purchase can come from either the
+  // branch/POS channel OR a kiosk walk-in capture (source='walkin'). Both key
+  // idempotency on the Foodics order uuid, so include both in the dedup lookup.
   const { data: branchEarn } = await supabaseAdmin
     .from('loyalty_transactions')
     .select('id')
     .eq('merchant_id', params.merchantId)
     .eq('type', 'earn')
-    .eq('source', 'branch')
+    .in('source', ['branch', 'walkin'])
     .eq('reference_id', foodicsRef)
     .limit(1)
     .maybeSingle();
@@ -297,6 +300,18 @@ async function resolveCrossChannelEarnGuard(params: {
 
 function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Normalize a Supabase RPC result for a function that `RETURNS jsonb`. The JS
+ * client hands back the object directly for a scalar jsonb function, but wraps
+ * single-row set-returning functions in a one-element array — accept both so
+ * callers can read `.status` / `.new_balance` uniformly.
+ */
+function rpcResultObject(data: unknown): Record<string, any> | null {
+  if (!data) return null;
+  if (Array.isArray(data)) return (data[0] as Record<string, any>) ?? null;
+  return typeof data === 'object' ? (data as Record<string, any>) : null;
 }
 
 function buildBranchReference(prefix: string, referenceId?: string | null) {
@@ -364,56 +379,49 @@ async function redeemPointsFromBalance(params: {
   const pointsToRedeem = Math.floor(Number(params.points));
   if (pointsToRedeem <= 0) throw new Error('Invalid points amount');
 
-  let balQuery = supabaseAdmin
-    .from('loyalty_points')
-    .select('points')
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId);
-  if (programId) balQuery = balQuery.eq('program_id', programId);
-  const { data: balance } = await balQuery.single();
-
-  if (!balance || balance.points < pointsToRedeem) {
-    throw new Error(`Insufficient points. Available: ${balance?.points ?? 0}`);
-  }
-
   const discountSar = +(pointsToRedeem * config.point_value_sar).toFixed(2);
 
-  // Atomic conditional update: only deduct if balance still >= pointsToRedeem (prevents double-spend race)
-  let updateQuery = supabaseAdmin
-    .from('loyalty_points')
-    .update({ points: balance.points - pointsToRedeem, updated_at: new Date().toISOString() })
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .gte('points', pointsToRedeem); // Guard: only succeeds if points still sufficient
-  if (programId) updateQuery = updateQuery.eq('program_id', programId);
-  const { data: updated, error: updateErr } = await updateQuery.select('points').maybeSingle();
-  if (updateErr || !updated) {
-    throw new Error('Redemption failed — balance may have changed. Please try again.');
-  }
-
-  await supabaseAdmin.from('loyalty_transactions').insert({
-    customer_id: params.customerId,
-    merchant_id: params.merchantId,
-    order_id: params.orderId,
-    type: 'redeem',
-    points: -pointsToRedeem,
-    description: `Redeemed ${pointsToRedeem} points for ${discountSar} SAR discount`,
-    branch_id: normalizeOptionalString(params.context?.branchId),
-    source: normalizeOptionalString(params.context?.source) ?? 'app',
-    actor_user_id: normalizeOptionalString(params.context?.actorUserId),
-    actor_role: normalizeOptionalString(params.context?.actorRole),
-    reference_type: normalizeOptionalString(params.context?.referenceType),
-    reference_id: normalizeOptionalString(params.context?.referenceId),
-    metadata: params.context?.metadata ?? {},
-    ...(programId ? { program_id: programId } : {}),
+  // LOY-1 / LOY-4: atomic deduct + ledger insert via the SECURITY DEFINER
+  // redeem_loyalty_points RPC. It guards `points >= x` (no read-modify-write
+  // double-spend race) and inserts the redeem row under the partial unique
+  // index idx_loyalty_tx_points_redeem_per_order keyed on
+  // (merchant_id, customer_id, order_id) — so a Foodics double-fire / client
+  // retry that replays the SAME order_id dedups instead of deducting twice.
+  // The /redeem route requires a real orderId (400 otherwise) and
+  // /branch/redeem-points derives a stable `branch-redeem:<ref>` id, so the
+  // per-order index always has a stable key to arbitrate on.
+  const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('redeem_loyalty_points', {
+    p_customer_id: params.customerId,
+    p_merchant_id: params.merchantId,
+    p_points: pointsToRedeem,
+    p_order_id: params.orderId,
+    p_reference_type: normalizeOptionalString(params.context?.referenceType),
+    p_reference_id: normalizeOptionalString(params.context?.referenceId),
+    p_source: normalizeOptionalString(params.context?.source) ?? 'app',
+    p_description: `Redeemed ${pointsToRedeem} points for ${discountSar} SAR discount`,
+    p_program_id: programId,
+    p_branch_id: params.context?.branchId ?? null,
+    p_actor_user_id: params.context?.actorUserId ?? null,
+    p_actor_role: params.context?.actorRole ?? null,
   });
+  if (rpcErr) throw new Error(rpcErr.message);
+  const rpcResult = rpcResultObject(rpcData);
+  const status = rpcResult?.status;
+  if (status === 'insufficient') {
+    // Route maps /insufficient points/i → HTTP 400 (unchanged behavior).
+    throw new Error('Insufficient points');
+  }
+  const newBalance = Number(rpcResult?.new_balance ?? 0);
 
   notifyPassUpdateSafe(params.customerId, params.merchantId);
   return {
     success: true,
     pointsRedeemed: pointsToRedeem,
     discountSar,
-    newBalance: balance.points - pointsToRedeem,
+    newBalance,
+    // status === 'duplicate' → same order already redeemed; return the prior
+    // redemption idempotently (the RPC did not deduct again).
+    ...(status === 'duplicate' ? { deduplicated: true } : {}),
   };
 }
 
@@ -450,41 +458,42 @@ async function redeemRewardFromBalance(params: {
     normalizeOptionalString(params.context?.referenceId) ||
     `branch-reward:${params.rewardId}:${Date.now()}`;
 
-  // Atomic conditional update: only deduct if balance still >= reward.points_cost (prevents double-spend race)
-  const { data: updated, error: updateErr } = await supabaseAdmin
-    .from('loyalty_points')
-    .update({ points: balance.points - reward.points_cost, updated_at: new Date().toISOString() })
-    .eq('customer_id', params.customerId)
-    .eq('merchant_id', params.merchantId)
-    .gte('points', reward.points_cost)
-    .select('points')
-    .maybeSingle();
-  if (updateErr || !updated) {
-    throw new Error('Redemption failed — balance may have changed. Please try again.');
-  }
-
-  await supabaseAdmin.from('loyalty_transactions').insert({
-    customer_id: params.customerId,
-    merchant_id: params.merchantId,
-    order_id: referenceId,
-    type: 'redeem',
-    points: -reward.points_cost,
-    description: `Redeemed reward: ${reward.name}`,
-    branch_id: normalizeOptionalString(params.context?.branchId),
-    source: normalizeOptionalString(params.context?.source) ?? 'app',
-    actor_user_id: normalizeOptionalString(params.context?.actorUserId),
-    actor_role: normalizeOptionalString(params.context?.actorRole),
-    reference_type: normalizeOptionalString(params.context?.referenceType) ?? 'reward',
-    reference_id: referenceId,
-    metadata: { ...(params.context?.metadata ?? {}), reward_id: reward.id, reward_name: reward.name },
+  // LOY-1: atomic deduct + ledger via redeem_loyalty_points. Replaces the
+  // read-modify-write `.gte()` update (double-spend race) with the SECURITY
+  // DEFINER RPC, which guards the balance and inserts the redeem row in one
+  // transaction. order_id = referenceId so a stable caller-supplied reference
+  // dedups on the per-order unique index (the default time-based reference is
+  // unique per call, matching the prior no-idempotency behavior).
+  const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('redeem_loyalty_points', {
+    p_customer_id: params.customerId,
+    p_merchant_id: params.merchantId,
+    p_points: reward.points_cost,
+    p_order_id: referenceId,
+    p_reference_type: normalizeOptionalString(params.context?.referenceType) ?? 'reward',
+    p_reference_id: referenceId,
+    p_source: normalizeOptionalString(params.context?.source) ?? 'app',
+    p_description: `Redeemed reward: ${reward.name}`,
+    p_program_id: null,
+    p_branch_id: params.context?.branchId ?? null,
+    p_actor_user_id: params.context?.actorUserId ?? null,
+    p_actor_role: params.context?.actorRole ?? null,
+    p_metadata: { reward_id: reward.id, reward_name: reward.name },
   });
+  if (rpcErr) throw new Error(rpcErr.message);
+  const rpcResult = rpcResultObject(rpcData);
+  const status = rpcResult?.status;
+  if (status === 'insufficient') {
+    throw new Error('Insufficient points');
+  }
+  const newBalance = Number(rpcResult?.new_balance ?? 0);
 
   notifyPassUpdateSafe(params.customerId, params.merchantId);
   return {
     success: true,
     reward: reward.name,
     pointsSpent: reward.points_cost,
-    newBalance: balance.points - reward.points_cost,
+    newBalance,
+    ...(status === 'duplicate' ? { deduplicated: true } : {}),
   };
 }
 
@@ -873,7 +882,7 @@ loyaltyRouter.post('/earn', async (req, res) => {
     // means the customer has paid and the merchant accepted it.
     const orderCheck = await supabaseAdmin
       .from('customer_orders')
-      .select('id, status, customer_id, merchant_id, total_sar')
+      .select('id, status, customer_id, merchant_id, total_sar, wallet_paid_sar, cashback_paid_sar')
       .eq('id', orderId)
       .eq('customer_id', customerId)
       .eq('merchant_id', merchantId || '')
@@ -889,19 +898,35 @@ loyaltyRouter.post('/earn', async (req, res) => {
     const customerType = await initCustomerLoyaltyType(merchantId || '', customerId, config.loyalty_type);
     const loyaltyType = customerType;
 
-    // M15 canonical earn base = net-of-loyalty. Callers here are server-side
-    // (nooksweb webhook / POS relay) and pass the net sale amount as
-    // orderSubtotal — POS sales carry no in-app wallet/cashback funding, so
-    // it is already net. The app-commit path computes the same base via
-    // netOfLoyaltyEarnBase() in orders.ts, so one purchase earns identically
-    // regardless of channel.
+    // LOY-7 / LOY-8 / M15: derive the earn base from the DB order row, never the
+    // caller's `orderSubtotal`. Canonical base = net-of-loyalty =
+    // total_sar - wallet_paid_sar - cashback_paid_sar, clamped ≥ 0. This is
+    // channel-independent and identical to netOfLoyaltyEarnBase() in orders.ts,
+    // so one physical purchase earns the same regardless of which path fires and
+    // a buggy/compromised internal caller cannot inflate the base via the body.
+    const orderRow = orderCheck.data as {
+      total_sar?: number | null;
+      wallet_paid_sar?: number | null;
+      cashback_paid_sar?: number | null;
+    };
+    const earnBase = Math.max(
+      0,
+      Number(
+        (
+          Number(orderRow.total_sar ?? 0) -
+          Number(orderRow.wallet_paid_sar ?? 0) -
+          Number(orderRow.cashback_paid_sar ?? 0)
+        ).toFixed(2),
+      ),
+    );
+
     if (loyaltyType === 'cashback') {
-      const result = await earnCashback(merchantId || '', customerId, orderId, Number(orderSubtotal));
+      const result = await earnCashback(merchantId || '', customerId, orderId, earnBase);
       return res.json(result);
     }
 
     // Default: points
-    const result = await earnPoints(customerId, orderId, Number(orderSubtotal), merchantId || '');
+    const result = await earnPoints(customerId, orderId, earnBase, merchantId || '');
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to earn' });
@@ -911,6 +936,32 @@ loyaltyRouter.post('/earn', async (req, res) => {
 /**
  * Shared earn logic – callable from routes and from order status handler
  */
+/**
+ * LOY-13: type-aware earn dispatcher for the app order-lifecycle paths
+ * (Delivered / customer-received). Mirrors the /earn route's branch so a
+ * cashback merchant's customer earns CASHBACK, not points, regardless of
+ * which server path fires the earn. `earnBase` is the already-computed
+ * net-of-loyalty base (callers use netOfLoyaltyEarnBase). Idempotency is
+ * enforced inside earnPoints/earnCashback via the partial unique indexes.
+ */
+export async function earnForOrder(
+  customerId: string,
+  orderId: string,
+  earnBase: number,
+  merchantId: string,
+  context?: LoyaltyActionContext,
+): Promise<unknown> {
+  if (!merchantId || !customerId) return { success: false, skipped: 'missing_ids' };
+  if (!supabaseAdmin) throw new Error('Database not configured');
+  const config = await getMerchantConfig(merchantId);
+  if (!config.loyalty_type) return { success: false, skipped: 'no_loyalty' };
+  const loyaltyType = await initCustomerLoyaltyType(merchantId, customerId, config.loyalty_type);
+  if (loyaltyType === 'cashback') {
+    return earnCashback(merchantId, customerId, orderId, earnBase, context);
+  }
+  return earnPoints(customerId, orderId, earnBase, merchantId, context);
+}
+
 export async function earnPoints(
   customerId: string,
   orderId: string,
@@ -1701,16 +1752,23 @@ export async function consumeOrderMilestones(
 
   for (const milestoneId of milestoneIds) {
     try {
-      // Idempotency: one redemption per (order, milestone).
+      // Per-(order, milestone) idempotency key. The A4 partial unique index
+      // idx_loyalty_tx_points_redeem_per_order is scoped to
+      // (merchant_id, customer_id, order_id) and does NOT include reference_id,
+      // so multiple milestone redeems for one order would collide on the raw
+      // order id (and collide with the POS points-for-discount redeem, which
+      // uses the bare order id). Namespace each milestone under
+      // `<orderId>:m:<mid>` so the index dedups per-milestone.
+      const milestoneOrderId = `${orderId}:m:${milestoneId}`;
+
+      // Idempotency fast-path: a retried commit already deducted this milestone.
       const { data: prior } = await supabaseAdmin
         .from('loyalty_transactions')
         .select('id')
         .eq('customer_id', customerId)
         .eq('merchant_id', merchantId)
-        .eq('order_id', orderId)
+        .eq('order_id', milestoneOrderId)
         .eq('type', 'redeem')
-        .eq('reference_type', 'milestone')
-        .eq('reference_id', milestoneId)
         .maybeSingle();
       if (prior) { deduplicated.push(milestoneId); continue; }
 
@@ -1730,59 +1788,86 @@ export async function consumeOrderMilestones(
         continue;
       }
 
-      const { data: bal } = await supabaseAdmin
-        .from('loyalty_points')
-        .select('points')
+      // LOY-2: skip the commit-time deduction if this milestone was already
+      // pre-redeemed on the rewards screen (handleRedeemMilestone, keyed on
+      // `milestone-redeem:<mid>:<key>`). Those points were already taken there;
+      // deducting again here double-charges one reward. Claim the most recent
+      // ACTIVE (un-refunded, un-consumed) pre-redemption and mark it consumed so
+      // a later order for the same catalog milestone can't free-ride on it.
+      const { data: preRows } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .select('id, metadata')
         .eq('customer_id', customerId)
         .eq('merchant_id', merchantId)
-        .maybeSingle();
-      const current = Number(bal?.points ?? 0);
-      if (current < threshold) {
-        failed.push({ milestoneId, reason: 'insufficient_points' });
-        continue;
-      }
-
-      // Ledger row first (audit anchor), then atomic .gte() deduct so a
-      // concurrent redeem can't overdraw.
-      const { data: txRow, error: txErr } = await supabaseAdmin
-        .from('loyalty_transactions')
-        .insert({
+        .eq('type', 'redeem')
+        .eq('loyalty_type', 'points')
+        .eq('reference_type', 'milestone')
+        .eq('reference_id', milestoneId)
+        .like('order_id', 'milestone-redeem:%')
+        .order('created_at', { ascending: false })
+        .limit(25);
+      const activePre = (preRows ?? []).find((r: { metadata?: Record<string, unknown> | null }) => {
+        const meta = (r.metadata ?? {}) as { refunded_at?: unknown; consumed_by_order?: unknown };
+        return !meta.refunded_at && !meta.consumed_by_order;
+      }) as { id: string; metadata?: Record<string, unknown> | null } | undefined;
+      if (activePre) {
+        await supabaseAdmin
+          .from('loyalty_transactions')
+          .update({
+            metadata: {
+              ...((activePre.metadata as Record<string, unknown>) ?? {}),
+              consumed_by_order: orderId,
+              consumed_at: new Date().toISOString(),
+            },
+          })
+          .eq('id', activePre.id);
+        // Anchor a zero-point marker under the per-milestone order key so a
+        // retried commit dedups on the fast-path above without re-deducting.
+        const { error: markerErr } = await supabaseAdmin.from('loyalty_transactions').insert({
           customer_id: customerId,
           merchant_id: merchantId,
-          order_id: orderId,
+          order_id: milestoneOrderId,
           type: 'redeem',
           loyalty_type: 'points',
-          points: -threshold,
-          description: `Redeemed milestone: ${milestone.reward_name ?? ''}`,
+          points: 0,
+          description: `Milestone pre-redeemed on rewards screen: ${milestone.reward_name ?? ''}`,
           source: 'app',
           reference_type: 'milestone',
           reference_id: milestoneId,
-          metadata: { idempotency_key: `order:${orderId}:${milestoneId}`, milestone_name: milestone.reward_name ?? '' },
-        })
-        .select('id')
-        .single();
-      if (txErr || !txRow) {
-        // 23505 = the partial unique index caught a concurrent/duplicate
-        // redemption for this (order, milestone) — already consumed, no-op.
-        if ((txErr as { code?: string } | null)?.code === '23505') { deduplicated.push(milestoneId); continue; }
-        failed.push({ milestoneId, reason: txErr?.message ?? 'tx_insert_failed' });
+          metadata: { pre_redeem_of: activePre.id, milestone_name: milestone.reward_name ?? '' },
+        });
+        if (markerErr && (markerErr as { code?: string }).code !== '23505') {
+          failed.push({ milestoneId, reason: markerErr.message ?? 'marker_insert_failed' });
+          continue;
+        }
+        deduplicated.push(milestoneId);
         continue;
       }
 
-      const { data: updated } = await supabaseAdmin
-        .from('loyalty_points')
-        .update({ points: current - threshold, updated_at: new Date().toISOString() })
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId)
-        .gte('points', threshold)
-        .select('points')
-        .maybeSingle();
-      if (!updated) {
-        // Balance changed under us (concurrent redeem) — undo the ledger row.
-        await supabaseAdmin.from('loyalty_transactions').delete().eq('id', txRow.id);
-        failed.push({ milestoneId, reason: 'balance_changed' });
+      // LOY-10: atomic deduct + ledger insert in one SECURITY DEFINER call —
+      // no crash window where the ledger row exists but the balance never
+      // dropped (the previous insert-then-`.gte()`-update-then-rollback path
+      // left an orphan redeem row if the process died between the two writes).
+      const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('redeem_loyalty_points', {
+        p_customer_id: customerId,
+        p_merchant_id: merchantId,
+        p_points: threshold,
+        p_order_id: milestoneOrderId,
+        p_reference_type: 'milestone',
+        p_reference_id: milestoneId,
+        p_source: 'app',
+        p_description: `Redeemed milestone: ${milestone.reward_name ?? ''}`,
+        p_program_id: null,
+        p_metadata: { milestone_id: milestoneId, milestone_name: milestone.reward_name ?? null },
+      });
+      if (rpcErr) {
+        if ((rpcErr as { code?: string }).code === '23505') { deduplicated.push(milestoneId); continue; }
+        failed.push({ milestoneId, reason: rpcErr.message ?? 'rpc_failed' });
         continue;
       }
+      const status = rpcResultObject(rpcData)?.status;
+      if (status === 'duplicate') { deduplicated.push(milestoneId); continue; }
+      if (status === 'insufficient') { failed.push({ milestoneId, reason: 'insufficient_points' }); continue; }
       redeemed.push(milestoneId);
     } catch (e: any) {
       failed.push({ milestoneId, reason: e?.message ?? 'error' });
@@ -1811,12 +1896,18 @@ export async function restoreStampMilestonesForRefund(params: {
   let pointsRestored = 0;
   let anyAlready = false;
 
+  // consumeOrderMilestones now namespaces each milestone redeem under
+  // `<orderId>:m:<mid>` (LOY-2/LOY-10) so the per-order unique index can dedup
+  // per-milestone. Match both the composite rows AND any legacy rows keyed on
+  // the bare orderId with a prefix LIKE. order ids are UUIDs (never a prefix of
+  // one another) so this can't leak across orders; zero-point pre-redemption
+  // markers fall out via the `giveBack <= 0` skip below.
   const { data: redeems } = await supabaseAdmin
     .from('loyalty_transactions')
     .select('id, reference_id, points')
     .eq('customer_id', params.customerId)
     .eq('merchant_id', params.merchantId)
-    .eq('order_id', params.orderId)
+    .like('order_id', `${params.orderId}%`)
     .eq('type', 'redeem')
     .eq('reference_type', 'milestone');
   if (!redeems || redeems.length === 0) {
@@ -1942,26 +2033,49 @@ loyaltyRouter.post('/redeem-cashback', async (req, res) => {
     const balance = balRow?.balance_sar ?? 0;
     if (balance < amount) return res.status(400).json({ error: `Insufficient cashback. Available: ${balance} SAR` });
 
-    // Atomic conditional update: only deduct if balance still >= amount (prevents double-spend race)
-    const { data: cbUpdated, error: cbUpdateErr } = await supabaseAdmin.from('loyalty_cashback_balances')
-      .update({ balance_sar: +(balance - amount).toFixed(2), updated_at: new Date().toISOString() })
-      .eq('customer_id', customerId).eq('merchant_id', merchantId).eq('config_version', balRow!.config_version)
-      .gte('balance_sar', amount)
-      .select('balance_sar')
-      .maybeSingle();
-    if (cbUpdateErr || !cbUpdated) {
-      return res.status(409).json({ error: 'Redemption failed — balance may have changed. Please try again.' });
+    // LOY-1: atomic deduct + ledger via redeem_loyalty_cashback. Replaces the
+    // read-modify-write `.gte()` update + separate insert with one SECURITY
+    // DEFINER call that guards `balance_sar >= amount` and inserts the redeem
+    // row under the partial unique index idx_loyalty_tx_cashback_redeem_per_order
+    // — closing both the double-spend race and the check-then-insert window that
+    // could slip past the priorRedeem fast-path above. p_config_version pins the
+    // ledger row (and the balance row targeted) to the same version the balance
+    // read resolved, matching the prior behavior.
+    const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('redeem_loyalty_cashback', {
+      p_customer_id: customerId,
+      p_merchant_id: merchantId,
+      p_amount_sar: amount,
+      p_order_id: orderId,
+      p_reference_type: null,
+      p_reference_id: null,
+      p_source: 'app',
+      p_description: `Used ${amount} SAR cashback`,
+      p_config_version: balRow?.config_version ?? config.config_version ?? null,
+    });
+    if (rpcErr) return res.status(500).json({ error: rpcErr.message });
+    const rpcResult = rpcResultObject(rpcData);
+    const status = rpcResult?.status;
+    const rpcNewBalance = rpcResult?.new_balance_sar;
+    if (status === 'insufficient') {
+      return res.status(400).json({ error: `Insufficient cashback. Available: ${balance} SAR` });
+    }
+    if (status === 'duplicate') {
+      // Same order already redeemed (race-loser past the fast-path) — return the
+      // prior redemption idempotently, matching the existing deduplicated shape.
+      return res.json({
+        success: true,
+        amountRedeemed: amount,
+        newBalance: rpcNewBalance != null ? +Number(rpcNewBalance).toFixed(2) : null,
+        deduplicated: true,
+      });
     }
 
-    await supabaseAdmin.from('loyalty_transactions').insert({
-      customer_id: customerId, merchant_id: merchantId, order_id: orderId,
-      type: 'redeem', loyalty_type: 'cashback', amount_sar: -amount,
-      points: 0, description: `Used ${amount} SAR cashback`,
-      source: 'app', config_version: balRow!.config_version,
-    });
-
     notifyPassUpdateSafe(customerId, merchantId);
-    res.json({ success: true, amountRedeemed: amount, newBalance: +(balance - amount).toFixed(2) });
+    res.json({
+      success: true,
+      amountRedeemed: amount,
+      newBalance: rpcNewBalance != null ? +Number(rpcNewBalance).toFixed(2) : +(balance - amount).toFixed(2),
+    });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem cashback' });
   }
@@ -2082,51 +2196,6 @@ async function handleRedeemMilestone(req: Request, res: Response) {
       }))
     ) return;
 
-    // ─── Idempotency check ───
-    // Match on metadata->>'idempotency_key' within the last 24h.
-    // If found, return the previous result without re-deducting.
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data: priorRedeem } = await supabaseAdmin
-      .from('loyalty_transactions')
-      .select('id, points, metadata')
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId)
-      .eq('type', 'redeem')
-      .eq('reference_type', 'milestone')
-      .eq('reference_id', milestoneId)
-      .gte('created_at', twentyFourHoursAgo)
-      .order('created_at', { ascending: false })
-      .limit(20);
-    if (priorRedeem && priorRedeem.length > 0) {
-      const match = priorRedeem.find((r) => {
-        const meta = (r.metadata ?? {}) as { idempotency_key?: string };
-        return meta.idempotency_key === idempotencyKey;
-      });
-      if (match) {
-        // Return current balance + milestone details for the client.
-        const { data: currentBalance } = await supabaseAdmin
-          .from('loyalty_points')
-          .select('points')
-          .eq('customer_id', customerId)
-          .eq('merchant_id', merchantId)
-          .maybeSingle();
-        const { data: milestoneRow } = await supabaseAdmin
-          .from('loyalty_milestones')
-          .select('reward_name, foodics_product_ids')
-          .eq('id', milestoneId)
-          .eq('merchant_id', merchantId)
-          .maybeSingle();
-        return res.json({
-          success: true,
-          newBalance: currentBalance?.points ?? 0,
-          redemptionId: match.id,
-          milestoneRewardName: milestoneRow?.reward_name ?? '',
-          foodicsProductIds: milestoneRow?.foodics_product_ids ?? [],
-          deduplicated: true,
-        });
-      }
-    }
-
     // ─── Look up milestone (merchant-scoped) ───
     const { data: milestone, error: milestoneErr } = await supabaseAdmin
       .from('loyalty_milestones')
@@ -2147,7 +2216,7 @@ async function handleRedeemMilestone(req: Request, res: Response) {
 
     await ensureLoyaltyMemberProfile(merchantId, customerId);
 
-    // ─── Read current balance ───
+    // ─── Read current balance (for the informative not-enough-points 400) ───
     const { data: balanceRow } = await supabaseAdmin
       .from('loyalty_points')
       .select('points')
@@ -2163,65 +2232,74 @@ async function handleRedeemMilestone(req: Request, res: Response) {
       });
     }
 
-    // ─── Insert transaction FIRST, then deduct ───
-    // Commit-before-deduct discipline: the transaction row is the
-    // audit-trail anchor; if the balance update fails we still have
-    // a record of the attempt. The balance update is atomic with a
-    // .gte() guard so a concurrent redemption can't overdraw.
-    const { data: txRow, error: txErr } = await supabaseAdmin
-      .from('loyalty_transactions')
-      .insert({
-        customer_id: customerId,
-        merchant_id: merchantId,
-        order_id: `milestone-redeem:${milestoneId}:${idempotencyKey}`,
-        type: 'redeem',
-        loyalty_type: 'points',
-        points: -pointsThreshold,
-        description: `Redeemed milestone: ${milestone.reward_name ?? ''}`,
-        source: 'app',
-        reference_type: 'milestone',
-        reference_id: milestoneId,
-        metadata: {
-          idempotency_key: idempotencyKey,
-          milestone_name: milestone.reward_name ?? '',
-        },
-      })
-      .select('id')
-      .single();
-    if (txErr || !txRow) {
-      return res.status(500).json({ error: txErr?.message || 'Failed to record redemption' });
+    // ─── Atomic deduct + ledger via redeem_loyalty_points (LOY-10) ───
+    // order_id encodes the idempotencyKey, so a retry with the same key dedups
+    // on the A4 per-order unique index. The SECURITY DEFINER RPC does
+    // INSERT-then-UPDATE in one transaction (no crash window where the ledger
+    // row exists but the balance never dropped) and returns {status} — a
+    // race-loser comes back as {status:'duplicate'} rather than raising 23505
+    // to a 500 (LOY-15). Idempotency here replaces the old 24h metadata scan.
+    const redeemOrderId = `milestone-redeem:${milestoneId}:${idempotencyKey}`;
+    const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('redeem_loyalty_points', {
+      p_customer_id: customerId,
+      p_merchant_id: merchantId,
+      p_points: pointsThreshold,
+      p_order_id: redeemOrderId,
+      p_reference_type: 'milestone',
+      p_reference_id: milestoneId,
+      p_source: 'app',
+      p_description: `Redeemed milestone: ${milestone.reward_name ?? ''}`,
+      p_program_id: null,
+      p_metadata: { milestone_id: milestoneId, milestone_name: milestone.reward_name ?? null, idempotency_key: idempotencyKey },
+    });
+    const rpcResult = rpcResultObject(rpcData);
+    const status = rpcResult?.status;
+    // LOY-15: treat a duplicate (status or a re-raised 23505) as a
+    // deduplicated success, not a 500.
+    const isDuplicate = status === 'duplicate' || (rpcErr as { code?: string } | null)?.code === '23505';
+    if (rpcErr && !isDuplicate) {
+      return res.status(500).json({ error: rpcErr.message || 'Failed to record redemption' });
+    }
+    if (status === 'insufficient') {
+      return res.status(400).json({
+        error: 'Not enough points',
+        needed: pointsThreshold,
+        current: currentPoints,
+      });
     }
 
-    // Atomic conditional balance deduct — .gte() guarantees we don't
-    // overdraw if a concurrent redeem already ran.
-    const { data: updatedBalance, error: updateErr } = await supabaseAdmin
-      .from('loyalty_points')
-      .update({
-        points: currentPoints - pointsThreshold,
-        updated_at: new Date().toISOString(),
-      })
+    // redemptionId is load-bearing — the app passes it to /unredeem-milestone
+    // to refund on cart removal. The RPC returns only {status,new_balance}, so
+    // resolve the redeem row by its unique order_id.
+    const { data: redeemRow } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .select('id')
       .eq('customer_id', customerId)
       .eq('merchant_id', merchantId)
-      .gte('points', pointsThreshold)
-      .select('points')
+      .eq('order_id', redeemOrderId)
+      .eq('type', 'redeem')
       .maybeSingle();
-    if (updateErr || !updatedBalance) {
-      // Roll back the transaction row we inserted — the balance
-      // didn't drop, so we shouldn't leave a redemption record.
-      await supabaseAdmin.from('loyalty_transactions').delete().eq('id', txRow.id);
-      return res.status(409).json({
-        error: 'Redemption failed — balance changed during processing. Please try again.',
-      });
+
+    let newBalance = rpcResult?.new_balance;
+    if (newBalance == null) {
+      const { data: bal } = await supabaseAdmin
+        .from('loyalty_points')
+        .select('points')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .maybeSingle();
+      newBalance = bal?.points ?? 0;
     }
 
     notifyPassUpdateSafe(customerId, merchantId);
 
     return res.json({
       success: true,
-      newBalance: updatedBalance.points,
-      redemptionId: txRow.id,
+      newBalance,
+      redemptionId: redeemRow?.id ?? null,
       milestoneRewardName: milestone.reward_name ?? '',
       foodicsProductIds: milestone.foodics_product_ids ?? [],
+      ...(isDuplicate ? { deduplicated: true } : {}),
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to redeem milestone' });

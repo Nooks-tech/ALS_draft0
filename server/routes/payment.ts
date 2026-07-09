@@ -749,6 +749,15 @@ paymentRouter.post('/token-pay', async (req, res) => {
       return res.status(400).json({ error: `Cannot pay for order status: ${order.status}` });
     }
 
+    // REG-1: token-pay must honour the same effective subscription-policy gate
+    // as /commit and payment initiation — a suspended / trial-expired / lapsed
+    // merchant cannot take new saved-card charges. getMerchantPaymentRuntimeConfig
+    // now computes customerPaymentsEnabled from the effective policy.
+    const tokenPayRuntime = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
+    if (!tokenPayRuntime.customerPaymentsEnabled) {
+      return res.status(403).json({ error: 'Payments are not enabled for this merchant' });
+    }
+
     // #8: local idempotency guard. If this order already carries a real card
     // payment id, a prior /token-pay already charged it — return that instead
     // of creating a second Moyasar charge. Moyasar's deterministic given_id

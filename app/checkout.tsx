@@ -887,21 +887,12 @@ export default function CheckoutScreen() {
             .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
         }
       }
-      // Stamp-milestone redemption runs AFTER the await commitOrder
-      // above. If commit failed it threw and we never got here, so
-      // stamps stay intact. If the redeem call itself fails post-
-      // commit, log it — the order already shipped with the freebie,
-      // server-side reconciliation can clean up stamp_milestone_ids
-      // if needed.
-      if (selectedMilestoneIds.size > 0 && user?.id && merchantId) {
-        for (const milestoneId of selectedMilestoneIds) {
-          void loyaltyApi
-            .redeemStampMilestone(user.id, merchantId, milestoneId, orderId)
-            .catch((err: any) =>
-              console.warn('[Checkout] Post-commit stamp redeem failed:', milestoneId, err?.message)
-            );
-        }
-      }
+      // LOY-2: milestone redemption is handled ATOMICALLY server-side during
+      // commit (consumeOrderMilestones deducts the selected milestones and
+      // dedups against any rewards-screen pre-redemption). The old post-commit
+      // redeemStampMilestone loop was deprecated (it 400s without an
+      // idempotencyKey) and is removed here so it can never be "fixed" into a
+      // second deduction on top of the server-side consume.
       // Cart clear below also removes any reward items, which
       // automatically empties the milestone-selected set since
       // selection is now derived from cart contents.
@@ -1187,15 +1178,10 @@ export default function CheckoutScreen() {
               .catch((e) => console.warn('[Checkout] Points redeem failed:', e?.message));
           }
         }
-        if (selectedMilestoneIds.size > 0 && merchantId) {
-          for (const milestoneId of selectedMilestoneIds) {
-            void loyaltyApi
-              .redeemStampMilestone(user.id, merchantId, milestoneId, walletOrderId)
-              .catch((err: any) =>
-                console.warn('[Checkout] Post-commit stamp redeem failed:', milestoneId, err?.message)
-              );
-          }
-        }
+        // LOY-2: milestone consumption for this wallet order is handled
+        // atomically server-side during commit (consumeOrderMilestones); the
+        // deprecated post-commit redeemStampMilestone loop (which 400s without
+        // an idempotencyKey) is removed to prevent any double-deduction.
 
         addOrder(
           {

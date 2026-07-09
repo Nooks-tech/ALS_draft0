@@ -107,7 +107,7 @@ async function fetchMerchantPaymentRuntimeConfig(
     };
   }
 
-  const [{ data, error }, { data: merchant }] = await Promise.all([
+  const [{ data, error }, { data: merchant }, { data: latestSub }] = await Promise.all([
     supabaseAdmin
       .from('merchant_payment_settings')
       .select('*')
@@ -115,8 +115,17 @@ async function fetchMerchantPaymentRuntimeConfig(
       .maybeSingle(),
     supabaseAdmin
       .from('merchants')
-      .select('status')
+      .select('status, trial_ends_at, deleted_at')
       .eq('id', merchantId)
+      .maybeSingle(),
+    // REG-1: latest subscription row for the payment-policy gate below.
+    supabaseAdmin
+      .from('subscriptions')
+      .select('status, current_period_end_at, expires_at')
+      .eq('merchant_id', merchantId)
+      .order('current_period_end_at', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle(),
   ]);
 
@@ -134,9 +143,58 @@ async function fetchMerchantPaymentRuntimeConfig(
     };
   }
 
-  const merchantStatus =
-    typeof merchant?.status === 'string' ? merchant.status.trim().toLowerCase() : '';
-  const merchantIsSuspended = merchantStatus === 'suspended';
+  // REG-1: gate customer payments on the EFFECTIVE subscription policy, not
+  // just an explicit `status='suspended'`. This mirrors the order-intake gate
+  // in server/routes/orders.ts so the payment-initiate paths (Moyasar invoice,
+  // STC Pay, saved-card token) agree with order-commit on who may transact.
+  // Allowed: active free trial, healthy active subscription, cancelled/expired
+  // sub still inside its paid period, or a lapsed/past-due sub within grace.
+  // Denied: soft-deleted, suspended, expired trial with no subscription, or a
+  // lapsed sub past grace. Only applied when the merchant row actually
+  // resolved — a null/transient read must not lock out a legitimately-active
+  // merchant (matches the prior suspended-only behavior on a null merchant).
+  const SUBSCRIPTION_GRACE_MS = 2 * 24 * 60 * 60 * 1000; // SUBSCRIPTION_GRACE_PERIOD_DAYS (nooksweb)
+  const nowMs = Date.now();
+  const parseMs = (v: unknown): number | null => {
+    if (typeof v !== 'string' || !v) return null;
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : null;
+  };
+
+  let paymentsPolicyAllowed = true;
+  if (merchant) {
+    const trialEndsMs = parseMs(merchant.trial_ends_at);
+    const trialActive = trialEndsMs != null && trialEndsMs > nowMs;
+    const merchantStatus =
+      typeof merchant.status === 'string' ? merchant.status.trim().toLowerCase() : null;
+
+    if (merchant.deleted_at) {
+      paymentsPolicyAllowed = false;
+    } else if (merchantStatus === 'suspended') {
+      paymentsPolicyAllowed = false;
+    } else if (!latestSub) {
+      // Never subscribed: open only while the free trial runs.
+      paymentsPolicyAllowed = trialActive;
+    } else {
+      const subStatus = typeof latestSub.status === 'string' ? latestSub.status : '';
+      const periodEndMs =
+        parseMs(latestSub.current_period_end_at) ?? parseMs(latestSub.expires_at);
+      if (subStatus === 'cancelled' || subStatus === 'expired') {
+        // Auto-renew off / ended: valid until the paid period actually ends.
+        paymentsPolicyAllowed = periodEndMs != null && periodEndMs > nowMs;
+      } else if (
+        subStatus === 'past_due' ||
+        (subStatus === 'active' && periodEndMs != null && periodEndMs <= nowMs)
+      ) {
+        // Renewal failed or the period lapsed — allowed only within grace.
+        const graceEndMs = periodEndMs != null ? periodEndMs + SUBSCRIPTION_GRACE_MS : null;
+        paymentsPolicyAllowed = graceEndMs != null && nowMs <= graceEndMs;
+      } else {
+        // Healthy active subscription (period still open / renewed).
+        paymentsPolicyAllowed = true;
+      }
+    }
+  }
 
   const environment = data.environment === 'sandbox' ? 'sandbox' : 'production';
   const publishableKeyEnc =
@@ -149,8 +207,8 @@ async function fetchMerchantPaymentRuntimeConfig(
   return {
     merchantId,
     environment,
-    customerPaymentsEnabled: !merchantIsSuspended && Boolean(data.customer_payments_enabled),
-    applePayEnabled: !merchantIsSuspended && Boolean(data.apple_pay_enabled),
+    customerPaymentsEnabled: paymentsPolicyAllowed && Boolean(data.customer_payments_enabled),
+    applePayEnabled: paymentsPolicyAllowed && Boolean(data.apple_pay_enabled),
     applePayMerchantId: normalizeOptionalString(data.apple_pay_merchant_id),
     publishableKey: safeDecrypt(publishableKeyEnc, null),
     secretKey: safeDecrypt(secretKeyEnc, null),
