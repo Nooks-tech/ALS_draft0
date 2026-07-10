@@ -1,8 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
-import type { RealtimeChannel } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { customerMarkArrived, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, subscribeToOrders, type OrderRow } from '../api/orders';
+import { customerMarkArrived, fetchOrdersForCustomer, holdOrder, insertOrder, resumeOrder, type OrderRow } from '../api/orders';
 import { useMerchant } from './MerchantContext';
 import { submitOrderToNooks } from '../api/nooksOrders';
 import type { CartItem } from './CartContext';
@@ -10,6 +9,9 @@ import { useAuth } from './AuthContext';
 
 const ORDER_STATUSES = ['Placed', 'Accepted', 'Preparing', 'Ready', 'Out for delivery', 'Delivered', 'Cancelled', 'On Hold'] as const;
 const MAX_HISTORY_ORDERS = 30;
+// DB-1: interval for the foreground order-status poll that replaced the
+// Supabase Realtime channel. Only runs while the app is foregrounded.
+const FOREGROUND_POLL_MS = 30_000;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 export type PlacedOrder = {
@@ -208,7 +210,6 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
   const { merchantId } = useMerchant();
   const [orders, setOrders] = useState<PlacedOrder[]>([]);
   const [loading, setLoading] = useState(true);
-  const channelRef = useRef<RealtimeChannel | null>(null);
 
   const customerId = user?.id ?? null;
   const merchantScope = merchantId || 'default';
@@ -292,82 +293,59 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
     };
   }, [customerId, merchantId, initialized, authLoading, cacheKey, persistOrdersCache]);
 
-  // Foreground refresh — Supabase realtime occasionally drops updates if
-  // the app was backgrounded, sleeping, or on a flaky network. Without
-  // this fallback an order that flipped Placed → Delivered while the
-  // device was off the channel would stay stuck at Placed in the UI
-  // until the user pulled to refresh (or the app was force-killed and
-  // reopened, triggering the initial-load effect above).
+  // DB-1 (2026-07-10): the persistent Supabase Realtime `postgres_changes`
+  // channel on customer_orders (previously opened here via subscribeToOrders)
+  // was REMOVED — it is the platform's first scale wall (O(subscribers) per
+  // WAL change; saturates at low-hundreds of concurrent sessions). Order-status
+  // updates are covered without it by:
+  //   1. server push on every status transition (Foodics webhook →
+  //      sendLocalizedPushToCustomer) — the primary live path, UNCHANGED;
+  //   2. the AppState 'active' refresh below — pulls fresh rows on foreground,
+  //      recovering anything missed while backgrounded / on a flaky network; and
+  //   3. a light 30s poll that runs ONLY while the app is foregrounded and is
+  //      cleared the moment it backgrounds (so it never runs off-screen).
+  // The old channel also filtered INSERTs on foodics_order_id and re-checked
+  // merchant_id; refresh()/fetchOrdersForCustomer already scope to
+  // (customer_id, merchant_id) server-side and only surface committed rows, so
+  // those guards are preserved by the fetch path.
+  //
+  // NEEDS ON-DEVICE TESTING before the next OTA: confirm a Placed → Delivered
+  // transition surfaces (a) immediately on foreground and (b) within ~30s while
+  // the app stays foregrounded, including after a backgrounded stretch — on a
+  // real order, on both iOS and Android.
   useEffect(() => {
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (intervalId != null) return;
+      intervalId = setInterval(() => { void refresh(); }, FOREGROUND_POLL_MS);
+    };
+    const stopPolling = () => {
+      if (intervalId != null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+
+    // Begin polling immediately if we are already foregrounded.
+    if (AppState.currentState === 'active') startPolling();
+
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void refresh();
+      if (state === 'active') {
+        void refresh();   // catch up right away on foreground
+        startPolling();
+      } else {
+        stopPolling();    // never poll while backgrounded
+      }
     });
-    return () => sub.remove();
+    return () => {
+      stopPolling();
+      sub.remove();
+    };
   }, [refresh]);
 
   useEffect(() => {
     persistOrdersCache(orders);
   }, [orders, persistOrdersCache]);
-
-  useEffect(() => {
-    if (!customerId || !merchantId) return;
-    // Defense against the Supabase Realtime multi-merchant gap: the
-    // postgres_changes filter only supports single-column equality, so
-    // the wire filter is `customer_id=eq.<uid>` (the same auth.uid is
-    // shared across every white-label app). The merchant_id check
-    // therefore happens INSIDE this callback — but the realtime row
-    // is fully attacker-controllable for any client that opens its
-    // own channel with a spoofed filter. We re-verify the row's
-    // merchant_id matches our context BEFORE doing anything, and
-    // ignore rows that don't.
-    const safeMerchantMatch = (row: OrderRow): boolean =>
-      (row as { merchant_id?: string }).merchant_id === merchantId;
-
-    channelRef.current = subscribeToOrders(
-      customerId,
-      merchantId,
-      (row) => {
-        if (!safeMerchantMatch(row)) return;
-        // Suppress realtime INSERTs where the order hasn't reached
-        // Foodics yet. The local addOrder still surfaces the order
-        // for the customer who placed it; this only stops orphans
-        // (failed-payment / abandoned-3DS rows) from showing up on
-        // a second device of the same customer. Once the relay
-        // succeeds, the UPDATE event below brings the row in.
-        if (!(row as { foodics_order_id?: string | null }).foodics_order_id) return;
-        setOrders((prev) => [rowToOrder(row), ...prev.filter((o) => o.id !== row.id)]);
-      },
-      // Update list — do NOT fire a local notification here. The
-      // server (Foodics webhook → sendLocalizedPushToCustomer) already
-      // sends a properly-localized push for every status transition.
-      // The previous local-notification call was bypassing the language
-      // pick and pushing a hardcoded English "Order update — Your order
-      // is being prepared" duplicate on top of the Arabic server push.
-      //
-      // If the row was previously suppressed by the INSERT guard and
-      // the relay just succeeded (foodics_order_id transitioning
-      // null→set), insert it now. If foodics_order_id is still null
-      // even on UPDATE (sweep cancelled it), drop the row from view.
-      (row) => {
-        if (!safeMerchantMatch(row)) return;
-        setOrders((prev) => {
-          const foodicsId = (row as { foodics_order_id?: string | null }).foodics_order_id;
-          const existing = prev.find((o) => o.id === row.id);
-          if (!foodicsId) {
-            return existing ? prev.filter((o) => o.id !== row.id) : prev;
-          }
-          if (existing) {
-            return prev.map((o) => (o.id === row.id ? rowToOrder(row) : o));
-          }
-          return [rowToOrder(row), ...prev];
-        });
-      }
-    );
-    return () => {
-      channelRef.current?.unsubscribe();
-      channelRef.current = null;
-    };
-  }, [customerId, merchantId]);
 
   const addOrder = useCallback(
     (

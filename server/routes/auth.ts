@@ -115,10 +115,11 @@ function recentOtpAttempts(key: string, now: number) {
 }
 
 function getRequestIp(req: Request) {
-  const forwarded = typeof req.headers['x-forwarded-for'] === 'string'
-    ? req.headers['x-forwarded-for'].split(',')[0]?.trim()
-    : '';
-  return forwarded || req.ip || req.socket?.remoteAddress || 'unknown';
+  // INPUT-2: prefer Express's proxy-aware req.ip. Under `trust proxy: 1`
+  // (server/index.ts) Express derives it from X-Forwarded-For using only the
+  // trusted hop count, so a client can't reset its OTP rate-limit window by
+  // prepending spoofed XFF entries — the previous leftmost-token read could.
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 // ─── Send OTP ────────────────────────────────────────────────────────────────

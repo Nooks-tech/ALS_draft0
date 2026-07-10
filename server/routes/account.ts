@@ -13,6 +13,8 @@
 import { Router } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
+import { decryptSavedCardToken } from './payment';
+import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 
 const accountRouter = Router();
 
@@ -173,6 +175,42 @@ accountRouter.delete('/', async (req, res) => {
       .eq('customer_id', user.id)
       .eq('merchant_id', merchantId);
 
+    // PRIV-05 (2026-07-10): revoke this merchant's saved-card tokens at Moyasar
+    // BEFORE deleting the rows. A saved token left behind is a reusable
+    // charge-until-expiry credential — an erasure that leaves it is both a
+    // security gap and a PDPL failure. Best-effort per token: a Moyasar outage
+    // must not block the erasure (the DB deletes below are the source of truth).
+    const { data: savedCards } = await supabaseAdmin
+      .from('customer_saved_cards')
+      .select('id, token, merchant_id')
+      .eq('customer_id', user.id)
+      .eq('merchant_id', merchantId);
+    for (const card of savedCards ?? []) {
+      try {
+        const runtimeConfig = await getMerchantPaymentRuntimeConfig(card.merchant_id);
+        const secretKey = runtimeConfig.secretKey;
+        if (secretKey && card.token) {
+          // PRIV-02: stored token is encrypted — decrypt before revoking.
+          let moyasarToken: string | null = null;
+          try {
+            moyasarToken = decryptSavedCardToken(card.token);
+          } catch {
+            moyasarToken = null;
+          }
+          if (moyasarToken) {
+            await fetch(`https://api.moyasar.com/v1/tokens/${moyasarToken}`, {
+              method: 'DELETE',
+              headers: {
+                Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}`,
+              },
+            });
+          }
+        }
+      } catch (e: any) {
+        console.warn('[account/delete] Moyasar token revoke failed (non-blocking):', e?.message);
+      }
+    }
+
     // Per-merchant deletion of loyalty + complaint + push records,
     // PLUS the per-merchant profile (name, email, language, avatar,
     // marketing opt-in) and the merchant_customers enrollment row
@@ -182,6 +220,14 @@ accountRouter.delete('/', async (req, res) => {
     // using it to sign in to other merchant apps.
     // Also fixes the legacy push_subscriptions filter — the column
     // is customer_id, not user_id (silent no-op before this fix).
+    // PRIV-05: also erase the PII the previous fan-out skipped —
+    //   • customer_saved_cards (chargeable Moyasar token, revoked above),
+    //   • loyalty_member_profiles (holds the customer's phone number).
+    // NOTE: wallet balance + ledger (customer_wallet_balances /
+    // customer_wallet_transactions) are intentionally RETAINED — they are
+    // financial records (money the customer topped up). Erasing them would
+    // forfeit a live balance and destroy the accounting trail. A
+    // refund-on-close flow is a separate feature (see audit finding PRIV-05).
     await Promise.all([
       supabaseAdmin.from('push_subscriptions').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('loyalty_points').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
@@ -191,6 +237,8 @@ accountRouter.delete('/', async (req, res) => {
       supabaseAdmin.from('customer_merchant_profiles').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('customer_carts').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
       supabaseAdmin.from('merchant_customers').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('customer_saved_cards').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
+      supabaseAdmin.from('loyalty_member_profiles').delete().eq('customer_id', user.id).eq('merchant_id', merchantId),
     ]);
 
     res.json({ success: true, scope: 'merchant', merchantId });

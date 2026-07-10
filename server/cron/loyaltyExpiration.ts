@@ -6,6 +6,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { sendPushScoped } from '../utils/push';
 import { captureError } from '../utils/sentryContext';
+import { notifyPassUpdateSafe } from '../routes/walletPass';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -185,6 +186,12 @@ async function expireStalePoints() {
       source: 'system',
     });
 
+    // LOY-C (2026-07-10): the decrement above lowered the on-server balance,
+    // but the Apple/Google Wallet pass caches the old (higher) figure until the
+    // next earn/redeem. Push a pass refresh now so the wallet doesn't over-state
+    // the balance — same fire-and-forget call the earn/redeem paths make.
+    notifyPassUpdateSafe(group.customerId, group.merchantId);
+
     sendPush(group.customerId, group.merchantId, 'Points Expired', `${expirable} loyalty points have expired.`);
     console.log(`[Loyalty Cron] Expired ${expirable} points for customer ${group.customerId} (gross ${group.totalPoints}, still-valid ${validEarns}, new balance ${newBalance})`);
   }
@@ -264,6 +271,10 @@ async function expireStaleCashback() {
       type: 'expire', loyalty_type: 'cashback', amount_sar: -expirableSar,
       points: 0, description: `${expirableSar.toFixed(2)} SAR cashback expired`, source: 'system',
     });
+
+    // LOY-C (2026-07-10): refresh the wallet pass so it doesn't over-state the
+    // cashback balance after this decrement (see expireStalePoints rationale).
+    notifyPassUpdateSafe(group.customerId, group.merchantId);
 
     sendPush(group.customerId, group.merchantId, 'Cashback Expired', `${expirableSar.toFixed(2)} SAR cashback has expired.`);
     console.log(`[Loyalty Cron] Expired ${expirableSar.toFixed(2)} SAR cashback for ${group.customerId} (gross ${group.totalSar.toFixed(2)}, valid ${validCashback.toFixed(2)}, new balance ${newSar})`);

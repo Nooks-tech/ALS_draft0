@@ -27,6 +27,7 @@ import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { paymentService } from '../services/payment';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
+import { decryptSavedCardToken } from './payment';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -361,13 +362,23 @@ walletRouter.post('/topup-with-saved-card', async (req: Request, res: Response) 
     // Moyasar). 'wallet-' prefix makes the row obvious in the dash.
     const topupOrderId = `wallet-${user.id}-${Date.now()}`;
 
+    // PRIV-02: the stored token is an encrypted envelope — decrypt to the
+    // raw Moyasar token before charging. A decrypt failure means the row is
+    // unusable; surface a bad-card 400 rather than charging a bogus token.
+    let moyasarToken: string;
+    try {
+      moyasarToken = decryptSavedCardToken(card.token);
+    } catch {
+      return res.status(400).json({ error: 'Saved card is no longer usable' });
+    }
+
     let session;
     try {
       session = await paymentService.initiateMoyasarTokenPayment({
         amount: amountSar,
         currency: 'SAR',
         orderId: topupOrderId,
-        token: card.token,
+        token: moyasarToken,
         merchantId,
         // The metadata.type === 'wallet_topup' marker is what
         // /topup-finalize uses to tell wallet payments apart from
