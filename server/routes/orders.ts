@@ -306,21 +306,88 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
       return res.status(503).json({ error: 'NOOKS_INTERNAL_SECRET is not configured' });
     }
 
-    const body = req.body ?? {};
-    if (body.customer_id && body.customer_id !== user.id) {
-      return res.status(403).json({ error: 'customer_id does not match authenticated user' });
+    // ─── ORDER-RELAY-1: strict mirror of an already-finalized order ───
+    // This route used to spread the client request body straight through
+    // to nooksweb's service-role order-creation endpoint, replacing only
+    // customer_id. An authenticated customer could therefore inject an
+    // arbitrary total_sar, payment_id, items, discounts, and delivery fee
+    // and have a free-or-fake-paid order inserted and relayed to Foodics
+    // (bypassing /commit, Moyasar verification, wallet/reward deduction,
+    // and authoritative pricing entirely). The internal secret only proves
+    // "ALS sent this"; it does NOT prove the order passed the authoritative
+    // commit/payment state machine.
+    //
+    // It is now a pure MIRROR: /commit is the single path allowed to
+    // create/finalize an order and it already relays every finalized order
+    // itself. Here we accept ONLY an order id, load the authoritative row
+    // scoped to the caller, require it to be finalized by /commit
+    // (payment_confirmed_at set on the hardened final commit), and relay
+    // STRICTLY from the stored server-side economics — never the request
+    // body. If the row isn't the caller's or isn't finalized we no-op; the
+    // order still reaches Foodics via /commit's own relay (and the
+    // reconcile-web-orders cron is the backstop). No client field can
+    // influence price, tender, items, or discounts on this path anymore.
+    const orderId = String(req.body?.id ?? req.body?.orderId ?? '').trim();
+    if (!orderId) {
+      return res.status(400).json({ error: 'order id is required' });
     }
-    if (!body.merchant_id || !body.branch_id || typeof body.total_sar !== 'number' || !Array.isArray(body.items)) {
-      return res.status(400).json({ error: 'merchant_id, branch_id, total_sar, and items are required' });
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: 'Database is not configured' });
     }
+    const db = supabaseAdmin;
 
-    const relayPayload = {
-      ...body,
-      customer_id: user.id,
-    };
+    const { data: order, error: loadErr } = await db
+      .from('customer_orders')
+      .select('id, merchant_id, branch_id, branch_name, customer_id, total_sar, status, items, order_type, delivery_address, delivery_lat, delivery_lng, delivery_city, delivery_fee, payment_id, payment_method, promo_code, promo_discount_sar, promo_scope, loyalty_discount_sar, wallet_amount_sar, car_details, qr_code_id, foodics_table_id, foodics_table_name, guests, payment_confirmed_at')
+      .eq('id', orderId)
+      .eq('customer_id', user.id)
+      .maybeSingle();
+
+    if (loadErr) {
+      return res.status(500).json({ error: loadErr.message });
+    }
+    if (!order || !order.payment_confirmed_at) {
+      // Not the caller's order, or /commit hasn't finalized it yet. Do NOT
+      // relay client-supplied economics from here — /commit owns relay.
+      return res.json({
+        success: true,
+        relayed: false,
+        reason: !order ? 'not_found_or_not_owned' : 'not_finalized',
+      });
+    }
 
     const customerJwt = (req.headers.authorization || '').toString().replace(/^Bearer\s+/i, '').trim() || null;
-    const data = await relayOrderToNooks(relayPayload, { customerJwt });
+    const data = await relayOrderToNooks(
+      {
+        id: order.id,
+        merchant_id: order.merchant_id,
+        branch_id: order.branch_id,
+        branch_name: order.branch_name,
+        customer_id: order.customer_id,
+        total_sar: order.total_sar,
+        status: order.status,
+        order_type: order.order_type,
+        items: order.items,
+        delivery_address: order.delivery_address,
+        delivery_lat: order.delivery_lat,
+        delivery_lng: order.delivery_lng,
+        delivery_city: order.delivery_city,
+        delivery_fee: order.delivery_fee,
+        payment_id: order.payment_id,
+        payment_method: order.payment_method,
+        promo_code: order.promo_code,
+        promo_discount_sar: order.promo_discount_sar,
+        promo_scope: order.promo_scope,
+        loyalty_discount_sar: order.loyalty_discount_sar,
+        wallet_amount_sar: order.wallet_amount_sar,
+        car_details: order.car_details,
+        qr_code_id: order.qr_code_id,
+        table_id: order.foodics_table_id,
+        foodics_table_name: order.foodics_table_name,
+        guests: order.guests,
+      },
+      { customerJwt },
+    );
 
     res.json({ success: true, relayed: true, data });
   } catch (err: any) {
