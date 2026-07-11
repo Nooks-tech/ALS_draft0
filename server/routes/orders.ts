@@ -22,7 +22,7 @@ import { sendOrderReceipt } from '../services/receipt';
 import { consumeOrderMilestones, earnForOrder, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
-import { enforceLimits } from '../utils/rateLimit';
+import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { creditWalletForRefund } from './wallet';
 import { notifyPassUpdateSafe } from './walletPass';
 
@@ -404,29 +404,11 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
 // a tester might fire 6-8 across multiple attempts in a minute.
 // This blocks a malicious or buggy client from rapid-firing 100s of
 // commits to probe for residual exploit surface after Layer 1/2.
-const COMMIT_RATE_LIMIT_PER_CUSTOMER_PER_MIN = 10;
-const commitRateBuckets = new Map<string, { count: number; resetAt: number }>();
-const commitRatePruneInterval: ReturnType<typeof setInterval> = setInterval(() => {
-  const now = Date.now();
-  for (const [k, b] of commitRateBuckets.entries()) {
-    if (b.resetAt < now) commitRateBuckets.delete(k);
-  }
-}, 5 * 60 * 1000);
-(commitRatePruneInterval as unknown as { unref?: () => void }).unref?.();
-
-function checkCommitRateLimit(customerId: string): { allowed: boolean; retryAfterSec?: number } {
-  const now = Date.now();
-  const bucket = commitRateBuckets.get(customerId);
-  if (!bucket || bucket.resetAt < now) {
-    commitRateBuckets.set(customerId, { count: 1, resetAt: now + 60_000 });
-    return { allowed: true };
-  }
-  if (bucket.count >= COMMIT_RATE_LIMIT_PER_CUSTOMER_PER_MIN) {
-    return { allowed: false, retryAfterSec: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)) };
-  }
-  bucket.count += 1;
-  return { allowed: true };
-}
+// SCAL-005: the per-process commit limiter (in-memory map) was replaced by
+// the shared Upstash-backed enforceLimits — with a bounded in-memory
+// emergency fallback on Upstash outage — so the commit limit stays correct
+// once the API runs on more than one Railway replica. See the /commit
+// handler below.
 
 ordersRouter.post('/commit', async (req, res) => {
   try {
@@ -436,17 +418,22 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(503).json({ error: 'Database not configured' });
     }
 
-    // Layer 3: customer-scoped rate limit (per-process). Multi-instance
-    // deployments should swap this for Redis, but Railway runs a
-    // single Express dyno today so the in-memory map is fine.
-    const rl = checkCommitRateLimit(user.id);
-    if (!rl.allowed) {
-      res.setHeader('Retry-After', String(rl.retryAfterSec ?? 60));
-      return res.status(429).json({
-        error: 'Too many order attempts. Please wait a moment and try again.',
-        code: 'COMMIT_RATE_LIMIT',
-        retryAfterSec: rl.retryAfterSec,
-      });
+    // Layer 3: customer-scoped commit rate limit. SCAL-005 — shared across
+    // replicas via Upstash (enforceLimits), with a bounded in-memory
+    // emergency fallback on Upstash outage, so it stays correct once the API
+    // scales past one Railway dyno. 10/min/customer + 30/min/IP backstop.
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'orders.commit',
+        keys: [
+          { dim: 'customer', value: user.id, max: 10, windowMs: 60_000 },
+          { dim: 'ip', value: ipFromReq(req), max: 30, windowMs: 60_000 },
+        ],
+        supabaseAdmin,
+        merchantId: typeof req.body?.merchantId === 'string' ? req.body.merchantId : null,
+      }))
+    ) {
+      return;
     }
 
     const {

@@ -79,6 +79,7 @@ import crypto from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { Redis } from '@upstash/redis';
 import { Ratelimit } from '@upstash/ratelimit';
+import { captureError } from './sentryContext';
 
 /* ──────────────────────────────────────────────────────────────────
    Upstash backend (Path B) — multi-dyno-safe sliding window.
@@ -149,11 +150,20 @@ async function previewLimitsUpstash(keys: LimitKey[]): Promise<LimitsResult> {
     }
     return { ok: true };
   } catch (err) {
+    // SCAL-005: do NOT fail open on high-risk (payment/auth/webhook) limits.
+    // A Redis outage previously returned {ok:true} here, meaning UNLIMITED
+    // requests on money endpoints across every replica. Fall back to a
+    // bounded per-process emergency bucket at 2x the configured limit — this
+    // preserves availability during an Upstash outage while still capping a
+    // multi-instance flood (worst case: 2x * replica_count, not unlimited).
     console.warn(
-      '[rate-limit] Upstash check failed, allowing through:',
+      '[rate-limit] Upstash check failed — bounded in-memory emergency fallback (2x):',
       err instanceof Error ? err.message : String(err),
     );
-    return { ok: true };
+    captureError(err instanceof Error ? err : new Error(String(err)), {
+      component: 'rate-limit.upstash-fallback',
+    });
+    return previewLimits(keys.map((k) => ({ ...k, max: Math.max(1, k.max * 2) })));
   }
 }
 

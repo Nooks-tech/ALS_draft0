@@ -6,7 +6,7 @@ import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { checkBranchOrderable } from '../lib/storeGate';
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
-import { paymentRateLimit, webhookRateLimit, enforceLimits } from '../utils/rateLimit';
+import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
 
 /** Constant-time string comparison; safe to call with strings of any length. */
@@ -64,10 +64,26 @@ paymentRouter.get('/redirect', (req, res) => {
   res.status(400).send('Invalid redirect');
 });
 
-paymentRouter.post('/initiate', paymentRateLimit, async (req, res) => {
+paymentRouter.post('/initiate', async (req, res) => {
   try {
     const user = await requireAuthenticatedAppUser(req, res);
     if (!user) return;
+    // SCAL-005: shared (Upstash) rate limit replacing the per-process
+    // paymentRateLimit middleware — customer-primary (CGNAT-safe) + IP
+    // backstop, bounded in-memory fallback on Upstash outage.
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'payment.initiate',
+        keys: [
+          { dim: 'customer', value: user.id, max: 30, windowMs: 60_000 },
+          { dim: 'ip', value: ipFromReq(req), max: 90, windowMs: 60_000 },
+        ],
+        supabaseAdmin,
+        merchantId: typeof req.body?.merchantId === 'string' ? req.body.merchantId : null,
+      }))
+    ) {
+      return;
+    }
     const { amount, currency, orderId, customer, successUrl, deliveryFee, merchantId } = req.body;
     console.log('[Payment] Initiate request:', { amount, currency, orderId, merchantId });
     const scopedMerchantId = typeof merchantId === 'string' ? merchantId.trim() : '';
@@ -148,8 +164,20 @@ paymentRouter.post('/initiate', paymentRateLimit, async (req, res) => {
 // this PR scoped to route removal; cleanup is a follow-up.
 
 /** POST /api/payment/webhook – Moyasar payment status callback */
-paymentRouter.post('/webhook', webhookRateLimit, async (req, res) => {
+paymentRouter.post('/webhook', async (req, res) => {
   try {
+    // SCAL-005: shared (Upstash) IP rate limit replacing the per-process
+    // webhookRateLimit middleware (bounded fallback on Upstash outage).
+    // 120/min/IP matches the prior cap; provider retries burst briefly.
+    if (
+      !(await enforceLimits(req, res, {
+        endpoint: 'payment.webhook',
+        keys: [{ dim: 'ip', value: ipFromReq(req), max: 120, windowMs: 60_000 }],
+        supabaseAdmin,
+      }))
+    ) {
+      return;
+    }
     const payload = req.body;
     const eventType: string = String(payload.type ?? payload.event ?? '').toLowerCase();
     // Moyasar fires separate event streams for payments and invoices. We
