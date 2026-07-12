@@ -26,6 +26,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Image,
   Modal,
   ScrollView,
@@ -47,7 +48,6 @@ import {
   type LoyaltyTransaction,
   type RedemptionResult,
 } from '../src/api/loyalty';
-import { supabase } from '../src/api/supabase';
 import { useAuth } from '../src/context/AuthContext';
 import { useCart } from '../src/context/CartContext';
 import { useMenuContext } from '../src/context/MenuContext';
@@ -198,37 +198,20 @@ export default function LoyaltyModal() {
     return unsubscribe;
   }, [loadLoyalty]);
 
-  const reloadDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // SCAL-001: the Supabase Realtime bindings on loyalty_cashback_balances /
+  // loyalty_points were REMOVED — postgres_changes evaluates every WAL change
+  // against every subscriber (O(subscribers) per change), the platform's
+  // first scale wall. Balance freshness is preserved by the paths that
+  // remain: the focus refresh (above), the local points-refund event refresh
+  // (above), and this foreground refresh — so a balance changed elsewhere
+  // (e.g. an in-store earn) shows the moment the user brings the app back
+  // with the modal open. A redeem in this modal refreshes inline already.
   useEffect(() => {
-    if (!supabase || !user?.id) return;
-    const sb = supabase;
-    const scheduleReload = () => {
-      if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
-      reloadDebounceRef.current = setTimeout(() => { void loadLoyalty(); }, 500);
-    };
-    // Two bindings, not three: the old loyalty_transactions binding never
-    // fired (the table isn't in the realtime publication) and was redundant
-    // anyway — every earn/redeem also updates loyalty_points or
-    // loyalty_cashback_balances, which are the bindings that do fire. Each
-    // binding costs a per-WAL-change evaluation server-side, so we keep
-    // only the live ones.
-    const channel = sb
-      .channel(`loyalty-${user.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'loyalty_cashback_balances', filter: `customer_id=eq.${user.id}` },
-        scheduleReload,
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'loyalty_points', filter: `customer_id=eq.${user.id}` },
-        scheduleReload,
-      )
-      .subscribe();
-    return () => {
-      if (reloadDebounceRef.current) clearTimeout(reloadDebounceRef.current);
-      sb.removeChannel(channel);
-    };
+    if (!user?.id) return;
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void loadLoyalty();
+    });
+    return () => sub.remove();
   }, [user?.id, loadLoyalty]);
 
   const points = balance?.points ?? 0;

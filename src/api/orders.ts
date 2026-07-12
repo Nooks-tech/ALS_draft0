@@ -1,7 +1,6 @@
 /**
  * Customer orders – persist to Supabase (customer_orders table) when user is logged in.
  */
-import type { RealtimeChannel } from '@supabase/supabase-js';
 import { api } from './client';
 import { supabase } from './supabase';
 
@@ -419,54 +418,15 @@ export async function getOrderComplaint(
   return (data as ComplaintRow | null) ?? null;
 }
 
-export function subscribeToOrders(
-  customerId: string,
-  merchantId: string,
-  onInsert: (row: OrderRow) => void,
-  onUpdate: (row: OrderRow) => void
-): RealtimeChannel | null {
-  if (!supabase) return null;
-  if (!merchantId) {
-    console.warn('[Orders] subscribeToOrders called without merchantId — skipping realtime');
-    return null;
-  }
-  const table = 'customer_orders';
-  // Supabase Realtime postgres_changes filter only supports a single
-  // column equality. Filter on customer_id at the wire level (so
-  // we get fewer events than nothing), then drop rows whose
-  // merchant_id doesn't match in the callback. Without this guard,
-  // a parallel order placed by the same auth.uid on a DIFFERENT
-  // merchant's app would push into THIS app's order list.
-  const channel = supabase
-    .channel(`${table}:${customerId}:${merchantId}`)
-    .on(
-      'postgres_changes',
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table,
-        filter: `customer_id=eq.${customerId}`,
-      },
-      (payload) => {
-        const row = payload.new as OrderRow;
-        if (row.merchant_id !== merchantId) return;
-        onInsert(row);
-      }
-    )
-    .on(
-      'postgres_changes',
-      {
-        event: 'UPDATE',
-        schema: 'public',
-        table,
-        filter: `customer_id=eq.${customerId}`,
-      },
-      (payload) => {
-        const row = payload.new as OrderRow;
-        if (row.merchant_id !== merchantId) return;
-        onUpdate(row);
-      }
-    )
-    .subscribe();
-  return channel;
-}
+// DB-1 (2026-07-10): subscribeToOrders — the persistent Supabase Realtime
+// `postgres_changes` channel on customer_orders — was REMOVED. It is the
+// platform's first scale wall: postgres_changes evaluates every WAL change
+// against every subscriber's filter + RLS (O(subscribers) per change) and
+// saturates at low-hundreds of concurrent sessions, well below the target.
+// Order-status updates are covered without it by three paths that remain:
+//   1. the server sends a push on every status transition (Foodics webhook →
+//      sendLocalizedPushToCustomer) — the primary live channel, UNCHANGED;
+//   2. an AppState 'active' refresh pulls fresh rows on foreground; and
+//   3. a light 30s foreground poll in OrdersContext (cleared on background).
+// NEEDS ON-DEVICE TESTING before the next OTA — see the matching comment in
+// src/context/OrdersContext.tsx.

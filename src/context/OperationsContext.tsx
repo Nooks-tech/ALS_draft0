@@ -1,6 +1,11 @@
 /**
  * Merchant operations from Nooks: store_status, prep_time_minutes, delivery_mode.
- * Uses Supabase Realtime on app_config for instant updates, with API polling as fallback.
+ * Kept fresh by a foreground-only poll. SCAL-001 removed the Supabase
+ * Realtime binding on app_config (it held a Postgres Changes connection
+ * per app instance — the 200-connection ceiling); SCAL-002 made the poll
+ * foreground-only at 60s. The server caches this endpoint for ~10s and
+ * order intake is gated server-side at POST time, so near-instant updates
+ * were redundant.
  *
  * The server now returns a unified closed state (effective_status /
  * closed_reason / reopens_at) covering manual close, the busy timer,
@@ -8,10 +13,8 @@
  * screens should gate on; `isClosed`/`isBusy` remain for display.
  */
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import type { RealtimeChannel } from '@supabase/supabase-js';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from '../api/supabase';
 import { fetchNooksOperations, type ClosedReason, type NooksOperations } from '../api/nooksOperations';
 import { useCart } from './CartContext';
 import { useMerchant } from './MerchantContext';
@@ -69,7 +72,7 @@ const OperationsContext = createContext<OperationsContextType>({
   busySecondsLeft: 0,
 });
 
-const POLL_MS = 15 * 1000;
+const POLL_MS = 60 * 1000;
 
 function deriveReopenSeconds(ops: NooksOperations | null): number {
   if (!ops) return 0;
@@ -106,8 +109,6 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [busySecondsLeft, setBusySecondsLeft] = useState(0);
   const [reopenSecondsLeft, setReopenSecondsLeft] = useState(0);
-  const channelRef = useRef<RealtimeChannel | null>(null);
-  const realtimeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expiryRefetchedRef = useRef(false);
   const selectedBranchId = selectedBranch?.id?.trim() || '';
   const cacheKey = `@als_operations_${merchantId || 'default'}_${selectedBranchId || 'merchant'}`;
@@ -146,53 +147,34 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
     }
   }, [merchantId, selectedBranchId, cacheKey]);
 
+  // SCAL-002: poll ONLY while the app is foregrounded. A backgrounded app
+  // holds no interval and issues no requests; foregrounding refetches
+  // immediately and restarts the 60s cadence. Store open/close latency is
+  // bounded by POLL_MS — fine, because order intake is gated server-side
+  // at POST time (checkOrderAllowed), never by this display poll.
+  // SCAL-001: the Supabase Realtime binding on app_config was removed —
+  // this foreground poll is now the sole freshness mechanism.
   useEffect(() => {
-    refetch();
-    const t = setInterval(refetch, POLL_MS);
-    const appStateSub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') refetch();
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer) return;
+      void refetch();
+      timer = setInterval(() => void refetch(), POLL_MS);
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+    if (AppState.currentState === 'active') start();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') start();
+      else stop();
     });
     return () => {
-      clearInterval(t);
-      appStateSub.remove();
+      stop();
+      sub.remove();
     };
   }, [refetch]);
-
-  useEffect(() => {
-    if (!supabase || !merchantId.trim() || selectedBranchId) return;
-    channelRef.current = supabase
-      .channel(`ops-${merchantId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'app_config',
-          filter: `merchant_id=eq.${merchantId}`,
-        },
-        () => {
-          // Don't build operations from the raw row — that bypassed the
-          // server-computed state (hours, busy timer, billing closure,
-          // per-branch aggregation). Use the event purely as a "something
-          // changed" signal and refetch, debounced against bursts.
-          if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
-          realtimeDebounceRef.current = setTimeout(() => {
-            realtimeDebounceRef.current = null;
-            void refetch();
-          }, 500);
-        }
-      )
-      .subscribe();
-
-    return () => {
-      if (realtimeDebounceRef.current) {
-        clearTimeout(realtimeDebounceRef.current);
-        realtimeDebounceRef.current = null;
-      }
-      channelRef.current?.unsubscribe();
-      channelRef.current = null;
-    };
-  }, [merchantId, selectedBranchId, refetch]);
 
   const isClosed = operations?.store_status === 'closed';
   const isBusy = operations?.store_status === 'busy';
