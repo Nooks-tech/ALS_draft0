@@ -304,11 +304,49 @@ export async function insertOrder(row: OrderInsert): Promise<boolean> {
   return true;
 }
 
-export async function commitOrder(payload: CommitOrderPayload) {
-  return api.post<{ success: boolean; order: { id: string; status: string; payment_id: string | null } }>(
-    '/api/orders/commit',
-    payload
-  );
+export type CommitOrderResponse = {
+  success?: boolean;
+  pending?: boolean;
+  code?: string;
+  retryAfterMs?: number;
+  order?: { id: string; status: string; payment_id: string | null };
+  [key: string]: unknown;
+};
+
+/** Thrown when the card payment is still settling after the retry budget. */
+export class PaymentSettlingError extends Error {
+  code = 'PAYMENT_SETTLING' as const;
+  constructor() {
+    super('Payment is still confirming');
+    this.name = 'PaymentSettlingError';
+  }
+}
+
+// SCAL-003: escalating client backoff that replaces the server's old fixed 2s
+// sleep. Only a slow-settling payment waits, and only as long as it needs.
+const SETTLING_RETRY_DELAYS_MS = [1000, 2000, 4000];
+
+export async function commitOrder(payload: CommitOrderPayload): Promise<CommitOrderResponse> {
+  // The final /commit verifies the card payment once server-side. If the
+  // charge is still settling it responds 202 { pending: true }; we retry the
+  // SAME payload — same order + payment id, so the server is idempotent and
+  // NEVER creates a second charge — at 1s/2s/4s, then hand off to the
+  // reconciliation path. Draft commits (relayToNooks:false) never return
+  // pending, so they pass straight through. Every caller gets this for free.
+  let attempt = 0;
+  for (;;) {
+    const res = await api.post<CommitOrderResponse>('/api/orders/commit', payload);
+    if (!res?.pending) return res;
+    if (attempt >= SETTLING_RETRY_DELAYS_MS.length) {
+      throw new PaymentSettlingError();
+    }
+    const waitMs = Math.max(
+      typeof res.retryAfterMs === 'number' ? res.retryAfterMs : 0,
+      SETTLING_RETRY_DELAYS_MS[attempt],
+    );
+    await new Promise((r) => setTimeout(r, waitMs));
+    attempt += 1;
+  }
 }
 
 // customerCancelOrder() removed: end users cannot cancel orders per

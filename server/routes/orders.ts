@@ -18,6 +18,7 @@ import { Router } from 'express';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { checkBranchOrderable } from '../lib/storeGate';
 import { cancelPayment, verifyPaidPayment } from '../services/payment';
+import { isPaymentStillSettling } from '../utils/paymentSettling';
 import { sendOrderReceipt } from '../services/receipt';
 import { consumeOrderMilestones, earnForOrder, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
@@ -897,6 +898,11 @@ ordersRouter.post('/commit', async (req, res) => {
           ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
           : Number(totalSar);
     const expectedHalalsForVerify = Math.round(cardPortionSar * 100);
+    // SCAL-003: the final commit verifies the card payment EXACTLY ONCE (below,
+    // where the fixed 2s sleep used to be). This request-local holds that
+    // result so the pre-relay gate can reuse it instead of a third Moyasar
+    // round-trip.
+    let finalPaymentVerification: Awaited<ReturnType<typeof verifyPaidPayment>> | null = null;
     // Final commits skip this entry verify: nothing between here and the
     // hardened post-delay verify below has side effects, so that gate (plus
     // the pre-relay one) still rejects unpaid payments before any money
@@ -1115,42 +1121,44 @@ ordersRouter.post('/commit', async (req, res) => {
         console.warn('[Orders] enroll_merchant_customer failed (non-fatal):', e?.message);
       }
 
-      // ─── Hardened Moyasar re-verify with delay ───
-      // Wait 2 seconds before the side effects fire, then verify
-      // Moyasar AGAIN. The first verify at the top of /commit can
-      // see a transient 'paid' that's about to roll back to
-      // 'initiated' if the customer abandoned 3DS post-auth. The
-      // delay lets Moyasar's settlement settle; the second verify
-      // catches the rollback before we touch wallet / promo. We use
-      // the same expectedHalals as the first verify so amount
-      // tampering still gets caught.
+      // ─── Single Moyasar verification (no fixed sleep) ───
+      // SCAL-003: verify ONCE, immediately — the old code slept 2s on every
+      // card checkout to let a 3DS-just-authorized 'initiated' state settle to
+      // 'paid'. That 2s is now spent by the CLIENT, and only when needed: if
+      // the payment is still settling (or the verify hit a transient error)
+      // we return 202 PAYMENT_SETTLING and the client retries the SAME commit
+      // (same order + payment id ⇒ idempotent, NO new charge) at 1s/2s/4s.
+      // This still runs BEFORE any side effect (cashback/wallet/promo below),
+      // so an unpaid payment can never move money; amount tampering is still
+      // caught by expectedHalalsForVerify. A terminal decline is a hard 402.
       if (isMoyasarPaymentId) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        const hardenedVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId, id);
-        if (!hardenedVerify.ok) {
-          // M9: transient Moyasar error — no side effects have run yet,
-          // so a retry is safe. Don't 402-decline a possibly-paid order.
-          if (hardenedVerify.retryable) {
+        finalPaymentVerification = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId, id);
+        if (!finalPaymentVerification.ok) {
+          if (isPaymentStillSettling(finalPaymentVerification.status, !!finalPaymentVerification.retryable)) {
             console.warn(
-              '[Orders] Hardened verify hit transient Moyasar error — asking client to retry:',
+              '[Orders] Final verify — payment still settling, asking client to retry:',
               trimmedPaymentId,
-              hardenedVerify.reason,
+              'status:',
+              finalPaymentVerification.status,
+              finalPaymentVerification.reason,
             );
-            return res.status(503).json({
-              error: 'Payment verification is temporarily unavailable. Please retry in a moment — you have not been charged twice.',
-              retryable: true,
-              ...(hardenedVerify.retryAfter ? { retryAfter: hardenedVerify.retryAfter } : {}),
+            return res.status(202).json({
+              success: false,
+              pending: true,
+              code: 'PAYMENT_SETTLING',
+              // Fixed hint; the client owns the escalating 1s/2s/4s backoff.
+              retryAfterMs: 1000,
             });
           }
           console.warn(
-            '[Orders] Hardened verify (post-delay) failed — refusing side effects:',
+            '[Orders] Final verify failed — refusing side effects:',
             trimmedPaymentId,
             'status:',
-            hardenedVerify.status,
+            finalPaymentVerification.status,
           );
           return res.status(402).json({
-            error: `Payment not confirmed (${hardenedVerify.reason}). The order was not created.`,
-            moyasarStatus: hardenedVerify.status,
+            error: `Payment not confirmed (${finalPaymentVerification.reason}). The order was not created.`,
+            moyasarStatus: finalPaymentVerification.status,
           });
         }
       }
@@ -1699,25 +1707,18 @@ ordersRouter.post('/commit', async (req, res) => {
       // DB but never reaches Foodics; the webhook will mark it
       // Cancelled when it lands. Customer + dashboard query filters
       // exclude these rows (cancellation_reason='Payment failed').
-      if (isMoyasarPaymentId) {
-        const relayVerify = await verifyPaidPayment(trimmedPaymentId, expectedHalalsForVerify, merchantId, id);
-        if (!relayVerify.ok) {
-          console.warn(
-            '[Orders] Skipping Foodics relay — payment no longer paid:',
-            trimmedPaymentId,
-            'status:',
-            relayVerify.status,
-            'reason:',
-            relayVerify.reason,
-          );
-          return res.json({
-            id: savedOrder.id,
-            status: savedOrder.status,
-            payment_id: savedOrder.payment_id,
-            foodics_skipped: 'payment_not_confirmed',
-            moyasar_status: relayVerify.status,
-          });
-        }
+      // SCAL-003: reuse the single verification from above instead of a third
+      // Moyasar round-trip. Item 3 already returned 402/202 unless the card
+      // payment verified, so for a Moyasar payment finalPaymentVerification.ok
+      // is guaranteed true here — this is a defensive invariant that should
+      // never fire (a fired invariant means a code path reached relay without
+      // verifying, which must fail loudly rather than ship an unverified order
+      // to Foodics). The old pre-relay re-verify guarded a paid→failed flip in
+      // the window between verify and relay; without the 2s sleep that window
+      // is sub-second, and the Foodics webhook + reconciliation still cancel a
+      // charge that flips after relay.
+      if (isMoyasarPaymentId && !finalPaymentVerification?.ok) {
+        throw new Error('Invariant violation: Foodics relay attempted without a verified payment');
       }
       // Wrap the Foodics relay in try/catch so that if it fails AFTER
       // we've already debited the wallet + redeemed the promo, we can

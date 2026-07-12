@@ -697,77 +697,18 @@ export default function CheckoutScreen() {
     try {
       const resolvedPaymentId = moyasarPaymentId || orderId;
 
-      // Commit FIRST, then redeem stamps. If we redeemed before the
-      // commit and the commit failed (server validation, network, etc.)
-      // the stamps were burned with no order to show for it — exactly
-      // the bug a customer hit on 2026-05-14. Inverting the order
-      // means a commit failure leaves the stamp balance untouched and
-      // the customer can retry. If the redeem fails AFTER a successful
-      // commit, the customer keeps the freebie without paying stamps
-      // (rare, low-cost, server-side reconciliation can clear
-      // stamp_milestone_ids on the order row in a follow-up).
-      if (user?.id) {
-        await commitOrder({
-          id: orderId,
-          merchantId,
-          branchId: selectedBranch.id,
-          branchName: selectedBranch.name ?? null,
-          totalSar: Number(finalTotal.toFixed(2)),
-          status: 'Placed',
-          items: cartItems.map((item) => ({
-            id: item.id,
-            name: item.name,
-            price: item.price, basePrice: item.basePrice ?? item.price,
-            quantity: item.quantity,
-            image: item.image,
-            customizations: item.customizations ?? null,
-            uniqueId: item.uniqueId,
-            rewardOriginalPriceSar: item.rewardOriginalPriceSar })),
-          orderType,
-          deliveryAddress: orderType === 'delivery' ? deliveryAddress?.address ?? null : null,
-          deliveryLat: orderType === 'delivery' ? deliveryAddress?.lat ?? null : null,
-          deliveryLng: orderType === 'delivery' ? deliveryAddress?.lng ?? null : null,
-          deliveryCity: orderType === 'delivery' ? deliveryAddress?.city ?? null : null,
-          deliveryFee,
-          paymentId: resolvedPaymentId,
-          paymentMethod,
-          customerName: profile.fullName || null,
-          customerPhone: profile.phone || null,
-          customerEmail: profile.email || null,
-          promoCode: promoApplied ? promoCode : null,
-          promoDiscountSar: promoApplied ? promoDiscount : null,
-          promoScope: promoApplied ? promoScope : null,
-          customerNote: orderNote.trim() || null,
-          qrCodeId: qrLanding.qrCodeId,
-          guests: orderType === 'dine_in' ? 1 : null,
-          carDetails:
-            orderType === 'drivethru'
-              ? {
-                  plate_letters: carPlateLetters.trim(),
-                  plate_numbers: carPlateNumbers.trim(),
-                  model: carModel.trim(),
-                  color: carColor.trim(),
-                }
-              : null,
-          // Apple Pay charged the post-wallet chargeAmount via
-          // paymentConfig.amount; this debits the wallet so the
-          // ledger matches the customer's outlay.
-          walletAmountSar: walletApplied > 0 ? Number(walletApplied.toFixed(2)) : null,
-          cashbackAmountSar: cashbackAmountForOrder > 0 ? cashbackAmountForOrder : null,
-          stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
-          stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
-          relayToNooks: false });
-      }
-
-      // Second commit — AWAITED. This is where the server runs the
-      // hardened post-delay Moyasar re-verify, fires the side effects
-      // (wallet debit, promo redeem), and relays to Foodics. If the
-      // hardened verify catches a 3DS-abandoned 'initiated' state or
-      // the Foodics relay fails, the server reverses everything and
-      // returns an error — and we must NOT redeem stamps / cashback /
-      // wallet on the client side either. Previously this was
-      // fire-and-forget which let stamps + cashback fire alongside a
-      // commit that ultimately failed.
+      // SCAL-003: ONE commit for the direct-card path. The old redundant
+      // first commit (relayToNooks:false) was removed — the single final
+      // commit below upserts the order row itself, so nothing is lost.
+      //
+      // This final commit is AWAITED. The server verifies the Moyasar payment
+      // exactly once (no 2s sleep), fires the side effects (wallet debit,
+      // promo + cashback redeem, milestone consume) and relays to Foodics; if
+      // the verify catches a 3DS-abandoned 'initiated'/'pending' it returns
+      // 202 and commitOrder transparently retries the SAME commit (no new
+      // charge) at 1s/2s/4s. If any of that ultimately fails the server
+      // reverses everything and throws, and we must NOT surface the order or
+      // redeem stamps/cashback/wallet on the client side.
       let finalCommitOk = false;
       if (user?.id) {
         try {
