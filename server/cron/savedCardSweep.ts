@@ -17,6 +17,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
+import { decryptSavedCardToken } from '../routes/payment';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -57,8 +58,19 @@ async function checkOne(
   }
   if (!secretKey) return;
 
+  // PRIV-02: card.token is now an encrypted envelope — decrypt to the raw
+  // Moyasar token before probing. If decrypt fails, SKIP the card (never
+  // delete on a decrypt failure — that would wipe every encrypted card).
+  let moyasarToken: string;
   try {
-    const res = await fetch(`https://api.moyasar.com/v1/tokens/${encodeURIComponent(card.token)}`, {
+    moyasarToken = decryptSavedCardToken(card.token);
+  } catch (err: any) {
+    console.warn('[SavedCardSweep] token decrypt failed, skipping card', card.id, err?.message);
+    return;
+  }
+
+  try {
+    const res = await fetch(`https://api.moyasar.com/v1/tokens/${encodeURIComponent(moyasarToken)}`, {
       headers: { Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}` },
     });
     if (res.status === 404) {

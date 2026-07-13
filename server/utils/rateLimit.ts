@@ -32,9 +32,9 @@ export interface RateLimitOptions {
 
 export function createRateLimit({ max, windowMs, prefix = '' }: RateLimitOptions) {
   return (req: Request, res: Response, next: NextFunction) => {
-    // Use X-Forwarded-For if behind a trusted proxy, otherwise raw IP.
-    const fwd = req.headers['x-forwarded-for'];
-    const ip = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]) || req.socket.remoteAddress || 'unknown';
+    // INPUT-2: key on the proxy-derived client IP (req.ip), not the spoofable
+    // leftmost X-Forwarded-For token. See ipFromReq() for the rationale.
+    const ip = ipFromReq(req);
     const key = `${prefix}:${ip}`;
     const now = Date.now();
     const bucket = buckets.get(key);
@@ -256,10 +256,9 @@ export async function enforceLimits(
   });
 
   // Best-effort audit. Don't slow the 429; don't throw inside security
-  // layer. ip is the same X-Forwarded-For extraction as createRateLimit
+  // layer. ip uses the same proxy-derived extraction as createRateLimit
   // above — kept here for the audit payload only (not as a bucket key).
-  const fwd = req.headers['x-forwarded-for'];
-  const ip = (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]) || req.socket.remoteAddress || 'unknown';
+  const ip = ipFromReq(req);
   if (opts.supabaseAdmin) {
     void opts.supabaseAdmin
       .from('audit_log')
@@ -283,10 +282,19 @@ export async function enforceLimits(
   return false;
 }
 
-/** Quick helper for endpoints that derive an IP key from the request. */
+/**
+ * Quick helper for endpoints that derive an IP key from the request.
+ *
+ * INPUT-2: use Express's proxy-aware req.ip rather than the leftmost
+ * X-Forwarded-For token. The server runs under `trust proxy: 1`
+ * (server/index.ts), so Express derives req.ip from XFF using only the single
+ * trusted hop — a client that prepends its own spoofed XFF entries can't shift
+ * the key (the leftmost-token read WAS client-spoofable, letting an attacker
+ * rotate the value to reset the per-IP window). Fall back to the raw socket
+ * address if req.ip is somehow unavailable.
+ */
 export function ipFromReq(req: Request): string {
-  const fwd = req.headers['x-forwarded-for'];
-  return (Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0]) || req.socket.remoteAddress || 'unknown';
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 /* ════════════════════════════════════════════════════════════════════

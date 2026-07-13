@@ -8,6 +8,7 @@ import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookIdempotency';
 import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
+import { decryptMerchantCredential } from '../lib/merchantCredentials';
 
 /** Constant-time string comparison; safe to call with strings of any length. */
 function safeEqual(a: string, b: string): boolean {
@@ -22,6 +23,105 @@ const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABAS
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
+
+/* ─── PRIV-02: Saved-card Moyasar token encryption at rest ───────────────────
+   customer_saved_cards.token previously stored the raw reusable Moyasar token
+   (`tok_...`) in plaintext, unlike every other payment secret (AES-256-GCM
+   `v2:` envelope). A DB read yielded chargeable card tokens. We now encrypt on
+   write and decrypt on read using the SAME key material + envelope format as
+   the merchant-credential codec so ALS's own decryptMerchantCredential can read
+   it back. (ALS's server/lib/merchantCredentials.ts is decrypt-only — nooksweb
+   is the writer for merchant creds — so the encrypt half is mirrored here.
+   Recommend the parent extract this to a shared util so the two other token
+   readers — server/cron/savedCardSweep.ts + server/routes/wallet.ts — can
+   decrypt too; they still read the token verbatim.)
+
+   Envelope: `v2:{keyId}:{iv}:{tag}:{ciphertext}` (base64url), or `v1:{iv}:{tag}:
+   {ciphertext}` in legacy single-key mode. Transition-safe: values without a
+   recognised envelope prefix are treated as legacy plaintext and passed through.
+   Dedup key is a stable sha256(plaintext) in token_hash (the random-IV
+   ciphertext can no longer serve as the upsert/unique key). */
+const SAVED_CARD_ALGORITHM = 'aes-256-gcm';
+const SAVED_CARD_IV_LENGTH = 12;
+
+let savedCardKeyCache: { keys: Record<string, Buffer>; activeKeyId: string | null } | null = null;
+
+function loadSavedCardKeys(): { keys: Record<string, Buffer>; activeKeyId: string | null } {
+  if (savedCardKeyCache) return savedCardKeyCache;
+  const keys: Record<string, Buffer> = {};
+  let activeKeyId: string | null = null;
+
+  const raw = (process.env.MERCHANT_CREDENTIALS_KEYS ?? '').trim();
+  if (raw) {
+    let parsed: Record<string, string> = {};
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error('MERCHANT_CREDENTIALS_KEYS must be valid JSON of {keyId: secret}');
+    }
+    for (const [id, secret] of Object.entries(parsed)) {
+      if (!id || typeof secret !== 'string' || !secret.trim()) continue;
+      keys[id] = crypto.createHash('sha256').update(secret.trim()).digest();
+    }
+    activeKeyId = (process.env.MERCHANT_CREDENTIALS_ACTIVE_KEY_ID ?? '').trim() || null;
+    if (!activeKeyId || !keys[activeKeyId]) activeKeyId = Object.keys(keys)[0] ?? null;
+  }
+
+  const legacyRaw = (process.env.MERCHANT_CREDENTIALS_ENCRYPTION_KEY ?? '').trim();
+  if (legacyRaw) keys['__legacy__'] = crypto.createHash('sha256').update(legacyRaw).digest();
+
+  savedCardKeyCache = { keys, activeKeyId };
+  return savedCardKeyCache;
+}
+
+/** Stable dedup key for a plaintext Moyasar token. */
+export function savedCardTokenHash(plaintextToken: string): string {
+  return crypto.createHash('sha256').update((plaintextToken ?? '').trim()).digest('hex');
+}
+
+/** Encrypt a plaintext Moyasar token into the versioned AES-256-GCM envelope. */
+export function encryptSavedCardToken(plaintextToken: string): string {
+  const trimmed = typeof plaintextToken === 'string' ? plaintextToken.trim() : '';
+  if (!trimmed) throw new Error('Cannot encrypt an empty saved-card token');
+
+  const { keys, activeKeyId } = loadSavedCardKeys();
+
+  if (activeKeyId && keys[activeKeyId]) {
+    const key = keys[activeKeyId];
+    const iv = crypto.randomBytes(SAVED_CARD_IV_LENGTH);
+    const cipher = crypto.createCipheriv(SAVED_CARD_ALGORITHM, key, iv);
+    const ciphertext = Buffer.concat([cipher.update(trimmed, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `v2:${activeKeyId}:${iv.toString('base64url')}:${tag.toString('base64url')}:${ciphertext.toString('base64url')}`;
+  }
+
+  const legacyKey = keys['__legacy__'];
+  if (!legacyKey) {
+    throw new Error('MERCHANT_CREDENTIALS_ENCRYPTION_KEY (or _KEYS) is not configured');
+  }
+  const iv = crypto.randomBytes(SAVED_CARD_IV_LENGTH);
+  const cipher = crypto.createCipheriv(SAVED_CARD_ALGORITHM, legacyKey, iv);
+  const ciphertext = Buffer.concat([cipher.update(trimmed, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString('base64url')}:${tag.toString('base64url')}:${ciphertext.toString('base64url')}`;
+}
+
+/**
+ * Decrypt a stored saved-card token back to the raw Moyasar token.
+ * Transition-safe: a value that isn't a recognised `v1:`/`v2:` envelope is
+ * assumed to be a legacy plaintext token (the pre-encryption rows) and is
+ * returned as-is so existing cards keep working until the backfill runs.
+ */
+export function decryptSavedCardToken(storedToken: string | null | undefined): string {
+  const raw = typeof storedToken === 'string' ? storedToken.trim() : '';
+  if (!raw) throw new Error('Saved-card token is empty');
+  if (raw.startsWith('v1:') || raw.startsWith('v2:')) {
+    const decrypted = decryptMerchantCredential(raw);
+    if (!decrypted) throw new Error('Saved-card token failed to decrypt');
+    return decrypted;
+  }
+  return raw; // legacy plaintext (pre-PRIV-02 rows, prior to backfill)
+}
 
 export function buildPaymentWebhookUpdates(params: {
   status: string;
@@ -99,7 +199,7 @@ paymentRouter.post('/initiate', async (req, res) => {
 
     const { data: order, error: orderError } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status')
+      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, branch_id, order_type')
       .eq('id', orderId)
       .eq('merchant_id', scopedMerchantId)
       .eq('customer_id', user.id)
@@ -118,6 +218,32 @@ paymentRouter.post('/initiate', async (req, res) => {
     }
     if (order.status === 'Cancelled' || order.status === 'Delivered') {
       return res.status(400).json({ error: `Cannot initiate payment for order status: ${order.status}` });
+    }
+
+    // BILL-1: gate payment initiation on the same effective subscription-policy
+    // + branch-closed checks that /token-pay enforces. Without this a lapsed /
+    // suspended / trial-expired merchant's customer could still spin up Moyasar
+    // sessions (the eventual /commit rejects, but only after a live session was
+    // created). No permanent money is kept, but this closes the gap.
+    const initiateRuntime = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
+    if (!initiateRuntime.customerPaymentsEnabled) {
+      return res.status(403).json({ error: 'Payments are not enabled for this merchant' });
+    }
+    const initiateBranchId = (order as { branch_id?: unknown }).branch_id;
+    if (typeof initiateBranchId === 'string' && initiateBranchId) {
+      const storeGate = await checkBranchOrderable(supabaseAdmin, {
+        merchantId: scopedMerchantId,
+        branchId: initiateBranchId,
+        orderType: (order as { order_type?: string | null }).order_type ?? null,
+      });
+      if (!storeGate.ok) {
+        return res.status(storeGate.status).json({
+          error: storeGate.error,
+          code: storeGate.code,
+          ...(storeGate.closedReason ? { closed_reason: storeGate.closedReason } : {}),
+          ...(storeGate.reopensAt !== undefined ? { reopens_at: storeGate.reopensAt } : {}),
+        });
+      }
     }
 
     const session = await paymentService.initiatePayment({
@@ -416,30 +542,44 @@ paymentRouter.post('/webhook', async (req, res) => {
         const tokenId: string = tokenObj.id ?? '';
         const customerId: string = metadata?.customer_id ?? order.customer_id ?? '';
         if (tokenId && customerId) {
-          const { error: upsertError } = await supabaseAdmin
-            .from('customer_saved_cards')
-            .upsert(
-              {
-                customer_id: customerId,
-                merchant_id: merchantId,
-                token: tokenId,
-                brand: (tokenObj.brand ?? source.company ?? '').toLowerCase() || null,
-                last_four: tokenObj.last_four ?? source.last_four ?? null,
-                name: tokenObj.name ?? source.name ?? null,
-                expires_month: tokenObj.month ?? null,
-                expires_year: tokenObj.year ?? null,
-              },
-              { onConflict: 'customer_id,merchant_id,token' },
-            );
-          if (upsertError) {
-            console.warn('[Payment Webhook] Card token save failed', {
+          // PRIV-02: encrypt the Moyasar token at rest; dedup on the stable
+          // token_hash (the random-IV ciphertext can't be the upsert key).
+          // Best-effort: an encrypt/save failure must not fail the webhook —
+          // the payment already succeeded and the order row is already updated.
+          try {
+            const { error: upsertError } = await supabaseAdmin
+              .from('customer_saved_cards')
+              .upsert(
+                {
+                  customer_id: customerId,
+                  merchant_id: merchantId,
+                  token: encryptSavedCardToken(tokenId),
+                  token_hash: savedCardTokenHash(tokenId),
+                  brand: (tokenObj.brand ?? source.company ?? '').toLowerCase() || null,
+                  last_four: tokenObj.last_four ?? source.last_four ?? null,
+                  name: tokenObj.name ?? source.name ?? null,
+                  expires_month: tokenObj.month ?? null,
+                  expires_year: tokenObj.year ?? null,
+                },
+                { onConflict: 'customer_id,merchant_id,token_hash' },
+              );
+            if (upsertError) {
+              console.warn('[Payment Webhook] Card token save failed', {
+                merchantId,
+                customerId,
+                paymentId: id,
+                error: upsertError.message,
+              });
+            } else {
+              console.log('[Payment Webhook] Card token saved for customer', customerId);
+            }
+          } catch (encErr: any) {
+            console.warn('[Payment Webhook] Card token encrypt/save failed', {
               merchantId,
               customerId,
               paymentId: id,
-              error: upsertError.message,
+              error: encErr?.message,
             });
-          } else {
-            console.log('[Payment Webhook] Card token saved for customer', customerId);
           }
         }
       }
@@ -567,12 +707,15 @@ paymentRouter.post('/saved-cards/attach', async (req, res) => {
       });
     }
 
+    // PRIV-02: match on the stable token_hash — the stored token column is now
+    // an AES-256-GCM ciphertext with a per-write random IV, so `.eq('token', …)`
+    // on the raw token can no longer find an existing row.
     const { data: existing } = await supabaseAdmin
       .from('customer_saved_cards')
       .select('id, brand, last_four, name, expires_month, expires_year')
       .eq('customer_id', user.id)
       .eq('merchant_id', merchantId)
-      .eq('token', token)
+      .eq('token_hash', savedCardTokenHash(token))
       .maybeSingle();
     if (existing) {
       return res.json({ ...existing, already_saved: true });
@@ -589,7 +732,8 @@ paymentRouter.post('/saved-cards/attach', async (req, res) => {
       .insert({
         customer_id: user.id,
         merchant_id: merchantId,
-        token,
+        token: encryptSavedCardToken(token), // PRIV-02: encrypt at rest
+        token_hash: savedCardTokenHash(token),
         brand,
         last_four,
         name,
@@ -681,13 +825,18 @@ paymentRouter.delete('/saved-cards/:id', async (req, res) => {
       const runtimeConfig = await getMerchantPaymentRuntimeConfig(card.merchant_id);
       const secretKey = runtimeConfig.secretKey;
       if (secretKey && card.token) {
-        await fetch(`https://api.moyasar.com/v1/tokens/${card.token}`, {
+        // PRIV-02: the stored token is encrypted at rest — decrypt to the raw
+        // Moyasar token id before calling their API (legacy plaintext rows pass
+        // through unchanged).
+        const moyasarToken = decryptSavedCardToken(card.token);
+        await fetch(`https://api.moyasar.com/v1/tokens/${encodeURIComponent(moyasarToken)}`, {
           method: 'DELETE',
           headers: {
             Authorization: `Basic ${Buffer.from(secretKey + ':').toString('base64')}`,
           },
         });
-        console.log('[SavedCards] Moyasar token deleted:', card.token);
+        // PRIV-03: log the card id, never the raw card token.
+        console.log('[SavedCards] Moyasar token deleted for card:', card.id);
       }
     } catch (e: any) {
       console.warn('[SavedCards] Moyasar token deletion failed (non-blocking):', e?.message);
@@ -759,6 +908,9 @@ paymentRouter.post('/token-pay', async (req, res) => {
     if (!card) {
       return res.status(404).json({ error: 'Saved card not found' });
     }
+    // PRIV-02: the stored token is encrypted at rest — decrypt to the raw
+    // Moyasar token before charging (legacy plaintext rows pass through).
+    const moyasarCardToken = decryptSavedCardToken(card.token);
 
     // Look up the order
     const { data: order, error: orderError } = await supabaseAdmin
@@ -878,7 +1030,7 @@ paymentRouter.post('/token-pay', async (req, res) => {
         amount: chargeAmount,
         currency: 'SAR',
         orderId,
-        token: card.token,
+        token: moyasarCardToken,
         merchantId: scopedMerchantId,
         metadata: { merchant_id: scopedMerchantId },
       });

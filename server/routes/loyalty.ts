@@ -286,13 +286,18 @@ async function resolveCrossChannelEarnGuard(params: {
   // LOY-9: a prior earn for this physical purchase can come from either the
   // branch/POS channel OR a kiosk walk-in capture (source='walkin'). Both key
   // idempotency on the Foodics order uuid, so include both in the dedup lookup.
+  // LOY-B (2026-07-10): branch/app earns store the BARE foodics uuid in
+  // reference_id, but the kiosk walk-in path writes it prefixed as
+  // 'walkin_<uuid>'. Matching only the bare uuid missed the kiosk row, so a
+  // race between the app final-commit and the walk-in sync could double-earn.
+  // Match BOTH forms.
   const { data: branchEarn } = await supabaseAdmin
     .from('loyalty_transactions')
     .select('id')
     .eq('merchant_id', params.merchantId)
     .eq('type', 'earn')
     .in('source', ['branch', 'walkin'])
-    .eq('reference_id', foodicsRef)
+    .in('reference_id', [foodicsRef, `walkin_${foodicsRef}`])
     .limit(1)
     .maybeSingle();
   return { foodicsRef, priorBranchEarn: Boolean(branchEarn) };
@@ -375,6 +380,25 @@ async function redeemPointsFromBalance(params: {
   if (!supabaseAdmin) throw new Error('Database not configured');
   await ensureLoyaltyMemberProfile(params.merchantId, params.customerId);
   const config = await getMerchantConfig(params.merchantId);
+
+  // LOY-A (2026-07-10): points are NEVER cash. Converting a points balance
+  // into a SAR monetary discount (points × point_value_sar) is disallowed on
+  // EVERY channel that reaches this function — including the internal Foodics
+  // POS adapter (/api/loyalty/redeem via internal secret) and the dashboard
+  // branch tool (/api/loyalty/branch/redeem-points). Only reward-item /
+  // milestone redemption (redeemRewardFromBalance) may spend a points balance.
+  // This mirrors the customer-self-service invariant already enforced at the
+  // top of POST /api/loyalty/redeem (403). Cashback (SAR-denominated) is
+  // unaffected — it legitimately reduces a monetary charge and does not flow
+  // through this function. Default per owner decision: block it.
+  const activeLoyaltyType = await getCustomerActiveLoyaltyType(params.merchantId, params.customerId);
+  const effectiveLoyaltyType = activeLoyaltyType ?? config.loyalty_type ?? 'points';
+  if (effectiveLoyaltyType === 'points') {
+    const blocked = new Error('Points can only be redeemed for rewards, not as a cash discount.') as Error & { code?: string };
+    blocked.code = 'POINTS_CASH_REDEMPTION_DISABLED';
+    throw blocked;
+  }
+
   const programId = await getActiveProgramId(params.merchantId);
   const pointsToRedeem = Math.floor(Number(params.points));
   if (pointsToRedeem <= 0) throw new Error('Invalid points amount');
@@ -1150,6 +1174,10 @@ loyaltyRouter.post('/redeem', async (req, res) => {
     });
     res.json(result);
   } catch (err: any) {
+    // LOY-A: points-as-cash is blocked for points merchants/customers.
+    if (err?.code === 'POINTS_CASH_REDEMPTION_DISABLED') {
+      return res.status(403).json({ error: err.message, code: err.code });
+    }
     const message = err?.message || 'Failed to redeem points';
     const status = /insufficient points|invalid points/i.test(message) ? 400 : 500;
     res.status(status).json({ error: message });
@@ -1448,6 +1476,11 @@ loyaltyRouter.post('/branch/redeem-points', async (req, res) => {
     const snapshot = await getLoyaltySnapshot(merchantId, member.customer_id);
     res.json({ success: true, result, member: snapshot });
   } catch (err: any) {
+    // LOY-A: points-as-cash is blocked for points merchants/customers — the
+    // branch tool may still redeem reward items via /branch/redeem-reward.
+    if (err?.code === 'POINTS_CASH_REDEMPTION_DISABLED') {
+      return res.status(403).json({ error: err.message, code: err.code });
+    }
     const message = err?.message || 'Failed to redeem branch loyalty points';
     const status = /insufficient points|required|invalid|not found/i.test(message) ? 400 : 500;
     res.status(status).json({ error: message });
