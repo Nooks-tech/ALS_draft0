@@ -1521,6 +1521,27 @@ ordersRouter.post('/commit', async (req, res) => {
       // First-commit drafts have NULL here and stay invisible until
       // the second commit promotes them.
       payment_confirmed_at: isFinalCommit ? new Date().toISOString() : null,
+      // ─── SCAL-004 shadow enqueue (ADDITIVE — worker disabled by default) ───
+      // On the FINAL commit, stamp the durable Foodics-dispatch queue
+      // metadata so the finalized paid order is ALSO a claimable job for the
+      // (currently disabled) order-dispatch worker + due-aware reconciler.
+      // This is strict SHADOW mode: the inline relay below stays the single
+      // source of truth and still runs synchronously exactly as before — on
+      // success it overwrites foodics_relay_status to 'ok' and sets
+      // foodics_order_id, which removes the row from the claim set; on failure
+      // it refunds and flips status to 'Cancelled', which also removes it.
+      // These two columns therefore only make the row claimable in the window
+      // before the inline relay finishes (or if it never landed a Foodics id),
+      // which is precisely the durable backstop SCAL-004 introduces. No
+      // behaviour changes today because ORDER_DISPATCH_WORKER_ENABLED gates
+      // the worker off. First-commit drafts (isFinalCommit=false) get nothing
+      // here — they stay invisible and are never claimable.
+      ...(isFinalCommit
+        ? {
+            foodics_relay_status: 'pending',
+            foodics_relay_next_attempt_at: new Date().toISOString(),
+          }
+        : {}),
       updated_at: new Date().toISOString(),
     };
 
@@ -2155,7 +2176,11 @@ type ReversalBreakdown = {
   cashback?: { amountSar: number; alreadyRestored?: boolean };
   stamps?: { count: number; milestones: string[]; alreadyRestored?: boolean };
 };
-async function refundOrderToWallet(
+// Exported (SCAL-004) so the out-of-band Foodics dispatch worker can reuse
+// the SAME idempotent cancel/refund the inline relay-failure path uses,
+// rather than inventing a new money movement. Export is visibility-only —
+// it changes no behaviour of the inline /commit relay.
+export async function refundOrderToWallet(
   orderId: string,
   cancelledBy: 'merchant' | 'system',
   reason: string,
