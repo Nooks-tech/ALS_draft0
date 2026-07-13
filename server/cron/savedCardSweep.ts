@@ -17,6 +17,13 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
+import {
+  CURSOR_NAME,
+  EMPTY_CURSOR,
+  driveSweep,
+  parseCursor,
+  type SweepCursor,
+} from './savedCardSweepCursor';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -90,6 +97,45 @@ async function checkOne(
 
 let sweepInFlight = false;
 
+type SavedCard = { id: string; customer_id: string; merchant_id: string; token: string };
+
+// Durable resume cursor (SCAL-013). Persisted in the shared cron_cursors
+// table so a run cut short by SWEEP_BUDGET_MS resumes on the next tick
+// instead of restarting at the head and aging out the tail.
+async function loadCursor(): Promise<SweepCursor> {
+  if (!supabaseAdmin) return EMPTY_CURSOR;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('cron_cursors')
+      .select('cursor')
+      .eq('name', CURSOR_NAME)
+      .maybeSingle();
+    if (error) {
+      console.warn('[SavedCardSweep] cursor load failed — starting from head:', error.message);
+      return EMPTY_CURSOR;
+    }
+    return parseCursor(data?.cursor);
+  } catch (err: any) {
+    console.warn('[SavedCardSweep] cursor load threw — starting from head:', err?.message);
+    return EMPTY_CURSOR;
+  }
+}
+
+async function saveCursor(cursor: SweepCursor): Promise<void> {
+  if (!supabaseAdmin) return;
+  try {
+    const { error } = await supabaseAdmin
+      .from('cron_cursors')
+      .upsert(
+        { name: CURSOR_NAME, cursor, updated_at: new Date().toISOString() },
+        { onConflict: 'name' },
+      );
+    if (error) console.warn('[SavedCardSweep] cursor save failed:', error.message);
+  } catch (err: any) {
+    console.warn('[SavedCardSweep] cursor save threw:', err?.message);
+  }
+}
+
 async function runSweep() {
   if (!supabaseAdmin) return;
   if (sweepInFlight) {
@@ -98,41 +144,35 @@ async function runSweep() {
   }
   sweepInFlight = true;
   try {
-    const startedAt = Date.now();
     const keyCache: MerchantKeyCache = new Map();
-    // Keyset pagination ordered by id: the old single unordered
-    // .limit(500) fetched the same ~500 physical-order rows every tick,
-    // so cards 501+ were NEVER swept and dead tokens surfaced as
-    // "payment failed" at checkout.
-    let lastId = '';
-    let checked = 0;
-    for (;;) {
-      let query = supabaseAdmin
-        .from('customer_saved_cards')
-        .select('id, customer_id, merchant_id, token')
-        .order('id', { ascending: true })
-        .limit(BATCH_LIMIT);
-      if (lastId) query = query.gt('id', lastId);
-      const { data, error } = await query;
-      if (error) {
-        console.warn('[SavedCardSweep] List query failed:', error.message);
-        return;
-      }
-      if (!data?.length) break;
-      console.log(`[SavedCardSweep] Checking batch of ${data.length} saved cards (total so far: ${checked})`);
-      for (const card of data as Array<{ id: string; customer_id: string; merchant_id: string; token: string }>) {
-        await checkOne(card, keyCache);
-        checked += 1;
-        await sleep(PER_TOKEN_DELAY_MS);
-      }
-      lastId = String((data[data.length - 1] as { id: string }).id);
-      if (data.length < BATCH_LIMIT) break; // drained
-      if (Date.now() - startedAt > SWEEP_BUDGET_MS) {
-        console.warn(`[SavedCardSweep] budget exhausted after ${checked} cards — resuming next tick`);
-        break;
-      }
-    }
-    if (checked > 0) console.log(`[SavedCardSweep] Sweep complete — ${checked} cards checked`);
+    // Keyset pagination ordered by id (the old single unordered .limit(500)
+    // fetched the same ~500 physical-order rows every tick, so cards 501+
+    // were NEVER swept). The cursor is now DURABLE across ticks — see driver.
+    await driveSweep<SavedCard>({
+      loadCursor,
+      saveCursor,
+      fetchBatch: async (afterId, limit) => {
+        let query = supabaseAdmin!
+          .from('customer_saved_cards')
+          .select('id, customer_id, merchant_id, token')
+          .order('id', { ascending: true })
+          .limit(limit);
+        if (afterId) query = query.gt('id', afterId);
+        const { data, error } = await query;
+        if (error) {
+          console.warn('[SavedCardSweep] List query failed:', error.message);
+          return null; // driver leaves the cursor in place for the next tick
+        }
+        return (data ?? []) as SavedCard[];
+      },
+      processRow: (card) => checkOne(card, keyCache),
+      now: Date.now,
+      batchLimit: BATCH_LIMIT,
+      budgetMs: SWEEP_BUDGET_MS,
+      delay: sleep,
+      perRowDelayMs: PER_TOKEN_DELAY_MS,
+      onLog: (m) => console.log(`[SavedCardSweep] ${m}`),
+    });
   } finally {
     sweepInFlight = false;
   }
