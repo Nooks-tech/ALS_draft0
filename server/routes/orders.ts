@@ -283,10 +283,16 @@ async function relayOrderToNooks(
     headers['x-customer-jwt'] = options.customerJwt;
   }
 
+  // DB-2: bound the internal relay hop. This was the only fetch in the
+  // codebase with no timeout — if nooksweb stalls (Foodics slow → Vercel
+  // 10s function limit → 504/hang), held commits would otherwise pile up
+  // unbounded on the single Railway dyno. 8s matches the external-fetch
+  // bound (services/foodics.ts) and stays under Vercel's 10s ceiling.
   const response = await fetch(`${NOOKS_API_BASE_URL}/api/public/orders`, {
     method: 'POST',
     headers,
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(8000),
   });
 
   const data = await response.json().catch(() => null);
@@ -2341,8 +2347,34 @@ export async function refundOrderToWallet(
   //     the intent because if Moyasar took the money, we still
   //     owe it back even if the intent != actual.
   let walletCreditSar = effectiveWalletPaid;
-  if (effectiveCardPaid > 0 && !cardReturnedToCustomer && !cardNothingOwed) {
+  const cardPortionCreditedToWalletFallback =
+    effectiveCardPaid > 0 && !cardReturnedToCustomer && !cardNothingOwed;
+  if (cardPortionCreditedToWalletFallback) {
     walletCreditSar = +(walletCreditSar + effectiveCardPaid).toFixed(2);
+    // PAY-2: the card portion was NOT reversed on Moyasar (void/refund
+    // failed or the cancel threw), yet we credit it to the wallet so the
+    // customer is whole immediately. This is a deliberate trade-off, but it
+    // opens a double-pay window if ops later refunds the same charge
+    // manually in the Moyasar console. Emit an explicit marker so that
+    // manual refund can be reconciled against this wallet credit.
+    try {
+      await supabaseAdmin.from('audit_log').insert({
+        merchant_id: order.merchant_id,
+        action: 'refund.card_void_failed_wallet_credited_needs_review',
+        payload: {
+          order_id: orderId,
+          customer_id: order.customer_id,
+          payment_id: order.payment_id ?? null,
+          card_amount_sar: effectiveCardPaid,
+          moyasar_method: moyasarMethod,
+          cancelled_by: cancelledBy,
+          reason,
+        },
+      });
+    } catch (e: any) {
+      // Never let the audit marker block the refund the customer is owed.
+      console.warn('[Orders] PAY-2 audit marker insert failed for', orderId, ':', e?.message);
+    }
   }
   if (walletCreditSar > 0) {
     try {
@@ -2789,15 +2821,47 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
     // 1778926829026 sitting at 24h shouldn't get auto-cancelled).
     const minAgeIso = new Date(Date.now() - 5 * 60 * 1000).toISOString();
     const maxAgeIso = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-    const { data: candidates, error: queryErr } = await supabaseAdmin
+    const SWEEP_SELECT =
+      'id, payment_id, merchant_id, customer_id, total_sar, card_paid_sar, created_at, payment_confirmed_at, foodics_order_id';
+
+    // ─── SWEEP-1: primary in-window pass (5–30 min old) ───
+    // ORDER BY created_at ASC so the oldest rows are drained first and
+    // nothing ages out under a burst; limit raised 100→250 so iftar-rate
+    // arrivals (5% of ~500/min = ~25/min) don't outrun a 5-min sweep.
+    const { data: windowCandidates, error: queryErr } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, payment_id, merchant_id, customer_id, total_sar, card_paid_sar, created_at, payment_confirmed_at, foodics_order_id')
+      .select(SWEEP_SELECT)
       .eq('status', 'Placed')
       .lt('created_at', minAgeIso)
       .gte('created_at', maxAgeIso)
       .not('payment_id', 'is', null)
-      .limit(100);
+      .order('created_at', { ascending: true })
+      .limit(250);
     if (queryErr) return res.status(500).json({ error: queryErr.message });
+
+    // ─── SWEEP-1: stale unconfirmed drafts PAST the 30-min ceiling ───
+    // An unconfirmed draft (payment_confirmed_at IS NULL) never reached the
+    // merchant's POS and should ALWAYS be reversible — the 30-min upper
+    // bound exists only to stop retroactively nuking stale *confirmed* test
+    // rows, not to strand abandoned drafts. Under a burst that ages rows
+    // past the ceiling, excluding these would leave them stuck 'Placed'
+    // forever with a possibly-authorized-not-voided card. So we additionally
+    // pick up drafts older than 30 min. Confirmed rows past the ceiling are
+    // deliberately NOT swept here (upper-bound protection preserved). These
+    // flow through the same draft-never-confirmed branch below, which keeps
+    // the Layer-2 ledger check and ORD-4 guards intact.
+    const { data: staleDrafts, error: staleErr } = await supabaseAdmin
+      .from('customer_orders')
+      .select(SWEEP_SELECT)
+      .eq('status', 'Placed')
+      .lt('created_at', maxAgeIso)
+      .is('payment_confirmed_at', null)
+      .not('payment_id', 'is', null)
+      .order('created_at', { ascending: true })
+      .limit(250);
+    if (staleErr) return res.status(500).json({ error: staleErr.message });
+
+    const candidates = [...(windowCandidates ?? []), ...(staleDrafts ?? [])];
 
     let swept = 0;
     let skipped = 0;
@@ -2948,7 +3012,7 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
       }
     }
 
-    res.json({ swept, skipped, total: (candidates ?? []).length, results });
+    res.json({ swept, skipped, total: candidates.length, results });
   } catch (err: any) {
     console.error('[Orders] sweep-abandoned-payments error:', err?.message);
     res.status(500).json({ error: err?.message || 'Sweep failed' });

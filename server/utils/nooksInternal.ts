@@ -88,12 +88,41 @@ export function hasValidInternalSecret(req: Request) {
  *       `${method}\n${path}\n${timestamp}\n${nonce}\n${sha256(body)}`))
  *
  * Body hash includes the raw request body (or empty string for no-body
- * GETs). 5-minute timestamp window blocks replay; nonce is purely
- * decorative for now — we don't track them, but they widen the input
- * surface so identical replayable signatures don't exist.
+ * GETs). The 5-minute timestamp window bounds how long any signature can
+ * live; within that window the nonce replay guard (PRIV-06) rejects a
+ * second use of the same signed request so a captured-but-still-fresh
+ * request can't be replayed verbatim.
  */
 export function isInternalHmacEnabled() {
   return NOOKS_INTERNAL_HMAC_KEY.length > 0;
+}
+
+// PRIV-06 (2026-07-10): in-memory nonce replay guard. A valid signature is
+// accepted at most once within its freshness window; a replay of the exact
+// same signed request (same nonce) is rejected. Keyed on nonce → expiry epoch
+// ms (= the timestamp past which the signature is stale anyway, so the entry
+// can be forgotten). Single-replica today.
+// TODO(scale): a multi-replica ALS deployment needs a shared store (e.g. the
+// existing Upstash Redis) for this guard to hold across processes — an
+// in-memory map only blocks replays that land on the SAME replica.
+// Pruned opportunistically so the map can't grow unbounded
+// under a bad-actor nonce flood (only *verified* signatures ever land here).
+const seenHmacNonces = new Map<string, number>();
+const MAX_TRACKED_NONCES = 5000;
+
+function recordFreshNonce(nonce: string, expiryMs: number): boolean {
+  const now = Date.now();
+  const existing = seenHmacNonces.get(nonce);
+  if (existing !== undefined && existing > now) {
+    return false; // already seen and still within its freshness window → replay
+  }
+  if (seenHmacNonces.size >= MAX_TRACKED_NONCES) {
+    for (const [key, exp] of seenHmacNonces) {
+      if (exp <= now) seenHmacNonces.delete(key);
+    }
+  }
+  seenHmacNonces.set(nonce, expiryMs);
+  return true;
 }
 
 function getRawBodyString(req: Request): string {
@@ -113,9 +142,19 @@ function getRawBodyString(req: Request): string {
   }
 }
 
+let warnedHmacUnset = false;
+
 export function verifyInternalHmac(req: Request): { ok: true } | { ok: false; reason: string } {
   if (!isInternalHmacEnabled()) {
-    // Soft rollout: HMAC not configured on this side, accept.
+    // Soft rollout / backward-compat: HMAC not configured on this side, accept.
+    // PRIV-06: with the key unset there is no signature to verify and no nonce
+    // to track, so the replay guard is inactive — warn once so this weaker
+    // posture is visible in logs. Callers are NOT broken (secret-only still
+    // gates the endpoint via requireNooksInternalRequest).
+    if (!warnedHmacUnset) {
+      warnedHmacUnset = true;
+      console.warn('[InternalAuth] NOOKS_INTERNAL_HMAC_KEY is not configured; HMAC signature + nonce replay protection are disabled (secret-only auth).');
+    }
     return { ok: true };
   }
   const timestampStr = safeHeaderValue(req.headers['x-nooks-internal-timestamp']);
@@ -145,6 +184,13 @@ export function verifyInternalHmac(req: Request): { ok: true } | { ok: false; re
     .digest('hex');
   if (!constantTimeEquals(signature, expected)) {
     return { ok: false, reason: 'signature mismatch' };
+  }
+  // PRIV-06: replay guard. Only record AFTER the signature verifies, so an
+  // attacker can't fill the nonce map with unsigned junk. A second use of the
+  // same nonce inside its freshness window is a replay. The signature is bound
+  // to the nonce, so a distinct legit request always carries a distinct nonce.
+  if (!recordFreshNonce(nonce, timestamp + HMAC_FRESHNESS_MS)) {
+    return { ok: false, reason: 'nonce replay' };
   }
   return { ok: true };
 }

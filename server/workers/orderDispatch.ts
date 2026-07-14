@@ -89,6 +89,9 @@ export async function callDispatchRelay(orderId: string): Promise<RelayResult> {
         'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
       },
       body: JSON.stringify({ order_id: orderId }),
+      // DB-2: bound the relay hop like relayOrderToNooks — an unbounded fetch
+      // here would wedge the worker loop for as long as nooksweb hangs.
+      signal: AbortSignal.timeout(8000),
     });
     const data: any = await res.json().catch(() => null);
     if (!res.ok) {
