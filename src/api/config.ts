@@ -9,10 +9,10 @@ const ENV = {
     apiUrl: 'http://localhost:3001',
   },
   staging: {
-    apiUrl: 'https://api-staging.als.delivery',
+    apiUrl: 'https://alsdraft0-production.up.railway.app',
   },
   prod: {
-    apiUrl: 'https://api.als.delivery',
+    apiUrl: 'https://alsdraft0-production.up.railway.app',
   },
 };
 

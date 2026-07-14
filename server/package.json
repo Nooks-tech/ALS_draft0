@@ -6,6 +6,7 @@
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
     "start:prod": "tsx index.ts",
+    "worker:dispatch": "tsx workers/orderDispatch.ts",
     "build": "tsc",
     "test": "node --import tsx --test tests/*.test.ts",
     "postinstall": "node scripts/patch-passkit-generator.js"
