@@ -7,6 +7,8 @@
     "start": "tsx index.ts",
     "start:prod": "tsx index.ts",
     "worker:dispatch": "tsx workers/orderDispatch.ts",
+    "ops:configure-moyasar-order-webhooks": "tsx scripts/configureMoyasarOrderWebhooks.ts",
+    "ops:reconcile-payment-processing": "tsx scripts/reconcilePaymentProcessing.ts",
     "build": "tsc",
     "test": "node --import tsx --test tests/*.test.ts",
     "postinstall": "node scripts/patch-passkit-generator.js"
