@@ -26,6 +26,17 @@ import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { creditWalletForRefund } from './wallet';
 import { notifyPassUpdateSafe } from './walletPass';
+import {
+  deriveFinalSettlementProof,
+  guardOrderFinalizationRequest,
+  hasRewardBearingOrderItems,
+  isReservedClientPaymentId,
+} from '../utils/orderFinalizationGuard';
+import {
+  decideCardReversal,
+  temporaryRefundStatus,
+} from '../utils/refundDecision';
+import { reverseStrictlyBoundRejectedPayment } from '../utils/rejectedFinalPayment';
 
 export const ordersRouter = Router();
 
@@ -37,22 +48,123 @@ export const ordersRouter = Router();
  * with NO customer_orders row — invisible even to the abandoned-
  * payments sweep. No-ops when paymentId isn't a real Moyasar id
  * (saved-card first commits carry none; wallet/reward sentinels skip).
- * Failures only log — the sweep remains the backstop for orders that
- * do have a row.
+ * Every provider mutation is preceded by strict amount/order binding. The
+ * outcome is persisted on an existing draft, or durably audited when the
+ * direct-card path has no draft row yet.
  */
 async function voidChargeOnRejectedCommit(
   paymentId: unknown,
   merchantId: string,
+  orderId: string,
+  customerId: string,
+  expectedAmountHalalas: number,
   context: string,
 ): Promise<void> {
   const pid = typeof paymentId === 'string' ? paymentId.trim() : '';
-  if (!pid || pid.startsWith('wallet:') || pid.startsWith('reward:')) return;
+  if (!pid || isReservedClientPaymentId(pid)) return;
   try {
-    const result = await cancelPayment(pid, undefined, merchantId);
-    if (result.method === 'failed') {
-      console.error(`[Orders] ${context}: void of Moyasar payment ${pid} failed:`, result.error);
+    const cleanup = await reverseStrictlyBoundRejectedPayment(
+      {
+        submittedPaymentId: pid,
+        expectedAmountHalalas,
+        merchantId,
+        orderId,
+      },
+      { verify: verifyPaidPayment, cancel: cancelPayment },
+    );
+    if (!cleanup.bindingVerified) {
+      captureError(new Error(`Rejected-commit payment was not strictly bound: ${cleanup.reason}`), {
+        component: 'orders.rejectedCommitReversal.bindingRejected',
+        merchantId,
+        customerId,
+        orderId,
+        extra: { paymentId: pid, context, retryable: cleanup.retryable },
+      });
+      if (supabaseAdmin) {
+        const { error: auditError } = await supabaseAdmin.from('audit_log').insert({
+          merchant_id: merchantId,
+          action: 'orders.rejected_commit_payment_manual_review',
+          payload: {
+            order_id: orderId,
+            customer_id: customerId,
+            submitted_payment_id: pid,
+            context,
+            reason: cleanup.reason,
+            retryable: cleanup.retryable,
+            provider_mutation_attempted: false,
+          },
+        });
+        if (auditError) console.warn('[Orders] Rejected-commit binding audit failed:', auditError.message);
+      }
+      return;
+    }
+
+    const result = cleanup.reversal;
+    const disposition = cleanup.disposition;
+    if (supabaseAdmin) {
+      const now = new Date().toISOString();
+      const { data: updatedRows, error: persistenceError } = await supabaseAdmin
+        .from('customer_orders')
+        .update({
+          status: 'Cancelled',
+          payment_id: cleanup.resolvedPaymentId,
+          cancellation_reason: `Commit rejected (${context}); provider reversal: ${result.method}`,
+          cancelled_by: 'system',
+          refund_status: disposition.refundStatus,
+          refund_amount: disposition.refundedSar,
+          refund_method: disposition.refundMethod,
+          refunded_at: disposition.completed && disposition.refundStatus === 'refunded' ? now : null,
+          updated_at: now,
+        })
+        .eq('id', orderId)
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .select('id');
+      if (persistenceError) {
+        captureError(persistenceError, {
+          component: 'orders.rejectedCommitReversal.persistence',
+          merchantId,
+          customerId,
+          orderId,
+        });
+      }
+      if (persistenceError || !updatedRows || updatedRows.length === 0) {
+        const { error: auditError } = await supabaseAdmin.from('audit_log').insert({
+          merchant_id: merchantId,
+          action:
+            disposition.pending
+              ? 'refund.card_reversal_unknown_needs_readback'
+              : disposition.manualReview
+                ? 'refund.card_reversal_failed_needs_manual_review'
+                : 'orders.rejected_commit_payment_reversed',
+          payload: {
+            order_id: orderId,
+            customer_id: customerId,
+            payment_id: cleanup.resolvedPaymentId,
+            context,
+            reversal_method: result.method,
+            refund_status: disposition.refundStatus,
+            persistence_error: persistenceError?.message ?? null,
+            draft_row_found: Boolean(updatedRows?.length),
+          },
+        });
+        if (auditError) console.warn('[Orders] Rejected-commit reversal audit failed:', auditError.message);
+      }
+    }
+    if (result.method === 'failed' || result.method === 'unknown') {
+      console.error(`[Orders] ${context}: reversal of Moyasar payment ${cleanup.resolvedPaymentId} needs attention:`, result.error);
+      captureError(new Error(result.error || `Rejected-commit card reversal ${result.method}`), {
+        component:
+          result.method === 'unknown'
+            ? 'orders.rejectedCommitReversal.providerUnknown'
+            : 'orders.rejectedCommitReversal.failed',
+        merchantId,
+        customerId,
+        orderId,
+        extra: { paymentId: cleanup.resolvedPaymentId, context, method: result.method },
+      });
     } else {
-      console.warn(`[Orders] ${context}: ${result.method} Moyasar payment ${pid} after rejecting final commit`);
+      console.warn(`[Orders] ${context}: ${result.method} Moyasar payment ${cleanup.resolvedPaymentId} after rejecting commit`);
     }
   } catch (e: any) {
     console.error(`[Orders] ${context}: void of Moyasar payment ${pid} threw:`, e?.message);
@@ -345,7 +457,7 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
 
     const { data: order, error: loadErr } = await db
       .from('customer_orders')
-      .select('id, merchant_id, branch_id, branch_name, customer_id, total_sar, status, items, order_type, delivery_address, delivery_lat, delivery_lng, delivery_city, delivery_fee, payment_id, payment_method, promo_code, promo_discount_sar, promo_scope, loyalty_discount_sar, wallet_amount_sar, car_details, qr_code_id, foodics_table_id, foodics_table_name, guests, payment_confirmed_at')
+      .select('id, merchant_id, branch_id, branch_name, customer_id, total_sar, status, items, order_type, delivery_address, delivery_lat, delivery_lng, delivery_city, delivery_fee, payment_id, payment_method, promo_code, promo_discount_sar, promo_scope, loyalty_discount_sar, wallet_amount_sar, wallet_paid_sar, card_paid_sar, car_details, qr_code_id, foodics_table_id, foodics_table_name, guests, payment_confirmed_at')
       .eq('id', orderId)
       .eq('customer_id', user.id)
       .maybeSingle();
@@ -360,6 +472,64 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
         success: true,
         relayed: false,
         reason: !order ? 'not_found_or_not_owned' : 'not_finalized',
+      });
+    }
+
+    const storedWalletHalalas = Math.max(0, Math.round(Number(order.wallet_paid_sar ?? 0) * 100));
+    const storedCardHalalas = Math.max(
+      0,
+      Math.round(
+        Number(
+          order.card_paid_sar
+            ?? Math.max(0, Number(order.total_sar ?? 0) - Number(order.wallet_paid_sar ?? 0)),
+        ) * 100,
+      ),
+    );
+    let walletDebitTransactionId: string | null = null;
+    if (storedWalletHalalas > 0) {
+      const { data: walletSpend, error: walletProofError } = await db
+        .from('customer_wallet_transactions')
+        .select('id, amount_halalas')
+        .eq('order_id', order.id)
+        .eq('customer_id', order.customer_id)
+        .eq('merchant_id', order.merchant_id)
+        .eq('entry_type', 'spend')
+        .maybeSingle();
+      if (walletProofError) return res.status(500).json({ error: walletProofError.message });
+      if (walletSpend && Math.abs(Number(walletSpend.amount_halalas ?? 0)) === storedWalletHalalas) {
+        walletDebitTransactionId = walletSpend.id;
+      }
+    }
+
+    let providerVerified = false;
+    let resolvedProviderPaymentId: string | null = null;
+    if (storedCardHalalas > 0 && typeof order.payment_id === 'string' && !isReservedClientPaymentId(order.payment_id)) {
+      const verification = await verifyPaidPayment(
+        order.payment_id,
+        storedCardHalalas,
+        order.merchant_id,
+        order.id,
+      );
+      if (verification.ok) {
+        providerVerified = true;
+        resolvedProviderPaymentId = verification.moyasarId;
+      }
+    }
+
+    const storedSettlementProof = deriveFinalSettlementProof({
+      isFinalCommit: true,
+      providerPaymentId: resolvedProviderPaymentId ?? order.payment_id,
+      providerPaymentMethod: order.payment_method,
+      providerVerified,
+      cardPortionHalalas: storedCardHalalas,
+      walletAppliedHalalas: storedWalletHalalas,
+      walletDebitTransactionId,
+    });
+    if (!storedSettlementProof.settled) {
+      return res.status(409).json({
+        error: 'Stored settlement could not be independently proven; the order was not relayed.',
+        code: 'SETTLEMENT_PROOF_REQUIRED',
+        reason: storedSettlementProof.reason,
       });
     }
 
@@ -380,8 +550,8 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
         delivery_lng: order.delivery_lng,
         delivery_city: order.delivery_city,
         delivery_fee: order.delivery_fee,
-        payment_id: order.payment_id,
-        payment_method: order.payment_method,
+        payment_id: storedSettlementProof.paymentId,
+        payment_method: storedSettlementProof.paymentMethod,
         promo_code: order.promo_code,
         promo_discount_sar: order.promo_discount_sar,
         promo_scope: order.promo_scope,
@@ -517,6 +687,17 @@ ordersRouter.post('/commit', async (req, res) => {
     if (typeof totalSar !== 'number' || !Number.isFinite(totalSar) || totalSar < 0) {
       return res.status(400).json({ error: 'totalSar must be a valid non-negative number' });
     }
+    const requestedWalletAppliedSar =
+      paymentMethod === 'wallet'
+        ? Number(totalSar)
+        : typeof walletAmountSar === 'number' && walletAmountSar > 0
+          ? Math.min(Number(walletAmountSar), Number(totalSar))
+          : 0;
+    const requestedCardPortionSar =
+      paymentMethod === 'wallet'
+        ? 0
+        : Math.max(0, Number(totalSar) - requestedWalletAppliedSar);
+    const expectedHalalsForVerify = Math.round(requestedCardPortionSar * 100);
 
     // ─── QR + dine-in validation ──────────────────────────────────────
     // Server is the source of truth on QR ↔ branch ↔ table linkage —
@@ -833,7 +1014,14 @@ ordersRouter.post('/commit', async (req, res) => {
         // Both commits: Apple Pay / SDK card charges land BEFORE the
         // first commit, so a first-commit rejection must void too (the
         // helper no-ops when there's no real Moyasar payment id).
-        await voidChargeOnRejectedCommit(paymentId, merchantId, `store gate (${storeGate.code})`);
+        await voidChargeOnRejectedCommit(
+          paymentId,
+          merchantId,
+          id,
+          user.id,
+          expectedHalalsForVerify,
+          `store gate (${storeGate.code})`,
+        );
         return res.status(storeGate.status).json({
           error: storeGate.error,
           code: storeGate.code,
@@ -882,28 +1070,45 @@ ordersRouter.post('/commit', async (req, res) => {
     // payment) or null (COD pays cash on delivery). For partial-wallet
     // orders the card still pays the remainder and Moyasar verifies
     // that portion below; we round the expected halalas to match.
+    const isFinalCommit = relayToNooks === true;
     const trimmedPaymentId = typeof paymentId === 'string' ? paymentId.trim() : '';
-    // 'wallet:<txn>' is the wallet-only sentinel. 'reward:<orderId>'
-    // is the free-order sentinel for rewards-only orders where no
-    // money is being charged at all (only stamp-milestone freebies).
-    // Both skip Moyasar verification — there's no card payment to
-    // verify against.
-    const isMoyasarPaymentId =
-      trimmedPaymentId
-      && !trimmedPaymentId.startsWith('wallet:')
-      && !trimmedPaymentId.startsWith('reward:');
+    let walletPaymentId: string | null = null;
+    let walletDebitTransactionId: string | null = null;
+    const walletAppliedSar = requestedWalletAppliedSar;
     // Compute expected card portion (totalSar minus wallet portion).
     // Cashback / loyalty discounts are NOT subtracted here — the
     // discount is applied as a Foodics line on the POS side and
     // Moyasar charges the post-discount totalSar value the client
     // sent us (which the per-item floor above already sanity-checked).
-    const cardPortionSar =
-      paymentMethod === 'wallet'
-        ? 0
-        : typeof walletAmountSar === 'number' && walletAmountSar > 0
-          ? Math.max(0, Number(totalSar) - Number(walletAmountSar))
-          : Number(totalSar);
-    const expectedHalalsForVerify = Math.round(cardPortionSar * 100);
+    const cardPortionSar = requestedCardPortionSar;
+    const finalizationDecision = guardOrderFinalizationRequest({
+      isFinalCommit,
+      submittedPaymentId: paymentId,
+      paymentMethod,
+      cardPortionHalalas: expectedHalalsForVerify,
+      walletAppliedHalalas: Math.round(walletAppliedSar * 100),
+      hasRewardBearingItems:
+        hasRewardBearingOrderItems(items) || claimedMilestones.length > 0,
+    });
+    if (!finalizationDecision.ok) {
+      if (finalizationDecision.providerPaymentIdToReverse) {
+        // Direct card/Apple Pay can charge before either commit. Strictly bind
+        // order + amount before one ambiguity-safe reversal attempt.
+        await voidChargeOnRejectedCommit(
+          finalizationDecision.providerPaymentIdToReverse,
+          merchantId,
+          id,
+          user.id,
+          expectedHalalsForVerify,
+          `finalization guard (${finalizationDecision.code})`,
+        );
+      }
+      return res.status(finalizationDecision.status).json({
+        error: finalizationDecision.error,
+        code: finalizationDecision.code,
+      });
+    }
+    const isMoyasarPaymentId = Boolean(trimmedPaymentId) && !isReservedClientPaymentId(trimmedPaymentId);
     // SCAL-003: the final commit verifies the card payment EXACTLY ONCE (below,
     // where the fixed 2s sleep used to be). This request-local holds that
     // result so the pre-relay gate can reuse it instead of a third Moyasar
@@ -966,7 +1171,6 @@ ordersRouter.post('/commit', async (req, res) => {
     // Moyasar payment in 'initiated' but our verify caught a
     // transient 'paid' window and burned the promo + wallet credit
     // for an order that never reached Foodics.
-    const isFinalCommit = relayToNooks === true;
     const trimmedPromoCode =
       typeof promoCode === 'string' && promoCode.trim() ? promoCode.trim().toUpperCase() : null;
     const promoScopeNormalized =
@@ -975,14 +1179,6 @@ ordersRouter.post('/commit', async (req, res) => {
       typeof promoDiscountSar === 'number' && Number.isFinite(promoDiscountSar) && promoDiscountSar > 0
         ? promoDiscountSar
         : 0;
-
-    let walletPaymentId: string | null = null;
-    let walletAppliedSar = 0;
-    if (paymentMethod === 'wallet') {
-      walletAppliedSar = Number(totalSar);
-    } else if (typeof walletAmountSar === 'number' && walletAmountSar > 0) {
-      walletAppliedSar = Math.min(Number(walletAmountSar), Number(totalSar));
-    }
 
     // ─── Server-validated cashback amount (R2 fix) ───
     // The client sends `cashbackAmountSar` / `loyaltyDiscountSar` on
@@ -1033,7 +1229,7 @@ ordersRouter.post('/commit', async (req, res) => {
       if (!cashbackAllowed) {
         // Both commits — see the store gate note (charge may precede
         // the first commit on the Apple Pay / SDK card paths).
-        await voidChargeOnRejectedCommit(paymentId, merchantId, 'loyalty-type gate');
+        await voidChargeOnRejectedCommit(paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'loyalty-type gate');
         return res.status(400).json({
           error:
             'Points can only be redeemed for rewards from the loyalty page — not as a cash discount. Remove the discount and try again.',
@@ -1043,7 +1239,7 @@ ordersRouter.post('/commit', async (req, res) => {
       const capSar =
         loyaltyCfg?.max_cashback_per_order_sar != null ? Number(loyaltyCfg.max_cashback_per_order_sar) : null;
       if (capSar != null && Number.isFinite(capSar) && capSar > 0 && claimedCashbackSar - capSar > 0.01) {
-        await voidChargeOnRejectedCommit(paymentId, merchantId, 'cashback cap gate');
+        await voidChargeOnRejectedCommit(paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'cashback cap gate');
         return res.status(400).json({
           error: `Maximum cashback per order is ${capSar} SAR.`,
           code: 'CASHBACK_OVER_CAP',
@@ -1215,9 +1411,9 @@ ordersRouter.post('/commit', async (req, res) => {
           | { status?: string }
           | null;
         if (cashbackRpcResult?.status === 'insufficient') {
-          await voidChargeOnRejectedCommit(paymentId, merchantId, 'cashback insufficient');
+          await voidChargeOnRejectedCommit(paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'cashback insufficient');
           return res.status(400).json({
-            error: 'Insufficient cashback balance for the claimed discount. The card payment was reversed.',
+            error: 'Insufficient cashback balance for the claimed discount. Any verified card charge is being reversed or held for provider review.',
             code: 'INSUFFICIENT_CASHBACK',
           });
         }
@@ -1236,9 +1432,9 @@ ordersRouter.post('/commit', async (req, res) => {
             .maybeSingle();
           const actualRedeemedSar = redeemTxn ? Math.abs(Number(redeemTxn.amount_sar ?? 0)) : 0;
           if (Math.abs(validatedCashbackSar - actualRedeemedSar) > 0.01) {
-            await voidChargeOnRejectedCommit(paymentId, merchantId, 'cashback mismatch');
+            await voidChargeOnRejectedCommit(paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'cashback mismatch');
             return res.status(400).json({
-              error: `Cashback amount mismatch: order claims ${validatedCashbackSar.toFixed(2)} SAR but ${actualRedeemedSar.toFixed(2)} SAR was redeemed. The card payment was reversed.`,
+              error: `Cashback amount mismatch: order claims ${validatedCashbackSar.toFixed(2)} SAR but ${actualRedeemedSar.toFixed(2)} SAR was redeemed. Any verified card charge is being reversed or held for provider review.`,
               code: 'CASHBACK_MISMATCH',
             });
           }
@@ -1303,6 +1499,7 @@ ordersRouter.post('/commit', async (req, res) => {
             .eq('entry_type', 'spend')
             .maybeSingle();
           if (priorDebit) {
+            walletDebitTransactionId = priorDebit.id;
             walletPaymentId = `wallet:${priorDebit.id}`;
           } else {
             const debit = await debitWalletForOrder({
@@ -1311,6 +1508,7 @@ ordersRouter.post('/commit', async (req, res) => {
               amountSar: walletAppliedSar,
               orderId: id,
             });
+            walletDebitTransactionId = debit.transactionId;
             walletPaymentId = `wallet:${debit.transactionId}`;
           }
         } catch (e: any) {
@@ -1421,6 +1619,43 @@ ordersRouter.post('/commit', async (req, res) => {
       }
     }
 
+    const finalSettlementProof = deriveFinalSettlementProof({
+      isFinalCommit,
+      providerPaymentId:
+        finalPaymentVerification?.ok === true
+          ? finalPaymentVerification.moyasarId
+          : trimmedPaymentId,
+      providerPaymentMethod: paymentMethod,
+      providerVerified: finalPaymentVerification?.ok === true,
+      cardPortionHalalas: expectedHalalsForVerify,
+      walletAppliedHalalas: Math.round(walletAppliedSar * 100),
+      walletDebitTransactionId,
+    });
+    if (isFinalCommit && !finalSettlementProof.settled) {
+      const proofError = new Error(
+        `Final settlement proof invariant failed: ${finalSettlementProof.reason}`,
+      );
+      captureError(proofError, {
+        component: 'orders.commit.finalSettlementProof',
+        merchantId,
+        customerId: user.id,
+        orderId: id,
+      });
+      return res.status(500).json({
+        error: 'The order could not be finalized because settlement proof was incomplete.',
+        code: 'SETTLEMENT_PROOF_INVARIANT',
+      });
+    }
+    const settlementConfirmed = finalSettlementProof.settled;
+    const persistedPaymentId = settlementConfirmed
+      ? finalSettlementProof.paymentId
+      : paymentMethod === 'wallet'
+        ? walletPaymentId
+        : (trimmedPaymentId || null);
+    const persistedPaymentMethod = settlementConfirmed
+      ? finalSettlementProof.paymentMethod
+      : (typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null);
+
     const payload: Record<string, unknown> = {
       id,
       merchant_id: merchantId,
@@ -1444,11 +1679,8 @@ ordersRouter.post('/commit', async (req, res) => {
       // payment_id stays whatever the client sent or null until
       // /token-pay or the webhook lands the card id; the wallet debit
       // is still recorded in customer_wallet_transactions.order_id.
-      payment_id:
-        paymentMethod === 'wallet'
-          ? walletPaymentId
-          : (typeof paymentId === 'string' && paymentId.trim() ? paymentId.trim() : null),
-      payment_method: typeof paymentMethod === 'string' && paymentMethod.trim() ? paymentMethod.trim() : null,
+      payment_id: persistedPaymentId,
+      payment_method: persistedPaymentMethod,
       // Persist the payment-composition breakdown. Card portion is
       // computed from totalSar minus the non-card portions so the four
       // amounts always sum to totalSar (within rounding). loyaltyDiscountSar
@@ -1526,7 +1758,7 @@ ordersRouter.post('/commit', async (req, res) => {
       // hardened post-delay re-verify passed and side effects fired.
       // First-commit drafts have NULL here and stay invisible until
       // the second commit promotes them.
-      payment_confirmed_at: isFinalCommit ? new Date().toISOString() : null,
+      payment_confirmed_at: settlementConfirmed ? new Date().toISOString() : null,
       // ─── SCAL-004 shadow enqueue (ADDITIVE — worker disabled by default) ───
       // On the FINAL commit, stamp the durable Foodics-dispatch queue
       // metadata so the finalized paid order is ALSO a claimable job for the
@@ -1542,7 +1774,7 @@ ordersRouter.post('/commit', async (req, res) => {
       // behaviour changes today because ORDER_DISPATCH_WORKER_ENABLED gates
       // the worker off. First-commit drafts (isFinalCommit=false) get nothing
       // here — they stay invisible and are never claimable.
-      ...(isFinalCommit
+      ...(settlementConfirmed
         ? {
             foodics_relay_status: 'pending',
             foodics_relay_next_attempt_at: new Date().toISOString(),
@@ -1691,7 +1923,32 @@ ordersRouter.post('/commit', async (req, res) => {
           }
           if (isMoyasarPaymentId) {
             try {
-              await cancelPayment(trimmedPaymentId, undefined, merchantId);
+              const reversal = await cancelPayment(trimmedPaymentId, undefined, merchantId);
+              if (reversal.method === 'unknown' || reversal.method === 'failed') {
+                const component = reversal.method === 'unknown'
+                  ? 'orders.commit.upsertReversal.cardProviderUnknown'
+                  : 'orders.commit.upsertReversal.cardFailed';
+                captureError(new Error(reversal.error || `Card reversal ${reversal.method}`), {
+                  component,
+                  merchantId,
+                  customerId: user.id,
+                  orderId: id,
+                  extra: { paymentId: trimmedPaymentId, method: reversal.method },
+                });
+                await supabaseAdmin.from('audit_log').insert({
+                  merchant_id: merchantId,
+                  action: reversal.method === 'unknown'
+                    ? 'refund.card_reversal_unknown_needs_readback'
+                    : 'refund.card_reversal_failed_needs_manual_review',
+                  payload: {
+                    order_id: id,
+                    customer_id: user.id,
+                    payment_id: trimmedPaymentId,
+                    context: 'commit_upsert_failure',
+                    error: reversal.error ?? null,
+                  },
+                });
+              }
             } catch (e: any) {
               console.error('[Orders] commit-failure direct card void failed', { merchantId, orderId: id, error: e?.message });
               captureError(e, { component: 'orders.commit.upsertReversal.card', merchantId, customerId: user.id, orderId: id });
@@ -1702,7 +1959,7 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(500).json({ error: commitError?.message || 'Failed to commit order' });
     }
 
-    if (isFinalCommit) {
+    if (finalSettlementProof.settled) {
       // Recovery stamping — the cart-abandonment cron (server/cron/
       // cartAbandonment.ts) records abandoned carts but nothing marked
       // them recovered until now. A confirmed order within 24h of the
@@ -1721,7 +1978,7 @@ ordersRouter.post('/commit', async (req, res) => {
     }
 
     let relayResult: unknown = null;
-    if (relayToNooks === true && payload.payment_id) {
+    if (finalSettlementProof.settled && payload.payment_id) {
       // Re-verify the Moyasar payment IMMEDIATELY before relaying.
       // The first /commit call (relayToNooks=false) verified the
       // payment as paid, but Moyasar can flip a payment from paid →
@@ -1744,7 +2001,10 @@ ordersRouter.post('/commit', async (req, res) => {
       // the window between verify and relay; without the 2s sleep that window
       // is sub-second, and the Foodics webhook + reconciliation still cancel a
       // charge that flips after relay.
-      if (isMoyasarPaymentId && !finalPaymentVerification?.ok) {
+      if (
+        (finalSettlementProof.tender === 'provider' || finalSettlementProof.tender === 'mixed')
+        && !finalPaymentVerification?.ok
+      ) {
         throw new Error('Invariant violation: Foodics relay attempted without a verified payment');
       }
       // Wrap the Foodics relay in try/catch so that if it fails AFTER
@@ -2022,9 +2282,9 @@ ordersRouter.post('/commit', async (req, res) => {
           });
         } else {
           // Never reached the POS → relay failure. Stamp attention columns for
-          // diagnostics, then throw into the catch to void + refund (matches the
-          // ok===false and app-path auto-refund policy). The customer is made
-          // whole rather than left with a paid order that never existed.
+          // diagnostics, then throw into the catch to void/refund (matches the
+          // ok===false and app-path cancellation policy). Ambiguous provider
+          // outcomes remain pending for read-back instead of being overstated.
           try {
             await supabaseAdmin
               .from('customer_orders')
@@ -2065,16 +2325,14 @@ ordersRouter.post('/commit', async (req, res) => {
         // restore, promo unredeem. The row stays as Cancelled with
         // refund_status set so the merchant dashboard's filter
         // (foodics_order_id IS NOT NULL) still hides it.
+        let cleanupOutcome: Awaited<ReturnType<typeof refundOrderToWallet>> | null = null;
         try {
           const refundResult = await refundOrderToWallet(id, 'system', 'Foodics relay failed');
+          cleanupOutcome = refundResult;
           if (!refundResult.ok) {
             // refundOrderToWallet returns {ok:false} WITHOUT throwing on
-            // partial failure (e.g. wallet credit failed mid-reversal). Don't
-            // let that look like success — surface it loudly. The order is left
-            // visible/Placed and only partially reversed; the abandoned-payment
-            // sweep cron will retry refundOrderToWallet, which is now idempotent
-            // at the DB level (credit_customer_wallet dedupes on order_id), so
-            // the retry completes the refund without double-crediting.
+            // partial failure or provider-unknown/manual-review outcome. Don't
+            // let that look like success — surface the exact disposition.
             console.error('[Orders] Cleanup refund after Foodics failure returned not-ok', {
               merchantId,
               customerId: user.id,
@@ -2104,7 +2362,16 @@ ordersRouter.post('/commit', async (req, res) => {
           });
         }
         return res.status(502).json({
-          error: 'Order could not be sent to the merchant POS. Your payment is being refunded.',
+          error:
+            cleanupOutcome && !cleanupOutcome.ok && cleanupOutcome.pending
+              ? 'Order could not be sent to the merchant POS. Your card reversal is being checked.'
+              : cleanupOutcome && !cleanupOutcome.ok && cleanupOutcome.manualReview
+                ? 'Order could not be sent to the merchant POS. The card reversal needs manual review.'
+                : cleanupOutcome && !cleanupOutcome.ok
+                  ? 'Order could not be sent to the merchant POS. The payment reversal needs attention.'
+                  : 'Order could not be sent to the merchant POS. Your payment is being refunded.',
+          ...(cleanupOutcome && !cleanupOutcome.ok && cleanupOutcome.pending ? { refund_pending: true } : {}),
+          ...(cleanupOutcome && !cleanupOutcome.ok && cleanupOutcome.manualReview ? { manual_review: true } : {}),
           foodics_error: relayErr?.message,
         });
       }
@@ -2156,9 +2423,9 @@ ordersRouter.post('/commit', async (req, res) => {
  * cashback_paid_sar, stamp_milestone_ids, stamps_consumed) and returns
  * each source to where it came from in parallel:
  *
- *   - card_paid_sar    → Moyasar void (free, ~2h) or refund (1-3d).
- *                        Only credit wallet as a fallback if Moyasar
- *                        cannot reverse the charge.
+  *   - card_paid_sar    → Moyasar void (free, ~2h) or refund (1-3d).
+  *                        Ambiguous/failed writes stay on the provider
+  *                        rail for read-back/manual review; never wallet.
  *   - wallet_paid_sar  → re-credit the in-app wallet via the wallet RPC.
  *   - cashback_paid_sar→ re-credit loyalty_cashback_balances and log a
  *                        +amount loyalty_transactions row.
@@ -2177,7 +2444,7 @@ ordersRouter.post('/commit', async (req, res) => {
  */
 type RefundDestination = 'card' | 'wallet' | 'none';
 type ReversalBreakdown = {
-  card?: { method: 'void' | 'refund' | 'failed' | 'not_required' | 'skipped'; amountSar: number };
+  card?: { method: 'void' | 'refund' | 'failed' | 'not_required' | 'unknown' | 'skipped'; amountSar: number };
   wallet?: { amountSar: number };
   cashback?: { amountSar: number; alreadyRestored?: boolean };
   stamps?: { count: number; milestones: string[]; alreadyRestored?: boolean };
@@ -2192,7 +2459,16 @@ export async function refundOrderToWallet(
   reason: string,
 ): Promise<
   | { ok: true; orderId: string; refundedSar: number; refundMethod: RefundDestination; breakdown: ReversalBreakdown; deduplicated?: boolean }
-  | { ok: false; error: string; status: number }
+  | {
+      ok: false;
+      error: string;
+      status: number;
+      code?: string;
+      pending?: boolean;
+      manualReview?: boolean;
+      orderId?: string;
+      breakdown?: ReversalBreakdown;
+    }
 > {
   if (!supabaseAdmin) return { ok: false, error: 'Database not configured', status: 500 };
 
@@ -2208,6 +2484,28 @@ export async function refundOrderToWallet(
   // misleading "already cancelled" error and without triggering a
   // double refund. Delivered orders still block (no refund path).
   if (order.status === 'Cancelled') {
+    if (order.refund_status === 'provider_unknown') {
+      return {
+        ok: false,
+        error: 'The card reversal is pending provider read-back.',
+        status: 202,
+        code: 'PROVIDER_REVERSAL_UNKNOWN',
+        pending: true,
+        orderId,
+        breakdown: {},
+      };
+    }
+    if (order.refund_status === 'refund_failed') {
+      return {
+        ok: false,
+        error: 'The card reversal failed and requires manual review.',
+        status: 409,
+        code: 'PROVIDER_REVERSAL_FAILED',
+        manualReview: true,
+        orderId,
+        breakdown: {},
+      };
+    }
     return {
       ok: true,
       orderId,
@@ -2320,11 +2618,11 @@ export async function refundOrderToWallet(
   //                       fallback.
   //   - not_required    → Moyasar says nothing was charged. No refund
   //                       owed.
-  //   - failed / skipped→ if there was a card portion the customer
-  //                       paid, we fall back to wallet credit so they
-  //                       become whole.
-  let moyasarMethod: 'void' | 'refund' | 'failed' | 'not_required' | 'skipped' = 'skipped';
-  if (effectiveCardPaid > 0 && order.payment_id) {
+  //   - unknown         → provider may have written; persist pending and
+  //                       require read-back before another provider write.
+  //   - failed / skipped→ persist manual review when a card portion exists.
+  let moyasarMethod: 'void' | 'refund' | 'failed' | 'not_required' | 'unknown' | 'skipped' = 'skipped';
+  if (effectiveCardPaid > 0 && order.payment_id && !isReservedClientPaymentId(order.payment_id)) {
     try {
       const result = await cancelPayment(order.payment_id, undefined, order.merchant_id);
       moyasarMethod = result.method;
@@ -2333,34 +2631,34 @@ export async function refundOrderToWallet(
       moyasarMethod = 'failed';
       console.warn('[Orders] Moyasar cancel threw:', e?.message);
     }
+  } else if (effectiveCardPaid > 0) {
+    moyasarMethod = 'failed';
+    console.error('[Orders] Card-funded order has no usable provider payment id', {
+      orderId,
+      paymentId: order.payment_id ?? null,
+    });
   }
-  const cardReturnedToCustomer = moyasarMethod === 'void' || moyasarMethod === 'refund';
-  const cardNothingOwed = moyasarMethod === 'not_required';
+  const reversalDecision = decideCardReversal({
+    method: moyasarMethod,
+    cardAmountSar: effectiveCardPaid,
+    actualWalletPaidSar: effectiveWalletPaid,
+  });
+  const cardReturnedToCustomer = reversalDecision.cardReturnedToCustomer;
   breakdown.card = { method: moyasarMethod, amountSar: effectiveCardPaid };
 
   // ─── Wallet reversal ───
-  // (a) Re-credit the wallet portion the customer ACTUALLY spent
-  //     (not the intent — see note above).
-  // (b) If the card portion couldn't be reversed via Moyasar AND
-  //     money actually moved (not 'not_required'), credit the card
-  //     portion to the wallet too as a fallback. This part uses
-  //     the intent because if Moyasar took the money, we still
-  //     owe it back even if the intent != actual.
-  let walletCreditSar = effectiveWalletPaid;
-  const cardPortionCreditedToWalletFallback =
-    effectiveCardPaid > 0 && !cardReturnedToCustomer && !cardNothingOwed;
-  if (cardPortionCreditedToWalletFallback) {
-    walletCreditSar = +(walletCreditSar + effectiveCardPaid).toFixed(2);
-    // PAY-2: the card portion was NOT reversed on Moyasar (void/refund
-    // failed or the cancel threw), yet we credit it to the wallet so the
-    // customer is whole immediately. This is a deliberate trade-off, but it
-    // opens a double-pay window if ops later refunds the same charge
-    // manually in the Moyasar console. Emit an explicit marker so that
-    // manual refund can be reconciled against this wallet credit.
+  // Re-credit only the wallet portion the ledger proves the customer spent.
+  // A failed or ambiguous card reversal stays on the provider rail for
+  // read-back/manual review; it is never converted into wallet value.
+  const walletCreditSar = reversalDecision.walletCreditSar;
+  if (reversalDecision.providerState === 'unknown' || reversalDecision.providerState === 'failed') {
     try {
       await supabaseAdmin.from('audit_log').insert({
         merchant_id: order.merchant_id,
-        action: 'refund.card_void_failed_wallet_credited_needs_review',
+        action:
+          reversalDecision.providerState === 'unknown'
+            ? 'refund.card_reversal_unknown_needs_readback'
+            : 'refund.card_reversal_failed_needs_manual_review',
         payload: {
           order_id: orderId,
           customer_id: order.customer_id,
@@ -2372,8 +2670,7 @@ export async function refundOrderToWallet(
         },
       });
     } catch (e: any) {
-      // Never let the audit marker block the refund the customer is owed.
-      console.warn('[Orders] PAY-2 audit marker insert failed for', orderId, ':', e?.message);
+      console.warn('[Orders] Card reversal review marker insert failed for', orderId, ':', e?.message);
     }
   }
   if (walletCreditSar > 0) {
@@ -2467,18 +2764,26 @@ export async function refundOrderToWallet(
   //  - wallet if wallet credit fired
   //  - none if nothing was owed (card portion was never charged AND
   //    there was no wallet/cashback/stamp portion)
+  const hasConfirmedLocalRestoration = Boolean(
+    (breakdown.wallet?.amountSar ?? 0) > 0
+    || (breakdown.cashback?.amountSar ?? 0) > 0
+    || (breakdown.stamps?.count ?? 0) > 0,
+  );
+  const refundStatus = temporaryRefundStatus(
+    reversalDecision.providerState,
+    hasConfirmedLocalRestoration,
+  );
   const refundMethod: RefundDestination =
     cardReturnedToCustomer
       ? 'card'
-      : breakdown.wallet
-        ? 'wallet'
-        : breakdown.cashback || breakdown.stamps
+      : (reversalDecision.providerState === 'unknown' || reversalDecision.providerState === 'failed')
+          && effectiveCardPaid > 0
+        ? 'card'
+        : hasConfirmedLocalRestoration
           ? 'wallet'
-          : cardNothingOwed && effectiveWalletPaid === 0 && effectiveCashbackPaid === 0 && stampsConsumed === 0
-            ? 'none'
-            : 'wallet';
+          : 'none';
   const refundedSarHeadline =
-    refundMethod === 'card'
+    refundMethod === 'card' && cardReturnedToCustomer
       ? effectiveCardPaid
       : refundMethod === 'wallet'
         ? walletCreditSar
@@ -2490,13 +2795,13 @@ export async function refundOrderToWallet(
       status: 'Cancelled',
       cancellation_reason: reason,
       cancelled_by: cancelledBy,
-      refund_status: refundMethod === 'none' ? 'not_required' : 'refunded',
+      refund_status: refundStatus,
       refund_amount: refundedSarHeadline,
       refund_fee: 0,
       refund_method: refundMethod,
       // #14: stamp when the refund happened so the timeline is recoverable
       // for disputes/reconciliation (refund_status alone carried no time).
-      refunded_at: refundMethod === 'none' ? null : new Date().toISOString(),
+      refunded_at: refundStatus === 'refunded' ? new Date().toISOString() : null,
       // Note: do NOT flip commission_status to 'cancelled' here.
       // Moyasar still charged Nooks for the original payment
       // attempt regardless of the refund, so the platform fee
@@ -2544,8 +2849,8 @@ export async function refundOrderToWallet(
   }
 
   // Tell Foodics the order is cancelled so the kitchen stops cooking.
-  // Best-effort — a Foodics outage must NOT roll back the refund we just
-  // issued. The customer is already whole; if Foodics drops the call, the
+  // Best-effort — a Foodics outage must NOT roll back the reversal work we
+  // just performed. If Foodics drops the call, the
   // merchant can void manually in the Foodics console (which already
   // triggers the inverse webhook). audit_log on the nooksweb side
   // records every attempt so ops can spot drift.
@@ -2635,6 +2940,19 @@ export async function refundOrderToWallet(
         );
       }
     }
+    if (reversalDecision.providerState === 'unknown' && effectiveCardPaid > 0) {
+      pieces.push(
+        isArabic
+          ? 'حالة استرداد البطاقة قيد التحقق، ولم تتم إضافة مبلغ البطاقة إلى المحفظة.'
+          : 'Your card reversal is still being checked; the card amount was not credited to your wallet.',
+      );
+    } else if (reversalDecision.providerState === 'failed' && effectiveCardPaid > 0) {
+      pieces.push(
+        isArabic
+          ? 'استرداد البطاقة يحتاج مراجعة يدوية، ولم تتم إضافة مبلغ البطاقة إلى المحفظة.'
+          : 'Your card reversal needs manual review; the card amount was not credited to your wallet.',
+      );
+    }
     if (breakdown.wallet && breakdown.wallet.amountSar > 0) {
       pieces.push(
         isArabic
@@ -2691,6 +3009,29 @@ export async function refundOrderToWallet(
       if (error) console.warn('[Orders] order_reversals upsert failed (non-blocking):', error.message);
     });
 
+  if (reversalDecision.providerState === 'unknown') {
+    return {
+      ok: false,
+      error: 'The provider may have processed the card reversal; read-back is required before any retry.',
+      status: 202,
+      code: 'PROVIDER_REVERSAL_UNKNOWN',
+      pending: true,
+      orderId,
+      breakdown,
+    };
+  }
+  if (reversalDecision.providerState === 'failed') {
+    return {
+      ok: false,
+      error: 'The provider rejected the card reversal; manual review is required.',
+      status: 409,
+      code: 'PROVIDER_REVERSAL_FAILED',
+      manualReview: true,
+      orderId,
+      breakdown,
+    };
+  }
+
   return {
     ok: true,
     orderId,
@@ -2702,8 +3043,8 @@ export async function refundOrderToWallet(
 
 /* ═══════════════════════════════════════════════════════════════════
    MERCHANT REFUSE – merchant declines the order BEFORE preparation. Voids
-   the Moyasar auth and credits the FULL order total to the customer's
-   wallet. Replaces the previous merchant-cancel route which accepted an
+   or refunds the Moyasar charge on-card and restores only the amount actually
+   spent from the in-app wallet. Replaces the previous merchant-cancel route which accepted an
    uncapped `amount` from the body and could refund > order total.
    ═══════════════════════════════════════════════════════════════════ */
 ordersRouter.post('/:id/merchant-refuse', async (req, res) => {
@@ -2714,7 +3055,13 @@ ordersRouter.post('/:id/merchant-refuse', async (req, res) => {
     if (!orderId) return res.status(400).json({ error: 'Missing order ID' });
     if (!reason) return res.status(400).json({ error: 'reason is required' });
     const result = await refundOrderToWallet(orderId, 'merchant', reason);
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    if (!result.ok) return res.status(result.status).json({
+      error: result.error,
+      ...(result.code ? { code: result.code } : {}),
+      ...(result.pending ? { pending: true } : {}),
+      ...(result.manualReview ? { manualReview: true } : {}),
+      ...(result.orderId ? { orderId: result.orderId } : {}),
+    });
     res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: result.refundMethod });
   } catch (err: any) {
     console.error('[Orders] merchant-refuse error:', err?.message);
@@ -2726,8 +3073,7 @@ ordersRouter.post('/:id/merchant-refuse', async (req, res) => {
  * BACKWARDS COMPATIBILITY: keep /merchant-cancel as an alias for
  * merchant-refuse so any in-flight nooksweb deploys / queued requests
  * still work during the cutover. The body's old `amount` parameter is
- * now ignored — refunds are always for the full order total per the
- * "all refunds go to the wallet" policy.
+ * now ignored — each proven payment component returns to its source.
  */
 ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
   try {
@@ -2737,7 +3083,13 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
     if (!orderId) return res.status(400).json({ error: 'Missing order ID' });
     if (!reason) return res.status(400).json({ error: 'reason is required' });
     const result = await refundOrderToWallet(orderId, 'merchant', reason);
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    if (!result.ok) return res.status(result.status).json({
+      error: result.error,
+      ...(result.code ? { code: result.code } : {}),
+      ...(result.pending ? { pending: true } : {}),
+      ...(result.manualReview ? { manualReview: true } : {}),
+      ...(result.orderId ? { orderId: result.orderId } : {}),
+    });
     res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: result.refundMethod });
   } catch (err: any) {
     console.error('[Orders] merchant-cancel (alias) error:', err?.message);
@@ -2756,7 +3108,7 @@ ordersRouter.post('/:id/merchant-cancel', async (req, res) => {
 
 /* ═══════════════════════════════════════════════════════════════════
    SYSTEM CANCEL – auto-cancel when no driver / kitchen unavailable.
-   Same wallet-credit path as merchant-refuse.
+   Uses the same source-preserving reversal path as merchant-refuse.
    ═══════════════════════════════════════════════════════════════════ */
 ordersRouter.post('/:id/system-cancel', async (req, res) => {
   try {
@@ -2764,7 +3116,13 @@ ordersRouter.post('/:id/system-cancel', async (req, res) => {
     const orderId = req.params.id;
     const reason = (req.body?.reason as string) || 'No delivery driver found within time limit';
     const result = await refundOrderToWallet(orderId, 'system', reason);
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    if (!result.ok) return res.status(result.status).json({
+      error: result.error,
+      ...(result.code ? { code: result.code } : {}),
+      ...(result.pending ? { pending: true } : {}),
+      ...(result.manualReview ? { manualReview: true } : {}),
+      ...(result.orderId ? { orderId: result.orderId } : {}),
+    });
     res.json({ success: true, orderId: result.orderId, refundedSar: result.refundedSar, refundMethod: result.refundMethod });
   } catch (err: any) {
     console.error('[Orders] system-cancel error:', err?.message);
@@ -2865,7 +3223,11 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
 
     let swept = 0;
     let skipped = 0;
-    const results: Array<{ orderId: string; action: 'swept' | 'kept' | 'error'; reason: string }> = [];
+    const results: Array<{
+      orderId: string;
+      action: 'swept' | 'kept' | 'pending' | 'manual_review' | 'error';
+      reason: string;
+    }> = [];
 
     for (const order of candidates ?? []) {
       const paymentId = String(order.payment_id ?? '');
@@ -2887,9 +3249,8 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
       // mint phantom credits if Layer 1 ever drifted. Skip the whole
       // refund flow; just void Moyasar if money moved on the card
       // side (token-pay charged before the second commit's verify
-      // rejected) and mark the row Cancelled. Customer is whole
-      // because: (a) Moyasar returns the card amount, (b) nothing
-      // else was deducted to begin with.
+      // rejected) and mark the row Cancelled. Moyasar ambiguity is persisted
+      // as pending for read-back; deterministic failure goes to manual review.
       if (!order.payment_confirmed_at) {
         // ─── ORD-4: verify the ledger before assuming nothing was deducted ───
         // The "never-confirmed ⇒ no side effects" assumption holds for a clean
@@ -2942,6 +3303,10 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
             if (result.ok) {
               swept += 1;
               results.push({ orderId: order.id, action: 'swept', reason: 'draft_never_confirmed_had_ledger' });
+            } else if (result.pending) {
+              results.push({ orderId: order.id, action: 'pending', reason: result.error });
+            } else if (result.manualReview) {
+              results.push({ orderId: order.id, action: 'manual_review', reason: result.error });
             } else {
               results.push({ orderId: order.id, action: 'error', reason: result.error });
             }
@@ -2951,29 +3316,85 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
           continue;
         }
 
-        let moyasarOutcome = 'skipped';
-        if (!paymentId.startsWith('reward:')) {
+        let moyasarOutcome: 'void' | 'refund' | 'failed' | 'not_required' | 'unknown' | 'skipped' = 'skipped';
+        if (!isReservedClientPaymentId(paymentId)) {
           try {
             const r = await cancelPayment(paymentId, undefined, order.merchant_id);
             moyasarOutcome = r.method;
           } catch (e: any) {
-            moyasarOutcome = `failed: ${e?.message || 'unknown'}`;
+            moyasarOutcome = 'failed';
+            console.error('[Orders] Abandoned-payment provider cancel threw', {
+              orderId: order.id,
+              paymentId,
+              error: e?.message,
+            });
           }
         }
-        await supabaseAdmin
+        const providerRefundStatus =
+          moyasarOutcome === 'void' || moyasarOutcome === 'refund'
+            ? 'refunded'
+            : moyasarOutcome === 'unknown'
+              ? 'provider_unknown'
+              : moyasarOutcome === 'failed'
+                ? 'refund_failed'
+                : 'not_required';
+        const providerReturned = providerRefundStatus === 'refunded';
+        const providerNeedsAttention =
+          providerRefundStatus === 'provider_unknown' || providerRefundStatus === 'refund_failed';
+        const { error: cancelUpdateError } = await supabaseAdmin
           .from('customer_orders')
           .update({
             status: 'Cancelled',
             cancelled_by: 'system',
             cancellation_reason: `Abandoned payment (never confirmed; moyasar: ${moyasarOutcome})`,
-            refund_status: 'not_required',
-            refund_amount: 0,
-            refund_method: 'none',
+            refund_status: providerRefundStatus,
+            refund_amount: providerReturned ? Math.max(0, Number(order.card_paid_sar ?? order.total_sar ?? 0)) : 0,
+            refund_method: providerReturned || providerNeedsAttention ? 'card' : 'none',
+            refunded_at: providerReturned ? new Date().toISOString() : null,
             updated_at: new Date().toISOString(),
           })
           .eq('id', order.id);
-        swept += 1;
-        results.push({ orderId: order.id, action: 'swept', reason: `draft_never_confirmed (moyasar: ${moyasarOutcome})` });
+        if (!cancelUpdateError && providerNeedsAttention) {
+          const { error: reviewAuditError } = await supabaseAdmin.from('audit_log').insert({
+            merchant_id: order.merchant_id,
+            action:
+              providerRefundStatus === 'provider_unknown'
+                ? 'refund.card_reversal_unknown_needs_readback'
+                : 'refund.card_reversal_failed_needs_manual_review',
+            payload: {
+              order_id: order.id,
+              customer_id: order.customer_id,
+              payment_id: paymentId,
+              card_amount_sar: Math.max(0, Number(order.card_paid_sar ?? order.total_sar ?? 0)),
+              context: 'abandoned_payment_sweep',
+              moyasar_method: moyasarOutcome,
+            },
+          });
+          if (reviewAuditError) {
+            console.warn('[Orders] Abandoned-payment review audit failed', {
+              orderId: order.id,
+              error: reviewAuditError.message,
+            });
+          }
+        }
+        if (cancelUpdateError) {
+          results.push({ orderId: order.id, action: 'error', reason: cancelUpdateError.message });
+        } else if (providerRefundStatus === 'provider_unknown') {
+          results.push({
+            orderId: order.id,
+            action: 'pending',
+            reason: 'provider_reversal_unknown; read-back required',
+          });
+        } else if (providerRefundStatus === 'refund_failed') {
+          results.push({
+            orderId: order.id,
+            action: 'manual_review',
+            reason: 'provider_reversal_failed',
+          });
+        } else {
+          swept += 1;
+          results.push({ orderId: order.id, action: 'swept', reason: `draft_never_confirmed (moyasar: ${moyasarOutcome})` });
+        }
         continue;
       }
 
@@ -2992,8 +3413,8 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
       // inside refundOrderToWallet will hit Foodics and either
       // succeed (still Pending → goes Void cleanly) or get the
       // post-accept rejection (logged as cancel_post_accept). Either
-      // way we refund — the customer has waited 5 min and shouldn't
-      // be left in limbo. Merchants who routinely brush past 5 min
+      // way we start the reversal — unresolved provider outcomes remain visible
+      // for read-back/manual review. Merchants who routinely brush past 5 min
       // can configure a longer threshold later.
       try {
         const result = await refundOrderToWallet(
@@ -3004,6 +3425,10 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
         if (result.ok) {
           swept += 1;
           results.push({ orderId: order.id, action: 'swept', reason: 'no_accept_timeout' });
+        } else if (result.pending) {
+          results.push({ orderId: order.id, action: 'pending', reason: result.error });
+        } else if (result.manualReview) {
+          results.push({ orderId: order.id, action: 'manual_review', reason: result.error });
         } else {
           results.push({ orderId: order.id, action: 'error', reason: result.error });
         }

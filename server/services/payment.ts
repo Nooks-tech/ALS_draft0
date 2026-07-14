@@ -67,12 +67,19 @@ export function calculateMoyasarFee(amountSAR: number, paymentMethod?: string): 
 }
 
 export type CancelPaymentResult = {
-  method: 'void' | 'refund' | 'failed' | 'not_required';
+  method: 'void' | 'refund' | 'failed' | 'not_required' | 'unknown';
   fee: number;
   moyasarId?: string;
   error?: string;
   /** Moyasar payment status snapshot at the time of cancel attempt. */
   paymentStatus?: string;
+};
+
+export type CancelPaymentDeps = {
+  /** Test seam; production callers use the process-global fetch. */
+  fetchImpl?: typeof fetch;
+  /** Test seam; production callers resolve the merchant-scoped secret. */
+  secretKey?: string;
 };
 
 export type VerifyPaymentResult =
@@ -94,6 +101,14 @@ export type VerifyPaymentResult =
       /** Moyasar Retry-After header value, when present on a 429/5xx. */
       retryAfter?: string;
     };
+
+export type VerifyPaidPaymentOptions = {
+  /** Reversal paths must never act on an unbound, attacker-supplied id. */
+  requireOrderBinding?: boolean;
+  /** Test seams; normal callers omit both. */
+  fetchImpl?: typeof fetch;
+  secretKey?: string;
+};
 
 /**
  * Server-side verification that a Moyasar payment really cleared before
@@ -122,25 +137,32 @@ export async function verifyPaidPayment(
    * caller (server/routes/orders.ts) passes the committing order id here.
    */
   expectedOrderId?: string | null,
+  options: VerifyPaidPaymentOptions = {},
 ): Promise<VerifyPaymentResult> {
   const scopedMerchantId = normalizeMerchantId(merchantId);
-  const config = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
-  const secretKey = scopedMerchantId ? config.secretKey : (config.secretKey || MOYASAR_SECRET_KEY);
+  let secretKey = options.secretKey?.trim() || '';
+  if (!secretKey) {
+    const config = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
+    secretKey = scopedMerchantId
+      ? (config.secretKey || '')
+      : (config.secretKey || MOYASAR_SECRET_KEY || '');
+  }
   if (!secretKey) {
     return { ok: false, status: 'unknown', amountHalals: 0, moyasarId: paymentId, reason: 'Moyasar secret key not configured' };
   }
   const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
+  const fetchImpl = options.fetchImpl ?? fetch;
   // resolvePayment already fetched the payment body during resolution —
   // reuse it instead of re-GETting the same URL (the old resolve-then-
   // verify shape cost 2 Moyasar round-trips per verify, ×3 verifies on
   // the commit path).
-  const resolved = await resolvePayment(paymentId, authHeader, expectedAmountHalals);
+  const resolved = await resolvePayment(paymentId, authHeader, expectedAmountHalals, fetchImpl);
   const realPaymentId = resolved.id;
 
   try {
     let payment = resolved.payment;
     if (!payment) {
-      const res = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
+      const res = await fetchImpl(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
         headers: { Authorization: authHeader },
         signal: AbortSignal.timeout(5000),
       });
@@ -221,6 +243,15 @@ export async function verifyPaidPayment(
         };
       }
       if (!boundOrderId) {
+        if (options.requireOrderBinding) {
+          return {
+            ok: false,
+            status,
+            amountHalals,
+            moyasarId: realPaymentId,
+            reason: 'payment is missing required order_id binding',
+          };
+        }
         console.warn(
           '[Payment] verify: payment',
           realPaymentId,
@@ -253,10 +284,11 @@ async function resolvePayment(
   storedId: string,
   authHeader: string,
   expectedAmountHalals?: number,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<{ id: string; payment: any | null; invoiceOrderId?: string | null }> {
   // First try to fetch as a payment — if it works, it's already correct
   try {
-    const res = await fetch(`https://api.moyasar.com/v1/payments/${storedId}`, {
+    const res = await fetchImpl(`https://api.moyasar.com/v1/payments/${storedId}`, {
       headers: { Authorization: authHeader },
       signal: AbortSignal.timeout(8000),
     });
@@ -276,7 +308,7 @@ async function resolvePayment(
   //   2) if no amount match, pick the most recently created
   //   3) last resort, fall through to storedId
   try {
-    const res = await fetch(`https://api.moyasar.com/v1/invoices/${storedId}`, {
+    const res = await fetchImpl(`https://api.moyasar.com/v1/invoices/${storedId}`, {
       headers: { Authorization: authHeader },
       signal: AbortSignal.timeout(8000),
     });
@@ -316,110 +348,182 @@ async function resolvePayment(
   return { id: storedId, payment: null };
 }
 
-/** Back-compat id-only wrapper (cancel path re-fetches the payment anyway). */
-async function resolvePaymentId(
-  storedId: string,
-  authHeader: string,
-  expectedAmountHalals?: number,
-): Promise<string> {
-  return (await resolvePayment(storedId, authHeader, expectedAmountHalals)).id;
+function normalizedProviderStatus(payment: any): string {
+  return String(payment?.status ?? '').trim().toLowerCase();
 }
 
+function isFullyRefunded(payment: any): boolean {
+  const status = normalizedProviderStatus(payment);
+  const refundedHalals = Number(payment?.refunded ?? 0);
+  const chargedHalalas = Number(payment?.amount ?? 0);
+  return (
+    status === 'refunded'
+    || (Number.isFinite(refundedHalals)
+      && Number.isFinite(chargedHalalas)
+      && chargedHalalas > 0
+      && refundedHalals >= chargedHalalas)
+  );
+}
+
+function confirmsRefundWrite(
+  payment: any,
+  requestedAmountHalalas?: number,
+  previouslyRefundedHalalas = 0,
+): boolean {
+  if (isFullyRefunded(payment)) return true;
+  const refundedHalalas = Number(payment?.refunded ?? 0);
+  return (
+    requestedAmountHalalas != null
+    && requestedAmountHalalas > 0
+    && Number.isFinite(refundedHalalas)
+    && refundedHalalas >= Math.max(0, previouslyRefundedHalalas) + requestedAmountHalalas
+  );
+}
+
+function isAmbiguousWriteStatus(status: number): boolean {
+  return status === 429 || status >= 500 || status < 400;
+}
+
+/**
+ * Void-first cancellation with an ambiguity stop. Once a provider write may
+ * have succeeded, this function never issues a second provider write in the
+ * same attempt. Callers must persist `unknown` for read-back/reconciliation.
+ */
 export async function cancelPayment(
   paymentId: string,
   amountHalals?: number,
   merchantId?: string | null,
+  deps: CancelPaymentDeps = {},
 ): Promise<CancelPaymentResult> {
   const scopedMerchantId = normalizeMerchantId(merchantId);
-  const config = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
-  const secretKey = scopedMerchantId ? config.secretKey : (config.secretKey || MOYASAR_SECRET_KEY);
+  let secretKey = deps.secretKey?.trim() || '';
+  if (!secretKey) {
+    const config = await getMerchantPaymentRuntimeConfig(scopedMerchantId);
+    secretKey = scopedMerchantId
+      ? (config.secretKey || '')
+      : (config.secretKey || MOYASAR_SECRET_KEY || '');
+  }
   if (!secretKey) return { method: 'failed', fee: 0, error: 'Moyasar secret key not configured' };
 
   const authHeader = `Basic ${Buffer.from(secretKey + ':').toString('base64')}`;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const resolved = await resolvePayment(paymentId, authHeader, amountHalals, fetchImpl);
+  const realPaymentId = resolved.id;
+  const currentPayment = resolved.payment;
 
-  // Resolve invoice ID -> payment ID if needed. Pass the expected amount
-  // so we pick the right payment when an invoice has multiple attempts.
-  const realPaymentId = await resolvePaymentId(paymentId, authHeader, amountHalals);
-
-  // Fetch the current Moyasar payment so we can short-circuit refund/void
-  // calls for payments that never charged the card. Without this check:
-  //   - `initiated` (customer never completed 3DS) → no money charged, but
-  //     a /void call returns 4xx and the caller's fallback would
-  //     incorrectly credit the wallet for funds that never moved.
-  //   - `failed` → same shape as initiated.
-  //   - `voided` / fully `refunded` → already returned to the customer;
-  //     a second refund attempt would 4xx and risk a double-credit on
-  //     the fallback path.
-  // Returning `not_required` lets the caller skip BOTH the card refund
-  // AND the wallet credit, since nothing is owed back.
-  try {
-    const statusRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}`, {
-      headers: { Authorization: authHeader },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (statusRes.ok) {
-      const payment = await statusRes.json();
-      const status = String(payment?.status ?? '').toLowerCase();
-      const refundedHalals = Number(payment?.refunded ?? 0);
-      const amountHalalsCharged = Number(payment?.amount ?? 0);
-      const fullyRefunded = status === 'refunded' && refundedHalals >= amountHalalsCharged && amountHalalsCharged > 0;
-      if (status === 'initiated' || status === 'failed' || status === 'voided' || fullyRefunded) {
-        console.log('[Payment] Cancel not required for', realPaymentId, '— status:', status);
-        return { method: 'not_required', fee: 0, moyasarId: realPaymentId, paymentStatus: status };
-      }
-    } else {
-      console.warn('[Payment] Status fetch non-ok:', statusRes.status, '— proceeding to attempt void/refund');
-    }
-  } catch (e: any) {
-    console.warn('[Payment] Status fetch threw, proceeding to attempt void/refund:', e?.message);
+  if (!currentPayment) {
+    const error = 'Could not read the current Moyasar payment state; cancellation outcome is unknown';
+    captureError(new Error(error), { component: 'payment.cancel.readback_unknown' });
+    return { method: 'unknown', fee: 0, moyasarId: realPaymentId, error };
   }
 
-  // 1) Try void (free — works only if not yet settled).
-  //    Skip void for partial refunds because void always reverses the FULL amount.
+  const currentStatus = normalizedProviderStatus(currentPayment);
+  const previouslyRefundedHalalas = Math.max(0, Number(currentPayment?.refunded ?? 0) || 0);
+  if (currentStatus === 'voided') {
+    return {
+      method: 'void',
+      fee: 0,
+      moyasarId: realPaymentId,
+      paymentStatus: currentStatus,
+    };
+  }
+  if (isFullyRefunded(currentPayment)) {
+    return {
+      method: 'refund',
+      fee: 0,
+      moyasarId: realPaymentId,
+      paymentStatus: currentStatus || 'refunded',
+    };
+  }
+  if (currentStatus === 'initiated' || currentStatus === 'failed') {
+    return {
+      method: 'not_required',
+      fee: 0,
+      moyasarId: realPaymentId,
+      paymentStatus: currentStatus,
+    };
+  }
+
   if (amountHalals == null) {
     try {
-      const voidRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}/void`, {
+      const voidRes = await fetchImpl(`https://api.moyasar.com/v1/payments/${realPaymentId}/void`, {
         method: 'POST',
         headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(8000),
       });
+      const voidData = await voidRes.json().catch(() => null);
       if (voidRes.ok) {
-        const data = await voidRes.json();
-        console.log('[Payment] Void success for', realPaymentId);
-        return { method: 'void', fee: 0, moyasarId: data?.id ?? realPaymentId };
+        if (normalizedProviderStatus(voidData) === 'voided') {
+          return {
+            method: 'void',
+            fee: 0,
+            moyasarId: voidData?.id ?? realPaymentId,
+            paymentStatus: 'voided',
+          };
+        }
+        const error = 'Moyasar returned an ambiguous 2xx response to the void request';
+        captureError(new Error(error), { component: 'payment.void.unknown' });
+        return { method: 'unknown', fee: 0, moyasarId: realPaymentId, error };
       }
-      const voidErr = await voidRes.json().catch(() => ({}));
-      console.log('[Payment] Void not possible:', voidRes.status, voidErr?.message ?? '');
+      if (isAmbiguousWriteStatus(voidRes.status)) {
+        const error = voidData?.message || `Void HTTP ${voidRes.status}; provider result is unknown`;
+        captureError(new Error(error), { component: 'payment.void.unknown' });
+        return { method: 'unknown', fee: 0, moyasarId: realPaymentId, error };
+      }
+      // A deterministic 4xx proves the void did not happen, so refund is the
+      // only circumstance in which a second provider write is permitted.
+      console.log('[Payment] Void not possible:', voidRes.status, voidData?.message ?? '');
     } catch (e: any) {
-      console.warn('[Payment] Void request error:', e?.message);
+      captureError(e, { component: 'payment.void.unknown' });
+      return {
+        method: 'unknown',
+        fee: 0,
+        moyasarId: realPaymentId,
+        error: e?.message || 'Void request outcome is unknown',
+      };
     }
-  } else {
-    console.log('[Payment] Partial amount specified, skipping void → going straight to refund');
   }
 
-  // 2) Fallback: refund (1 SAR fee)
   try {
     const body: Record<string, unknown> = {};
     if (amountHalals != null) body.amount = amountHalals;
-    const refundRes = await fetch(`https://api.moyasar.com/v1/payments/${realPaymentId}/refund`, {
+    const refundRes = await fetchImpl(`https://api.moyasar.com/v1/payments/${realPaymentId}/refund`, {
       method: 'POST',
       headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(8000),
     });
-    const refundData = await refundRes.json();
+    const refundData = await refundRes.json().catch(() => null);
     if (refundRes.ok) {
-      console.log('[Payment] Refund success for', realPaymentId);
-      return { method: 'refund', fee: REFUND_FEE_SAR, moyasarId: refundData?.id ?? realPaymentId };
+      if (confirmsRefundWrite(refundData, amountHalals, previouslyRefundedHalalas)) {
+        return {
+          method: 'refund',
+          fee: REFUND_FEE_SAR,
+          moyasarId: refundData?.id ?? realPaymentId,
+          paymentStatus: normalizedProviderStatus(refundData) || 'refunded',
+        };
+      }
+      const error = 'Moyasar returned an ambiguous 2xx response to the refund request';
+      captureError(new Error(error), { component: 'payment.refund.unknown' });
+      return { method: 'unknown', fee: 0, moyasarId: realPaymentId, error };
     }
-    console.error('[Payment] Refund failed:', refundRes.status, refundData);
-    // M12: refund failures are money-path incidents — ship to Sentry.
-    captureError(new Error(refundData?.message || `Refund HTTP ${refundRes.status}`), { component: 'payment.refund' });
-    return { method: 'failed', fee: 0, error: refundData?.message || `Refund HTTP ${refundRes.status}` };
+    if (isAmbiguousWriteStatus(refundRes.status)) {
+      const error = refundData?.message || `Refund HTTP ${refundRes.status}; provider result is unknown`;
+      captureError(new Error(error), { component: 'payment.refund.unknown' });
+      return { method: 'unknown', fee: 0, moyasarId: realPaymentId, error };
+    }
+
+    const error = refundData?.message || `Refund HTTP ${refundRes.status}`;
+    captureError(new Error(error), { component: 'payment.refund' });
+    return { method: 'failed', fee: 0, moyasarId: realPaymentId, error };
   } catch (e: any) {
-    console.error('[Payment] Refund request error:', e?.message);
-    captureError(e, { component: 'payment.refund' });
-    return { method: 'failed', fee: 0, error: e?.message };
+    captureError(e, { component: 'payment.refund.unknown' });
+    return {
+      method: 'unknown',
+      fee: 0,
+      moyasarId: realPaymentId,
+      error: e?.message || 'Refund request outcome is unknown',
+    };
   }
 }
 

@@ -9,6 +9,10 @@ import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookId
 import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
 import { decryptMerchantCredential } from '../lib/merchantCredentials';
+import {
+  hasRewardBearingOrderItems,
+  reservedClientPaymentPrefix,
+} from '../utils/orderFinalizationGuard';
 
 /** Constant-time string comparison; safe to call with strings of any length. */
 function safeEqual(a: string, b: string): boolean {
@@ -198,7 +202,7 @@ paymentRouter.post('/initiate', async (req, res) => {
 
     const { data: order, error: orderError } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, branch_id, order_type')
+      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, branch_id, order_type, items')
       .eq('id', orderId)
       .eq('merchant_id', scopedMerchantId)
       .eq('customer_id', user.id)
@@ -217,6 +221,12 @@ paymentRouter.post('/initiate', async (req, res) => {
     }
     if (order.status === 'Cancelled' || order.status === 'Delivered') {
       return res.status(400).json({ error: `Cannot initiate payment for order status: ${order.status}` });
+    }
+    if (hasRewardBearingOrderItems((order as { items?: unknown }).items)) {
+      return res.status(409).json({
+        error: 'Reward checkout is temporarily unavailable while secure reward reservations are enabled.',
+        code: 'REWARD_CHECKOUT_TEMPORARILY_DISABLED',
+      });
     }
 
     // BILL-1: gate payment initiation on the same effective subscription-policy
@@ -916,7 +926,7 @@ paymentRouter.post('/token-pay', async (req, res) => {
     // Look up the order
     const { data: order, error: orderError } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, wallet_paid_sar, payment_id, branch_id, order_type')
+      .select('id, total_sar, delivery_fee, customer_id, merchant_id, status, wallet_paid_sar, payment_id, branch_id, order_type, items')
       .eq('id', orderId)
       .eq('merchant_id', scopedMerchantId)
       .eq('customer_id', user.id)
@@ -929,6 +939,14 @@ paymentRouter.post('/token-pay', async (req, res) => {
     }
     if (order.status === 'Cancelled' || order.status === 'Delivered') {
       return res.status(400).json({ error: `Cannot pay for order status: ${order.status}` });
+    }
+    // Phase A also blocks legacy/in-flight reward drafts created before the
+    // /commit guard shipped. Refuse before any saved-card provider write.
+    if (hasRewardBearingOrderItems((order as { items?: unknown }).items)) {
+      return res.status(409).json({
+        error: 'Reward checkout is temporarily unavailable while secure reward reservations are enabled.',
+        code: 'REWARD_CHECKOUT_TEMPORARILY_DISABLED',
+      });
     }
 
     // REG-1: token-pay must honour the same effective subscription-policy gate
@@ -968,7 +986,14 @@ paymentRouter.post('/token-pay', async (req, res) => {
     // also dedups, but this avoids the redundant call + a payment_id rewrite.
     // Wallet placeholder ids ('wallet:...') are not real card charges.
     const existingPaymentId = (order as { payment_id?: unknown }).payment_id;
-    if (typeof existingPaymentId === 'string' && existingPaymentId && !existingPaymentId.startsWith('wallet:')) {
+    const existingReservedPrefix = reservedClientPaymentPrefix(existingPaymentId);
+    if (existingReservedPrefix === 'reward:' || existingReservedPrefix === 'cashback:') {
+      return res.status(409).json({
+        error: 'This draft contains a client-authored payment sentinel and cannot be charged.',
+        code: 'CLIENT_PAYMENT_SENTINEL_FORBIDDEN',
+      });
+    }
+    if (typeof existingPaymentId === 'string' && existingPaymentId && !existingReservedPrefix) {
       console.log('[TokenPay] Order already has a card payment_id — returning it (idempotent):', existingPaymentId);
       return res.json({ id: existingPaymentId, status: 'paid', reused: true });
     }
@@ -1010,16 +1035,23 @@ paymentRouter.post('/token-pay', async (req, res) => {
       // synthetic 'paid' session so the client's existing success
       // path runs.
       const walletPaymentId = walletDebitRow ? `wallet:${walletDebitRow.id}` : null;
-      if (walletPaymentId) {
-        await supabaseAdmin
-          .from('customer_orders')
-          .update({ payment_id: walletPaymentId, payment_method: 'wallet' })
-          .eq('id', orderId)
-          .eq('merchant_id', scopedMerchantId)
-          .eq('customer_id', user.id);
+      if (!walletPaymentId) {
+        const hasWalletIntent = walletDebitSar > 0;
+        return res.status(409).json({
+          error: hasWalletIntent
+            ? 'A server-recorded wallet debit is required before this order can be finalized.'
+            : 'This zero-charge order has no server-verifiable settlement proof.',
+          code: hasWalletIntent ? 'WALLET_DEBIT_REQUIRED' : 'SETTLEMENT_PROOF_REQUIRED',
+        });
       }
+      await supabaseAdmin
+        .from('customer_orders')
+        .update({ payment_id: walletPaymentId, payment_method: 'wallet' })
+        .eq('id', orderId)
+        .eq('merchant_id', scopedMerchantId)
+        .eq('customer_id', user.id);
       return res.json({
-        id: walletPaymentId ?? `wallet-${orderId}`,
+        id: walletPaymentId,
         status: 'paid',
         url: undefined,
       });

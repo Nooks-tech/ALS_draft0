@@ -84,6 +84,7 @@ interface RecordedUpdate {
 function makeDeps(opts: {
   relayResult: RelayResult;
   refundOk?: boolean;
+  refundResult?: Awaited<ReturnType<ProcessDeps['refund']>>;
   refundThrows?: boolean;
 }): { deps: ProcessDeps; updates: RecordedUpdate[]; counter: { refund: number } } {
   const updates: RecordedUpdate[] = [];
@@ -110,6 +111,7 @@ function makeDeps(opts: {
     refund: async () => {
       counter.refund += 1;
       if (opts.refundThrows) throw new Error('refund helper threw');
+      if (opts.refundResult) return opts.refundResult;
       return { ok: opts.refundOk ?? false };
     },
     db: db as unknown as ProcessDeps['db'],
@@ -183,6 +185,45 @@ test('processClaimedOrder: exhausted retries + FAILED refund dead-letters as mon
   assert.equal(updates[0].payload.foodics_relay_status, 'failed');
   assert.ok(typeof updates[0].payload.foodics_relay_dead_lettered_at === 'string');
   assert.match(String(updates[0].payload.foodics_relay_dead_letter_reason), /refund_failed/);
+});
+
+test('processClaimedOrder: provider-unknown refund stays pending/manual and is never labelled refunded', async () => {
+  const { deps, updates, counter } = makeDeps({
+    relayResult: { ok: false, error: 'still failing' },
+    refundResult: {
+      ok: false,
+      status: 202,
+      pending: true,
+      code: 'PROVIDER_REVERSAL_UNKNOWN',
+      error: 'read-back required',
+    },
+  });
+  const outcome = await processClaimedOrder({ id: 'ord_pending', foodics_relay_attempts: 4 }, deps);
+
+  assert.equal(outcome, 'dead_letter');
+  assert.equal(counter.refund, 1);
+  assert.equal(updates[0].payload.foodics_relay_status, 'failed');
+  assert.match(String(updates[0].payload.foodics_relay_dead_letter_reason), /provider_reversal_pending/);
+  assert.doesNotMatch(String(updates[0].payload.foodics_relay_dead_letter_reason), /auto_cancelled_refunded/);
+});
+
+test('processClaimedOrder: deterministic provider failure is labelled manual review, not refunded', async () => {
+  const { deps, updates } = makeDeps({
+    relayResult: { ok: false, error: 'still failing' },
+    refundResult: {
+      ok: false,
+      status: 409,
+      manualReview: true,
+      code: 'PROVIDER_REVERSAL_FAILED',
+      error: 'manual review required',
+    },
+  });
+  const outcome = await processClaimedOrder({ id: 'ord_manual', foodics_relay_attempts: 4 }, deps);
+
+  assert.equal(outcome, 'dead_letter');
+  assert.equal(updates[0].payload.foodics_relay_status, 'failed');
+  assert.match(String(updates[0].payload.foodics_relay_dead_letter_reason), /provider_reversal_manual_review/);
+  assert.doesNotMatch(String(updates[0].payload.foodics_relay_dead_letter_reason), /auto_cancelled_refunded/);
 });
 
 test('processClaimedOrder: a throwing refund helper is treated as a failed refund and still dead-letters', async () => {

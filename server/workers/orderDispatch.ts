@@ -117,7 +117,14 @@ export interface ProcessDeps {
     orderId: string,
     cancelledBy: 'system',
     reason: string,
-  ) => Promise<{ ok: boolean; error?: string; status?: number }>;
+  ) => Promise<{
+    ok: boolean;
+    error?: string;
+    status?: number;
+    code?: string;
+    pending?: boolean;
+    manualReview?: boolean;
+  }>;
   db: Pick<SupabaseClient, 'from'>;
   now: () => Date;
 }
@@ -184,6 +191,7 @@ export async function processClaimedOrder(
   // ── Terminal: retries exhausted → compensating cancel/refund ─────────
   // Reuses the SAME idempotent helper the inline relay-failure path uses.
   let refundOk = false;
+  let refundDisposition: 'succeeded' | 'pending' | 'manual_review' | 'failed' = 'failed';
   try {
     const r = await refund(
       order.id,
@@ -191,13 +199,25 @@ export async function processClaimedOrder(
       `Foodics dispatch failed after ${attempts} attempts: ${errorMsg}`,
     );
     refundOk = !!r.ok;
+    refundDisposition = r.ok
+      ? 'succeeded'
+      : r.pending
+        ? 'pending'
+        : r.manualReview
+          ? 'manual_review'
+          : 'failed';
     if (!refundOk) {
       captureError(new Error(`Dispatch compensating refund returned not-ok: ${r.error ?? 'unknown'}`), {
-        component: 'orderDispatch.refund.notOk',
+        component:
+          refundDisposition === 'pending'
+            ? 'orderDispatch.refund.providerUnknown'
+            : refundDisposition === 'manual_review'
+              ? 'orderDispatch.refund.manualReview'
+              : 'orderDispatch.refund.notOk',
         orderId: order.id,
         merchantId: order.merchant_id ?? undefined,
         customerId: order.customer_id ?? undefined,
-        extra: { attempts, refundStatus: r.status },
+        extra: { attempts, refundStatus: r.status, refundCode: r.code, refundDisposition },
       });
     }
   } catch (err) {
@@ -213,9 +233,13 @@ export async function processClaimedOrder(
 
   const outcome = decideOutcome({ ok: false, attempts, refundOk }); // 'dead_letter'
   const deadLetterReason = (
-    refundOk
+    refundDisposition === 'succeeded'
       ? `max_attempts_exceeded:auto_cancelled_refunded:${errorMsg}`
-      : `max_attempts_exceeded:refund_failed:${errorMsg}`
+      : refundDisposition === 'pending'
+        ? `max_attempts_exceeded:provider_reversal_pending:${errorMsg}`
+        : refundDisposition === 'manual_review'
+          ? `max_attempts_exceeded:provider_reversal_manual_review:${errorMsg}`
+          : `max_attempts_exceeded:refund_failed:${errorMsg}`
   ).slice(0, 300);
 
   await db
@@ -238,14 +262,21 @@ export async function processClaimedOrder(
     new Error(
       refundOk
         ? `Foodics dispatch dead-lettered after ${attempts} attempts (auto-refunded): ${errorMsg}`
-        : `Foodics dispatch dead-lettered after ${attempts} attempts AND refund FAILED: ${errorMsg}`,
+        : `Foodics dispatch dead-lettered after ${attempts} attempts with refund ${refundDisposition}: ${errorMsg}`,
     ),
     {
-      component: refundOk ? 'orderDispatch.deadLetter.refunded' : 'orderDispatch.deadLetter.refundFailed',
+      component:
+        refundDisposition === 'succeeded'
+          ? 'orderDispatch.deadLetter.refunded'
+          : refundDisposition === 'pending'
+            ? 'orderDispatch.deadLetter.providerUnknown'
+            : refundDisposition === 'manual_review'
+              ? 'orderDispatch.deadLetter.manualReview'
+              : 'orderDispatch.deadLetter.refundFailed',
       orderId: order.id,
       merchantId: order.merchant_id ?? undefined,
       customerId: order.customer_id ?? undefined,
-      extra: { attempts, refundOk, reason: deadLetterReason },
+      extra: { attempts, refundOk, refundDisposition, reason: deadLetterReason },
     },
   );
   return outcome; // 'dead_letter'
