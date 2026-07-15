@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { decryptMerchantCredential, hasMerchantCredential } from './merchantCredentials';
+import { captureError } from '../utils/sentryContext';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -13,12 +14,17 @@ function normalizeOptionalString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function safeDecrypt(value: unknown, fallback: string | null) {
+function safeDecrypt(value: unknown, fallback: string | null, merchantId?: string | null) {
   const encryptedValue = normalizeOptionalString(value);
   if (!hasMerchantCredential(encryptedValue)) return fallback;
   try {
     return decryptMerchantCredential(encryptedValue);
-  } catch {
+  } catch (err) {
+    console.error(
+      '[merchantIntegrations] credential decrypt failed:',
+      err instanceof Error ? err.message : err
+    );
+    captureError(err, { component: 'merchantIntegrations.decrypt', merchantId });
     return fallback;
   }
 }
@@ -210,9 +216,9 @@ async function fetchMerchantPaymentRuntimeConfig(
     customerPaymentsEnabled: paymentsPolicyAllowed && Boolean(data.customer_payments_enabled),
     applePayEnabled: paymentsPolicyAllowed && Boolean(data.apple_pay_enabled),
     applePayMerchantId: normalizeOptionalString(data.apple_pay_merchant_id),
-    publishableKey: safeDecrypt(publishableKeyEnc, null),
-    secretKey: safeDecrypt(secretKeyEnc, null),
-    webhookSecret: safeDecrypt(webhookSecretEnc, null),
+    publishableKey: safeDecrypt(publishableKeyEnc, null, merchantId),
+    secretKey: safeDecrypt(secretKeyEnc, null, merchantId),
+    webhookSecret: safeDecrypt(webhookSecretEnc, null, merchantId),
     source: 'merchant',
   };
 }
@@ -288,7 +294,7 @@ export async function getMerchantDeliveryRuntimeConfig(
           : data.status === 'connected'
             ? 'connected'
             : 'disconnected',
-    refreshToken: safeDecrypt(refreshTokenEnc, null),
+    refreshToken: safeDecrypt(refreshTokenEnc, null, merchantId),
     preferredCarriers: normalizeOptionalString(data.preferred_carriers),
     source: 'merchant',
   };

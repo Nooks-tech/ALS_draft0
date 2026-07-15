@@ -18,6 +18,7 @@ const execFileAsync = promisify(execFile);
 import { requireAuthenticatedAppUser } from '../utils/appUserAuth';
 import { ensureLoyaltyMemberProfile } from '../services/loyaltyMembers';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
+import { captureError } from '../utils/sentryContext';
 import { getCustomerLoyaltyRoute } from './loyalty';
 
 export const walletPassRouter = Router();
@@ -801,7 +802,18 @@ async function createPassBuffer(files: Record<string, Buffer>): Promise<Buffer> 
 function verifyAuthHeader(req: any, serialNumber: string): boolean {
   const header = req.headers['authorization'] || '';
   const token = header.replace(/^ApplePass\s+/i, '');
-  return token === authTokenForSerial(serialNumber);
+  const match = token === authTokenForSerial(serialNumber);
+  if (!match) {
+    const context = {
+      component: 'walletPass.verifyAuthHeader',
+      serialNumber,
+      deviceId: req.params?.deviceId,
+      passTypeId: req.params?.passTypeId,
+    };
+    console.warn('[walletPass] auth token mismatch for pass web-service request', context);
+    captureError(new Error('walletPass auth token mismatch'), context);
+  }
+  return match;
 }
 
 // POST /v1/devices/:deviceId/registrations/:passTypeId/:serialNumber

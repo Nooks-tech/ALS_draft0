@@ -36,6 +36,17 @@ const supabaseAdmin =
 const POLL_INTERVAL_MS = 60 * 1000; // every minute
 const STATUS_WINDOW_MS = 3 * 60 * 60 * 1000; // only orders created in the last 3h
 const BATCH_LIMIT = 100; // hard cap on Foodics read-backs per tick
+// Wall-clock deadline for a single tick's read-back loop. Each read-back can
+// take up to its own 8s AbortSignal.timeout, so a serial BATCH_LIMIT=100 loop
+// has a worst case of ~800s — far past the 55s cron-lock TTL (see cronLock.ts).
+// A tick that overruns its lock lets a second replica's tick claim the lock
+// and start overlapping read-backs on the SAME rows mid-loop. The nooksweb-side
+// compare-and-swap (lib/foodics-order-status-sync.ts) makes that overlap safe
+// (only one call ever wins the write + push), but staying inside the TTL is
+// cheap defense-in-depth: once the deadline passes, stop issuing NEW
+// read-backs and leave the remainder for the next tick (same oldest-first
+// query picks them straight back up — nothing is skipped, only deferred).
+const PROCESS_DEADLINE_MS = 45 * 1000;
 
 // Non-terminal app statuses worth refreshing. Delivered/Cancelled are terminal.
 const NON_TERMINAL_STATUSES = ['Placed', 'Preparing', 'Ready', 'Out for delivery'];
@@ -67,7 +78,16 @@ async function processBatch(): Promise<{ scanned: number; synced: number }> {
   if (rows.length === 0) return { scanned: 0, synced: 0 };
 
   let synced = 0;
-  for (const row of rows) {
+  const deadlineAt = Date.now() + PROCESS_DEADLINE_MS;
+  let i = 0;
+  for (; i < rows.length; i++) {
+    if (Date.now() >= deadlineAt) {
+      console.warn(
+        `[foodicsOrderStatusSync] wall-clock deadline (${PROCESS_DEADLINE_MS}ms) reached — deferring ${rows.length - i} order(s) to next tick`,
+      );
+      break;
+    }
+    const row = rows[i];
     if (!row.merchant_id || !row.foodics_order_id) continue;
     const result = await readBackFoodicsStatusViaNooks({
       merchantId: String(row.merchant_id),

@@ -41,7 +41,42 @@ const BODY_DENY_KEYS = new Set([
   'build_webhook_secret',
   'madar_sms_api_key',
   'encrypted_value',
+  'token', // e.g. the long-lived kiosk JWT (?token=...)
 ]);
+
+// Query-param names stripped from any URL the scrubber sees — both
+// event.request.url and breadcrumb.data.url. Mirror of
+// nooksweb/lib/sentry-scrub.ts's URL_PARAM_DENY_LIST.
+const URL_PARAM_DENY_LIST = new Set([
+  'token',
+  'access_token',
+  'apikey',
+  'api_key',
+  'key',
+  'secret',
+]);
+
+// Redacts denylisted query params from a URL string, returning it
+// unchanged if nothing matched. Handles relative URLs (e.g.
+// "/api/kiosk/pending-order?token=...") by returning a relative
+// string rather than inventing an origin.
+function scrubUrlString(raw: string): string {
+  const isRelative = !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw);
+  try {
+    const url = new URL(raw, isRelative ? 'http://sentry-scrub.invalid' : undefined);
+    let changed = false;
+    for (const key of url.searchParams.keys()) {
+      if (URL_PARAM_DENY_LIST.has(key.toLowerCase())) {
+        url.searchParams.set(key, '[Filtered]');
+        changed = true;
+      }
+    }
+    if (!changed) return raw;
+    return isRelative ? `${url.pathname}${url.search}${url.hash}` : url.toString();
+  } catch {
+    return raw;
+  }
+}
 
 function redactStringMap(input: Record<string, unknown> | undefined, deny: Set<string>): void {
   if (!input || typeof input !== 'object') return;
@@ -81,6 +116,9 @@ export function scrubSentryEvent(event: Sentry.Event): Sentry.Event | null {
       if (event.request.data !== undefined) {
         event.request.data = redactDeep(event.request.data, BODY_DENY_KEYS) as typeof event.request.data;
       }
+      if (typeof event.request.url === 'string') {
+        event.request.url = scrubUrlString(event.request.url);
+      }
     }
     if (event.breadcrumbs) {
       event.breadcrumbs = event.breadcrumbs.map((bc) => {
@@ -88,6 +126,7 @@ export function scrubSentryEvent(event: Sentry.Event): Sentry.Event | null {
           const data = bc.data as Record<string, unknown>;
           if (data.headers) redactStringMap(data.headers as Record<string, unknown>, HEADER_DENY_LIST);
           if (data.body !== undefined) data.body = redactDeep(data.body, BODY_DENY_KEYS);
+          if (typeof data.url === 'string') data.url = scrubUrlString(data.url);
         }
         return bc;
       });
