@@ -257,6 +257,47 @@ export function requireNooksInternalRequest(req: Request, res: Response): boolea
 }
 
 /**
+ * Phase E (LOW, defense-in-depth): outbound signer for the ALS -> nooksweb
+ * direction (currently just the Foodics status read-back call). Mirrors
+ * nooksweb's own als-internal-fetch.ts signer byte-for-byte so the same
+ * canonical payload (`${method}\n${path}\n${timestamp}\n${nonce}\n${sha256(body)}`)
+ * verifies on both ends. Additive: returns {} (no extra headers) when
+ * NOOKS_INTERNAL_HMAC_KEY is unset, so outbound calls behave exactly as
+ * before — secret-only — until the key is configured on both sides.
+ *
+ * `bodyString` must be the EXACT string handed to fetch() as the body (not
+ * re-derived), so the hash the caller signs matches the raw bytes nooksweb
+ * receives and hashes on its end.
+ */
+export function buildOutboundInternalSignature(
+  method: string,
+  url: string,
+  bodyString: string,
+): Record<string, string> {
+  if (!NOOKS_INTERNAL_HMAC_KEY) return {};
+  const timestamp = Date.now();
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const bodyHash = crypto.createHash('sha256').update(bodyString).digest('hex');
+  let path = url;
+  try {
+    const u = new URL(url, 'http://internal');
+    path = `${u.pathname}${u.search}`;
+  } catch {
+    // Relative URL, already a path.
+  }
+  const payload = `${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n${bodyHash}`;
+  const signature = crypto
+    .createHmac('sha256', NOOKS_INTERNAL_HMAC_KEY)
+    .update(payload)
+    .digest('hex');
+  return {
+    'x-nooks-internal-timestamp': String(timestamp),
+    'x-nooks-internal-nonce': nonce,
+    'x-nooks-internal-signature': signature,
+  };
+}
+
+/**
  * Diagnostic routes are never public on remotely reachable environments.
  */
 export function requireDiagnosticAccess(req: Request, res: Response): boolean {

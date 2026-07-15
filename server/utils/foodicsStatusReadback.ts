@@ -15,6 +15,8 @@
  * a failed read as UNKNOWN — never as permission to cancel.
  */
 
+import { buildOutboundInternalSignature } from './nooksInternal';
+
 const NOOKS_API_BASE_URL = (process.env.NOOKS_API_BASE_URL || '').trim().replace(/\/+$/, '');
 const NOOKS_INTERNAL_SECRET = (process.env.NOOKS_INTERNAL_SECRET || '').trim();
 
@@ -58,13 +60,18 @@ export async function readBackFoodicsStatusViaNooks(
     return { ok: false, reason: 'nooks internal relay not configured' };
   }
   try {
-    const response = await fetch(`${NOOKS_API_BASE_URL}/api/internal/foodics-order-status`, {
+    const url = `${NOOKS_API_BASE_URL}/api/internal/foodics-order-status`;
+    const bodyString = JSON.stringify(input);
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
+        // Phase E: second-factor HMAC, additive — empty object (no extra
+        // headers) when NOOKS_INTERNAL_HMAC_KEY is unset on this side.
+        ...buildOutboundInternalSignature('POST', url, bodyString),
       },
-      body: JSON.stringify(input),
+      body: bodyString,
       signal: AbortSignal.timeout(8000),
     });
     const data = await response.json().catch(() => null);
