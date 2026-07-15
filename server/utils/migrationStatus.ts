@@ -7,11 +7,8 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
 
-// If the latest applied migration is older than this many days
-// relative to the deploy time, we treat it as drift and log loudly.
-// The 2026-05-22 incident had a 50-migration / 6-week gap go
-// undetected — anything more than ~14 days is suspicious.
-const MIGRATION_DRIFT_WARN_DAYS = 14;
+export const HISTORICAL_MANIFEST_SHA256 =
+  'd939264176fe1ff360c27cb2b56b83cefc23bc5b29a3ac55ff1dfb1c6f233493';
 
 export type MigrationStatus = {
   ok: boolean;
@@ -19,127 +16,233 @@ export type MigrationStatus = {
   latestName: string | null;
   latestAppliedAgeDays: number | null;
   totalApplied: number | null;
+  manifestSha256: string | null;
+  authorityRepository: string | null;
+  totalInventory: number | null;
+  registeredExact: number | null;
+  liveEffectAttested: number | null;
+  supersededObsolete: number | null;
+  pendingUnproven: number | null;
+  manifestComplete: boolean;
+  hashesValid: boolean;
+  manifestCount: number | null;
+  authoritativeManifestSha256: string | null;
+  authoritativeReleaseCount: number | null;
+  deploymentAttestationComplete: boolean;
   driftSuspected: boolean;
   reason: string | null;
 };
 
+export type MigrationStatusRpcRow = {
+  latest_version?: unknown;
+  latest_name?: unknown;
+  total_applied?: unknown;
+  manifest_sha256?: unknown;
+  authority_repository?: unknown;
+  total_inventory?: unknown;
+  registered_exact?: unknown;
+  live_effect_attested?: unknown;
+  superseded_obsolete?: unknown;
+  pending_unproven?: unknown;
+  manifest_complete?: unknown;
+  hashes_valid?: unknown;
+  manifest_count?: unknown;
+  authoritative_manifest_sha256?: unknown;
+  authoritative_release_count?: unknown;
+  deployment_attestation_complete?: unknown;
+};
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function nullableNonnegativeInteger(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function strictBoolean(value: unknown): boolean {
+  return value === true;
+}
+
+function latestVersionAgeDays(version: string | null, nowMs: number): number | null {
+  if (!version || !/^\d{14}$/.test(version)) return null;
+  const iso =
+    `${version.slice(0, 4)}-${version.slice(4, 6)}-${version.slice(6, 8)}` +
+    `T${version.slice(8, 10)}:${version.slice(10, 12)}:${version.slice(12, 14)}Z`;
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return null;
+  return Number(((nowMs - timestamp) / (24 * 60 * 60 * 1000)).toFixed(2));
+}
+
+function emptyStatus(reason: string, driftSuspected = false): MigrationStatus {
+  return {
+    ok: false,
+    latestVersion: null,
+    latestName: null,
+    latestAppliedAgeDays: null,
+    totalApplied: null,
+    manifestSha256: null,
+    authorityRepository: null,
+    totalInventory: null,
+    registeredExact: null,
+    liveEffectAttested: null,
+    supersededObsolete: null,
+    pendingUnproven: null,
+    manifestComplete: false,
+    hashesValid: false,
+    manifestCount: null,
+    authoritativeManifestSha256: null,
+    authoritativeReleaseCount: null,
+    deploymentAttestationComplete: false,
+    driftSuspected,
+    reason,
+  };
+}
+
 /**
- * Query supabase_migrations.schema_migrations for the latest applied
- * migration version. The version is a 14-digit YYYYMMDDhhmmss
- * timestamp from the filename prefix. We parse it, compute the age
- * relative to now (the assumption being: the server just started up,
- * so "now" ≈ "deploy time"), and flag if the gap exceeds the warn
- * threshold.
+ * Convert the service-only RPC row into the stable /ready response.
  *
- * This is intentionally a coarse check — we can't read the migrations
- * directory from inside the Docker container (the build context is
- * only the server/ folder; supabase/migrations/ is one level up).
- * A more precise check (file-vs-DB diff) would require either baking
- * a manifest at build time or fetching from GitHub at runtime. For
- * the kind of bug we're trying to catch (multi-week migration gap),
- * the age-of-latest-applied check is sufficient.
+ * The built-in Supabase registry fields remain for compatibility and
+ * diagnostics, but health is decided by collision-safe manifests, source
+ * hashes, evidence status, and the finalized ALS deployment attestation.
  */
-export async function checkMigrationStatus(): Promise<MigrationStatus> {
-  if (!supabaseAdmin) {
-    return {
-      ok: false,
-      latestVersion: null,
-      latestName: null,
-      latestAppliedAgeDays: null,
-      totalApplied: null,
-      driftSuspected: false,
-      reason: 'supabase-unconfigured',
-    };
+export function interpretMigrationStatusRow(
+  row: MigrationStatusRpcRow | null | undefined,
+  nowMs = Date.now(),
+): MigrationStatus {
+  if (!row) return emptyStatus('manifest-status-empty', true);
+
+  const latestVersion = nullableString(row.latest_version);
+  const latestName = nullableString(row.latest_name);
+  const totalApplied = nullableNonnegativeInteger(row.total_applied);
+  const manifestSha256 = nullableString(row.manifest_sha256);
+  const authorityRepository = nullableString(row.authority_repository);
+  const totalInventory = nullableNonnegativeInteger(row.total_inventory);
+  const registeredExact = nullableNonnegativeInteger(row.registered_exact);
+  const liveEffectAttested = nullableNonnegativeInteger(row.live_effect_attested);
+  const supersededObsolete = nullableNonnegativeInteger(row.superseded_obsolete);
+  const pendingUnproven = nullableNonnegativeInteger(row.pending_unproven);
+  const manifestCount = nullableNonnegativeInteger(row.manifest_count);
+  const authoritativeManifestSha256 = nullableString(row.authoritative_manifest_sha256);
+  const authoritativeReleaseCount = nullableNonnegativeInteger(row.authoritative_release_count);
+  const manifestComplete = strictBoolean(row.manifest_complete);
+  const hashesValid = strictBoolean(row.hashes_valid);
+  const deploymentAttestationComplete = strictBoolean(row.deployment_attestation_complete);
+  const latestAppliedAgeDays = latestVersionAgeDays(latestVersion, nowMs);
+
+  const statusCounts = [
+    registeredExact,
+    liveEffectAttested,
+    supersededObsolete,
+    pendingUnproven,
+  ];
+  const countsValid =
+    totalInventory !== null &&
+    registeredExact !== null &&
+    liveEffectAttested !== null &&
+    supersededObsolete !== null &&
+    pendingUnproven !== null &&
+    statusCounts.every((value) => value !== null) &&
+    registeredExact + liveEffectAttested + supersededObsolete + pendingUnproven === totalInventory;
+
+  let reason: string | null = null;
+  if (!latestVersion) {
+    reason = 'schema-migrations-empty';
+  } else if (manifestSha256 !== HISTORICAL_MANIFEST_SHA256) {
+    reason = 'historical-manifest-missing-or-unexpected';
+  } else if (authorityRepository !== 'ALS') {
+    reason = 'shared-db-authority-is-not-als';
+  } else if (!manifestComplete) {
+    reason = 'manifest-incomplete';
+  } else if (!hashesValid) {
+    reason = 'manifest-hash-mismatch';
+  } else if (
+    !deploymentAttestationComplete ||
+    !authoritativeManifestSha256 ||
+    authoritativeReleaseCount === null ||
+    authoritativeReleaseCount < 4 ||
+    manifestCount === null ||
+    manifestCount < 2
+  ) {
+    reason = 'authoritative-deployment-attestation-missing';
+  } else if (!countsValid) {
+    reason = 'manifest-status-counts-invalid';
+  } else if ((pendingUnproven ?? 0) > 0) {
+    reason = `pending-unproven-history (${pendingUnproven})`;
   }
+
+  return {
+    ok: reason === null,
+    latestVersion,
+    latestName,
+    latestAppliedAgeDays,
+    totalApplied,
+    manifestSha256,
+    authorityRepository,
+    totalInventory,
+    registeredExact,
+    liveEffectAttested,
+    supersededObsolete,
+    pendingUnproven,
+    manifestComplete,
+    hashesValid,
+    manifestCount,
+    authoritativeManifestSha256,
+    authoritativeReleaseCount,
+    deploymentAttestationComplete,
+    driftSuspected: reason !== null,
+    reason,
+  };
+}
+
+export async function checkMigrationStatus(): Promise<MigrationStatus> {
+  if (!supabaseAdmin) return emptyStatus('supabase-unconfigured');
+
   try {
-    // supabase-js's PostgREST proxy only sees the `public` schema by
-    // default, so we can't direct-query supabase_migrations.schema_migrations.
-    // The 20260522000001_migration_status_rpc.sql migration adds a
-    // SECURITY DEFINER function that exposes the summary; we call it
-    // here. If the RPC itself is missing (e.g. that migration hasn't
-    // been applied yet), we treat it as inconclusive — meta-drift.
     const { data, error } = await supabaseAdmin.rpc('get_migration_status');
-    if (error) {
-      return {
-        ok: false,
-        latestVersion: null,
-        latestName: null,
-        latestAppliedAgeDays: null,
-        totalApplied: null,
-        driftSuspected: false,
-        reason: `rpc-error: ${error.message}`,
-      };
-    }
-    const row = Array.isArray(data) ? data[0] : data;
-    const latest = (row ?? null) as { latest_version?: string; latest_name?: string; total_applied?: number } | null;
-    if (!latest?.latest_version) {
-      return {
-        ok: false,
-        latestVersion: null,
-        latestName: null,
-        latestAppliedAgeDays: null,
-        totalApplied: 0,
-        driftSuspected: true,
-        reason: 'schema-migrations-empty',
-      };
-    }
-    // Parse YYYYMMDDhhmmss
-    const v = latest.latest_version;
-    let ageDays: number | null = null;
-    if (v.length === 14 && /^\d+$/.test(v)) {
-      const iso = `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}T${v.slice(8, 10)}:${v.slice(10, 12)}:${v.slice(12, 14)}Z`;
-      const t = Date.parse(iso);
-      if (Number.isFinite(t)) {
-        ageDays = (Date.now() - t) / (24 * 60 * 60 * 1000);
-      }
-    }
-    const drift = ageDays != null && ageDays > MIGRATION_DRIFT_WARN_DAYS;
-    return {
-      ok: !drift,
-      latestVersion: latest.latest_version,
-      latestName: latest.latest_name ?? null,
-      latestAppliedAgeDays: ageDays != null ? Number(ageDays.toFixed(2)) : null,
-      totalApplied: Number(latest.total_applied ?? 0),
-      driftSuspected: drift,
-      reason: drift ? `latest-applied-too-old (${ageDays?.toFixed(1)}d > ${MIGRATION_DRIFT_WARN_DAYS}d)` : null,
-    };
-  } catch (e: any) {
-    return {
-      ok: false,
-      latestVersion: null,
-      latestName: null,
-      latestAppliedAgeDays: null,
-      totalApplied: null,
-      driftSuspected: false,
-      reason: `threw: ${e?.message}`,
-    };
+    if (error) return emptyStatus(`rpc-error: ${error.message}`);
+
+    const row = (Array.isArray(data) ? data[0] : data) as MigrationStatusRpcRow | null;
+    return interpretMigrationStatusRow(row);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return emptyStatus(`threw: ${message}`);
   }
 }
 
 /**
- * Startup hook — query the migration status and log loudly if drift
- * is suspected, with a Sentry capture + audit_log row. Called once
- * at boot from index.ts.
- *
- * Why this matters: the 2026-05-22 incident was caused by 50 git-
- * applied migrations that were never run against prod, going
- * unnoticed for 6 weeks until the wallet topup broke. With this
- * check, that gap would show up in the very first startup log as
- * a WARN line and in Sentry as a captured event.
+ * Startup hook: unresolved inventory is visible without blocking /ready.
+ * Pending/unproven history is intentionally noisy until each row is either
+ * terminal-effect-attested or explicitly superseded; it is never auto-marked.
  */
 export async function logStartupMigrationStatus(): Promise<void> {
   const status = await checkMigrationStatus();
   if (status.driftSuspected) {
     console.warn(
-      `[startup] ⚠️  MIGRATION DRIFT SUSPECTED — latest applied: ${status.latestVersion} (${status.latestName}), age ${status.latestAppliedAgeDays}d. Reason: ${status.reason}. Apply pending migrations via 'supabase migrate up' or the management API.`,
+      `[startup] MIGRATION REGISTRY ATTENTION — manifest ${status.manifestSha256 ?? 'missing'}, ` +
+        `authority ${status.authorityRepository ?? 'unknown'}, pending/unproven ` +
+        `${status.pendingUnproven ?? 'unknown'}. Reason: ${status.reason}. ` +
+        'Inspect the collision-safe ledger; append only reviewed ALS-authority attestations.',
     );
-    captureError(new Error(`Migration drift suspected: ${status.reason}`), {
+    captureError(new Error(`Migration registry attention: ${status.reason}`), {
       component: 'startup.migrationDrift',
       extra: {
         latest_version: status.latestVersion,
         latest_name: status.latestName,
-        age_days: status.latestAppliedAgeDays,
         total_applied: status.totalApplied,
+        historical_manifest_sha256: status.manifestSha256,
+        authoritative_manifest_sha256: status.authoritativeManifestSha256,
+        authority_repository: status.authorityRepository,
+        total_inventory: status.totalInventory,
+        registered_exact: status.registeredExact,
+        live_effect_attested: status.liveEffectAttested,
+        superseded_obsolete: status.supersededObsolete,
+        pending_unproven: status.pendingUnproven,
+        manifest_complete: status.manifestComplete,
+        hashes_valid: status.hashesValid,
+        deployment_attestation_complete: status.deploymentAttestationComplete,
       },
     });
     void writeAudit({
@@ -148,16 +251,26 @@ export async function logStartupMigrationStatus(): Promise<void> {
       payload: {
         latest_version: status.latestVersion,
         latest_name: status.latestName,
-        age_days: status.latestAppliedAgeDays,
-        total_applied: status.totalApplied,
+        historical_manifest_sha256: status.manifestSha256,
+        authoritative_manifest_sha256: status.authoritativeManifestSha256,
+        authority_repository: status.authorityRepository,
+        total_inventory: status.totalInventory,
+        registered_exact: status.registeredExact,
+        live_effect_attested: status.liveEffectAttested,
+        superseded_obsolete: status.supersededObsolete,
+        pending_unproven: status.pendingUnproven,
+        manifest_complete: status.manifestComplete,
+        hashes_valid: status.hashesValid,
+        deployment_attestation_complete: status.deploymentAttestationComplete,
         reason: status.reason,
       },
     });
   } else if (!status.ok && status.reason) {
-    console.warn(`[startup] Migration status check inconclusive: ${status.reason}`);
+    console.warn(`[startup] Migration registry check inconclusive: ${status.reason}`);
   } else {
     console.log(
-      `[startup] Migrations OK — latest applied: ${status.latestVersion} (${status.latestName}), age ${status.latestAppliedAgeDays}d, total applied: ${status.totalApplied}`,
+      `[startup] Migration registry OK — ${status.totalInventory} releases across ` +
+        `${status.manifestCount} manifests; authority ${status.authorityRepository}`,
     );
   }
 }
