@@ -511,6 +511,58 @@ async function relayOrderToNooks(
   return data;
 }
 
+/**
+ * App-facing statuses that are terminal — a Foodics read-back must never move
+ * an order out of these, and there is nothing to refresh for them.
+ */
+const FOODICS_TERMINAL_APP_STATUSES = new Set(['Delivered', 'Cancelled']);
+
+/**
+ * Credentialed Foodics order-status read-back, via nooksweb (which holds the
+ * per-merchant Foodics OAuth token; ALS's own services/foodics.ts is deprecated
+ * and global-token).
+ *
+ * WHY (2026-07-15): the Foodics webhook never reaches us — registration is
+ * blocked by Foodics permissions and unsigned deliveries are quarantined by the
+ * Phase A containment. So a cashier tapping Accept/Close was invisible to Nooks:
+ * the app's status froze at "Placed" AND the no-accept sweep below then
+ * cancelled + refunded orders the store had already accepted (observed in prod:
+ * order-1784133782903 refunded at 16:50 post-accept). This read-back is the
+ * reliable substitute.
+ *
+ * Best-effort by construction: never throws, short timeout. A Foodics/nooksweb
+ * hiccup must never break the app's status poll — and must never be mistaken
+ * for "not accepted" by the sweep (callers treat a failed read as UNKNOWN, not
+ * as permission to cancel).
+ */
+async function readBackFoodicsStatusViaNooks(input: {
+  merchantId: string;
+  internalOrderId: string;
+  foodicsOrderId: string;
+}): Promise<{ ok: boolean; synced?: boolean; from?: string | null; to?: string | null; accepted?: boolean; reason?: string }> {
+  if (!NOOKS_API_BASE_URL || !NOOKS_INTERNAL_SECRET) {
+    return { ok: false, reason: 'nooks internal relay not configured' };
+  }
+  try {
+    const response = await fetch(`${NOOKS_API_BASE_URL}/api/internal/foodics-order-status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
+      },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      return { ok: false, reason: data?.error || `status read-back HTTP ${response.status}` };
+    }
+    return { ok: true, ...(data ?? {}) };
+  } catch (e: any) {
+    return { ok: false, reason: e?.message || 'status read-back threw' };
+  }
+}
+
 ordersRouter.post('/relay-to-nooks', async (req, res) => {
   try {
     const user = await requireAuthenticatedAppUser(req, res);
@@ -3454,7 +3506,7 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
     let skipped = 0;
     const results: Array<{
       orderId: string;
-      action: 'swept' | 'kept' | 'pending' | 'manual_review' | 'error';
+      action: 'swept' | 'kept' | 'pending' | 'manual_review' | 'error' | 'skipped';
       reason: string;
     }> = [];
 
@@ -3645,6 +3697,45 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
       // way we start the reversal — unresolved provider outcomes remain visible
       // for read-back/manual review. Merchants who routinely brush past 5 min
       // can configure a longer threshold later.
+      // ─── Accept-check before cancelling (2026-07-15) ────────────────
+      // The 5-min timeout above assumes "still Placed" == "store never
+      // accepted". That assumption is FALSE in production: the Foodics webhook
+      // never lands (registration blocked by Foodics perms + Phase A
+      // quarantines unsigned deliveries), so an accepted order still reads
+      // 'Placed' here. This sweep was therefore cancelling AND REFUNDING orders
+      // the store had already accepted, leaving the merchant making food for a
+      // refunded order and forcing a manual Void (observed live:
+      // order-1784133782903 refunded at 16:50; "cancel_post_accept — Order was
+      // already accepted in Foodics; merchant must Void manually there").
+      //
+      // So: ask Foodics directly first. Only a CONFIRMED not-accepted order may
+      // be swept. A failed/unknown read is NOT permission to cancel — skip and
+      // let the next sweep retry, because wrongly refunding an accepted order is
+      // an active harm while a delayed sweep is recoverable.
+      if (order.foodics_order_id && order.merchant_id) {
+        const readBack = await readBackFoodicsStatusViaNooks({
+          merchantId: String(order.merchant_id),
+          internalOrderId: String(order.id),
+          foodicsOrderId: String(order.foodics_order_id),
+        });
+        if (!readBack.ok) {
+          console.warn('[Orders] sweep: Foodics status read-back failed — NOT cancelling', {
+            orderId: order.id,
+            reason: readBack.reason,
+          });
+          results.push({ orderId: order.id, action: 'skipped', reason: `status_readback_failed: ${readBack.reason}` });
+          continue;
+        }
+        if (readBack.accepted) {
+          console.warn('[Orders] sweep: store DID accept — skipping timeout cancel', {
+            orderId: order.id,
+            syncedTo: readBack.to,
+          });
+          results.push({ orderId: order.id, action: 'skipped', reason: 'foodics_accepted' });
+          continue;
+        }
+      }
+
       try {
         const result = await refundOrderToWallet(
           order.id,
@@ -3794,12 +3885,35 @@ ordersRouter.get('/:id/status', async (req, res) => {
 
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, status, cancellation_reason, cancelled_by, refund_status, refund_amount, refund_fee, refund_method, created_at, updated_at')
+      .select('id, customer_id, merchant_id, foodics_order_id, status, cancellation_reason, cancelled_by, refund_status, refund_amount, refund_fee, refund_method, created_at, updated_at')
       .eq('id', orderId)
       .eq('customer_id', user.id)
       .single();
 
     if (error || !order) return res.status(404).json({ error: 'Order not found' });
+
+    // ─── Foodics read-through (2026-07-15) ───────────────────────────
+    // The Foodics webhook never lands (registration blocked by Foodics perms +
+    // Phase A quarantines unsigned deliveries), so the stored status goes stale
+    // the moment the cashier taps Accept/Close. Since the app polls THIS
+    // endpoint, do a credentialed read-back for non-terminal Foodics-relayed
+    // orders and return the fresh value. Best-effort: any failure just returns
+    // the stored status (never breaks the poll).
+    let effectiveStatus = order.status as string;
+    if (
+      order.foodics_order_id &&
+      order.merchant_id &&
+      !FOODICS_TERMINAL_APP_STATUSES.has(effectiveStatus)
+    ) {
+      const readBack = await readBackFoodicsStatusViaNooks({
+        merchantId: String(order.merchant_id),
+        internalOrderId: String(order.id),
+        foodicsOrderId: String(order.foodics_order_id),
+      });
+      if (readBack.ok && readBack.synced && typeof readBack.to === 'string') {
+        effectiveStatus = readBack.to;
+      }
+    }
 
     // canCustomerCancel + cancelTimeRemaining were exposed for the legacy
     // customer-cancel route. That route is gone — customers can no longer
@@ -3808,7 +3922,7 @@ ordersRouter.get('/:id/status', async (req, res) => {
     // the cancel button as disabled (instead of crashing on undefined).
     res.json({
       id: order.id,
-      status: order.status,
+      status: effectiveStatus,
       cancellation_reason: order.cancellation_reason,
       cancelled_by: order.cancelled_by,
       refund_status: order.refund_status,
