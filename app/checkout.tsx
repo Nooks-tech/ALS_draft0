@@ -43,7 +43,7 @@ import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from
 import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
-import { validateNooksPromo } from '../src/api/nooksPromos';
+import { validateNooksPromo, calculateNooksPromoDiscount } from '../src/api/nooksPromos';
 
 /** Haversine distance in km. Used when city is missing to detect cross-city delivery. */
 function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -119,7 +119,14 @@ export default function CheckoutScreen() {
   const [orderNote, setOrderNote] = useState('');
   const [promoCode, setPromoCode] = useState('');
   const [promoApplied, setPromoApplied] = useState(false);
-  const [promoDiscount, setPromoDiscount] = useState(0);
+  // promoType/promoValue are the promo's actual terms (percent-of-base
+  // or fixed-amount), captured at apply-time. The discount AMOUNT is
+  // never frozen — it's replayed against the LIVE cart on every render
+  // via effectivePromoDiscount below, so it tracks cart edits made
+  // after the code was applied (reward milestone toggles, going back
+  // and changing quantities, etc.).
+  const [promoType, setPromoType] = useState<'percent' | 'fixed'>('fixed');
+  const [promoValue, setPromoValue] = useState(0);
   // Where the discount applies — drives both the UI ("delivery free!"
   // vs "10 off your subtotal") and the Foodics order body (delivery
   // promos shrink charges[].amount, subtotal promos scale the line
@@ -459,7 +466,27 @@ export default function CheckoutScreen() {
       ? (deliveryQuoteFee != null ? deliveryQuoteFee : cartDeliveryFee > 0 ? cartDeliveryFee : 0)
       : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
-  const discount = promoApplied ? promoDiscount : 0;
+  // Recompute the discount from the LIVE cart on every render instead of
+  // freezing a SAR amount at apply-time. The cart can change after a
+  // promo is applied — reward milestones toggle cart items, and
+  // the customer can navigate back and edit quantities — so a frozen SAR
+  // amount can end up larger than the current subtotal supports. The
+  // server now re-derives + enforces the same promo math at commit
+  // (PRICE_RECONCILE_MODE=enforce), so a stale discount here gets the
+  // whole order rejected as an under-charge. calculateNooksPromoDiscount
+  // is the exact same pure function the server's cap logic mirrors.
+  const effectivePromoDiscount = useMemo(
+    () =>
+      promoApplied
+        ? calculateNooksPromoDiscount(
+            { id: '', code: promoCode, name: promoCode, type: promoType, value: promoValue, scope: promoScope },
+            totalPrice,
+            deliveryFee,
+          )
+        : 0,
+    [promoApplied, promoCode, promoType, promoValue, promoScope, totalPrice, deliveryFee],
+  );
+  const discount = effectivePromoDiscount;
   const subtotalAfterPromo = Math.max(0, subtotalBeforePromo - discount);
 
   // Loyalty discount: caps at the entire post-promo total (items +
@@ -631,7 +658,8 @@ export default function CheckoutScreen() {
             return;
           }
           if (validation.discountAmount > 0) {
-            setPromoDiscount(validation.discountAmount);
+            setPromoType(validation.type);
+            setPromoValue(validation.value);
             setPromoApplied(true);
             setPromoCode(validation.code);
             setPromoScope(validation.scope);
@@ -667,7 +695,8 @@ export default function CheckoutScreen() {
 
   const removeCoupon = () => {
     setPromoApplied(false);
-    setPromoDiscount(0);
+    setPromoType('fixed');
+    setPromoValue(0);
     setPromoCode('');
     setPromoScope('total');
     setCouponInput('');
@@ -741,7 +770,7 @@ export default function CheckoutScreen() {
             customerPhone: profile.phone || null,
             customerEmail: profile.email || null,
             promoCode: promoApplied ? promoCode : null,
-            promoDiscountSar: promoApplied ? promoDiscount : null,
+            promoDiscountSar: promoApplied ? effectivePromoDiscount : null,
             promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
           qrCodeId: qrLanding.qrCodeId,
@@ -794,7 +823,7 @@ export default function CheckoutScreen() {
           paymentId: resolvedPaymentId,
           paymentMethod: paymentMethod,
           promoCode: promoApplied ? promoCode : undefined,
-          promoDiscountSar: promoApplied ? promoDiscount : undefined,
+          promoDiscountSar: promoApplied ? effectivePromoDiscount : undefined,
           promoScope: promoApplied ? promoScope : undefined,
           customerNote: orderNote.trim() || undefined,
           qrCodeId: qrLanding.qrCodeId ?? undefined,
@@ -1068,7 +1097,7 @@ export default function CheckoutScreen() {
           customerPhone: profile.phone || null,
           customerEmail: profile.email || null,
           promoCode: promoApplied ? promoCode : null,
-          promoDiscountSar: promoApplied ? promoDiscount : null,
+          promoDiscountSar: promoApplied ? effectivePromoDiscount : null,
           promoScope: promoApplied ? promoScope : null,
           customerNote: orderNote.trim() || null,
           qrCodeId: qrLanding.qrCodeId,
@@ -1119,7 +1148,7 @@ export default function CheckoutScreen() {
             paymentId: isFreeRewardOrder ? `reward:${walletOrderId}` : walletOrderId,
             paymentMethod: isFreeRewardOrder ? 'reward' : 'wallet',
             promoCode: promoApplied ? promoCode : undefined,
-            promoDiscountSar: promoApplied ? promoDiscount : undefined,
+            promoDiscountSar: promoApplied ? effectivePromoDiscount : undefined,
             promoScope: promoApplied ? promoScope : undefined,
             customerNote: orderNote.trim() || undefined,
           qrCodeId: qrLanding.qrCodeId ?? undefined,
@@ -1207,7 +1236,7 @@ export default function CheckoutScreen() {
             customerPhone: profile.phone || null,
             customerEmail: profile.email || null,
             promoCode: promoApplied ? promoCode : null,
-            promoDiscountSar: promoApplied ? promoDiscount : null,
+            promoDiscountSar: promoApplied ? effectivePromoDiscount : null,
             promoScope: promoApplied ? promoScope : null,
             customerNote: orderNote.trim() || null,
           qrCodeId: qrLanding.qrCodeId,
@@ -1616,7 +1645,7 @@ export default function CheckoutScreen() {
                     <Text className="text-slate-400 text-xs">{isArabic ? 'اضغط لإزالة الكود' : 'Tap to remove code'}</Text>
                   </View>
                 </View>
-                <View className="flex-row items-center"><Text className="text-slate-500 text-sm">−</Text><PriceWithSymbol amount={promoDiscount} iconSize={14} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 14 }} /></View>
+                <View className="flex-row items-center"><Text className="text-slate-500 text-sm">−</Text><PriceWithSymbol amount={effectivePromoDiscount} iconSize={14} iconColor="#64748b" textStyle={{ color: '#64748b', fontSize: 14 }} /></View>
               </TouchableOpacity>
             ) : (
               <TouchableOpacity
