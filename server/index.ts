@@ -50,6 +50,7 @@ import { startPaymentProcessingHealthCron } from './cron/paymentProcessingHealth
 import { startLoyaltyExpirationCron } from './cron/loyaltyExpiration';
 import { startComplaintEscalationCron } from './cron/complaintEscalation';
 import { startSavedCardSweepCron } from './cron/savedCardSweep';
+import { startFoodicsOrderStatusSyncCron } from './cron/foodicsOrderStatusSync';
 
 const app = express();
 // Railway terminates TLS at its edge and sets X-Forwarded-For before the
@@ -152,14 +153,15 @@ app.get('/ready', async (_, res) => {
   // lag; the merchant dashboard can poll /ready and flag them.
   try {
     const { getCronHealth } = await import('./utils/cronHeartbeat');
-    const [cart, loyalty, complaint, savedCard, paymentHealth] = await Promise.all([
+    const [cart, loyalty, complaint, savedCard, paymentHealth, statusSync] = await Promise.all([
       getCronHealth('cartAbandonment', 60 * 1000),
       getCronHealth('loyaltyExpiration', 24 * 60 * 60 * 1000),
       getCronHealth('complaintEscalation', 30 * 60 * 1000),
       getCronHealth('savedCardSweep', 6 * 60 * 60 * 1000),
       getCronHealth('paymentProcessingHealth', 30 * 60 * 1000),
+      getCronHealth('foodicsOrderStatusSync', 2 * 60 * 1000),
     ]);
-    checks.crons = { cartAbandonment: cart, loyaltyExpiration: loyalty, complaintEscalation: complaint, savedCardSweep: savedCard, paymentProcessingHealth: paymentHealth };
+    checks.crons = { cartAbandonment: cart, loyaltyExpiration: loyalty, complaintEscalation: complaint, savedCardSweep: savedCard, paymentProcessingHealth: paymentHealth, foodicsOrderStatusSync: statusSync };
   } catch (e: any) {
     checks.crons = { ok: false, error: e?.message };
   }
@@ -213,6 +215,7 @@ app.listen(Number(PORT), '0.0.0.0', () => {
   startSavedCardSweepCron();
   startCartAbandonmentCron();
   startPaymentProcessingHealthCron();
+  startFoodicsOrderStatusSyncCron();
   // Surface migration drift at boot. If the latest applied migration
   // is older than 14 days, this logs a WARN + ships a Sentry alert
   // so a 2026-05-22-style migration gap doesn't go unnoticed.

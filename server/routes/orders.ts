@@ -45,6 +45,7 @@ import {
   sarToHalalas,
   type PromoScope,
 } from '../utils/orderTotalReconciliation';
+import { readBackFoodicsStatusViaNooks } from '../utils/foodicsStatusReadback';
 
 export const ordersRouter = Router();
 
@@ -516,52 +517,6 @@ async function relayOrderToNooks(
  * an order out of these, and there is nothing to refresh for them.
  */
 const FOODICS_TERMINAL_APP_STATUSES = new Set(['Delivered', 'Cancelled']);
-
-/**
- * Credentialed Foodics order-status read-back, via nooksweb (which holds the
- * per-merchant Foodics OAuth token; ALS's own services/foodics.ts is deprecated
- * and global-token).
- *
- * WHY (2026-07-15): the Foodics webhook never reaches us — registration is
- * blocked by Foodics permissions and unsigned deliveries are quarantined by the
- * Phase A containment. So a cashier tapping Accept/Close was invisible to Nooks:
- * the app's status froze at "Placed" AND the no-accept sweep below then
- * cancelled + refunded orders the store had already accepted (observed in prod:
- * order-1784133782903 refunded at 16:50 post-accept). This read-back is the
- * reliable substitute.
- *
- * Best-effort by construction: never throws, short timeout. A Foodics/nooksweb
- * hiccup must never break the app's status poll — and must never be mistaken
- * for "not accepted" by the sweep (callers treat a failed read as UNKNOWN, not
- * as permission to cancel).
- */
-async function readBackFoodicsStatusViaNooks(input: {
-  merchantId: string;
-  internalOrderId: string;
-  foodicsOrderId: string;
-}): Promise<{ ok: boolean; synced?: boolean; from?: string | null; to?: string | null; accepted?: boolean; reason?: string }> {
-  if (!NOOKS_API_BASE_URL || !NOOKS_INTERNAL_SECRET) {
-    return { ok: false, reason: 'nooks internal relay not configured' };
-  }
-  try {
-    const response = await fetch(`${NOOKS_API_BASE_URL}/api/internal/foodics-order-status`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-nooks-internal-secret': NOOKS_INTERNAL_SECRET,
-      },
-      body: JSON.stringify(input),
-      signal: AbortSignal.timeout(8000),
-    });
-    const data = await response.json().catch(() => null);
-    if (!response.ok) {
-      return { ok: false, reason: data?.error || `status read-back HTTP ${response.status}` };
-    }
-    return { ok: true, ...(data ?? {}) };
-  } catch (e: any) {
-    return { ok: false, reason: e?.message || 'status read-back threw' };
-  }
-}
 
 ordersRouter.post('/relay-to-nooks', async (req, res) => {
   try {
