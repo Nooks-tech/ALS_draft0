@@ -38,6 +38,13 @@ import {
 } from '../utils/refundDecision';
 import { reverseStrictlyBoundRejectedPayment } from '../utils/rejectedFinalPayment';
 import { checkLegacyPromoDiscountMagnitude } from '../utils/promoDiscountGuard';
+import {
+  clampDeliveryHalalas,
+  promoCapHalalas,
+  reconcileOrderTotal,
+  sarToHalalas,
+  type PromoScope,
+} from '../utils/orderTotalReconciliation';
 
 export const ordersRouter = Router();
 
@@ -170,6 +177,71 @@ async function voidChargeOnRejectedCommit(
   } catch (e: any) {
     console.error(`[Orders] ${context}: void of Moyasar payment ${pid} threw:`, e?.message);
   }
+}
+
+/**
+ * Server-authoritative items subtotal in integer halalas (VAT-inclusive) for
+ * the total-reconciliation guard. Each non-reward item's unit price is the
+ * merchant's own menu price (branch override > price_override > base) PLUS the
+ * client-reported modifier surcharge (price - basePrice); modifier prices are
+ * not yet ALS-readable, so the surcharge remains client-influenced (bounded,
+ * and surfaced by the shadow logs). Reward items (uniqueId `reward-…`) are 0.
+ * Items absent from the merchant's menu fall back to the client unit price and
+ * are reported as `unresolved` so shadow telemetry can flag catalog gaps.
+ */
+async function computeServerItemsSubtotalHalalas(
+  admin: NonNullable<typeof supabaseAdmin>,
+  merchantId: string,
+  branchId: string | null,
+  items: Array<{ id?: unknown; foodicsProductId?: unknown; uniqueId?: unknown; price?: unknown; basePrice?: unknown; quantity?: unknown }>,
+): Promise<{ halalas: number; unresolved: string[] }> {
+  const productIds = Array.from(new Set(
+    items
+      .filter((it) => !(typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')))
+      .map((it) => (typeof it.id === 'string' ? (it.id as string) : null))
+      .filter((v): v is string => !!v),
+  ));
+  const priceById = new Map<string, number>();
+  if (productIds.length > 0) {
+    const { data: rows } = await admin
+      .from('products')
+      .select('id, price, price_override, branch_prices_json')
+      .eq('merchant_id', merchantId)
+      .in('id', productIds);
+    for (const p of (rows ?? []) as Array<{ id: string; price: number | null; price_override: number | null; branch_prices_json: Record<string, unknown> | null }>) {
+      const branchOverride = branchId && p.branch_prices_json && typeof p.branch_prices_json === 'object'
+        ? Number((p.branch_prices_json as Record<string, unknown>)[branchId])
+        : NaN;
+      let unit = Number(p.price ?? 0);
+      if (p.price_override != null && Number.isFinite(Number(p.price_override)) && Number(p.price_override) > 0) {
+        unit = Number(p.price_override);
+      }
+      if (Number.isFinite(branchOverride) && branchOverride > 0) unit = branchOverride;
+      if (Number.isFinite(unit) && unit > 0) priceById.set(p.id, unit);
+    }
+  }
+  let halalas = 0;
+  const unresolved: string[] = [];
+  for (const it of items) {
+    const qty = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
+    if (typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')) {
+      continue; // free reward item — contributes 0
+    }
+    const pid = typeof it.id === 'string' ? (it.id as string) : null;
+    const clientUnit = Number(it.price ?? it.basePrice ?? 0);
+    const clientBase = Number(it.basePrice ?? it.price ?? 0);
+    const modifierSurcharge = Math.max(0, clientUnit - clientBase);
+    const serverBase = pid ? priceById.get(pid) : undefined;
+    let authoritativeUnit: number;
+    if (serverBase == null) {
+      authoritativeUnit = clientUnit; // not in menu — defer to client (logged)
+      if (pid) unresolved.push(pid);
+    } else {
+      authoritativeUnit = serverBase + modifierSurcharge;
+    }
+    halalas += sarToHalalas(authoritativeUnit) * qty;
+  }
+  return { halalas, unresolved };
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -1305,6 +1377,86 @@ ordersRouter.post('/commit', async (req, res) => {
           error: `Promo discount ${promoDiscountValue} SAR exceeds the maximum allowed for this code; refusing to commit.`,
           code: 'PROMO_DISCOUNT_TAMPERED',
         });
+      }
+    }
+
+    // ─── Server-authoritative total reconciliation (2026-07-15, Fable-reviewed) ──
+    // Recomputes the order total from server-known inputs (menu-priced items,
+    // clamped delivery, server-capped promo, ledger-validated cashback) in
+    // integer halalas and compares to the client total_sar. This is the final
+    // piece that makes total_sar itself authoritative — the existing checks
+    // already bind card==total_sar-wallet, but total_sar itself was only floor-
+    // checked (up to 95% off). Default mode is 'shadow' (log only, never reject)
+    // so we can observe real orders — including a live Apple Pay test — before
+    // switching PRICE_RECONCILE_MODE=enforce. Wrapped so it can never break a
+    // legitimate commit while in shadow.
+    {
+      const reconcileMode = (process.env.PRICE_RECONCILE_MODE || 'shadow').toLowerCase();
+      try {
+        const { halalas: itemsH, unresolved } = await computeServerItemsSubtotalHalalas(
+          supabaseAdmin,
+          merchantId,
+          typeof branchId === 'string' ? branchId : null,
+          items as Array<Record<string, unknown>>,
+        );
+        const feeH = clampDeliveryHalalas(orderType, deliveryFee);
+        let promoCap = 0;
+        if (trimmedPromoCode && promoDiscountValue > 0 && promoScopeNormalized) {
+          const { data: promoRows } = await supabaseAdmin
+            .from('promo_codes')
+            .select('code, discount_percent, discount_fixed')
+            .eq('merchant_id', merchantId);
+          const promoRow = (promoRows ?? []).find(
+            (p: { code: string }) => typeof p.code === 'string' && p.code.toUpperCase() === trimmedPromoCode,
+          ) as { discount_percent: number | null; discount_fixed: number | null } | undefined;
+          promoCap = promoCapHalalas(promoRow ?? null, promoScopeNormalized as PromoScope, itemsH, feeH);
+        }
+        const rec = reconcileOrderTotal({
+          itemsHalalas: itemsH,
+          deliveryHalalas: feeH,
+          claimedPromoHalalas: sarToHalalas(promoDiscountValue),
+          promoCapHalalas: promoCap,
+          validatedCashbackHalalas: sarToHalalas(validatedCashbackSar),
+          clientTotalHalalas: sarToHalalas(Number(totalSar)),
+        });
+        const breakdown = {
+          mode: reconcileMode,
+          orderId: id,
+          merchantId,
+          isFinalCommit,
+          itemsH,
+          feeH,
+          promoCapH: promoCap,
+          claimedPromoH: sarToHalalas(promoDiscountValue),
+          cashbackH: sarToHalalas(validatedCashbackSar),
+          walletH: Math.round(requestedWalletAppliedSar * 100),
+          expectedH: rec.expectedHalalas,
+          totalH: sarToHalalas(Number(totalSar)),
+          deltaH: rec.deltaHalalas,
+          underclaim: rec.underclaim,
+          overclaim: rec.overclaim,
+          unresolvedProducts: unresolved,
+        };
+        if (rec.underclaim || rec.overclaim || unresolved.length > 0) {
+          console.warn('[Orders] TOTAL_RECONCILIATION', breakdown);
+        } else {
+          console.log('[Orders] TOTAL_RECONCILIATION ok', {
+            orderId: id, expectedH: rec.expectedHalalas, totalH: sarToHalalas(Number(totalSar)),
+          });
+        }
+        if (reconcileMode === 'enforce' && rec.underclaim) {
+          console.error('[Orders] TOTAL_RECONCILIATION enforce reject', breakdown);
+          await voidChargeOnRejectedCommit(
+            paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'total reconciliation',
+          );
+          return res.status(400).json({
+            error: 'Order total does not match the current menu price; please refresh and try again.',
+            code: 'TOTAL_RECONCILIATION_FAILED',
+          });
+        }
+      } catch (e: any) {
+        // Shadow reconciliation must never break a legitimate commit.
+        console.error('[Orders] TOTAL_RECONCILIATION error (non-blocking)', { orderId: id, error: e?.message });
       }
     }
 
