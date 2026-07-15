@@ -37,6 +37,7 @@ import {
   temporaryRefundStatus,
 } from '../utils/refundDecision';
 import { reverseStrictlyBoundRejectedPayment } from '../utils/rejectedFinalPayment';
+import { checkLegacyPromoDiscountMagnitude } from '../utils/promoDiscountGuard';
 
 export const ordersRouter = Router();
 
@@ -1253,6 +1254,58 @@ ordersRouter.post('/commit', async (req, res) => {
       validatedCashbackSar = +claimedCashbackSar.toFixed(2);
       loyaltyCfgConfigVersion =
         typeof loyaltyCfg?.config_version === 'number' ? loyaltyCfg.config_version : null;
+    }
+
+    // ─── Server-validated promo discount magnitude (2026-07-15 audit R1) ───
+    // redeem_promo's p_discount_sar is caller-supplied and was only ever
+    // checked for ELIGIBILITY (expiry, usage limits) — never against the
+    // promo's own configured value. The DIRECT money impact is already bounded
+    // by the MAX_DISCOUNT_RATIO (95%-of-menu-floor) check above, so this is
+    // primarily a reporting-integrity gap. We enforce ONLY the provably-safe
+    // fixed-promo ceiling here (see checkLegacyPromoDiscountMagnitude): a
+    // legitimate 'X SAR off' client always sends <= X, so this can never
+    // reject a valid order. Percent-promo magnitude is intentionally deferred
+    // to the Phase B canonical quote, which has a server-authoritative
+    // modifier-inclusive subtotal to check against (the legacy computedItemFloor
+    // is a lower bound that would false-reject carts with paid modifiers).
+    if (trimmedPromoCode && promoDiscountValue > 0 && promoScopeNormalized) {
+      const { data: merchantPromoRows, error: promoLookupErr } = await supabaseAdmin
+        .from('promo_codes')
+        .select('code, discount_percent, discount_fixed')
+        .eq('merchant_id', merchantId);
+      if (promoLookupErr) {
+        console.error('[Orders] promo_codes lookup failed:', promoLookupErr.message);
+        return res.status(500).json({ error: 'Promo validation failed' });
+      }
+      const promoRow = (merchantPromoRows ?? []).find(
+        (p: { code: string }) => typeof p.code === 'string' && p.code.toUpperCase() === trimmedPromoCode,
+      ) as { discount_percent: number | null; discount_fixed: number | null } | undefined;
+      if (!promoRow) {
+        await voidChargeOnRejectedCommit(paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'promo not found');
+        return res.status(400).json({ error: 'Promo code not found', code: 'PROMO_REJECTED' });
+      }
+      const promoMagnitude = checkLegacyPromoDiscountMagnitude(promoDiscountValue, promoRow);
+      if (!promoMagnitude.ok) {
+        console.warn('[Orders] Fixed promo discount magnitude tampered — refusing', {
+          merchantId,
+          orderId: id,
+          code: trimmedPromoCode,
+          claimed: promoDiscountValue,
+          maxLegalDiscount: promoMagnitude.maxLegalDiscountSar,
+        });
+        await voidChargeOnRejectedCommit(
+          paymentId,
+          merchantId,
+          id,
+          user.id,
+          expectedHalalsForVerify,
+          'promo discount magnitude gate',
+        );
+        return res.status(400).json({
+          error: `Promo discount ${promoDiscountValue} SAR exceeds the maximum allowed for this code; refusing to commit.`,
+          code: 'PROMO_DISCOUNT_TAMPERED',
+        });
+      }
     }
 
     if (isFinalCommit) {
