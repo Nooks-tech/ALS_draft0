@@ -43,6 +43,16 @@ export function hasRewardBearingOrderItems(items: unknown): boolean {
   });
 }
 
+/**
+ * Kill-switch for the Phase A blanket reward-checkout block. Default OFF —
+ * behavior is unchanged (every reward-bearing request still gets the 409
+ * below) until this is explicitly flipped on. Once ON, the pre-charge
+ * per-milestone REWARD_UNAUTHORIZED gate in orders.ts (product binding +
+ * redeemability check, see authorizeRewardMilestoneForCommit in loyalty.ts)
+ * becomes the real defense. Read once at module load.
+ */
+export const REWARD_CHECKOUT_ENABLED = process.env.REWARD_CHECKOUT_ENABLED === 'true';
+
 export type FinalizationRequestDecision =
   | { ok: true; stage: 'draft'; tender: 'draft' }
   | { ok: true; stage: 'final'; tender: 'provider' | 'wallet' }
@@ -89,7 +99,10 @@ export function guardOrderFinalizationRequest(input: {
   // Reward-bearing drafts must fail before saved-card token-pay can charge.
   // Direct card/Apple Pay may arrive only after charging on either commit, so
   // surface the strictly-bind-before-reversal candidate whenever one exists.
-  if (input.hasRewardBearingItems || paymentMethod === 'reward') {
+  // Flag-gated: once REWARD_CHECKOUT_ENABLED, fall through to the normal
+  // draft/final-commit checks below — the pre-charge gate in orders.ts is
+  // the real defense against an unauthorized reward.
+  if ((input.hasRewardBearingItems || paymentMethod === 'reward') && !REWARD_CHECKOUT_ENABLED) {
     return {
       ok: false,
       status: 409,

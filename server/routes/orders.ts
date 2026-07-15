@@ -20,7 +20,13 @@ import { checkBranchOrderable } from '../lib/storeGate';
 import { cancelPayment, verifyPaidPayment } from '../services/payment';
 import { isPaymentStillSettling } from '../utils/paymentSettling';
 import { sendOrderReceipt } from '../services/receipt';
-import { consumeOrderMilestones, earnForOrder, restoreCashbackForRefund, restoreStampMilestonesForRefund } from './loyalty';
+import {
+  authorizeRewardMilestoneForCommit,
+  consumeOrderMilestones,
+  earnForOrder,
+  restoreCashbackForRefund,
+  restoreStampMilestonesForRefund,
+} from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { enforceLimits, ipFromReq } from '../utils/rateLimit';
@@ -183,18 +189,28 @@ async function voidChargeOnRejectedCommit(
 /**
  * Server-authoritative items subtotal in integer halalas (VAT-inclusive) for
  * the total-reconciliation guard. Each non-reward item's unit price is the
- * merchant's own menu price (branch override > price_override > base) PLUS the
- * client-reported modifier surcharge (price - basePrice); modifier prices are
- * not yet ALS-readable, so the surcharge remains client-influenced (bounded,
- * and surfaced by the shadow logs). Reward items (uniqueId `reward-…`) are 0.
- * Items absent from the merchant's menu fall back to the client unit price and
- * are reported as `unresolved` so shadow telemetry can flag catalog gaps.
+ * merchant's own menu price (price_override > branch price > base — mirrors
+ * nooksweb's public menu route + repriceWebCart precedence exactly) PLUS each
+ * selected modifier option's price resolved server-side from the product's
+ * own modifier_groups_json. Reward items (uniqueId `reward-…`) are 0. Items
+ * absent from the merchant's menu, or carrying a modifier option that can't be
+ * resolved against the catalog, fall back to the client unit price entirely
+ * and are reported as `unresolved` so shadow telemetry can flag catalog gaps
+ * (or client tampering) rather than silently trusting client-priced money.
  */
 async function computeServerItemsSubtotalHalalas(
   admin: NonNullable<typeof supabaseAdmin>,
   merchantId: string,
   branchId: string | null,
-  items: Array<{ id?: unknown; foodicsProductId?: unknown; uniqueId?: unknown; price?: unknown; basePrice?: unknown; quantity?: unknown }>,
+  items: Array<{
+    id?: unknown;
+    foodicsProductId?: unknown;
+    uniqueId?: unknown;
+    price?: unknown;
+    basePrice?: unknown;
+    quantity?: unknown;
+    customizations?: unknown;
+  }>,
 ): Promise<{ halalas: number; unresolved: string[] }> {
   // ID-SPACE: the mobile cart sends FOODICS product ids as `item.id` (verified
   // against a live order 2026-07-15: item.id resolved 0 rows on products.id but
@@ -211,10 +227,36 @@ async function computeServerItemsSubtotalHalalas(
       .filter((v): v is string => !!v),
   ));
 
-  type Row = { id: string; foodics_product_id: string | null; price: number | null; price_override: number | null; branch_prices_json: Record<string, unknown> | null };
+  // branch_prices_json is keyed by the FOODICS branch id, not Nooks
+  // branch_mappings.id (mirrors nooksweb web-checkout's repriceWebCart —
+  // see app/api/public/orders/web-checkout/route.ts). Resolve it ONCE
+  // before the loop; a Nooks branchId used as the lookup key silently
+  // matches nothing (defect B1).
+  let foodicsBranchId: string | null = null;
+  if (branchId) {
+    const { data: bm } = await admin
+      .from('branch_mappings')
+      .select('foodics_branch_id')
+      .eq('id', branchId)
+      .eq('merchant_id', merchantId)
+      .maybeSingle();
+    foodicsBranchId = (bm as { foodics_branch_id?: string | null } | null)?.foodics_branch_id ?? null;
+  }
+
+  type ModifierOption = { id?: unknown; name?: unknown; price?: unknown };
+  type ModifierGroup = { id?: unknown; title?: unknown; options?: ModifierOption[] };
+  type Row = {
+    id: string;
+    foodics_product_id: string | null;
+    price: number | null;
+    price_override: number | null;
+    branch_prices_json: Record<string, { price?: number | null } | null> | null;
+    modifier_groups_json: unknown;
+  };
   const priceByKey = new Map<string, number>();
+  const modifierGroupsByKey = new Map<string, ModifierGroup[]>();
   if (candidateIds.length > 0) {
-    const cols = 'id, foodics_product_id, price, price_override, branch_prices_json';
+    const cols = 'id, foodics_product_id, price, price_override, branch_prices_json, modifier_groups_json';
     const [byId, byFid] = await Promise.all([
       admin.from('products').select(cols).eq('merchant_id', merchantId).in('id', candidateIds),
       admin.from('products').select(cols).eq('merchant_id', merchantId).in('foodics_product_id', candidateIds),
@@ -224,23 +266,58 @@ async function computeServerItemsSubtotalHalalas(
       ...(((byFid as { data?: Row[] }).data) ?? []),
     ];
     for (const p of rows) {
-      const branchOverride = branchId && p.branch_prices_json && typeof p.branch_prices_json === 'object'
-        ? Number((p.branch_prices_json as Record<string, unknown>)[branchId])
-        : NaN;
+      // Precedence: price_override(>0) > branch price(>0) > base. Branch is
+      // applied BEFORE override so override always wins when both are set —
+      // matches menu/route.ts:149-157 and repriceWebCart exactly (defect B1c;
+      // the old code applied branch LAST, letting it beat an explicit override).
       let unit = Number(p.price ?? 0);
-      if (p.price_override != null && Number.isFinite(Number(p.price_override)) && Number(p.price_override) > 0) {
-        unit = Number(p.price_override);
-      }
-      if (Number.isFinite(branchOverride) && branchOverride > 0) unit = branchOverride;
+      const branchEntry = foodicsBranchId && p.branch_prices_json && typeof p.branch_prices_json === 'object'
+        ? (p.branch_prices_json as Record<string, { price?: number | null } | null>)[foodicsBranchId]
+        : null;
+      const branchPrice = branchEntry && branchEntry.price != null ? Number(branchEntry.price) : NaN;
+      if (Number.isFinite(branchPrice) && branchPrice > 0) unit = branchPrice;
+      const overridePrice = p.price_override != null ? Number(p.price_override) : NaN;
+      if (Number.isFinite(overridePrice) && overridePrice > 0) unit = overridePrice;
       if (!Number.isFinite(unit) || unit <= 0) continue;
+      const groups: ModifierGroup[] = Array.isArray(p.modifier_groups_json)
+        ? (p.modifier_groups_json as ModifierGroup[])
+        : [];
       // A foodics_product_id can map to MULTIPLE products rows (verified live).
       // Keep the LOWEST price: it yields the most permissive `expected` total,
       // so an ambiguous catalog can never manufacture a false under-claim reject.
+      // Merge modifier groups across ambiguous rows for the same reason — the
+      // more groups we can resolve options against, the fewer false
+      // "unresolved" flags an ambiguous catalog produces.
       for (const key of [p.id, p.foodics_product_id].filter((k): k is string => !!k)) {
         const prev = priceByKey.get(key);
         priceByKey.set(key, prev == null ? unit : Math.min(prev, unit));
+        const prevGroups = modifierGroupsByKey.get(key) ?? [];
+        modifierGroupsByKey.set(key, prevGroups.length > 0 ? [...prevGroups, ...groups] : groups);
       }
     }
+  }
+
+  // Resolve one selected modifier option's price from the product's own
+  // modifier_groups_json, matching by option id first (authoritative Foodics
+  // id, mirrors the cart's stored option.id) then by name as a fallback —
+  // same two-pass strategy as nooksweb's repriceWebCart.
+  function resolveOptionPriceSar(groups: ModifierGroup[], optionId: string | null, optionName: string | null): number | null {
+    if (optionId) {
+      for (const g of groups) {
+        for (const opt of g.options ?? []) {
+          if (String(opt.id ?? '').trim() === optionId) return Number(opt.price ?? 0);
+        }
+      }
+    }
+    if (optionName) {
+      const wantName = optionName.toLowerCase();
+      for (const g of groups) {
+        for (const opt of g.options ?? []) {
+          if (String(opt.name ?? '').trim().toLowerCase() === wantName) return Number(opt.price ?? 0);
+        }
+      }
+    }
+    return null;
   }
 
   let halalas = 0;
@@ -253,8 +330,6 @@ async function computeServerItemsSubtotalHalalas(
     const idKey = typeof it.id === 'string' ? (it.id as string).trim() : null;
     const fidKey = typeof it.foodicsProductId === 'string' ? (it.foodicsProductId as string).trim() : null;
     const clientUnit = Number(it.price ?? it.basePrice ?? 0);
-    const clientBase = Number(it.basePrice ?? it.price ?? 0);
-    const modifierSurcharge = Math.max(0, clientUnit - clientBase);
     const serverBase =
       (idKey ? priceByKey.get(idKey) : undefined) ?? (fidKey ? priceByKey.get(fidKey) : undefined);
     let authoritativeUnit: number;
@@ -262,7 +337,38 @@ async function computeServerItemsSubtotalHalalas(
       authoritativeUnit = clientUnit; // not in menu — defer to client (logged)
       if (idKey) unresolved.push(idKey);
     } else {
-      authoritativeUnit = serverBase + modifierSurcharge;
+      // Cart customizations are `{ [groupTitle]: { id, name, price } }` (see
+      // CartContext.tsx / product.tsx). We only need the selected option's id
+      // (or name, as fallback) — the group title key isn't needed since we
+      // search across all of the product's modifier groups, same as
+      // repriceWebCart.
+      const groups = (idKey && modifierGroupsByKey.get(idKey)) || (fidKey && modifierGroupsByKey.get(fidKey)) || [];
+      const customizations = it.customizations && typeof it.customizations === 'object'
+        ? Object.values(it.customizations as Record<string, unknown>)
+        : [];
+      let modifierSar = 0;
+      let modifiersResolved = true;
+      for (const optRaw of customizations) {
+        const opt = optRaw as ModifierOption | null;
+        const optionId = opt?.id != null ? String(opt.id).trim() : null;
+        const optionName = typeof opt?.name === 'string' ? opt.name.trim() : null;
+        const resolvedPrice = resolveOptionPriceSar(groups, optionId, optionName || null);
+        if (resolvedPrice == null) {
+          modifiersResolved = false;
+          break;
+        }
+        modifierSar += resolvedPrice;
+      }
+      if (modifiersResolved) {
+        authoritativeUnit = serverBase + modifierSar;
+      } else {
+        // A selected option couldn't be matched against the catalog — don't
+        // trust the client's per-option price; fall back to the client's
+        // whole-item unit price (same fail-open convention as an unresolved
+        // product) and flag it so shadow telemetry can surface it.
+        authoritativeUnit = clientUnit;
+        if (idKey) unresolved.push(idKey);
+      }
     }
     halalas += sarToHalalas(authoritativeUnit) * qty;
   }
@@ -844,6 +950,9 @@ ordersRouter.post('/commit', async (req, res) => {
     const MIN_ITEM_PRICE_SAR = 0.5;
     let computedItemFloor = 0;
     const rewardMilestoneIdsInCart: string[] = [];
+    // Reward-authorization gate (2026-07-16): milestoneId -> the cart line's
+    // foodics product id, populated below alongside rewardMilestoneIdsInCart.
+    const rewardCartLineProductIds = new Map<string, string>();
     for (const it of items as Array<{ price?: unknown; quantity?: unknown; basePrice?: unknown; uniqueId?: unknown }>) {
       const unitPrice = Number(it.basePrice ?? it.price ?? 0);
       const qty = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
@@ -880,6 +989,19 @@ ordersRouter.post('/commit', async (req, res) => {
             });
           }
           rewardMilestoneIdsInCart.push(milestoneMatch[1]);
+          // Reward-authorization gate: also capture the bound product id.
+          // uniqueId is 'reward-<milestoneId>-<foodicsId>' from
+          // checkout.tsx or 'reward-<milestoneId>-<foodicsId>-<idempotencyKey>'
+          // from rewards.tsx — both ids are 36-char UUIDs, so take the 36
+          // chars right after the matched prefix instead of naive-splitting
+          // on '-' (a UUID itself contains hyphens). A short/malformed
+          // remainder leaves this unset, which the gate below then rejects
+          // (missing product binding) rather than silently letting it through.
+          const afterPrefix = uid.slice(milestoneMatch[0].length);
+          const productIdCandidate = afterPrefix.slice(0, 36);
+          if (/^[0-9a-f-]{36}$/i.test(productIdCandidate)) {
+            rewardCartLineProductIds.set(milestoneMatch[1], productIdCandidate);
+          }
         }
         continue;
       }
@@ -934,54 +1056,12 @@ ordersRouter.post('/commit', async (req, res) => {
       });
     }
 
-    // #11: menu-authoritative price validation. The floor above is built from
-    // CLIENT-supplied basePrice, which a tampered client can understate. Cross-
-    // check each non-reward item's unit price against the merchant's actual menu
-    // (products table, honoring per-branch overrides) and reject anything priced
-    // BELOW the menu price — the "client lies about item prices to underpay"
-    // vector the older comment flagged as pending nooksweb integration. Items
-    // not found in the menu (just-synced / edge) fall back to the floor checks
-    // above rather than hard-rejecting, to avoid false rejections.
-    {
-      const productItemIds = Array.from(new Set(
-        (items as Array<{ id?: unknown; uniqueId?: unknown }>)
-          .filter((it) => !(typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')))
-          .map((it) => (typeof it.id === 'string' ? (it.id as string) : null))
-          .filter((v): v is string => !!v),
-      ));
-      if (productItemIds.length > 0) {
-        const { data: menuRows } = await supabaseAdmin
-          .from('products')
-          .select('id, price, branch_prices_json')
-          .eq('merchant_id', merchantId)
-          .in('id', productItemIds);
-        const priceById = new Map<string, number>();
-        for (const p of (menuRows ?? []) as Array<{ id: string; price: number | null; branch_prices_json: Record<string, unknown> | null }>) {
-          const override = p.branch_prices_json && typeof p.branch_prices_json === 'object'
-            ? Number((p.branch_prices_json as Record<string, unknown>)[branchId as string])
-            : NaN;
-          const authoritative = Number.isFinite(override) && override > 0 ? override : Number(p.price ?? 0);
-          if (Number.isFinite(authoritative) && authoritative > 0) priceById.set(p.id, authoritative);
-        }
-        for (const it of items as Array<{ id?: unknown; basePrice?: unknown; price?: unknown; uniqueId?: unknown; name?: unknown }>) {
-          if (typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')) continue;
-          const pid = typeof it.id === 'string' ? (it.id as string) : null;
-          if (!pid) continue;
-          const authoritative = priceById.get(pid);
-          if (authoritative == null) continue; // not in menu — defer to floor checks above
-          const claimed = Number(it.basePrice ?? it.price ?? 0);
-          if (claimed < authoritative - 0.01) {
-            console.warn('[Orders] Item price understated vs menu — refusing', {
-              merchantId, orderId: id, productId: pid, claimed, authoritative,
-            });
-            return res.status(400).json({
-              error: `Item "${typeof it.name === 'string' ? it.name : pid}" is priced below the menu price; refusing to commit.`,
-              code: 'ITEM_PRICE_TAMPERED',
-            });
-          }
-        }
-      }
-    }
+    // #11 (dead, removed 2026-07-15): this menu-tamper check queried
+    // `.in('id', productItemIds)` against products.id ONLY, but the mobile
+    // cart sends FOODICS ids as item.id — it resolved 0 rows and `continue`d
+    // every item, so it never fired. Superseded by the server-authoritative
+    // total reconciliation above (computeServerItemsSubtotalHalalas), which
+    // queries both id spaces and owns tamper enforcement now.
 
     if (orderType !== 'delivery' && orderType !== 'pickup' && orderType !== 'drivethru') {
       return res.status(400).json({ error: 'orderType must be delivery, pickup, or drivethru' });
@@ -1491,6 +1571,37 @@ ordersRouter.post('/commit', async (req, res) => {
       }
     }
 
+    // ─── Pre-charge reward-authorization gate (2026-07-16) ───
+    // Runs BEFORE either commit's side effects — the first commit
+    // (relayToNooks=false) runs before the card charge, so a rejected
+    // reward voids the charge here just like the sibling cashback /
+    // loyalty-type / promo gates above. Guarded on cart contents so a
+    // non-reward order pays zero extra DB reads. This REPLACES the
+    // blanket Phase A 409 once REWARD_CHECKOUT_ENABLED=true (see
+    // orderFinalizationGuard.ts) — each reward line's milestone must be
+    // active, its product must be bound to that milestone, and the
+    // customer must be able to redeem it (authorizeRewardMilestoneForCommit
+    // in loyalty.ts, mirroring consumeOrderMilestones' own fast-paths so a
+    // legitimate or retried reward is never false-rejected).
+    if (rewardMilestoneIdsInCart.length > 0) {
+      for (const mid of rewardMilestoneIdsInCart) {
+        const foodicsProductId = rewardCartLineProductIds.get(mid) ?? null;
+        const authz = await authorizeRewardMilestoneForCommit({
+          customerId: user.id,
+          merchantId,
+          milestoneId: mid,
+          foodicsProductId,
+          orderId: id,
+        });
+        if (!authz.authorized) {
+          await voidChargeOnRejectedCommit(
+            paymentId, merchantId, id, user.id, expectedHalalsForVerify, `reward gate (${authz.reason})`,
+          );
+          return res.status(400).json({ error: authz.error, code: 'REWARD_UNAUTHORIZED' });
+        }
+      }
+    }
+
     if (isFinalCommit) {
       // ─── ORD-4 guard: refuse re-commit of an already-reversed order ───
       // The final commit deducts wallet/promo/cashback/milestone below and
@@ -1830,6 +1941,33 @@ ordersRouter.post('/commit', async (req, res) => {
               orderId: id,
               failed: r.failed,
             });
+            // The pre-charge reward gate above should already have refused
+            // any unauthorized reward, so an authorization-class failure
+            // here is a rare race (balance/milestone changed between the
+            // gate and this post-commit deduction) — alert instead of a
+            // silent console.warn so ops can catch it.
+            const authFailures = r.failed.filter(
+              (f) =>
+                f.reason === 'insufficient_points' ||
+                f.reason === 'milestone_not_found_or_inactive' ||
+                f.reason === 'invalid_threshold',
+            );
+            if (authFailures.length > 0) {
+              captureError(
+                new Error(
+                  `Milestone redemption authorization failure post-commit: ${authFailures
+                    .map((f) => `${f.milestoneId}:${f.reason}`)
+                    .join(', ')}`,
+                ),
+                {
+                  component: 'orders.commit.milestoneConsume.authFailure',
+                  merchantId,
+                  customerId: user.id,
+                  orderId: id,
+                  extra: { authFailures },
+                },
+              );
+            }
           }
         } catch (e: any) {
           console.error('[Orders] consumeOrderMilestones threw (non-blocking)', {

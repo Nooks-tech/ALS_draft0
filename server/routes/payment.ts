@@ -12,6 +12,7 @@ import { decryptMerchantCredential } from '../lib/merchantCredentials';
 import {
   hasRewardBearingOrderItems,
   reservedClientPaymentPrefix,
+  REWARD_CHECKOUT_ENABLED,
 } from '../utils/orderFinalizationGuard';
 
 /** Constant-time string comparison; safe to call with strings of any length. */
@@ -222,7 +223,7 @@ paymentRouter.post('/initiate', async (req, res) => {
     if (order.status === 'Cancelled' || order.status === 'Delivered') {
       return res.status(400).json({ error: `Cannot initiate payment for order status: ${order.status}` });
     }
-    if (hasRewardBearingOrderItems((order as { items?: unknown }).items)) {
+    if (hasRewardBearingOrderItems((order as { items?: unknown }).items) && !REWARD_CHECKOUT_ENABLED) {
       return res.status(409).json({
         error: 'Reward checkout is temporarily unavailable while secure reward reservations are enabled.',
         code: 'REWARD_CHECKOUT_TEMPORARILY_DISABLED',
@@ -942,7 +943,9 @@ paymentRouter.post('/token-pay', async (req, res) => {
     }
     // Phase A also blocks legacy/in-flight reward drafts created before the
     // /commit guard shipped. Refuse before any saved-card provider write.
-    if (hasRewardBearingOrderItems((order as { items?: unknown }).items)) {
+    // Flag-gated (see REWARD_CHECKOUT_ENABLED) — once on, the pre-charge
+    // gate in orders.ts /commit is the real defense.
+    if (hasRewardBearingOrderItems((order as { items?: unknown }).items) && !REWARD_CHECKOUT_ENABLED) {
       return res.status(409).json({
         error: 'Reward checkout is temporarily unavailable while secure reward reservations are enabled.',
         code: 'REWARD_CHECKOUT_TEMPORARILY_DISABLED',

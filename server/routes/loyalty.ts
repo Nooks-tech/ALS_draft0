@@ -1929,6 +1929,107 @@ export async function consumeOrderMilestones(
 }
 
 /**
+ * Pre-charge authorization check for a single reward-milestone cart line —
+ * called from orders.ts /commit BEFORE either commit's side effects (the
+ * draft commit runs before the card charge), so an unauthorized reward is
+ * rejected before money moves. This REPLACES the blanket Phase A 409 once
+ * REWARD_CHECKOUT_ENABLED=true (see orderFinalizationGuard.ts).
+ *
+ * Mirrors consumeOrderMilestones' own R0 (idempotent re-commit) and R1
+ * (active pre-redemption from the rewards screen) fast-paths, plus a fresh
+ * balance check (R2), so a legitimate or retried reward can NEVER be
+ * false-rejected here — it only tightens against a genuinely unauthorized
+ * claim (wrong product, inactive milestone, no points and no
+ * pre-redemption). Keep the three fast-paths in sync with
+ * consumeOrderMilestones if either changes.
+ */
+export async function authorizeRewardMilestoneForCommit(params: {
+  customerId: string;
+  merchantId: string;
+  milestoneId: string;
+  foodicsProductId: string | null;
+  orderId: string;
+}): Promise<{ authorized: true } | { authorized: false; reason: string; error: string }> {
+  if (!supabaseAdmin) return { authorized: false, reason: 'no_db', error: 'Database not configured' };
+  const { customerId, merchantId, milestoneId, foodicsProductId, orderId } = params;
+
+  // R0: this order already consumed it (idempotent retried commit).
+  const milestoneOrderId = `${orderId}:m:${milestoneId}`;
+  const { data: priorRedeem } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id')
+    .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
+    .eq('order_id', milestoneOrderId)
+    .eq('type', 'redeem')
+    .maybeSingle();
+  if (priorRedeem) return { authorized: true };
+
+  // Milestone must exist, be active, and have a finite positive threshold.
+  const { data: milestone } = await supabaseAdmin
+    .from('loyalty_milestones')
+    .select('id, points_threshold, foodics_product_ids, is_active')
+    .eq('id', milestoneId)
+    .eq('merchant_id', merchantId)
+    .maybeSingle();
+  if (!milestone || !milestone.is_active) {
+    return { authorized: false, reason: 'milestone_not_found_or_inactive', error: 'This reward is no longer available.' };
+  }
+  const threshold = Number(milestone.points_threshold);
+  if (!Number.isFinite(threshold) || threshold <= 0) {
+    return { authorized: false, reason: 'invalid_threshold', error: 'This reward is misconfigured.' };
+  }
+
+  // Product binding: the cart line's product must be a member of this
+  // milestone's foodics_product_ids. An empty array means no reward is
+  // configured for this milestone (the client never builds a reward line
+  // for one, and preflight forbids an active milestone with an empty
+  // array) — reject rather than silently allow.
+  const boundProductIds: string[] = Array.isArray(milestone.foodics_product_ids)
+    ? milestone.foodics_product_ids
+    : [];
+  if (boundProductIds.length === 0 || !foodicsProductId || !boundProductIds.includes(foodicsProductId)) {
+    return {
+      authorized: false,
+      reason: 'product_not_bound',
+      error: 'This item is not a valid reward for the redeemed milestone.',
+    };
+  }
+
+  // R1: an active un-consumed pre-redemption exists (rewards-screen flow) —
+  // legitimately has points < threshold since it was already spent there.
+  const { data: preRows } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id, metadata')
+    .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
+    .eq('type', 'redeem')
+    .eq('loyalty_type', 'points')
+    .eq('reference_type', 'milestone')
+    .eq('reference_id', milestoneId)
+    .like('order_id', 'milestone-redeem:%')
+    .order('created_at', { ascending: false })
+    .limit(25);
+  const activePre = (preRows ?? []).find((r: { metadata?: Record<string, unknown> | null }) => {
+    const meta = (r.metadata ?? {}) as { refunded_at?: unknown; consumed_by_order?: unknown };
+    return !meta.refunded_at && !meta.consumed_by_order;
+  });
+  if (activePre) return { authorized: true };
+
+  // R2: current points balance covers the threshold outright.
+  const { data: balanceRow } = await supabaseAdmin
+    .from('loyalty_points')
+    .select('points')
+    .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId)
+    .maybeSingle();
+  const currentPoints = Number(balanceRow?.points ?? 0);
+  if (currentPoints >= threshold) return { authorized: true };
+
+  return { authorized: false, reason: 'insufficient_points', error: 'Not enough points for this reward.' };
+}
+
+/**
  * Reverse the milestone point deductions consumeOrderMilestones made for an
  * order (cancellation / refund). Idempotent: a 'milestone-refund' marker row
  * per milestone stops a double-restore. Returns the total points given back
