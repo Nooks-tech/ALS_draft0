@@ -195,20 +195,34 @@ async function computeServerItemsSubtotalHalalas(
   branchId: string | null,
   items: Array<{ id?: unknown; foodicsProductId?: unknown; uniqueId?: unknown; price?: unknown; basePrice?: unknown; quantity?: unknown }>,
 ): Promise<{ halalas: number; unresolved: string[] }> {
-  const productIds = Array.from(new Set(
+  // ID-SPACE: the mobile cart sends FOODICS product ids as `item.id` (verified
+  // against a live order 2026-07-15: item.id resolved 0 rows on products.id but
+  // matched products.foodics_product_id). The web reprice already queries both
+  // spaces; mirror that here or the lookup silently resolves nothing and the
+  // guard degrades to trusting the client.
+  const candidateIds = Array.from(new Set(
     items
       .filter((it) => !(typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')))
-      .map((it) => (typeof it.id === 'string' ? (it.id as string) : null))
+      .flatMap((it) => [
+        typeof it.id === 'string' ? (it.id as string).trim() : null,
+        typeof it.foodicsProductId === 'string' ? (it.foodicsProductId as string).trim() : null,
+      ])
       .filter((v): v is string => !!v),
   ));
-  const priceById = new Map<string, number>();
-  if (productIds.length > 0) {
-    const { data: rows } = await admin
-      .from('products')
-      .select('id, price, price_override, branch_prices_json')
-      .eq('merchant_id', merchantId)
-      .in('id', productIds);
-    for (const p of (rows ?? []) as Array<{ id: string; price: number | null; price_override: number | null; branch_prices_json: Record<string, unknown> | null }>) {
+
+  type Row = { id: string; foodics_product_id: string | null; price: number | null; price_override: number | null; branch_prices_json: Record<string, unknown> | null };
+  const priceByKey = new Map<string, number>();
+  if (candidateIds.length > 0) {
+    const cols = 'id, foodics_product_id, price, price_override, branch_prices_json';
+    const [byId, byFid] = await Promise.all([
+      admin.from('products').select(cols).eq('merchant_id', merchantId).in('id', candidateIds),
+      admin.from('products').select(cols).eq('merchant_id', merchantId).in('foodics_product_id', candidateIds),
+    ]);
+    const rows: Row[] = [
+      ...(((byId as { data?: Row[] }).data) ?? []),
+      ...(((byFid as { data?: Row[] }).data) ?? []),
+    ];
+    for (const p of rows) {
       const branchOverride = branchId && p.branch_prices_json && typeof p.branch_prices_json === 'object'
         ? Number((p.branch_prices_json as Record<string, unknown>)[branchId])
         : NaN;
@@ -217,9 +231,17 @@ async function computeServerItemsSubtotalHalalas(
         unit = Number(p.price_override);
       }
       if (Number.isFinite(branchOverride) && branchOverride > 0) unit = branchOverride;
-      if (Number.isFinite(unit) && unit > 0) priceById.set(p.id, unit);
+      if (!Number.isFinite(unit) || unit <= 0) continue;
+      // A foodics_product_id can map to MULTIPLE products rows (verified live).
+      // Keep the LOWEST price: it yields the most permissive `expected` total,
+      // so an ambiguous catalog can never manufacture a false under-claim reject.
+      for (const key of [p.id, p.foodics_product_id].filter((k): k is string => !!k)) {
+        const prev = priceByKey.get(key);
+        priceByKey.set(key, prev == null ? unit : Math.min(prev, unit));
+      }
     }
   }
+
   let halalas = 0;
   const unresolved: string[] = [];
   for (const it of items) {
@@ -227,15 +249,17 @@ async function computeServerItemsSubtotalHalalas(
     if (typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-')) {
       continue; // free reward item — contributes 0
     }
-    const pid = typeof it.id === 'string' ? (it.id as string) : null;
+    const idKey = typeof it.id === 'string' ? (it.id as string).trim() : null;
+    const fidKey = typeof it.foodicsProductId === 'string' ? (it.foodicsProductId as string).trim() : null;
     const clientUnit = Number(it.price ?? it.basePrice ?? 0);
     const clientBase = Number(it.basePrice ?? it.price ?? 0);
     const modifierSurcharge = Math.max(0, clientUnit - clientBase);
-    const serverBase = pid ? priceById.get(pid) : undefined;
+    const serverBase =
+      (idKey ? priceByKey.get(idKey) : undefined) ?? (fidKey ? priceByKey.get(fidKey) : undefined);
     let authoritativeUnit: number;
     if (serverBase == null) {
       authoritativeUnit = clientUnit; // not in menu — defer to client (logged)
-      if (pid) unresolved.push(pid);
+      if (idKey) unresolved.push(idKey);
     } else {
       authoritativeUnit = serverBase + modifierSurcharge;
     }
