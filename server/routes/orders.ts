@@ -274,11 +274,26 @@ async function computeServerItemsSubtotalHalalas(
       const branchEntry = foodicsBranchId && p.branch_prices_json && typeof p.branch_prices_json === 'object'
         ? (p.branch_prices_json as Record<string, { price?: number | null } | null>)[foodicsBranchId]
         : null;
+      // `!= null` (allow 0), not `> 0` — matches menu/route.ts:149-157 and
+      // repriceWebCart exactly. A `> 0` guard here would drop a legitimate
+      // 0-price branch entry ("this item is free at this branch") and fall
+      // back to the higher base price, making expected > client under
+      // enforce mode and false-rejecting a correctly-priced order. Guard
+      // with `!= null` BEFORE Number() since Number(null) is 0, which would
+      // otherwise look like a valid (wrong) price.
       const branchPrice = branchEntry && branchEntry.price != null ? Number(branchEntry.price) : NaN;
-      if (Number.isFinite(branchPrice) && branchPrice > 0) unit = branchPrice;
+      if (Number.isFinite(branchPrice)) unit = branchPrice;
+      // Same reasoning for price_override: a 0 override ("this item is
+      // free") must win over branch/base, not just a >0 override. Applied
+      // last so override always beats branch, matching the reference
+      // precedence (price_override > branch price > base price).
       const overridePrice = p.price_override != null ? Number(p.price_override) : NaN;
-      if (Number.isFinite(overridePrice) && overridePrice > 0) unit = overridePrice;
-      if (!Number.isFinite(unit) || unit <= 0) continue;
+      if (Number.isFinite(overridePrice)) unit = overridePrice;
+      // `< 0` (not `<= 0`) — a legitimately zero-priced item should
+      // contribute 0 to the subtotal, not be dropped from priceByKey
+      // entirely (which would make it "not in menu" downstream and defer
+      // to the client's unit price instead of the authoritative 0).
+      if (!Number.isFinite(unit) || unit < 0) continue;
       const groups: ModifierGroup[] = Array.isArray(p.modifier_groups_json)
         ? (p.modifier_groups_json as ModifierGroup[])
         : [];
@@ -302,22 +317,41 @@ async function computeServerItemsSubtotalHalalas(
   // id, mirrors the cart's stored option.id) then by name as a fallback —
   // same two-pass strategy as nooksweb's repriceWebCart.
   function resolveOptionPriceSar(groups: ModifierGroup[], optionId: string | null, optionName: string | null): number | null {
+    // Collect ALL matching options — not just the first — and take the
+    // MINIMUM finite price, same permissive-under-ambiguity convention as
+    // the base-price dedup above (Math.min across ambiguous
+    // foodics_product_id rows): an ambiguous/duplicated catalog entry can
+    // then never manufacture a false under-claim reject. Non-finite
+    // candidate prices are skipped rather than returned — a NaN here would
+    // poison authoritativeUnit -> itemsH -> the whole reconciliation
+    // comparison into a silent no-op (any comparison against NaN is
+    // false, so both the under- and over-claim checks would pass
+    // unconditionally). A skipped/all-NaN match falls through to `null`,
+    // which the caller treats as unresolved (fallback to client price).
+    let best: number | null = null;
     if (optionId) {
       for (const g of groups) {
         for (const opt of g.options ?? []) {
-          if (String(opt.id ?? '').trim() === optionId) return Number(opt.price ?? 0);
+          if (String(opt.id ?? '').trim() === optionId) {
+            const price = Number(opt.price ?? 0);
+            if (Number.isFinite(price) && (best == null || price < best)) best = price;
+          }
         }
       }
+      if (best != null) return best;
     }
     if (optionName) {
       const wantName = optionName.toLowerCase();
       for (const g of groups) {
         for (const opt of g.options ?? []) {
-          if (String(opt.name ?? '').trim().toLowerCase() === wantName) return Number(opt.price ?? 0);
+          if (String(opt.name ?? '').trim().toLowerCase() === wantName) {
+            const price = Number(opt.price ?? 0);
+            if (Number.isFinite(price) && (best == null || price < best)) best = price;
+          }
         }
       }
     }
-    return null;
+    return best;
   }
 
   let halalas = 0;
@@ -981,27 +1015,42 @@ ordersRouter.post('/commit', async (req, res) => {
         // counts = tampering (e.g., two reward items but only one
         // milestone redemption claimed).
         const milestoneMatch = uid.match(/^reward-([0-9a-f-]{36})-/i);
-        if (milestoneMatch?.[1]) {
-          if (rewardMilestoneIdsInCart.includes(milestoneMatch[1])) {
-            return res.status(400).json({
-              error: 'Duplicate reward for the same milestone in the cart.',
-              code: 'REWARD_DUPLICATE_MILESTONE',
-            });
-          }
-          rewardMilestoneIdsInCart.push(milestoneMatch[1]);
-          // Reward-authorization gate: also capture the bound product id.
-          // uniqueId is 'reward-<milestoneId>-<foodicsId>' from
-          // checkout.tsx or 'reward-<milestoneId>-<foodicsId>-<idempotencyKey>'
-          // from rewards.tsx — both ids are 36-char UUIDs, so take the 36
-          // chars right after the matched prefix instead of naive-splitting
-          // on '-' (a UUID itself contains hyphens). A short/malformed
-          // remainder leaves this unset, which the gate below then rejects
-          // (missing product binding) rather than silently letting it through.
-          const afterPrefix = uid.slice(milestoneMatch[0].length);
-          const productIdCandidate = afterPrefix.slice(0, 36);
-          if (/^[0-9a-f-]{36}$/i.test(productIdCandidate)) {
-            rewardCartLineProductIds.set(milestoneMatch[1], productIdCandidate);
-          }
+        if (!milestoneMatch?.[1]) {
+          // A reward-prefixed uniqueId that doesn't match the expected
+          // reward-<uuid>-<uuid> shape can't be tied to a redeemed
+          // milestone. Previously this fell straight to `continue`: the
+          // item contributed 0 to the floor AND was never recorded in
+          // rewardMilestoneIdsInCart/rewardCartLineProductIds, so the
+          // pre-charge reward-authorization gate never saw it either.
+          // Once REWARD_CHECKOUT_ENABLED lifts the blanket 409, that's a
+          // free-item exploit: a reward-prefixed line carrying a real
+          // (expensive) product id at price 0 would sail through
+          // unauthorized. A legitimate reward line always has a
+          // well-formed reward-<uuid>-<uuid> uniqueId, so reject.
+          return res.status(400).json({
+            error: 'Malformed reward item — cannot verify the redeemed milestone.',
+            code: 'REWARD_MALFORMED',
+          });
+        }
+        if (rewardMilestoneIdsInCart.includes(milestoneMatch[1])) {
+          return res.status(400).json({
+            error: 'Duplicate reward for the same milestone in the cart.',
+            code: 'REWARD_DUPLICATE_MILESTONE',
+          });
+        }
+        rewardMilestoneIdsInCart.push(milestoneMatch[1]);
+        // Reward-authorization gate: also capture the bound product id.
+        // uniqueId is 'reward-<milestoneId>-<foodicsId>' from
+        // checkout.tsx or 'reward-<milestoneId>-<foodicsId>-<idempotencyKey>'
+        // from rewards.tsx — both ids are 36-char UUIDs, so take the 36
+        // chars right after the matched prefix instead of naive-splitting
+        // on '-' (a UUID itself contains hyphens). A short/malformed
+        // remainder leaves this unset, which the gate below then rejects
+        // (missing product binding) rather than silently letting it through.
+        const afterPrefix = uid.slice(milestoneMatch[0].length);
+        const productIdCandidate = afterPrefix.slice(0, 36);
+        if (/^[0-9a-f-]{36}$/i.test(productIdCandidate)) {
+          rewardCartLineProductIds.set(milestoneMatch[1], productIdCandidate);
         }
         continue;
       }

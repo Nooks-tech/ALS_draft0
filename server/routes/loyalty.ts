@@ -1937,11 +1937,23 @@ export async function consumeOrderMilestones(
  *
  * Mirrors consumeOrderMilestones' own R0 (idempotent re-commit) and R1
  * (active pre-redemption from the rewards screen) fast-paths, plus a fresh
- * balance check (R2), so a legitimate or retried reward can NEVER be
- * false-rejected here — it only tightens against a genuinely unauthorized
- * claim (wrong product, inactive milestone, no points and no
- * pre-redemption). Keep the three fast-paths in sync with
+ * balance check (R2). Keep the three fast-paths in sync with
  * consumeOrderMilestones if either changes.
+ *
+ * Product binding is enforced on every fresh (non-R0-retry) path, R1
+ * included, and it reads the LIVE loyalty_milestones.foodics_product_ids —
+ * not a snapshot taken at pre-redemption time. This is deliberate: skipping
+ * binding on R1 would open a wrong-product redemption hole (a cheap
+ * pre-redemption claiming an expensive bound product). The honest tradeoff
+ * is that a legitimate/pre-redeemed reward is NOT guaranteed to never be
+ * false-rejected here — if a merchant edits a milestone's bound products
+ * between a customer's pre-redemption and checkout, R1 will be
+ * false-rejected for that in-flight cart. That's an accepted, rare race;
+ * correct product binding wins over it.
+ * TODO: bind against the product recorded at pre-redemption time (e.g.
+ * persisted in the pre-redeem transaction's metadata) instead of the live
+ * milestone row, so a later merchant edit can't retroactively invalidate an
+ * already-pre-redeemed reward.
  */
 export async function authorizeRewardMilestoneForCommit(params: {
   customerId: string;
