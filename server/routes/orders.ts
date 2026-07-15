@@ -45,7 +45,7 @@ import {
   sarToHalalas,
   type PromoScope,
 } from '../utils/orderTotalReconciliation';
-import { readBackFoodicsStatusViaNooks } from '../utils/foodicsStatusReadback';
+import { readBackFoodicsStatusViaNooks, readbackPermitsTimeoutCancel } from '../utils/foodicsStatusReadback';
 
 export const ordersRouter = Router();
 
@@ -3673,22 +3673,33 @@ ordersRouter.post('/internal/sweep-abandoned-payments', async (req, res) => {
           internalOrderId: String(order.id),
           foodicsOrderId: String(order.foodics_order_id),
         });
-        if (!readBack.ok) {
-          console.warn('[Orders] sweep: Foodics status read-back failed — NOT cancelling', {
+        // Only a CONFIRMED not-accepted order may be swept. "Confirmed" requires
+        // the credentialed Foodics READ to have succeeded (readOk) — NOT merely
+        // the ALS→nooksweb HTTP relay (ok). nooksweb returns HTTP 200 even when
+        // the Foodics call failed (expired token / 5xx), so gating on `ok` alone
+        // let a failed read (accepted===undefined) fall through and cancel +
+        // void + refund an order the store had already accepted. See
+        // readbackPermitsTimeoutCancel — anything short of a proven not-accepted
+        // read SKIPS (and the next sweep retries), because wrongly refunding an
+        // accepted order is active harm while a delayed sweep is recoverable.
+        if (!readbackPermitsTimeoutCancel(readBack)) {
+          const reason =
+            !readBack.ok || readBack.readOk !== true
+              ? `status_read_unavailable: ${readBack.reason ?? 'no read'}`
+              : 'foodics_accepted_or_unknown';
+          console.warn('[Orders] sweep: not a confirmed not-accepted order — NOT cancelling', {
             orderId: order.id,
-            reason: readBack.reason,
-          });
-          results.push({ orderId: order.id, action: 'skipped', reason: `status_readback_failed: ${readBack.reason}` });
-          continue;
-        }
-        if (readBack.accepted) {
-          console.warn('[Orders] sweep: store DID accept — skipping timeout cancel', {
-            orderId: order.id,
+            ok: readBack.ok,
+            readOk: readBack.readOk,
+            accepted: readBack.accepted,
             syncedTo: readBack.to,
+            reason,
           });
-          results.push({ orderId: order.id, action: 'skipped', reason: 'foodics_accepted' });
+          results.push({ orderId: order.id, action: 'skipped', reason });
           continue;
         }
+        // readOk === true && accepted === false → the store demonstrably did
+        // NOT accept → safe to sweep.
       }
 
       try {

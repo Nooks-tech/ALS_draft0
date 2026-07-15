@@ -25,12 +25,30 @@ export interface FoodicsStatusReadbackInput {
 }
 
 export interface FoodicsStatusReadbackResult {
-  ok: boolean;
+  ok: boolean; // HTTP-transport success of the ALS→nooksweb call ONLY.
+  // readOk is the nooksweb-reported flag meaning the credentialed Foodics read
+  // genuinely succeeded, so `accepted` is trustworthy. `ok` (HTTP 200) does NOT
+  // imply readOk: nooksweb always returns 200, even when the Foodics call
+  // failed. A cancel decision MUST require readOk===true && accepted===false.
+  readOk?: boolean;
   synced?: boolean;
   from?: string | null;
   to?: string | null;
   accepted?: boolean;
   reason?: string;
+}
+
+/**
+ * The no-accept timeout sweep may cancel + void + refund an order ONLY when the
+ * credentialed Foodics read succeeded (readOk) AND proved the store did not
+ * accept (accepted === false). Every other state — HTTP relay failed, Foodics
+ * read failed, acceptance unknown, or an old nooksweb build that predates
+ * `readOk` — is UNKNOWN and must SKIP (never cancel), because wrongly refunding
+ * an accepted-and-cooking order is active harm while a delayed sweep is
+ * recoverable. Pure + exported so the exact decision is unit-tested.
+ */
+export function readbackPermitsTimeoutCancel(r: FoodicsStatusReadbackResult): boolean {
+  return r.ok === true && r.readOk === true && r.accepted === false;
 }
 
 export async function readBackFoodicsStatusViaNooks(
