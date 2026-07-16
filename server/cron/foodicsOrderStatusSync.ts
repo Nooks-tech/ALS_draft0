@@ -26,6 +26,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { runWithHeartbeat } from '../utils/cronHeartbeat';
 import { readBackFoodicsStatusViaNooks } from '../utils/foodicsStatusReadback';
+import { earnForOrder } from '../routes/loyalty';
+import { netOfLoyaltyEarnBase } from '../utils/loyaltyEarnBase';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -56,6 +58,10 @@ type OrderRow = {
   merchant_id: string;
   foodics_order_id: string;
   status: string;
+  customer_id: string | null;
+  total_sar: number | null;
+  wallet_paid_sar: number | null;
+  cashback_paid_sar: number | null;
 };
 
 async function processBatch(): Promise<{ scanned: number; synced: number }> {
@@ -63,7 +69,7 @@ async function processBatch(): Promise<{ scanned: number; synced: number }> {
   const windowStart = new Date(Date.now() - STATUS_WINDOW_MS).toISOString();
   const { data, error } = await supabaseAdmin
     .from('customer_orders')
-    .select('id, merchant_id, foodics_order_id, status')
+    .select('id, merchant_id, foodics_order_id, status, customer_id, total_sar, wallet_paid_sar, cashback_paid_sar')
     .not('foodics_order_id', 'is', null)
     .not('payment_confirmed_at', 'is', null)
     .in('status', NON_TERMINAL_STATUSES)
@@ -102,6 +108,35 @@ async function processBatch(): Promise<{ scanned: number; synced: number }> {
         from: result.from,
         to: result.to,
       });
+      // Loyalty earn on delivery. This cron is what actually drives orders to
+      // Delivered now that the Foodics webhook is dead — the earn hooks on the
+      // ALS status routes never see these transitions, so without firing here
+      // NOTHING earns for cron-synced orders (found live 2026-07-16: every
+      // Delivered order since this cron shipped on 07-15 earned zero, under
+      // both points and cashback). The push side effect made the migration
+      // from the webhook; the earn side effect did not. earnPoints/earnCashback
+      // are idempotent per order (partial unique indexes + atomic RPCs), so a
+      // double-fire against the route hooks is a safe no-op.
+      if (result.to === 'Delivered' && row.customer_id && row.merchant_id) {
+        try {
+          const earn = await earnForOrder(
+            row.customer_id,
+            row.id,
+            netOfLoyaltyEarnBase(row),
+            row.merchant_id,
+          );
+          console.log('[foodicsOrderStatusSync] loyalty earn fired', {
+            orderId: row.id,
+            earnBase: netOfLoyaltyEarnBase(row),
+            result: earn,
+          });
+        } catch (e: any) {
+          console.warn('[foodicsOrderStatusSync] loyalty earn failed:', {
+            orderId: row.id,
+            error: e?.message,
+          });
+        }
+      }
     }
   }
   return { scanned: rows.length, synced };

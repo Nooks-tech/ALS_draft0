@@ -30,6 +30,7 @@ import {
 } from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
+import { netOfLoyaltyEarnBase } from '../utils/loyaltyEarnBase';
 import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { creditWalletForRefund } from './wallet';
 import { notifyPassUpdateSafe } from './walletPass';
@@ -849,16 +850,6 @@ import { captureError, tagSentry } from '../utils/sentryContext';
  * pass net POS amounts — so one physical purchase earns on the same base regardless
  * of channel. Clamped ≥ 0.
  */
-function netOfLoyaltyEarnBase(order: {
-  total_sar?: number | null;
-  wallet_paid_sar?: number | null;
-  cashback_paid_sar?: number | null;
-}): number {
-  const total = Number(order.total_sar ?? 0);
-  const wallet = Number(order.wallet_paid_sar ?? 0);
-  const cashback = Number(order.cashback_paid_sar ?? 0);
-  return Math.max(0, Number((total - wallet - cashback).toFixed(2)));
-}
 
 async function relayOrderToNooks(
   payload: Record<string, unknown>,

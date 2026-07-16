@@ -14,6 +14,7 @@ import { notifyPassUpdateSafe } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
+import { netOfLoyaltyEarnBase } from '../utils/loyaltyEarnBase';
 import { enforceLimits } from '../utils/rateLimit';
 
 export const loyaltyRouter = Router();
@@ -968,27 +969,11 @@ loyaltyRouter.post('/earn', async (req, res) => {
     const customerType = await initCustomerLoyaltyType(merchantId || '', customerId, config.loyalty_type);
     const loyaltyType = customerType;
 
-    // LOY-7 / LOY-8 / M15: derive the earn base from the DB order row, never the
-    // caller's `orderSubtotal`. Canonical base = net-of-loyalty =
-    // total_sar - wallet_paid_sar - cashback_paid_sar, clamped ≥ 0. This is
-    // channel-independent and identical to netOfLoyaltyEarnBase() in orders.ts,
-    // so one physical purchase earns the same regardless of which path fires and
-    // a buggy/compromised internal caller cannot inflate the base via the body.
-    const orderRow = orderCheck.data as {
-      total_sar?: number | null;
-      wallet_paid_sar?: number | null;
-      cashback_paid_sar?: number | null;
-    };
-    const earnBase = Math.max(
-      0,
-      Number(
-        (
-          Number(orderRow.total_sar ?? 0) -
-          Number(orderRow.wallet_paid_sar ?? 0) -
-          Number(orderRow.cashback_paid_sar ?? 0)
-        ).toFixed(2),
-      ),
-    );
+    // LOY-7 / LOY-8 / M15: derive the earn base from the DB order row, never
+    // the caller's `orderSubtotal` — a buggy/compromised internal caller must
+    // not be able to inflate the base via the body. Uses the ONE canonical
+    // net-of-loyalty rule (utils/loyaltyEarnBase) shared by every earn path.
+    const earnBase = netOfLoyaltyEarnBase(orderCheck.data);
 
     if (loyaltyType === 'cashback') {
       const result = await earnCashback(merchantId || '', customerId, orderId, earnBase);
