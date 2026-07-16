@@ -880,6 +880,11 @@ walletPassRouter.post(
           .from('wallet_pass_registrations')
           .update({ push_token: pushToken })
           .eq('id', existing.id);
+        // This is how a REMOVED-then-re-added pass comes back (same device +
+        // serial → same row; wallet push tokens are stable per device+passType
+        // so even the token often doesn't change). Log it — this branch being
+        // silent cost hours of diagnosis on 2026-07-16.
+        console.log(`[WalletPass] Device ${deviceId.substring(0, 8)}… RE-registered for ${serialNumber} (existing row, token refreshed)`);
         return res.sendStatus(200);
       }
 
@@ -953,7 +958,10 @@ walletPassRouter.get(
         .eq('device_library_id', deviceId)
         .eq('pass_type_id', passTypeId);
 
-      if (!regs || regs.length === 0) return res.sendStatus(204);
+      if (!regs || regs.length === 0) {
+        console.log(`[WalletPass] updated-since: device ${deviceId.substring(0, 8)}… has no registrations → 204`);
+        return res.sendStatus(204);
+      }
 
       const serials = regs.map((r: any) => r.serial_number);
       const tag = req.query.passesUpdatedSince as string;
@@ -968,9 +976,16 @@ walletPassRouter.get(
       }
 
       const { data: updated } = await query;
-      if (!updated || updated.length === 0) return res.sendStatus(204);
+      if (!updated || updated.length === 0) {
+        // The device asked "what changed since <tag>" and we said "nothing" —
+        // if a pass looks stale on-device while these 204s appear, the bug is
+        // in OUR tag bookkeeping, not the phone. Log the comparison inputs.
+        console.log(`[WalletPass] updated-since: device ${deviceId.substring(0, 8)}… tag=${tag ?? '(none)'} serials=${serials.length} → no changes (204)`);
+        return res.sendStatus(204);
+      }
 
       const maxTag = Math.max(...updated.map((u: any) => u.last_updated));
+      console.log(`[WalletPass] updated-since: device ${deviceId.substring(0, 8)}… tag=${tag ?? '(none)'} → ${updated.length} changed serial(s), newTag=${maxTag}`);
       return res.json({
         serialNumbers: updated.map((u: any) => u.serial_number),
         lastUpdated: String(maxTag),
@@ -1005,7 +1020,10 @@ walletPassRouter.get(
         .eq('serial_number', serialNumber)
         .maybeSingle();
       const lastMod = new Date((upd?.last_updated ?? Math.floor(Date.now() / 1000)) * 1000).toUTCString();
-      if (modTag && modTag === lastMod) return res.sendStatus(304);
+      if (modTag && modTag === lastMod) {
+        console.log(`[WalletPass] pass fetch ${serialNumber.substring(0, 24)}… → 304 (If-Modified-Since matched ${lastMod})`);
+        return res.sendStatus(304);
+      }
 
       const { data: pointsData } = await supabaseAdmin
         .from('loyalty_points').select('points, lifetime_points, updated_at')
@@ -1128,6 +1146,15 @@ walletPassRouter.get(
 
       const pkpass = await createPassBuffer(files);
 
+      // The one place a device provably re-downloads its pass. Without this
+      // line, a successful update is indistinguishable from "device never
+      // fetched" — which is what made the 2026-07-16 stale-pass incident cost
+      // hours. Log what was actually served so the display on the phone can
+      // be compared against it.
+      console.log(
+        `[WalletPass] pass fetch ${serialNumber.substring(0, 24)}… → 200 (type=${loyaltyType} points=${points} cashback=${cbRow?.balance_sar ?? 0} lastMod=${lastMod})`,
+      );
+
       res.set({
         'Content-Type': 'application/vnd.apple.pkpass',
         'Content-Length': String(pkpass.length),
@@ -1185,8 +1212,15 @@ async function sendApnsPush(pushToken: string): Promise<boolean> {
         ':method': 'POST',
         ':path': `/3/device/${pushToken}`,
         'apns-topic': PASS_TYPE_ID,
-        'apns-push-type': 'background',
-        'apns-priority': '5',
+        // Wallet pass-update pushes are 'alert'-class per Apple's APNs header
+        // docs (empty payload; the system Wallet daemon consumes it — no UI is
+        // shown). This was 'background'/priority-5 since March, and background
+        // pushes are explicitly best-effort: iOS budgets, defers, and silently
+        // drops them (Low Power Mode, repeated sends to one token, general
+        // throttling) — observed live 2026-07-16/17 as APNs 200s with the
+        // device never fetching the pass, hours after multiple pushes.
+        'apns-push-type': 'alert',
+        'apns-priority': '10',
       });
 
       const timer = setTimeout(() => {
@@ -1198,9 +1232,22 @@ async function sendApnsPush(pushToken: string): Promise<boolean> {
 
       req.on('response', (headers) => {
         clearTimeout(timer);
-        const status = headers[':status'];
-        req.close();
-        done(status === 200);
+        const status = Number(headers[':status'] ?? 0);
+        // Read the response body — on non-200 APNs sends a JSON reason
+        // ('Unregistered', 'BadDeviceToken', 'TooManyRequests', …) that is
+        // the difference between diagnosable and invisible.
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', (c: string) => { body += c; });
+        req.on('end', () => {
+          if (status !== 200) {
+            console.warn(`[WalletPass] APNs push rejected: status=${status} reason=${body.slice(0, 200)} token=${pushToken.substring(0, 8)}…`);
+          }
+          done(status === 200);
+        });
+        // Backstop: if 'end' never fires (stream aborted mid-body), settle on
+        // close so the caller's Promise can't hang. done() self-guards.
+        req.on('close', () => done(status === 200));
       });
 
       req.on('error', () => {
