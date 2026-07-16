@@ -75,9 +75,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    const errData = data as { error?: unknown; message?: unknown } | null;
+    const errData = data as { error?: unknown; message?: unknown; code?: unknown } | null;
     const msg = errData?.error || errData?.message || `Request failed ${res.status}`;
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    const e: any = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    e.code = errData?.code;
+    throw e;
   }
 
   return data as T;

@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Modal,
   Platform,
   ScrollView,
@@ -77,6 +78,66 @@ import { useQrLanding } from '../src/context/QrLandingContext';
 export type PaymentMethod = 'apple_pay' | 'credit_card' | 'saved_card';
 
 const VAT_RATE = 0.15; // 15% Saudi VAT
+
+/**
+ * Reward-item rejections from POST /commit (server/routes/orders.ts)
+ * used to read differently depending on payment path: Apple Pay showed a
+ * hardcoded generic "Order failed" message while the saved-card path
+ * showed the raw server string. Both catch sites now share this map so
+ * the same server rejection code always shows the same friendly copy to
+ * the customer, regardless of which payment method they used.
+ *
+ * REWARD_UNAUTHORIZED is intentionally NOT in this map — the server's own
+ * `error` string for that code is already a friendly, reward-specific
+ * reason (e.g. "Not enough points for this reward."), so callers should
+ * show err.message directly instead of a generic mapped string.
+ */
+const REWARD_ERROR_COPY: Record<string, { en: string; ar: string }> = {
+  REWARD_DUPLICATE_MILESTONE: {
+    en: "You've already added this reward.",
+    ar: 'لقد أضفت هذه المكافأة بالفعل.',
+  },
+  REWARD_DUPLICATE_LINE: {
+    en: 'This reward is already in your cart.',
+    ar: 'هذه المكافأة موجودة بالفعل في سلتك.',
+  },
+  REWARD_QTY_INVALID: {
+    en: 'Reward items can only be redeemed one at a time.',
+    ar: 'يمكن استبدال المكافآت بمقدار واحد فقط في كل مرة.',
+  },
+  REWARD_MALFORMED: {
+    en: 'There was a problem with a reward item in your cart. Please remove it and try again.',
+    ar: 'حدث خطأ في أحد عناصر المكافأة في سلتك. يرجى حذفه والمحاولة مرة أخرى.',
+  },
+  REWARD_MILESTONE_MISMATCH: {
+    en: "Your rewards don't match your current points. Please refresh your cart and try again.",
+    ar: 'مكافآتك لا تطابق رصيد نقاطك الحالي. يرجى تحديث السلة والمحاولة مرة أخرى.',
+  },
+  REWARD_TOO_MANY: {
+    en: 'You can only redeem a limited number of rewards per order.',
+    ar: 'يمكنك استبدال عدد محدود فقط من المكافآت في كل طلب.',
+  },
+};
+
+/**
+ * Resolve friendly copy for a /commit reward-rejection error, shared by
+ * the Apple Pay and saved-card catch blocks. Returns null when `code`
+ * isn't a recognized reward code, so callers fall back to their own
+ * (payment-method-specific) default message.
+ */
+function friendlyRewardErrorMessage(
+  code: string | undefined,
+  serverMessage: string | undefined,
+  isArabic: boolean,
+): string | null {
+  if (!code) return null;
+  if (code === 'REWARD_UNAUTHORIZED') {
+    return serverMessage || null;
+  }
+  const copy = REWARD_ERROR_COPY[code];
+  if (!copy) return null;
+  return isArabic ? copy.ar : copy.en;
+}
 
 export default function CheckoutScreen() {
   const router = useRouter();
@@ -793,11 +854,19 @@ export default function CheckoutScreen() {
           finalCommitOk = true;
         } catch (err: any) {
           console.warn('[Checkout] Final commit failed:', err?.message);
+          // The charge has ALREADY happened at this point (Apple Pay /
+          // saved-card session succeeded before this commit ran), so a
+          // known reward-rejection code still gets the friendly mapped
+          // copy, but any UNKNOWN failure must keep the refund caveat —
+          // that's the only signal the customer gets that a genuine
+          // post-charge settlement failure is being reversed.
+          const rewardMsg = friendlyRewardErrorMessage(err?.code, err?.message, isArabic);
           Alert.alert(
             isArabic ? 'فشل إنشاء الطلب' : 'Order failed',
-            isArabic
-              ? `لم نقدر نأكد طلبك. لو خصمنا أي مبلغ راح يرجعك خلال دقائق.`
-              : `We couldn't finalize your order. Any amount charged will be refunded within minutes.`,
+            rewardMsg ??
+              (isArabic
+                ? `لم نقدر نأكد طلبك. لو خصمنا أي مبلغ راح يرجعك خلال دقائق.`
+                : `We couldn't finalize your order. Any amount charged will be refunded within minutes.`),
           );
           return;
         }
@@ -1293,9 +1362,14 @@ export default function CheckoutScreen() {
               : 'Your saved card is no longer accepted by Moyasar. Please add a new card and try again.',
           );
         } else {
+          // Pre-charge path — no refund caveat needed here (unlike the
+          // Apple Pay / final-commit catch). Reward-rejection codes get
+          // the SAME mapped copy as the Apple Pay path so the wording is
+          // identical regardless of payment method.
+          const rewardMsg = friendlyRewardErrorMessage(err?.code, msg, isArabic);
           Alert.alert(
             isArabic ? 'خطأ في الدفع' : 'Payment Error',
-            err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.'),
+            rewardMsg ?? (err instanceof Error ? err.message : (isArabic ? 'تعذر بدء عملية الدفع.' : 'Failed to start payment.')),
           );
         }
       } finally {
@@ -1534,6 +1608,50 @@ export default function CheckoutScreen() {
               </View>
               <ChevronRight size={20} color="#94a3b8" />
             </TouchableOpacity>
+          </View>
+
+          {/* Read-only order items — lets the customer confirm exactly
+              what they're paying for before they pay. Deliberately has
+              NO quantity steppers, remove buttons, or edit navigation:
+              this is a summary, not an editor. Styling matches the
+              read-only item rows in order-detail-modal.tsx. To change
+              the order the customer goes back to the Cart screen. */}
+          <View className="mt-4 bg-slate-50 rounded-[28px] border border-slate-100 p-4">
+            <Text className="text-slate-900 text-base font-bold mb-3">{isArabic ? 'عناصر طلبك' : 'Your Items'}</Text>
+            {cartItems.map((item) => {
+              const isReward = item.uniqueId.startsWith('reward-');
+              return (
+                <View key={item.uniqueId} className="flex-row items-center mb-3">
+                  {item.image ? (
+                    <Image source={{ uri: item.image }} className="w-12 h-12 rounded-xl bg-slate-200" />
+                  ) : (
+                    <View className="w-12 h-12 rounded-xl bg-slate-200 items-center justify-center">
+                      <Gift size={18} color="#94a3b8" />
+                    </View>
+                  )}
+                  <View className="flex-1 ms-3">
+                    <Text className="text-slate-800 font-bold text-sm" numberOfLines={1}>
+                      {item.name}
+                    </Text>
+                    <Text className="text-slate-400 text-xs mt-0.5">
+                      {isArabic ? `الكمية ×${item.quantity}` : `Qty x${item.quantity}`}
+                    </Text>
+                  </View>
+                  {isReward ? (
+                    <Text style={{ color: primaryColor, fontWeight: '700', fontSize: 13 }}>
+                      {isArabic ? 'مجاناً 🎁' : 'FREE 🎁'}
+                    </Text>
+                  ) : (
+                    <PriceWithSymbol
+                      amount={item.price * item.quantity}
+                      iconSize={14}
+                      iconColor="#0f172a"
+                      textStyle={{ color: '#0f172a', fontWeight: '700', fontSize: 14 }}
+                    />
+                  )}
+                </View>
+              );
+            })}
           </View>
 
           {/* Curbside — "Receive from your car". Four fields ride to
