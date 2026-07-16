@@ -211,6 +211,219 @@ async function voidChargeOnRejectedCommit(
 }
 
 /**
+ * Which lane unwindCommitDeductions actually reversed the ledger side
+ * through — paired with the ChargeReversalOutcome it also returns for the
+ * card:
+ *   'reversed_via_row' — an existing draft customer_orders row (the first
+ *                         commit of a two-commit flow) drove the reversal;
+ *                         refundOrderToWallet voided the card AND restored
+ *                         wallet/cashback/promo/milestones together, off the
+ *                         row + the ACTUAL ledger, in one pass.
+ *   'reversed_direct'  — no row existed yet (single-commit wallet/reward
+ *                         flow, or any final-commit rejection before its own
+ *                         upsert) — each source was restored directly off
+ *                         the (customer, merchant, order_id) ledgers, and
+ *                         the card was voided separately.
+ *   'partial'          — a row existed but refundOrderToWallet's own
+ *                         reversal only partially completed (provider
+ *                         read-back pending / manual review). It's
+ *                         idempotent and the abandoned-payment sweep will
+ *                         retry it — the direct fallback must NOT also run
+ *                         on top of it.
+ *   'none'              — reserved for a future no-op guard; every current
+ *                         caller already gates on isFinalCommit before
+ *                         calling this, so it isn't produced today.
+ */
+type LedgerReversalOutcome = 'reversed_via_row' | 'reversed_direct' | 'partial' | 'none';
+
+/**
+ * Card-side outcome when refundOrderToWallet drove the reversal (a row
+ * existed): it already voided/refunded the card as part of its own sweep, so
+ * calling voidChargeOnRejectedCommit again here would be a second provider
+ * mutation against the same charge. Read the outcome off its own result
+ * instead, using the same three-way semantics ChargeReversalOutcome
+ * documents above (void/refund/not_required = handled; unknown/failed =
+ * needs a human; no breakdown at all only happens on the already-cancelled
+ * dedup path or an early guard failure, so treat those as resolved/
+ * unconfirmed respectively rather than guessing).
+ */
+function cardOutcomeFromLedgerReversal(
+  rev: Awaited<ReturnType<typeof refundOrderToWallet>>,
+): ChargeReversalOutcome {
+  const method = rev.breakdown?.card?.method;
+  if (method === 'unknown' || method === 'failed') return 'pending_manual';
+  if (method === 'void' || method === 'refund' || method === 'not_required') return 'completed';
+  if (method === 'skipped') return 'no_charge';
+  return rev.ok ? 'completed' : 'pending_manual';
+}
+
+/**
+ * ORD-4: unwind whatever a failed final commit already deducted. By the time
+ * ANY final-commit gate rejects — cashback redeem, promo redeem, wallet
+ * debit, the settlement-proof invariant, or the row upsert itself — the
+ * Apple Pay / saved-card charge may already be captured AND some prefix of
+ * cashback/promo/wallet/milestones may already be burned off the customer's
+ * balances. A bare error response strands all of it. This is the one place
+ * that unwinds them together, and it stays ledger-driven, not
+ * tracker-driven: every restore reads what ACTUALLY happened for this
+ * order_id and no-ops if nothing was applied, so calling it from an earlier
+ * gate (where less has happened) or a later one (where more has) is equally
+ * safe, and a retry that calls it twice never double-restores.
+ *
+ * Prefers refundOrderToWallet: when the first commit already created a
+ * draft customer_orders row, that single call reverses card + wallet +
+ * cashback + milestone + promo off the row + the ACTUAL ledger (never
+ * phantom-credits) in one pass. When no row exists yet (single-commit
+ * wallet/reward flow, or a final commit that fails before its own upsert),
+ * refundOrderToWallet 404s and this falls back to restoring each source
+ * directly off the (customer, merchant, order_id) ledgers — which don't
+ * need the row — then voids the card separately via
+ * voidChargeOnRejectedCommit.
+ */
+async function unwindCommitDeductions(args: {
+  orderId: string;
+  customerId: string;
+  merchantId: string;
+  paymentId: unknown;
+  expectedAmountHalalas: number;
+  context: string;
+}): Promise<{ card: ChargeReversalOutcome; ledger: LedgerReversalOutcome }> {
+  const { orderId, customerId, merchantId, paymentId, expectedAmountHalalas, context } = args;
+  let reversedViaRow = false;
+  let cardFromRow: ChargeReversalOutcome | null = null;
+  let ledger: LedgerReversalOutcome = 'none';
+  try {
+    const rev = await refundOrderToWallet(orderId, 'system', 'Order commit failed — reversing side effects');
+    if (rev.ok) {
+      reversedViaRow = true;
+      ledger = 'reversed_via_row';
+      cardFromRow = cardOutcomeFromLedgerReversal(rev);
+    } else if (rev.status === 404) {
+      reversedViaRow = false; // row never landed — use the direct fallback below
+    } else {
+      // Row existed but the reversal only partially completed; it is
+      // idempotent and the abandoned-payment sweep will retry it. Do NOT
+      // also run the direct fallback (that would be a second pass over
+      // the same row).
+      reversedViaRow = true;
+      ledger = 'partial';
+      cardFromRow = cardOutcomeFromLedgerReversal(rev);
+      console.error('[Orders] commit-failure reversal via refundOrderToWallet returned not-ok', {
+        merchantId,
+        customerId,
+        orderId,
+        error: rev.error,
+        status: rev.status,
+      });
+      captureError(new Error(`commit-failure reversal not-ok: ${rev.error}`), {
+        component: 'orders.commit.upsertReversal',
+        merchantId,
+        customerId,
+        orderId,
+      });
+    }
+  } catch (revErr: any) {
+    reversedViaRow = false;
+    console.error('[Orders] commit-failure reversal via refundOrderToWallet threw', {
+      merchantId,
+      customerId,
+      orderId,
+      error: revErr?.message,
+    });
+    captureError(revErr, {
+      component: 'orders.commit.upsertReversal',
+      merchantId,
+      customerId,
+      orderId,
+    });
+  }
+
+  if (reversedViaRow) {
+    return { card: cardFromRow ?? 'pending_manual', ledger };
+  }
+
+  // Direct, row-less reversal. Promo unredeem / cashback restore / milestone
+  // restore are self-guarding (they read the actual ledger by order_id and
+  // no-op if nothing was applied) — call them unconditionally instead of
+  // gating on this specific request's own progress, so the SAME helper stays
+  // correct no matter how much of the commit had run before it was
+  // rejected. The wallet credit is the one exception: it trusts the amount
+  // it's given, so read the ACTUAL debit off customer_wallet_transactions
+  // first — crediting a caller-claimed "intended" amount that was never
+  // actually debited would mint free wallet balance.
+  if (supabaseAdmin) {
+    try {
+      await supabaseAdmin.rpc('unredeem_promo', { p_merchant_id: merchantId, p_order_id: orderId });
+    } catch (e: any) {
+      console.error('[Orders] commit-failure direct unredeem_promo failed', { merchantId, orderId, error: e?.message });
+      captureError(e, { component: 'orders.commit.upsertReversal.promo', merchantId, customerId, orderId });
+    }
+
+    try {
+      const { data: actualWalletSpend } = await supabaseAdmin
+        .from('customer_wallet_transactions')
+        .select('amount_halalas')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .eq('order_id', orderId)
+        .eq('entry_type', 'spend')
+        .maybeSingle();
+      const actualWalletPaidSar = actualWalletSpend
+        ? Math.abs(Number((actualWalletSpend as { amount_halalas?: number }).amount_halalas ?? 0)) / 100
+        : 0;
+      if (actualWalletPaidSar > 0) {
+        await creditWalletForRefund({
+          customerId,
+          merchantId,
+          amountSar: actualWalletPaidSar,
+          orderId,
+          complaintId: null,
+          note: 'Order commit failed — wallet refund',
+        });
+      }
+    } catch (e: any) {
+      console.error('[Orders] commit-failure direct wallet credit failed', { merchantId, customerId, orderId, error: e?.message });
+      captureError(e, { component: 'orders.commit.upsertReversal.wallet', merchantId, customerId, orderId });
+    }
+
+    try {
+      const { data: actualCashbackRedeem } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .select('amount_sar')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .eq('order_id', orderId)
+        .eq('type', 'redeem')
+        .eq('loyalty_type', 'cashback')
+        .maybeSingle();
+      const actualCashbackPaidSar = actualCashbackRedeem
+        ? Math.abs(Number((actualCashbackRedeem as { amount_sar?: number }).amount_sar ?? 0))
+        : 0;
+      if (actualCashbackPaidSar > 0) {
+        await restoreCashbackForRefund({ customerId, merchantId, amountSar: actualCashbackPaidSar, orderId });
+      }
+    } catch (e: any) {
+      console.warn('[Orders] commit-failure direct cashback restore failed (non-blocking)', { merchantId, customerId, orderId, error: e?.message });
+      captureError(e, { component: 'orders.commit.upsertReversal.cashback', merchantId, customerId, orderId });
+    }
+
+    try {
+      // milestoneIds/stampsConsumed are accepted for signature compatibility
+      // only — restoreStampMilestonesForRefund re-derives everything it
+      // restores straight off loyalty_transactions by order_id, so passing
+      // empty/zero here is not a correctness gap.
+      await restoreStampMilestonesForRefund({ customerId, merchantId, milestoneIds: [], stampsConsumed: 0, orderId });
+    } catch (e: any) {
+      console.warn('[Orders] commit-failure direct milestone restore failed (non-blocking)', { merchantId, customerId, orderId, error: e?.message });
+      captureError(e, { component: 'orders.commit.upsertReversal.milestone', merchantId, customerId, orderId });
+    }
+  }
+
+  const card = await voidChargeOnRejectedCommit(paymentId, merchantId, orderId, customerId, expectedAmountHalalas, context);
+  return { card, ledger: 'reversed_direct' };
+}
+
+/**
  * Server-authoritative items subtotal in integer halalas (VAT-inclusive) for
  * the total-reconciliation guard. Each non-reward item's unit price is the
  * merchant's own menu price (price_override > branch price > base — mirrors
@@ -2000,14 +2213,41 @@ ordersRouter.post('/commit', async (req, res) => {
         });
         if (redeemErr) {
           console.error('[Orders] redeem_promo RPC error:', redeemErr.message);
-          return res.status(500).json({ error: 'Promo redemption failed' });
+          // Apple Pay / saved-card already captured the charge client-side,
+          // and cashback (if any) was already redeemed ~90 lines above —
+          // both are real money/balance already gone, not "nothing happened
+          // yet". Unwind both before telling the client this is terminal.
+          const { card: reversal } = await unwindCommitDeductions({
+            orderId: id,
+            customerId: user.id,
+            merchantId,
+            paymentId,
+            expectedAmountHalalas: expectedHalalsForVerify,
+            context: 'promo rpc error',
+          });
+          return res.status(500).json({
+            error: 'Promo redemption failed',
+            code: 'PROMO_REDEEM_FAILED',
+            terminal: true,
+            reversal,
+          });
         }
         const redeemResult = Array.isArray(redeemRows) ? redeemRows[0] : redeemRows;
         const ok = redeemResult?.ok ?? false;
         if (!ok) {
           const reason = redeemResult?.reason ?? 'Promo code redemption failed';
           console.warn('[Orders] Rejecting commit — promo redeem failed:', trimmedPromoCode, reason);
-          return res.status(400).json({ error: reason, code: 'PROMO_REJECTED' });
+          // Same captured-charge/burned-cashback exposure as the RPC-error
+          // branch above.
+          const { card: reversal } = await unwindCommitDeductions({
+            orderId: id,
+            customerId: user.id,
+            merchantId,
+            paymentId,
+            expectedAmountHalalas: expectedHalalsForVerify,
+            context: 'promo rejected',
+          });
+          return res.status(400).json({ error: reason, code: 'PROMO_REJECTED', terminal: true, reversal });
         }
       }
 
@@ -2218,9 +2458,22 @@ ordersRouter.post('/commit', async (req, res) => {
         customerId: user.id,
         orderId: id,
       });
+      // The worst of the four: cashback, promo, AND wallet can all already
+      // be deducted by this point, on top of the already-captured card
+      // charge — every gate above this one has passed.
+      const { card: reversal } = await unwindCommitDeductions({
+        orderId: id,
+        customerId: user.id,
+        merchantId,
+        paymentId,
+        expectedAmountHalalas: expectedHalalsForVerify,
+        context: 'settlement proof invariant',
+      });
       return res.status(500).json({
         error: 'The order could not be finalized because settlement proof was incomplete.',
         code: 'SETTLEMENT_PROOF_INVARIANT',
+        terminal: true,
+        reversal,
       });
     }
     const settlementConfirmed = finalSettlementProof.settled;
@@ -2384,154 +2637,19 @@ ordersRouter.post('/commit', async (req, res) => {
       // On the FINAL commit the promo redeem, wallet debit, milestone consume,
       // and (pre-commit) cashback redeem — plus the card charge — all fire
       // ABOVE this upsert. A failed upsert must NOT leave the customer's
-      // balances burned with no order (the reported ORD-4 loss). Reverse with
-      // the same helpers the refund path uses. Prefer refundOrderToWallet: it
-      // drives off the order row + the ACTUAL ledger (never phantom-credits)
-      // and is fully idempotent. For the two-commit card flow the draft row
-      // exists, so this reverses card+wallet+cashback+milestone+promo in one
-      // consistent path; a later retry is blocked because the Moyasar charge is
-      // now voided (verify → 402). For the SINGLE-commit wallet/reward flow the
-      // failing upsert WAS the row's own creation, so refundOrderToWallet 404s
-      // — fall back to reversing each applied deduction directly off the
-      // (customer, merchant, order_id) ledgers, which don't need the row. Each
-      // deduction is known to have succeeded (a failure would have returned
-      // before this upsert), so these credit-backs are exact, not phantom.
+      // balances burned with no order (the reported ORD-4 loss). See
+      // unwindCommitDeductions() above the /commit router for the reversal
+      // strategy (row-driven first, ledger-driven direct fallback) — this is
+      // one of four rejection points that now share it.
       if (isFinalCommit) {
-        let reversedViaRow = false;
-        try {
-          const rev = await refundOrderToWallet(id, 'system', 'Order commit failed — reversing side effects');
-          if (rev.ok) {
-            reversedViaRow = true;
-          } else if (rev.status === 404) {
-            reversedViaRow = false; // row never landed — use the direct fallback below
-          } else {
-            // Row existed but the reversal only partially completed; it is
-            // idempotent and the abandoned-payment sweep will retry it. Do NOT
-            // also run the direct fallback (that would be a second pass over
-            // the same row).
-            reversedViaRow = true;
-            console.error('[Orders] commit-failure reversal via refundOrderToWallet returned not-ok', {
-              merchantId,
-              customerId: user.id,
-              orderId: id,
-              error: rev.error,
-              status: rev.status,
-            });
-            captureError(new Error(`commit-failure reversal not-ok: ${rev.error}`), {
-              component: 'orders.commit.upsertReversal',
-              merchantId,
-              customerId: user.id,
-              orderId: id,
-            });
-          }
-        } catch (revErr: any) {
-          reversedViaRow = false;
-          console.error('[Orders] commit-failure reversal via refundOrderToWallet threw', {
-            merchantId,
-            customerId: user.id,
-            orderId: id,
-            error: revErr?.message,
-          });
-          captureError(revErr, {
-            component: 'orders.commit.upsertReversal',
-            merchantId,
-            customerId: user.id,
-            orderId: id,
-          });
-        }
-
-        if (!reversedViaRow) {
-          // Direct, row-less reversal. Promo unredeem / cashback restore /
-          // milestone restore are self-guarding (they read the actual ledger
-          // by order_id and no-op if nothing was applied). The wallet credit
-          // is safe because reaching this branch with walletAppliedSar > 0
-          // implies a successful debit (walletPaymentId is set), and
-          // creditWalletForRefund is idempotent per order_id. The card, if any,
-          // is voided so the customer is whole and a retry is verify-blocked.
-          if (trimmedPromoCode) {
-            try {
-              await supabaseAdmin.rpc('unredeem_promo', { p_merchant_id: merchantId, p_order_id: id });
-            } catch (e: any) {
-              console.error('[Orders] commit-failure direct unredeem_promo failed', { merchantId, orderId: id, error: e?.message });
-              captureError(e, { component: 'orders.commit.upsertReversal.promo', merchantId, customerId: user.id, orderId: id });
-            }
-          }
-          if (
-            walletAppliedSar > 0 &&
-            typeof walletPaymentId === 'string' &&
-            walletPaymentId.startsWith('wallet:') &&
-            !walletPaymentId.startsWith('wallet:pending')
-          ) {
-            try {
-              await creditWalletForRefund({
-                customerId: user.id,
-                merchantId,
-                amountSar: walletAppliedSar,
-                orderId: id,
-                complaintId: null,
-                note: 'Order commit failed — wallet refund',
-              });
-            } catch (e: any) {
-              console.error('[Orders] commit-failure direct wallet credit failed', { merchantId, customerId: user.id, orderId: id, amountSar: walletAppliedSar, error: e?.message });
-              captureError(e, { component: 'orders.commit.upsertReversal.wallet', merchantId, customerId: user.id, orderId: id });
-            }
-          }
-          if (validatedCashbackSar > 0) {
-            try {
-              await restoreCashbackForRefund({ customerId: user.id, merchantId, amountSar: validatedCashbackSar, orderId: id });
-            } catch (e: any) {
-              console.warn('[Orders] commit-failure direct cashback restore failed (non-blocking)', { merchantId, customerId: user.id, orderId: id, error: e?.message });
-              captureError(e, { component: 'orders.commit.upsertReversal.cashback', merchantId, customerId: user.id, orderId: id });
-            }
-          }
-          if (claimedMilestones.length > 0) {
-            try {
-              await restoreStampMilestonesForRefund({
-                customerId: user.id,
-                merchantId,
-                milestoneIds: claimedMilestones,
-                stampsConsumed: typeof stampsConsumed === 'number' && stampsConsumed > 0 ? Math.floor(stampsConsumed) : 0,
-                orderId: id,
-              });
-            } catch (e: any) {
-              console.warn('[Orders] commit-failure direct milestone restore failed (non-blocking)', { merchantId, customerId: user.id, orderId: id, error: e?.message });
-              captureError(e, { component: 'orders.commit.upsertReversal.milestone', merchantId, customerId: user.id, orderId: id });
-            }
-          }
-          if (isMoyasarPaymentId) {
-            try {
-              const reversal = await cancelPayment(trimmedPaymentId, undefined, merchantId);
-              if (reversal.method === 'unknown' || reversal.method === 'failed') {
-                const component = reversal.method === 'unknown'
-                  ? 'orders.commit.upsertReversal.cardProviderUnknown'
-                  : 'orders.commit.upsertReversal.cardFailed';
-                captureError(new Error(reversal.error || `Card reversal ${reversal.method}`), {
-                  component,
-                  merchantId,
-                  customerId: user.id,
-                  orderId: id,
-                  extra: { paymentId: trimmedPaymentId, method: reversal.method },
-                });
-                await supabaseAdmin.from('audit_log').insert({
-                  merchant_id: merchantId,
-                  action: reversal.method === 'unknown'
-                    ? 'refund.card_reversal_unknown_needs_readback'
-                    : 'refund.card_reversal_failed_needs_manual_review',
-                  payload: {
-                    order_id: id,
-                    customer_id: user.id,
-                    payment_id: trimmedPaymentId,
-                    context: 'commit_upsert_failure',
-                    error: reversal.error ?? null,
-                  },
-                });
-              }
-            } catch (e: any) {
-              console.error('[Orders] commit-failure direct card void failed', { merchantId, orderId: id, error: e?.message });
-              captureError(e, { component: 'orders.commit.upsertReversal.card', merchantId, customerId: user.id, orderId: id });
-            }
-          }
-        }
+        await unwindCommitDeductions({
+          orderId: id,
+          customerId: user.id,
+          merchantId,
+          paymentId,
+          expectedAmountHalalas: expectedHalalsForVerify,
+          context: 'order upsert failed',
+        });
       }
       return res.status(500).json({ error: commitError?.message || 'Failed to commit order' });
     }
