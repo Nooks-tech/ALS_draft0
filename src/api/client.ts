@@ -75,10 +75,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    const errData = data as { error?: unknown; message?: unknown; code?: unknown } | null;
+    const errData = data as
+      | { error?: unknown; message?: unknown; code?: unknown; terminal?: unknown; reversal?: unknown }
+      | null;
     const msg = errData?.error || errData?.message || `Request failed ${res.status}`;
     const e: any = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
     e.code = errData?.code;
+    // Pass through the money-path reversal contract (server/routes/orders.ts
+    // /api/orders/commit as of a3ac828): terminal:true means the server
+    // already reversed (or flagged) a charge before rejecting the commit,
+    // and reversal tells the caller which. Callers that charge a card before
+    // committing (checkout.tsx's createOrderAfterPayment) need both fields to
+    // decide whether it's safe to mint a fresh idempotency key on retry —
+    // dropping them here would make that decision impossible downstream.
+    e.terminal = errData?.terminal;
+    e.reversal = errData?.reversal;
     throw e;
   }
 

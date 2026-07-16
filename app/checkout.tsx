@@ -139,6 +139,72 @@ function friendlyRewardErrorMessage(
   return isArabic ? copy.ar : copy.en;
 }
 
+/**
+ * Deterministically turns a client-generated orderId into a UUID-shaped
+ * string for Moyasar's `givenId` idempotency key (see the `paymentConfig`
+ * useMemo below). Moyasar requires a well-formed UUID and treats two
+ * payment attempts submitted with the same given_id as THE SAME payment —
+ * it returns the original charge instead of creating a new one. That's
+ * exactly what protects a retry after a settling timeout or a network
+ * blip from minting a second Moyasar charge: same orderIdRef -> same
+ * givenId -> Moyasar hands back the original payment.
+ *
+ * The server's mirror of this (server/services/payment.ts orderIdToUuid)
+ * hashes with sha256 via Node's `crypto`. That module doesn't exist in
+ * React Native, and this app has no sync hashing available at all —
+ * `expo-crypto` (the natural replacement) isn't an installed dependency,
+ * and its digestStringAsync is async besides, which doesn't fit the
+ * synchronous useMemo that builds paymentConfig without turning it into
+ * an effect that recomputes after an await (bigger surgery — flagged for
+ * the humans, not done here). Adding expo-crypto pulls in native code,
+ * which forces a new native build instead of an OTA — too big a lever for
+ * this fix. So this uses a small NON-cryptographic string hash (cyrb128)
+ * instead of sha256.
+ *
+ * That's safe here specifically because ONLY the client ever generates or
+ * reads this value — Moyasar just needs *a* stable UUID per orderId, not
+ * one that byte-matches the server's. The server computes its OWN
+ * given_id independently (for STC Pay / invoice / saved-card flows) and
+ * the two are never compared against each other, so the differing
+ * algorithm is harmless.
+ *
+ * COUPLING WARNING — do not read this function's output without also
+ * respecting the rotation rule: a givenId is only correct paired with
+ * rotating orderIdRef.current on a *terminal* (reversed) commit failure,
+ * and ONLY then. See the big comment in createOrderAfterPayment's catch
+ * block before touching either half.
+ */
+function orderIdToClientGivenId(orderId: string): string {
+  // cyrb128 (public-domain, bryc) — four independent 32-bit mixes of the
+  // input string. Good avalanche/distribution for a short id, but NOT a
+  // cryptographic hash — doesn't need to be, see the doc comment above.
+  let h1 = 1779033703, h2 = 3144134277, h3 = 1013904242, h4 = 2773480762;
+  const str = String(orderId);
+  for (let i = 0; i < str.length; i++) {
+    const k = str.charCodeAt(i);
+    h1 = h2 ^ Math.imul(h1 ^ k, 597399067);
+    h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+    h3 = h4 ^ Math.imul(h3 ^ k, 951274213);
+    h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+  }
+  h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067);
+  h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+  h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
+  h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+  h1 ^= h2 ^ h3 ^ h4; h2 ^= h1; h3 ^= h1; h4 ^= h1;
+  const hex = [h1, h2, h3, h4].map((n) => (n >>> 0).toString(16).padStart(8, '0')).join('');
+  // Lay out as 8-4-4-4-12 with the version (4) and variant (8) nibbles
+  // pinned — same shape as the server's orderIdToUuid — so Moyasar
+  // accepts it as a UUID.
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    '4' + hex.slice(13, 16),
+    '8' + hex.slice(17, 20),
+    hex.slice(20, 32),
+  ].join('-');
+}
+
 export default function CheckoutScreen() {
   const router = useRouter();
   const { i18n } = useTranslation();
@@ -658,6 +724,17 @@ export default function CheckoutScreen() {
     if (!resolvedPublishableKey || !customerPaymentsEnabled) return null;
     try {
       return new PaymentConfig({
+        // Idempotency key for Moyasar — see orderIdToClientGivenId's doc
+        // comment above for why this is a non-crypto hash instead of the
+        // server's sha256, and why that mismatch is harmless. This MUST
+        // stay coupled to orderIdRef.current: it's read directly (not via
+        // a dep-array-tracked state value) because orderIdRef is a ref, so
+        // recomputation relies on SOME other dep changing on the next
+        // render after a rotation — which always happens, because every
+        // call site that rotates orderIdRef.current also calls
+        // setSubmitting(false) in its surrounding finally block, forcing
+        // a re-render that picks the new ref value back up here.
+        givenId: orderIdToClientGivenId(orderIdRef.current),
         publishableApiKey: resolvedPublishableKey,
         baseUrl: MOYASAR_BASE_URL,
         amount: Math.max(amountHalals, 100),
@@ -681,7 +758,11 @@ export default function CheckoutScreen() {
     } catch {
       return null;
     }
-  }, [amountHalals, appName, customerPaymentsEnabled, merchantId, resolvedApplePayEnabled, resolvedPublishableKey, saveCardChecked, user?.id]);
+    // orderIdRef.current is a ref read, not state — it's listed here so
+    // React re-diffs it on the next render (see the givenId comment
+    // above); mutating a ref alone does NOT trigger that render, only
+    // the setSubmitting(false) that always accompanies a rotation does.
+  }, [amountHalals, appName, customerPaymentsEnabled, merchantId, orderIdRef.current, resolvedApplePayEnabled, resolvedPublishableKey, saveCardChecked, user?.id]);
 
   const applyCoupon = async () => {
     const code = (couponInput || promoCode).trim();
@@ -853,20 +934,80 @@ export default function CheckoutScreen() {
             relayToNooks: true });
           finalCommitOk = true;
         } catch (err: any) {
-          console.warn('[Checkout] Final commit failed:', err?.message);
+          console.warn('[Checkout] Final commit failed:', err?.message, {
+            terminal: err?.terminal,
+            reversal: err?.reversal,
+          });
           // The charge has ALREADY happened at this point (Apple Pay /
-          // saved-card session succeeded before this commit ran), so a
-          // known reward-rejection code still gets the friendly mapped
-          // copy, but any UNKNOWN failure must keep the refund caveat —
-          // that's the only signal the customer gets that a genuine
-          // post-charge settlement failure is being reversed.
+          // saved-card session succeeded before this commit ran).
+          //
+          // ⚠️ ROTATION RULE — this is the other half of the givenId
+          // coupling documented on orderIdToClientGivenId / paymentConfig
+          // above. NEVER change one half without the other:
+          //   - err.terminal === true means the server (server/routes/
+          //     orders.ts /api/orders/commit, as of a3ac828) has ALREADY
+          //     reversed or flagged this exact charge before rejecting the
+          //     commit. Reusing the same orderId — and therefore the same
+          //     givenId — on the next attempt would hand Moyasar back the
+          //     now-VOIDED payment, verify would fail, and checkout would
+          //     be permanently bricked (this is the same class of bug as
+          //     the subscription-renewal given_id deadlock, fixed
+          //     2026-07-02). So: rotate orderIdRef AND drop the stored
+          //     saved-card invoice id so the next tap is a genuinely fresh
+          //     order with a fresh givenId -> a fresh charge.
+          //   - Anything else — the 202-settling retry budget exhausted
+          //     (PaymentSettlingError, code 'PAYMENT_SETTLING') or an
+          //     ambiguous network/timeout error with no structured
+          //     `terminal` at all — means we do NOT know the charge was
+          //     reversed. It may still be sitting there, still settling.
+          //     Rotating here would let a retry mint a SECOND charge
+          //     instead of Moyasar recognizing the unchanged givenId and
+          //     handing back the first payment. So: touch NOTHING.
+          if (err?.terminal === true) {
+            orderIdRef.current = `order-${Date.now()}`;
+            moyasarInvoiceIdRef.current = null;
+            setMoyasarWebUrl(null);
+          }
+          // Copy driven off the server's reversal signal instead of a
+          // blanket promise. "Refunded within minutes" was a lie — a card
+          // reversal (especially mada) can take days to drop off a
+          // statement — so it's gone from every branch below, not just
+          // the happy one.
           const rewardMsg = friendlyRewardErrorMessage(err?.code, err?.message, isArabic);
+          const reversal = err?.terminal === true ? err?.reversal : undefined;
+          let fallbackMsg: string;
+          if (reversal === 'completed' || reversal === 'no_charge') {
+            fallbackMsg = isArabic
+              ? 'ما تم تنفيذ طلبك، وتم إلغاء المبلغ المدفوع بالكامل — ما راح يتم خصم أي شيء منك. حسب البنك، قد يبقى ظاهر كحجز مؤقت لعدة أيام قبل ما يختفي من كشف حسابك. تقدر تحاول مرة ثانية.'
+              : "Your order didn't go through, and your payment has been reversed — you have not been charged. Depending on your bank, a temporary hold may take a few days to disappear. You can try again.";
+          } else if (reversal === 'pending_manual') {
+            // Do NOT invite an immediate retry here — that would stack
+            // more manual-review charges on top of this one.
+            fallbackMsg = isArabic
+              ? `ما تم تنفيذ طلبك. لو شفت أي مبلغ مخصوم من بطاقتك، لا تقلق — تم رصده من طرفنا وراح يتم إرجاعه لك. الرقم المرجعي: ${orderId}. تواصل مع الدعم لو تحتاج تحديث عن حالته.`
+              : `Your order didn't go through. If you see a charge, don't worry — it's flagged on our side and will be returned. Reference: ${orderId}. Contact support if you'd like an update.`;
+          } else if (err?.code === 'PAYMENT_SETTLING') {
+            // Known-but-not-terminal: the settling retry budget ran out
+            // client-side. The charge is likely fine and still
+            // confirming — actively discourage an immediate re-tap since
+            // (per the rotation rule above) we deliberately did NOT
+            // rotate, so a same-givenId retry is safe but pointless if
+            // the first attempt is still in flight.
+            fallbackMsg = isArabic
+              ? 'دفعتك لسه قيد التأكيد. تابع تبويب طلباتك بعد شوي قبل ما تحاول مرة ثانية — عشان ما نخصم بطاقتك مرتين.'
+              : "Your payment is still confirming. Please check your Orders tab in a moment before trying again — we don't want to charge your card twice.";
+          } else {
+            // Ambiguous — network error/timeout, or a terminal:true whose
+            // reversal value we don't recognize. Stay cautious in both
+            // directions: don't claim the charge was reversed, don't
+            // claim it's fine, don't promise a timeline.
+            fallbackMsg = isArabic
+              ? 'ما قدرنا نأكد حالة طلبك. لو انخصم أي مبلغ، تابع تبويب طلباتك بعد شوي، أو تواصل مع الدعم لو استمر الخصم.'
+              : "We couldn't confirm your order. If any amount was charged, please check your Orders tab in a moment, or contact support if the charge doesn't clear.";
+          }
           Alert.alert(
             isArabic ? 'فشل إنشاء الطلب' : 'Order failed',
-            rewardMsg ??
-              (isArabic
-                ? `لم نقدر نأكد طلبك. لو خصمنا أي مبلغ راح يرجعك خلال دقائق.`
-                : `We couldn't finalize your order. Any amount charged will be refunded within minutes.`),
+            rewardMsg ?? fallbackMsg,
           );
           return;
         }
@@ -2166,8 +2307,23 @@ export default function CheckoutScreen() {
               and never runs handlePay — so it must NOT render while the
               store is effectively closed, or a customer could be charged
               at a closed branch. The fallback branch renders the regular
-              (disabled) button + banner instead. */}
-          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 && !curbsideCarInfoMissing && !effectivelyClosed ? (
+              (disabled) button + banner instead.
+              Also gated on !submitting: the native button is a PassKit
+              control the SDK doesn't expose a `disabled` prop for (unlike
+              the fallback TouchableOpacity below, which already has
+              `disabled={submitting || ...}`), so the only reliable way to
+              stop a second tap from opening a second Apple Pay sheet
+              while a commit is in flight is to unmount it outright rather
+              than trust pointerEvents/disabled on a native view. NOTE
+              this only closes the CONCURRENT double-tap window — it does
+              NOT stop a SERIAL retry after this commit fails, because
+              submitting flips back to false (createOrderAfterPayment's
+              finally block, earlier in this file) before the failure
+              Alert shows. Serial retries are made safe
+              by the givenId + rotation-on-terminal-failure pair instead
+              (see orderIdToClientGivenId and the catch block in
+              createOrderAfterPayment). */}
+          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 && !curbsideCarInfoMissing && !effectivelyClosed && !submitting ? (
             <View style={{ width: 180, height: 50 }}>
               <ApplePayButton
                 paymentConfig={paymentConfig}
