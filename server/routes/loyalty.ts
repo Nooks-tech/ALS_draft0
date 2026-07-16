@@ -1066,74 +1066,60 @@ export async function earnPoints(
     ? (() => { const d = new Date(); d.setMonth(d.getMonth() + config.expiry_months!); return d.toISOString(); })()
     : null;
 
-  // Insert the ledger row FIRST so the partial unique index
-  // idx_loyalty_transactions_app_earn_unique arbitrates the double-earn
-  // race (e.g. Foodics firing the order webhook twice — the cashback
-  // incident on 2026-05-15). The race-loser's INSERT fails with 23505 and
-  // we short-circuit WITHOUT calling the increment RPC, so the balance is
-  // credited exactly once. (The SELECT idempotency check above is a fast
-  // path for the common already-earned case; this is the atomic backstop.)
-  const ledger = await supabaseAdmin
-    .from('loyalty_transactions')
-    .insert({
-      customer_id: customerId,
-      merchant_id: merchantId,
-      order_id: orderId,
-      type: 'earn',
-      loyalty_type: 'points',
-      points: pointsEarned,
-      description: `Earned ${pointsEarned} points`,
-      expires_at: expiresAt,
-      branch_id: normalizeOptionalString(context?.branchId),
-      source: normalizeOptionalString(context?.source) ?? 'app',
-      actor_user_id: normalizeOptionalString(context?.actorUserId),
-      actor_role: normalizeOptionalString(context?.actorRole),
-      reference_type: normalizeOptionalString(context?.referenceType),
-      reference_id: normalizeOptionalString(context?.referenceId),
-      metadata: context?.metadata ?? {},
-      ...(programId ? { program_id: programId } : {}),
-      // Phase H8: stamped ONLY in enforce mode — in off/shadow the column
-      // stays null so idx_loyalty_foodics_purchase_earn_unique stays dormant.
-      ...(guardMode === 'enforce' && foodicsRef ? { foodics_order_ref: foodicsRef } : {}),
-    })
-    .select('id')
-    .maybeSingle();
-  if (ledger.error) {
-    if ((ledger.error as { code?: string }).code === '23505') {
-      // Race-loser / retry — already earned for this order. Return the
-      // current balance without crediting again.
-      let balQuery = supabaseAdmin
-        .from('loyalty_points')
-        .select('points')
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId);
-      if (programId) balQuery = balQuery.eq('program_id', programId);
-      const { data: bal } = await balQuery.maybeSingle();
-      return { success: true, pointsEarned: 0, newBalance: bal?.points ?? 0 };
-    }
-    throw new Error(ledger.error.message);
-  }
-
-  // Won the slot — credit the balance atomically via the SECURITY DEFINER
-  // RPC (INSERT…ON CONFLICT; immune to the RLS read-then-update edge case).
-  const { data: incData, error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
+  // Atomic + idempotent ledger-insert + balance-credit via the
+  // earn_loyalty_points RPC (SECURITY DEFINER, one DB transaction). This
+  // replaces the old two-step ledger-INSERT-then-increment-RPC sequence: a
+  // hard process kill between those two writes used to leave the ledger row
+  // committed with no balance credit, and every retry after that hit the
+  // ledger row on the idempotency check and returned pointsEarned: 0 —
+  // silently losing the customer's points. Now the insert and the credit
+  // either both commit or neither does, so a crash anywhere in between is
+  // safe to retry. The ledger insert inside the RPC dedups against ALL
+  // THREE partial unique earn indexes (idx_loyalty_transactions_app_earn_unique,
+  // idx_loyalty_normal_earn_unique, idx_loyalty_foodics_purchase_earn_unique) —
+  // whichever one a repeat/race call trips, the RPC returns status:
+  // 'duplicate' without crediting again. (The SELECT idempotency check above
+  // is a fast path for the common already-earned case; this is the atomic
+  // backstop.)
+  const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('earn_loyalty_points', {
     p_customer_id: customerId,
     p_merchant_id: merchantId,
     p_points: pointsEarned,
+    p_order_id: orderId,
+    p_description: `Earned ${pointsEarned} points`,
+    p_expires_at: expiresAt,
+    p_program_id: programId ?? null,
+    p_branch_id: normalizeOptionalString(context?.branchId),
+    p_source: normalizeOptionalString(context?.source) ?? 'app',
+    p_actor_user_id: normalizeOptionalString(context?.actorUserId),
+    p_actor_role: normalizeOptionalString(context?.actorRole),
+    p_reference_type: normalizeOptionalString(context?.referenceType),
+    p_reference_id: normalizeOptionalString(context?.referenceId),
+    // Phase H8: stamped ONLY in enforce mode — in off/shadow the column
+    // stays null so idx_loyalty_foodics_purchase_earn_unique stays dormant.
+    p_foodics_order_ref: guardMode === 'enforce' && foodicsRef ? foodicsRef : null,
     p_config_version: config?.config_version ?? 1,
+    p_metadata: context?.metadata ?? {},
   });
-  if (incErr) {
-    // Roll back the ledger row so a retry can re-earn (no split-brain).
-    if (ledger.data?.id) {
-      await supabaseAdmin.from('loyalty_transactions').delete().eq('id', ledger.data.id);
-    }
-    console.error('[earnPoints] increment_loyalty_points RPC failed:', incErr.message);
-    throw new Error(`Loyalty points increment failed: ${incErr.message}`);
+  if (rpcErr) {
+    console.error('[earnPoints] earn_loyalty_points RPC failed:', rpcErr.message);
+    throw new Error(`Loyalty points earn failed: ${rpcErr.message}`);
   }
-  const rpcNewBalance =
-    Array.isArray(incData) && incData[0] && typeof (incData[0] as { points?: unknown }).points === 'number'
-      ? (incData[0] as { points: number }).points
-      : null;
+  const rpcResult = rpcResultObject(rpcData);
+  const rpcNewBalance = typeof rpcResult?.new_balance === 'number' ? rpcResult.new_balance : null;
+
+  if (rpcResult?.status === 'duplicate') {
+    // Race-loser / retry — already earned for this order. No credit again.
+    return { success: true, pointsEarned: 0, newBalance: rpcNewBalance ?? 0 };
+  }
+  if (rpcResult?.status !== 'ok') {
+    // The RPC only ever returns 'ok' or 'duplicate' (anything else raises and
+    // surfaces as rpcErr above), so an unrecognized result means we are
+    // talking to an unexpected function version. Fail loud rather than report
+    // points we cannot prove were credited.
+    console.error('[earnPoints] earn_loyalty_points returned an unexpected result:', rpcResult);
+    throw new Error('Loyalty points earn failed: unexpected RPC result');
+  }
 
   notifyPassUpdateSafe(customerId, merchantId);
 
@@ -3031,28 +3017,17 @@ async function handleUnredeemMilestone(req: any, res: any) {
     // branch where THIS call's own insert created the row — never on a
     // 23505 — so across the original attempt plus any number of retries
     // resumes/concurrent duplicate calls, the credit fires at most once.
-    // If the credit step itself then fails for a normal (non-crash)
-    // reason, we roll back (delete) the ledger row we just inserted so the
-    // next retry re-enters a clean state (fresh insert, fresh credit)
-    // instead of a stuck "row exists, never credited" limbo — which would
-    // otherwise be a NEW silent-loss vector introduced by this very fix.
-    //
     // Why this can't silently lose the credit: previously ANY crash
     // between the CAS (refunded_at set) and the old inline ledger-insert
     // +credit permanently stuck the row on the refunded_at dedup fast-path
     // forever, since nothing ever re-examined it. Now that fast-path calls
-    // finishRefund, which re-attempts the insert; since no ledger row
+    // finishRefund, which re-attempts the refund; since no ledger row
     // exists yet for that crash case, the insert succeeds fresh and the
-    // credit runs. The only remaining gap is the ledger insert's own
-    // sub-transaction boundary vs the balance-credit write immediately
-    // after it — a hard process kill in that exact narrow window would
-    // leave a ledger row with no credit, and a resume would then see 23505
-    // and (per the dedup branch) not credit again. This is the same
-    // residual risk every other ledger-then-credit pair in this file
-    // already carries (e.g. earnPoints above); fully closing it needs both
-    // writes wrapped in one DB transaction/RPC, which is a migration and
-    // out of scope for this fix. Every crash point OTHER than that single
-    // sub-write gap is now fully recoverable with no double-credit.
+    // credit runs. The ledger insert and the balance credit are no longer
+    // two separate writes either — refund_loyalty_points does both in ONE
+    // transaction, so there is no window in which a kill can leave a ledger
+    // row with no credit. Every crash point is recoverable, with neither a
+    // double-credit nor a silent loss.
     const finishRefund = async (meta: Record<string, unknown>) => {
       if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured' });
 
