@@ -594,8 +594,11 @@ function LoyaltyTab({
 
       {/* Rewards catalog — actual list of catalog rewards
           (loyaltyApi.getRewards). Same content as classic, polaroid
-          chrome. Tapping a card with enough points fires onRedeem. */}
-      {rewards.length > 0 && (
+          chrome. Tapping a card with enough points fires onRedeem.
+          Points-only concept — hidden once the customer's EFFECTIVE
+          loyalty type is cashback (isCashback above, server-computed
+          via loyaltyApi.getBalance). */}
+      {rewards.length > 0 && !isCashback && (
         <View style={{ marginBottom: 18 }}>
           <MonoText
             size={11}

@@ -1091,8 +1091,15 @@ function ClassicMenuScreen() {
           user-scoped). Cart is gated on totalItems>0 — there's
           nothing to view when the cart is empty. Browsing isn't
           gated by branch status; checkout is where we validate
-          the customer's selected/nearest branch. */}
-      {customerId && (
+          the customer's selected/nearest branch.
+          Rewards/milestones are a points-only concept — also gated
+          on the customer's EFFECTIVE loyalty type (server-computed,
+          not the merchant's configured type) not being cashback. A
+          customer keeps the FAB until their own points balance hits
+          0 even after the merchant switches to cashback. Requiring
+          loyaltyBalance to be loaded first (same as loyaltyCard above)
+          avoids a flash-then-hide for cashback customers. */}
+      {customerId && !!loyaltyBalance && loyaltyBalance.loyaltyType !== 'cashback' && (
         <TouchableOpacity
           onPress={() => router.push('/rewards' as never)}
           accessibilityLabel={isArabic ? 'مكافآت الأختام' : 'Stamp rewards'}

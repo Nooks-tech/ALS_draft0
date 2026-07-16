@@ -15,12 +15,14 @@
  * this screen is purely a visual swap of the classic menu.tsx.
  */
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
   I18nManager,
   Image,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   Platform,
   RefreshControl,
   ScrollView,
@@ -31,11 +33,13 @@ import {
   View,
 } from 'react-native';
 import { StoreStatusBanner } from '../../components/common/StoreStatusBanner';
+import { useAuth } from '../../context/AuthContext';
 import { useCart } from '../../context/CartContext';
 import { useMenuContext } from '../../context/MenuContext';
 import { useMerchant } from '../../context/MerchantContext';
 import { useMerchantBranding } from '../../context/MerchantBrandingContext';
 import { fetchNooksBanners, type NooksBanner } from '../../api/nooksBanners';
+import { loyaltyApi, type LoyaltyBalance } from '../../api/loyalty';
 import { MonoText, PolaroidCard } from './PolaroidCard';
 import { POLAROID_FONT, resolvePolaroidColors, rotationForIndex } from './styles';
 
@@ -56,9 +60,14 @@ export default function PolaroidMenuScreen() {
     addToCart,
   } = useCart();
   const { width: windowWidth } = useWindowDimensions();
+  // Hoisted so both the banner slider layout AND the auto-advance
+  // effect (which needs it in a dependency array) share one value.
+  const bannerWidth = useMemo(() => windowWidth - 20, [windowWidth]);
   const { products, categories, loading } = useMenuContext();
   const { layoutColors, logoUrl } = useMerchantBranding();
   const { merchantId } = useMerchant();
+  const { user } = useAuth();
+  const customerId = user?.id ?? null;
   const colors = useMemo(() => resolvePolaroidColors(layoutColors), [layoutColors]);
 
   const displayCategories = useMemo(() => categories.filter((c) => c !== 'All'), [categories]);
@@ -76,6 +85,73 @@ export default function PolaroidMenuScreen() {
     () => banners.filter((b) => b.placement === 'slider' && b.image_url),
     [banners],
   );
+
+  // Effective per-user loyalty type (points vs cashback), used to hide
+  // the rewards badge below for customers who are effectively on
+  // cashback. Server-computed — NOT derived from merchant config, so a
+  // customer keeps the badge until their own points balance hits 0
+  // even after the merchant switches modes.
+  const [loyaltyBalance, setLoyaltyBalance] = useState<LoyaltyBalance | null>(null);
+
+  useEffect(() => {
+    if (!merchantId || !customerId) {
+      setLoyaltyBalance(null);
+      return;
+    }
+    let cancelled = false;
+    loyaltyApi
+      .getBalance(customerId, merchantId)
+      .then((balance) => {
+        if (!cancelled) setLoyaltyBalance(balance);
+      })
+      .catch(() => {
+        if (!cancelled) setLoyaltyBalance(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [merchantId, customerId]);
+
+  // Banner slider auto-advance — refs (not state) so the timer never
+  // forces a re-render. Pauses while the user is dragging/settling the
+  // scroll, then resumes from wherever they left off.
+  const bannerScrollRef = useRef<ScrollView>(null);
+  const bannerIndexRef = useRef(0);
+  const bannerPausedRef = useRef(false);
+  const bannerResumeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (sliderBanners.length <= 1 || bannerWidth <= 0) return;
+    const interval = setInterval(() => {
+      if (bannerPausedRef.current) return;
+      const next = (bannerIndexRef.current + 1) % sliderBanners.length;
+      bannerIndexRef.current = next;
+      bannerScrollRef.current?.scrollTo({ x: next * bannerWidth, animated: true });
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [sliderBanners.length, bannerWidth]);
+
+  useEffect(() => () => {
+    if (bannerResumeTimeoutRef.current) clearTimeout(bannerResumeTimeoutRef.current);
+  }, []);
+
+  const handleBannerInteractionStart = useCallback(() => {
+    bannerPausedRef.current = true;
+    if (bannerResumeTimeoutRef.current) {
+      clearTimeout(bannerResumeTimeoutRef.current);
+      bannerResumeTimeoutRef.current = null;
+    }
+  }, []);
+
+  const handleBannerInteractionEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (bannerWidth > 0) {
+      bannerIndexRef.current = Math.round(e.nativeEvent.contentOffset.x / bannerWidth);
+    }
+    if (bannerResumeTimeoutRef.current) clearTimeout(bannerResumeTimeoutRef.current);
+    bannerResumeTimeoutRef.current = setTimeout(() => {
+      bannerPausedRef.current = false;
+    }, 3000);
+  }, [bannerWidth]);
 
   // Group products by category — we show ALL categories as sections
   // on the same page now (no single-category filter). Search narrows
@@ -320,10 +396,10 @@ export default function PolaroidMenuScreen() {
               next banner cleanly. Cards keep the polaroid look but
               fill the viewport. */}
           {sliderBanners.length > 0 && (() => {
-            const bannerWidth = windowWidth - 20; // matches scroll's horizontal padding
             return (
               <View style={{ marginBottom: 18, marginHorizontal: -10 }}>
                 <ScrollView
+                  ref={bannerScrollRef}
                   horizontal
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}
@@ -331,6 +407,10 @@ export default function PolaroidMenuScreen() {
                   snapToInterval={bannerWidth}
                   decelerationRate="fast"
                   snapToAlignment="start"
+                  onScrollBeginDrag={handleBannerInteractionStart}
+                  onTouchStart={handleBannerInteractionStart}
+                  onScrollEndDrag={handleBannerInteractionEnd}
+                  onMomentumScrollEnd={handleBannerInteractionEnd}
                 >
                   {sliderBanners.map((b, i) => (
                     <View key={b.id} style={{ width: bannerWidth, paddingHorizontal: 4 }}>
@@ -496,61 +576,68 @@ export default function PolaroidMenuScreen() {
           polaroid card pinned to the right side, ABOVE the cart bar.
           Visually distinctive (rotated, photo-style), not just a
           fat pill. When the cart appears it slides down toward the
-          tab bar; rewards badge stays anchored higher. */}
-      <View
-        style={{
-          position: 'absolute',
-          right: 14,
-          // When cart is on screen the badge climbs to make room for
-          // the cart bar below it; otherwise it sits just above the
-          // tab bar.
-          bottom: totalItems > 0
-            ? (Platform.OS === 'ios' ? 180 : 162)
-            : (Platform.OS === 'ios' ? 108 : 90),
-          zIndex: 60,
-        }}
-        pointerEvents="box-none"
-      >
-        <TouchableOpacity
-          onPress={() => router.push('/rewards' as never)}
-          activeOpacity={0.85}
-          accessibilityLabel={isArabic ? 'مسار النقاط' : 'Rewards roadmap'}
+          tab bar; rewards badge stays anchored higher.
+          Rewards are a points-only concept — hidden once the
+          customer's EFFECTIVE per-user loyalty type (server-computed,
+          not the merchant's configured type) is cashback. While that
+          type is still loading/unknown we don't show it either, to
+          avoid a flash-then-hide for cashback customers. */}
+      {!!loyaltyBalance && loyaltyBalance.loyaltyType !== 'cashback' && (
+        <View
+          style={{
+            position: 'absolute',
+            right: 14,
+            // When cart is on screen the badge climbs to make room for
+            // the cart bar below it; otherwise it sits just above the
+            // tab bar.
+            bottom: totalItems > 0
+              ? (Platform.OS === 'ios' ? 180 : 162)
+              : (Platform.OS === 'ios' ? 108 : 90),
+            zIndex: 60,
+          }}
+          pointerEvents="box-none"
         >
-          <PolaroidCard
-            rotation="-4deg"
-            large
-            style={{ paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, alignItems: 'center', width: 96 }}
+          <TouchableOpacity
+            onPress={() => router.push('/rewards' as never)}
+            activeOpacity={0.85}
+            accessibilityLabel={isArabic ? 'مسار النقاط' : 'Rewards roadmap'}
           >
-            <View
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 999,
-                backgroundColor: colors.accent,
-                alignItems: 'center',
-                justifyContent: 'center',
-                shadowColor: '#000',
-                shadowOpacity: 0.25,
-                shadowRadius: 4,
-                shadowOffset: { width: 0, height: 2 },
-              }}
+            <PolaroidCard
+              rotation="-4deg"
+              large
+              style={{ paddingHorizontal: 10, paddingTop: 8, paddingBottom: 10, alignItems: 'center', width: 96 }}
             >
-              <MonoText size={22} weight="800" color="#ffffff">★</MonoText>
-            </View>
-            <MonoText
-              size={8}
-              tracking={2}
-              uppercase
-              weight="800"
-              align="center"
-              color={colors.textOnSurface}
-              style={{ marginTop: 6 }}
-            >
-              {isArabic ? 'مكافآت' : 'Rewards'}
-            </MonoText>
-          </PolaroidCard>
-        </TouchableOpacity>
-      </View>
+              <View
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 999,
+                  backgroundColor: colors.accent,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  shadowColor: '#000',
+                  shadowOpacity: 0.25,
+                  shadowRadius: 4,
+                  shadowOffset: { width: 0, height: 2 },
+                }}
+              >
+                <MonoText size={22} weight="800" color="#ffffff">★</MonoText>
+              </View>
+              <MonoText
+                size={8}
+                tracking={2}
+                uppercase
+                weight="800"
+                align="center"
+                color={colors.textOnSurface}
+                style={{ marginTop: 6 }}
+              >
+                {isArabic ? 'مكافآت' : 'Rewards'}
+              </MonoText>
+            </PolaroidCard>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Sticky polaroid cart bar — sits BELOW the rewards badge,
           anchored just above the tab bar (closer to thumb). */}

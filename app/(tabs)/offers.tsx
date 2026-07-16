@@ -1023,8 +1023,11 @@ function ClassicOffersScreen() {
               </TouchableOpacity>
             )}
 
-            {/* Rewards Catalog */}
-            {rewards.length > 0 && (
+            {/* Rewards Catalog — points-only concept. Hidden once the
+                customer's EFFECTIVE loyalty type (server-computed via
+                loyaltyApi.getBalance, not the merchant's configured
+                type) is cashback. */}
+            {rewards.length > 0 && loyaltyType !== 'cashback' && (
               <View className="mt-5">
                 <Text className="text-lg font-bold mb-3" style={{ color: textColor }}>{isArabic ? 'المكافآت' : 'Rewards'}</Text>
                 {rewards.map((r) => (
