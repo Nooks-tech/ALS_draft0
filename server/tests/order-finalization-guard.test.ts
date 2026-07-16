@@ -187,3 +187,43 @@ test('mixed finalization uses the verified resolved provider id plus wallet debi
     },
   );
 });
+
+test('an unrecognized payment method still exposes the captured charge for reversal', () => {
+  // Regression (proven live 2026-07-16): providerPaymentIdToReverse used to be
+  // gated on CARD_LIKE_PAYMENT_METHODS, which made it mutually exclusive with
+  // the PAYMENT_METHOD_INVALID branch that fires when the label ISN'T card-like.
+  // A real captured charge submitted with a stray label ('creditcard' instead of
+  // 'credit_card') was rejected with no reversal candidate, so the charge sat
+  // paid with no order — the exact stranding class this guard exists to prevent.
+  // The label is untrusted client input; the caller's strict order+amount
+  // binding is what makes the reversal safe.
+  const decision = guardOrderFinalizationRequest({
+    isFinalCommit: true,
+    submittedPaymentId: 'pay_captured_real',
+    paymentMethod: 'creditcard',
+    cardPortionHalalas: 19_500,
+    walletAppliedHalalas: 2_000,
+    hasRewardBearingItems: false,
+  });
+  assert.equal(decision.ok, false);
+  if (decision.ok) return;
+  assert.equal(decision.code, 'PAYMENT_METHOD_INVALID');
+  assert.equal(decision.providerPaymentIdToReverse, 'pay_captured_real');
+});
+
+test('reserved sentinels are never offered as a reversal candidate', () => {
+  // The reversal candidate widened to ignore the method label, so re-pin the
+  // boundary that actually matters: a wallet/reward/cashback sentinel is not a
+  // provider payment and must never reach a provider mutation.
+  const decision = guardOrderFinalizationRequest({
+    isFinalCommit: true,
+    submittedPaymentId: 'wallet:txn_123',
+    paymentMethod: 'nonsense_label',
+    cardPortionHalalas: 19_500,
+    walletAppliedHalalas: 0,
+    hasRewardBearingItems: false,
+  });
+  assert.equal(decision.ok, false);
+  if (decision.ok) return;
+  assert.equal(decision.providerPaymentIdToReverse, undefined);
+});

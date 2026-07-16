@@ -88,9 +88,18 @@ export function guardOrderFinalizationRequest(input: {
   const submittedPaymentId = normalizedString(input.submittedPaymentId);
   const cardPortionHalalas = normalizedHalalas(input.cardPortionHalalas);
   const reservedPrefix = reservedClientPaymentPrefix(submittedPaymentId);
+  // Deliberately NOT gated on CARD_LIKE_PAYMENT_METHODS: the method is an
+  // untrusted client label, and "is there a real provider payment worth
+  // reversing?" must not depend on the client getting that label right. Gating
+  // on it made this mutually exclusive with the PAYMENT_METHOD_INVALID branch
+  // below — which rejects precisely when the label ISN'T card-like — so the
+  // one rejection most likely to be holding an already-captured charge could
+  // never reverse it. (Proven live 2026-07-16: a commit with paymentMethod
+  // 'creditcard' left a genuinely paid charge stranded.) What makes a reversal
+  // safe is the caller's strict order+amount binding before it mutates
+  // anything, not the label — same reasoning as the note on the set above.
   const providerPaymentIdToReverse =
     cardPortionHalalas > 0
-    && CARD_LIKE_PAYMENT_METHODS.has(paymentMethod)
     && submittedPaymentId
     && !reservedPrefix
       ? submittedPaymentId

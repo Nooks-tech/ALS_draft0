@@ -1655,10 +1655,11 @@ ordersRouter.post('/commit', async (req, res) => {
         hasRewardBearingOrderItems(items) || claimedMilestones.length > 0,
     });
     if (!finalizationDecision.ok) {
+      let guardReversal: ChargeReversalOutcome = 'no_charge';
       if (finalizationDecision.providerPaymentIdToReverse) {
         // Direct card/Apple Pay can charge before either commit. Strictly bind
         // order + amount before one ambiguity-safe reversal attempt.
-        await voidChargeOnRejectedCommit(
+        guardReversal = await voidChargeOnRejectedCommit(
           finalizationDecision.providerPaymentIdToReverse,
           merchantId,
           id,
@@ -1670,6 +1671,8 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(finalizationDecision.status).json({
         error: finalizationDecision.error,
         code: finalizationDecision.code,
+        terminal: true,
+        reversal: guardReversal,
       });
     }
     const isMoyasarPaymentId = Boolean(trimmedPaymentId) && !isReservedClientPaymentId(trimmedPaymentId);
