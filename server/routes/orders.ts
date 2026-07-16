@@ -21,11 +21,12 @@ import { cancelPayment, verifyPaidPayment } from '../services/payment';
 import { isPaymentStillSettling } from '../utils/paymentSettling';
 import { sendOrderReceipt } from '../services/receipt';
 import {
-  authorizeRewardMilestoneForCommit,
+  authorizeRewardInstancesForCommit,
   consumeOrderMilestones,
   earnForOrder,
   restoreCashbackForRefund,
   restoreStampMilestonesForRefund,
+  type RewardInstance,
 } from './loyalty';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -415,6 +416,22 @@ const NOOKS_COMMISSION_RATE = 0;
 const EXPO_ACCESS_TOKEN = process.env.EXPO_ACCESS_TOKEN;
 const NOOKS_API_BASE_URL = (process.env.NOOKS_API_BASE_URL || process.env.EXPO_PUBLIC_NOOKS_API_BASE_URL || '').trim().replace(/\/+$/, '');
 const NOOKS_INTERNAL_SECRET = (process.env.NOOKS_INTERNAL_SECRET || '').trim();
+// Kill-switch for N-times-per-order reward-milestone stacking (design:
+// reward_stacking_design.md). Default OFF — read once at module load,
+// mirroring REWARD_CHECKOUT_ENABLED in orderFinalizationGuard.ts. While OFF,
+// the /commit reward loop still parses cart lines into RewardInstances (so
+// the new parser runs live and its behavior can be logged/verified), but a
+// cart with >1 instance for the same milestone is rejected with the SAME
+// REWARD_DUPLICATE_MILESTONE 400 as before stacking existed — external
+// behavior for every single-reward-per-milestone cart is byte-identical to
+// today. Flipping this on requires REWARD_CHECKOUT_ENABLED=true as well (a
+// stacked reward is still a reward-bearing order, gated by that flag first).
+const REWARD_STACKING_ENABLED = process.env.REWARD_STACKING_ENABLED === 'true';
+// Hard operational cap on redemption instances per order, independent of the
+// stacking flag (cheap safety bound enforced at parse time regardless).
+const MAX_REWARD_INSTANCES_PER_ORDER = Number(process.env.MAX_REWARD_INSTANCES_PER_ORDER) > 0
+  ? Math.floor(Number(process.env.MAX_REWARD_INSTANCES_PER_ORDER))
+  : 10;
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
@@ -983,10 +1000,19 @@ ordersRouter.post('/commit', async (req, res) => {
     // total can claim a 0.01 SAR order with 50 items in cart).
     const MIN_ITEM_PRICE_SAR = 0.5;
     let computedItemFloor = 0;
-    const rewardMilestoneIdsInCart: string[] = [];
-    // Reward-authorization gate (2026-07-16): milestoneId -> the cart line's
-    // foodics product id, populated below alongside rewardMilestoneIdsInCart.
-    const rewardCartLineProductIds = new Map<string, string>();
+    // Redemption-instance model (design §2): a redemption INSTANCE = one or
+    // more reward-prefixed cart lines sharing (milestoneId, lineKey).
+    // lineKey is the rewards-screen pre-redemption idempotency key parsed
+    // out of the cart uniqueId `reward-<mid>-<fid>-<key>`; undefined/absent
+    // means an "at-commit" (checkout-toggle) instance with no prior
+    // pre-redemption. Keyed by `${milestoneId} ${lineKey ?? ''}` so N
+    // pre-redemptions of the SAME milestone (distinct keys) never collide,
+    // and a multi-product milestone (several bound fids sharing one key)
+    // collapses into a single instance instead of being rejected outright.
+    // Replaces the overwrite-prone rewardCartLineProductIds Map<mid,fid>.
+    const REWARD_UNIQUE_ID_RE = /^reward-([0-9a-f-]{36})-([0-9a-f-]{36})(?:-([A-Za-z0-9._-]{8,128}))?$/i;
+    const rewardInstancesByKey = new Map<string, RewardInstance>();
+    const rewardLineTriplesSeen = new Set<string>();
     for (const it of items as Array<{ price?: unknown; quantity?: unknown; basePrice?: unknown; uniqueId?: unknown }>) {
       const unitPrice = Number(it.basePrice ?? it.price ?? 0);
       const qty = Math.max(1, Math.floor(Number(it.quantity ?? 1)));
@@ -998,8 +1024,8 @@ ordersRouter.post('/commit', async (req, res) => {
       const isFreeReward =
         typeof it.uniqueId === 'string' && (it.uniqueId as string).startsWith('reward-');
       if (isFreeReward) {
-        // Reward exploit defense: each redeemed milestone yields a
-        // SINGLE free item. A cart entry with quantity > 1 means a
+        // Reward exploit defense: each redeemed instance yields a SINGLE
+        // free item per cart line. A cart entry with quantity > 1 means a
         // tampered client tried to multiply the freebie (or the
         // pre-2026-05-16 cart UI let a user bump it). Reject.
         if (qty !== 1) {
@@ -1009,48 +1035,45 @@ ordersRouter.post('/commit', async (req, res) => {
           });
         }
         const uid = String(it.uniqueId ?? '');
-        // uniqueId format: 'reward-<milestoneId>-<foodicsProductId>'.
-        // Extract milestoneId so we can cross-check against the
-        // stampMilestoneIds the client says it redeemed. Mismatched
-        // counts = tampering (e.g., two reward items but only one
-        // milestone redemption claimed).
-        const milestoneMatch = uid.match(/^reward-([0-9a-f-]{36})-/i);
-        if (!milestoneMatch?.[1]) {
+        // Full-string match (design §2): 'reward-<mid>-<fid>' (checkout.tsx,
+        // keyless/at-commit) or 'reward-<mid>-<fid>-<lineKey>' (rewards.tsx /
+        // loyalty-modal.tsx, pre-redeemed). Anchored end-to-end — a
+        // prefix-only match would let a tampered uniqueId smuggle unparsed
+        // trailing content past the parser.
+        const m = uid.match(REWARD_UNIQUE_ID_RE);
+        if (!m) {
           // A reward-prefixed uniqueId that doesn't match the expected
-          // reward-<uuid>-<uuid> shape can't be tied to a redeemed
-          // milestone. Previously this fell straight to `continue`: the
-          // item contributed 0 to the floor AND was never recorded in
-          // rewardMilestoneIdsInCart/rewardCartLineProductIds, so the
-          // pre-charge reward-authorization gate never saw it either.
-          // Once REWARD_CHECKOUT_ENABLED lifts the blanket 409, that's a
-          // free-item exploit: a reward-prefixed line carrying a real
-          // (expensive) product id at price 0 would sail through
-          // unauthorized. A legitimate reward line always has a
-          // well-formed reward-<uuid>-<uuid> uniqueId, so reject.
+          // shape can't be tied to a redeemed milestone/instance. Once
+          // REWARD_CHECKOUT_ENABLED lifts the blanket 409, letting this
+          // through unauthorized would be a free-item exploit: a
+          // reward-prefixed line carrying a real (expensive) product id at
+          // price 0 would sail through unauthorized. A legitimate reward
+          // line always has this well-formed shape, so reject.
           return res.status(400).json({
             error: 'Malformed reward item — cannot verify the redeemed milestone.',
             code: 'REWARD_MALFORMED',
           });
         }
-        if (rewardMilestoneIdsInCart.includes(milestoneMatch[1])) {
+        const [, milestoneId, foodicsProductId, lineKeyRaw] = m;
+        const lineKey = lineKeyRaw ?? null;
+        const instanceMapKey = `${milestoneId} ${lineKey ?? ''}`;
+        // Belt-and-suspenders (design §2): the exact same (milestone, key,
+        // product) triple appearing twice in one cart can only be client
+        // tampering (a legitimate redeem produces each bound product line
+        // once per instance) — reject rather than silently de-duping.
+        const tripleKey = `${milestoneId}|${lineKey ?? ''}|${foodicsProductId.toLowerCase()}`;
+        if (rewardLineTriplesSeen.has(tripleKey)) {
           return res.status(400).json({
-            error: 'Duplicate reward for the same milestone in the cart.',
-            code: 'REWARD_DUPLICATE_MILESTONE',
+            error: 'Duplicate reward line for the same milestone, product, and redemption in the cart.',
+            code: 'REWARD_DUPLICATE_LINE',
           });
         }
-        rewardMilestoneIdsInCart.push(milestoneMatch[1]);
-        // Reward-authorization gate: also capture the bound product id.
-        // uniqueId is 'reward-<milestoneId>-<foodicsId>' from
-        // checkout.tsx or 'reward-<milestoneId>-<foodicsId>-<idempotencyKey>'
-        // from rewards.tsx — both ids are 36-char UUIDs, so take the 36
-        // chars right after the matched prefix instead of naive-splitting
-        // on '-' (a UUID itself contains hyphens). A short/malformed
-        // remainder leaves this unset, which the gate below then rejects
-        // (missing product binding) rather than silently letting it through.
-        const afterPrefix = uid.slice(milestoneMatch[0].length);
-        const productIdCandidate = afterPrefix.slice(0, 36);
-        if (/^[0-9a-f-]{36}$/i.test(productIdCandidate)) {
-          rewardCartLineProductIds.set(milestoneMatch[1], productIdCandidate);
+        rewardLineTriplesSeen.add(tripleKey);
+        const existingInstance = rewardInstancesByKey.get(instanceMapKey);
+        if (existingInstance) {
+          existingInstance.fids.push(foodicsProductId);
+        } else {
+          rewardInstancesByKey.set(instanceMapKey, { milestoneId, lineKey, fids: [foodicsProductId] });
         }
         continue;
       }
@@ -1075,18 +1098,72 @@ ordersRouter.post('/commit', async (req, res) => {
       }
       computedItemFloor += unitPrice * qty;
     }
-    // Cross-check: every reward item in the cart must correspond to
-    // a milestone redemption the client claimed. The /commit body
-    // carries stamp_milestone_ids — if the cart has more reward items
-    // than the client says it redeemed, that's a free-item exploit
-    // attempt. (Fewer is fine — a customer can redeem and then remove
-    // the reward; the redemption stays usable for the next cart.)
+    const rewardInstances: RewardInstance[] = Array.from(rewardInstancesByKey.values());
+    // MAX_REWARD_INSTANCES_PER_ORDER — cheap operational safety bound,
+    // enforced at parse time regardless of the stacking kill-switch below
+    // (design §7b/§11).
+    if (rewardInstances.length > MAX_REWARD_INSTANCES_PER_ORDER) {
+      return res.status(400).json({
+        error: `Cart has ${rewardInstances.length} reward redemption(s), exceeding the ${MAX_REWARD_INSTANCES_PER_ORDER}-per-order limit.`,
+        code: 'REWARD_TOO_MANY',
+      });
+    }
+    if (!REWARD_STACKING_ENABLED) {
+      // Kill-switch OFF (default): reproduce today's exact external
+      // behavior — a cart with more than one reward LINE for the SAME
+      // milestone (regardless of lineKey) is rejected with the
+      // byte-identical pre-stacking error and code. The instance parser
+      // above still runs live either way (so it's exercised/verified before
+      // the flag ever flips); it just can't let more than one line per
+      // milestone through the gate yet. This DELETES the old inline
+      // per-line "seen milestone" check — this grouping check replaces it.
+      //
+      // "More than one reward line" has TWO shapes under the new
+      // instance-grouping model, and pre-change code rejected both:
+      //   (a) 2+ instances of the same milestoneId (distinct lineKeys, or
+      //       one keyed + one keyless) — the obvious case.
+      //   (b) a SINGLE instance whose fids array already has length > 1,
+      //       i.e. one milestone/lineKey pair with multiple bound-product
+      //       cart lines grouped together. Pre-change, each of those lines
+      //       independently tripped the old "seen this milestoneId before"
+      //       check on the 2nd line, so a milestone bound to 2+ products
+      //       could never check out. Grouping them into one instance must
+      //       not silently let that multi-product case through while the
+      //       flag is off — otherwise consume would deduct only ONE
+      //       threshold for N free products (a behavior change AND a
+      //       possible free-item while stacking is supposed to be off).
+      const milestoneInstanceCounts = new Map<string, number>();
+      let hasMultiFidInstance = false;
+      for (const inst of rewardInstances) {
+        milestoneInstanceCounts.set(inst.milestoneId, (milestoneInstanceCounts.get(inst.milestoneId) ?? 0) + 1);
+        if (inst.fids.length > 1) {
+          hasMultiFidInstance = true;
+        }
+      }
+      if (hasMultiFidInstance || Array.from(milestoneInstanceCounts.values()).some((count) => count > 1)) {
+        return res.status(400).json({
+          error: 'Duplicate reward for the same milestone in the cart.',
+          code: 'REWARD_DUPLICATE_MILESTONE',
+        });
+      }
+    }
+    // Cross-check: every DISTINCT milestone represented among the cart's
+    // reward instances must correspond to a milestone redemption the client
+    // claimed. The /commit body carries stamp_milestone_ids — a reward
+    // instance for a milestone the client never claimed is a free-item
+    // exploit attempt. Set-membership, not count (design §5): claimed ids
+    // with no matching cart line are ignored/not consumed (a customer can
+    // redeem then remove the reward; the redemption stays usable for the
+    // next cart), and N stacked instances of one claimed milestone are not
+    // a mismatch against a claimed-list of length 1.
     const claimedMilestones = Array.isArray(stampMilestoneIds)
       ? (stampMilestoneIds as unknown[]).filter((v) => typeof v === 'string')
       : [];
-    if (rewardMilestoneIdsInCart.length > claimedMilestones.length) {
+    const claimedMilestoneSet = new Set(claimedMilestones);
+    const cartMilestoneIds = Array.from(new Set(rewardInstances.map((inst) => inst.milestoneId)));
+    if (cartMilestoneIds.some((mid) => !claimedMilestoneSet.has(mid))) {
       return res.status(400).json({
-        error: `Cart has ${rewardMilestoneIdsInCart.length} reward item(s) but only ${claimedMilestones.length} milestone redemption(s) claimed.`,
+        error: 'Cart has a reward item for a milestone that was not claimed as redeemed.',
         code: 'REWARD_MILESTONE_MISMATCH',
       });
     }
@@ -1627,27 +1704,27 @@ ordersRouter.post('/commit', async (req, res) => {
     // loyalty-type / promo gates above. Guarded on cart contents so a
     // non-reward order pays zero extra DB reads. This REPLACES the
     // blanket Phase A 409 once REWARD_CHECKOUT_ENABLED=true (see
-    // orderFinalizationGuard.ts) — each reward line's milestone must be
-    // active, its product must be bound to that milestone, and the
-    // customer must be able to redeem it (authorizeRewardMilestoneForCommit
-    // in loyalty.ts, mirroring consumeOrderMilestones' own fast-paths so a
-    // legitimate or retried reward is never false-rejected).
-    if (rewardMilestoneIdsInCart.length > 0) {
-      for (const mid of rewardMilestoneIdsInCart) {
-        const foodicsProductId = rewardCartLineProductIds.get(mid) ?? null;
-        const authz = await authorizeRewardMilestoneForCommit({
-          customerId: user.id,
-          merchantId,
-          milestoneId: mid,
-          foodicsProductId,
-          orderId: id,
-        });
-        if (!authz.authorized) {
-          await voidChargeOnRejectedCommit(
-            paymentId, merchantId, id, user.id, expectedHalalsForVerify, `reward gate (${authz.reason})`,
-          );
-          return res.status(400).json({ error: authz.error, code: 'REWARD_UNAUTHORIZED' });
-        }
+    // orderFinalizationGuard.ts). ONE call per order (design §3) covers
+    // every instance in the cart in a fixed number of batch reads
+    // regardless of N — each instance's milestone must be active, every
+    // line's product must be bound to that milestone, and the customer
+    // must be able to redeem it (authorizeRewardInstancesForCommit in
+    // loyalty.ts, mirroring consumeOrderMilestones' own fast-paths so a
+    // legitimate or retried reward is never false-rejected, and summing
+    // balance-backed instances so a stacked cart can't slip past a
+    // per-milestone-only check).
+    if (rewardInstances.length > 0) {
+      const authz = await authorizeRewardInstancesForCommit({
+        customerId: user.id,
+        merchantId,
+        orderId: id,
+        instances: rewardInstances,
+      });
+      if (!authz.authorized) {
+        await voidChargeOnRejectedCommit(
+          paymentId, merchantId, id, user.id, expectedHalalsForVerify, `reward gate (${authz.reason})`,
+        );
+        return res.status(400).json({ error: authz.error, code: 'REWARD_UNAUTHORIZED' });
       }
     }
 
@@ -1980,9 +2057,9 @@ ordersRouter.post('/commit', async (req, res) => {
       // double-deduct. Non-blocking: a failure (not enough points / inactive /
       // race) is logged, never blocks the order. The cancel path reverses
       // these via restoreStampMilestonesForRefund.
-      if (claimedMilestones.length > 0) {
+      if (rewardInstances.length > 0) {
         try {
-          const r = await consumeOrderMilestones(user.id, merchantId, claimedMilestones, id);
+          const r = await consumeOrderMilestones(user.id, merchantId, rewardInstances, id);
           if (r.failed.length > 0) {
             console.warn('[Orders] Some milestone redemptions did not deduct', {
               merchantId,
@@ -1993,13 +2070,16 @@ ordersRouter.post('/commit', async (req, res) => {
             // The pre-charge reward gate above should already have refused
             // any unauthorized reward, so an authorization-class failure
             // here is a rare race (balance/milestone changed between the
-            // gate and this post-commit deduction) — alert instead of a
-            // silent console.warn so ops can catch it.
+            // gate and this post-commit deduction, or — for a keyed instance
+            // — its pre-redemption row got claimed/refunded in that same
+            // window) — alert instead of a silent console.warn so ops can
+            // catch it.
             const authFailures = r.failed.filter(
               (f) =>
                 f.reason === 'insufficient_points' ||
                 f.reason === 'milestone_not_found_or_inactive' ||
-                f.reason === 'invalid_threshold',
+                f.reason === 'invalid_threshold' ||
+                f.reason === 'pre_redemption_unavailable',
             );
             if (authFailures.length > 0) {
               captureError(

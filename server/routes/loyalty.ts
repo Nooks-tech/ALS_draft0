@@ -1780,38 +1780,87 @@ export async function restoreCashbackForRefund(params: {
  * Phase 2's cancellation refactor can land before this is removed.
  */
 /**
+ * A redemption INSTANCE = one or more cart lines sharing (milestoneId,
+ * lineKey). lineKey is the rewards-screen pre-redemption idempotency key
+ * (parsed out of the cart uniqueId `reward-<mid>-<fid>-<key>`); null means
+ * an "at-commit" (checkout-toggle) instance with no prior pre-redemption.
+ * fids = the distinct foodics_product_ids across this instance's cart
+ * lines, used for product-binding checks. See reward_stacking_design.md §3.
+ */
+export type RewardInstance = { milestoneId: string; lineKey: string | null; fids: string[] };
+
+/**
  * Server-authoritative redemption of free-reward (points) milestones for an
  * order. Called from /commit so the deduction can't be skipped by a broken or
  * malicious client (the app previously fired a deprecated, key-less redeem call
  * that 400'd, so points were NEVER deducted → infinitely re-claimable freebie).
  *
- * Idempotent per (order, milestone): a retried commit finds the prior redeem
- * row and skips. Non-throwing per milestone — collects failures (insufficient
- * points / inactive / race) so the caller can keep the change non-blocking.
+ * Idempotent per instance (order, milestone[, lineKey]): a retried commit
+ * finds the prior redeem row and skips. Non-throwing per instance — collects
+ * failures (insufficient points / inactive / race / pre_redemption_unavailable)
+ * so the caller can keep the change non-blocking.
+ *
+ * Back-compat: legacy callers may still pass a bare `milestoneId[]` (the
+ * pre-stacking shape) — each id is treated as a keyless (lineKey=null)
+ * instance, which reproduces today's exact behavior byte-for-byte (see the
+ * "Keyless instance" branch below). New callers pass `RewardInstance[]`
+ * directly, processed keyed-first-then-keyless (design §4).
  */
 export async function consumeOrderMilestones(
   customerId: string,
   merchantId: string,
   milestoneIds: string[],
   orderId: string,
+): Promise<{ redeemed: string[]; deduplicated: string[]; failed: { milestoneId: string; reason: string }[] }>;
+export async function consumeOrderMilestones(
+  customerId: string,
+  merchantId: string,
+  instances: RewardInstance[],
+  orderId: string,
+): Promise<{ redeemed: string[]; deduplicated: string[]; failed: { milestoneId: string; reason: string }[] }>;
+export async function consumeOrderMilestones(
+  customerId: string,
+  merchantId: string,
+  input: string[] | RewardInstance[],
+  orderId: string,
 ): Promise<{ redeemed: string[]; deduplicated: string[]; failed: { milestoneId: string; reason: string }[] }> {
   if (!supabaseAdmin) throw new Error('Database not configured');
+  const instances: RewardInstance[] =
+    input.length === 0
+      ? []
+      : typeof input[0] === 'string'
+        ? (input as string[]).map((milestoneId) => ({ milestoneId, lineKey: null, fids: [] }))
+        : (input as RewardInstance[]);
+
   const redeemed: string[] = [];
   const deduplicated: string[] = [];
   const failed: { milestoneId: string; reason: string }[] = [];
 
-  for (const milestoneId of milestoneIds) {
-    try {
-      // Per-(order, milestone) idempotency key. The A4 partial unique index
-      // idx_loyalty_tx_points_redeem_per_order is scoped to
-      // (merchant_id, customer_id, order_id) and does NOT include reference_id,
-      // so multiple milestone redeems for one order would collide on the raw
-      // order id (and collide with the POS points-for-discount redeem, which
-      // uses the bare order id). Namespace each milestone under
-      // `<orderId>:m:<mid>` so the index dedups per-milestone.
-      const milestoneOrderId = `${orderId}:m:${milestoneId}`;
+  const preRedeemOrderId = (mid: string, lineKey: string) => `milestone-redeem:${mid}:${lineKey}`;
+  const instanceKeyOf = (inst: RewardInstance) =>
+    inst.lineKey != null ? `${orderId}:m:${inst.milestoneId}:k:${inst.lineKey}` : `${orderId}:m:${inst.milestoneId}`;
 
-      // Idempotency fast-path: a retried commit already deducted this milestone.
+  // Keyed-first-then-keyless (design §4) — keyed instances are backed by an
+  // exact, already-known pre-redemption row and must never silently fall
+  // back to a live-balance deduction; keyless instances (today's only shape)
+  // are processed last so their legacy R1 spare-scan naturally excludes
+  // whatever this order's keyed instances already claimed.
+  const keyedTargetOrderIds = new Set(
+    instances.filter((i) => i.lineKey != null).map((i) => preRedeemOrderId(i.milestoneId, i.lineKey as string)),
+  );
+  const ordered = [...instances.filter((i) => i.lineKey != null), ...instances.filter((i) => i.lineKey == null)];
+
+  for (const inst of ordered) {
+    try {
+      // Per-instance idempotency key (design §2). Pre-paid instances get a
+      // 0-point marker keyed under `...:k:<lineKey>`; keyless/at-commit
+      // instances are UNCHANGED (`<orderId>:m:<mid>`) — the A4 partial
+      // unique index idx_loyalty_tx_points_redeem_per_order is scoped to
+      // (merchant_id, customer_id, order_id) so this namespacing keeps every
+      // instance's dedup independent, including N instances of one milestone.
+      const milestoneOrderId = instanceKeyOf(inst);
+
+      // Idempotency fast-path: a retried commit already processed this instance.
       const { data: prior } = await supabaseAdmin
         .from('loyalty_transactions')
         .select('id')
@@ -1820,59 +1869,91 @@ export async function consumeOrderMilestones(
         .eq('order_id', milestoneOrderId)
         .eq('type', 'redeem')
         .maybeSingle();
-      if (prior) { deduplicated.push(milestoneId); continue; }
+      if (prior) { deduplicated.push(inst.milestoneId); continue; }
 
       const { data: milestone } = await supabaseAdmin
         .from('loyalty_milestones')
         .select('id, points_threshold, reward_name, is_active')
-        .eq('id', milestoneId)
+        .eq('id', inst.milestoneId)
         .eq('merchant_id', merchantId)
         .maybeSingle();
       if (!milestone || !milestone.is_active) {
-        failed.push({ milestoneId, reason: 'milestone_not_found_or_inactive' });
+        failed.push({ milestoneId: inst.milestoneId, reason: 'milestone_not_found_or_inactive' });
         continue;
       }
       const threshold = Number(milestone.points_threshold);
       if (!Number.isFinite(threshold) || threshold <= 0) {
-        failed.push({ milestoneId, reason: 'invalid_threshold' });
+        failed.push({ milestoneId: inst.milestoneId, reason: 'invalid_threshold' });
         continue;
       }
 
-      // LOY-2: skip the commit-time deduction if this milestone was already
-      // pre-redeemed on the rewards screen (handleRedeemMilestone, keyed on
-      // `milestone-redeem:<mid>:<key>`). Those points were already taken there;
-      // deducting again here double-charges one reward. Claim the most recent
-      // ACTIVE (un-refunded, un-consumed) pre-redemption and mark it consumed so
-      // a later order for the same catalog milestone can't free-ride on it.
-      const { data: preRows } = await supabaseAdmin
-        .from('loyalty_transactions')
-        .select('id, metadata')
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId)
-        .eq('type', 'redeem')
-        .eq('loyalty_type', 'points')
-        .eq('reference_type', 'milestone')
-        .eq('reference_id', milestoneId)
-        .like('order_id', 'milestone-redeem:%')
-        .order('created_at', { ascending: false })
-        .limit(25);
-      const activePre = (preRows ?? []).find((r: { metadata?: Record<string, unknown> | null }) => {
-        const meta = (r.metadata ?? {}) as { refunded_at?: unknown; consumed_by_order?: unknown };
-        return !meta.refunded_at && !meta.consumed_by_order;
-      }) as { id: string; metadata?: Record<string, unknown> | null } | undefined;
-      if (activePre) {
-        await supabaseAdmin
+      if (inst.lineKey != null) {
+        // ── Keyed instance: must be backed by its OWN pre-redemption row,
+        // claimed via a CAS conditional update (closes L2 — a read-then-
+        // unconditional-update let two concurrent commits both claim the
+        // same row). No balance fallback: authorize (§3) never approved
+        // one, so consuming one here would be an unbacked free item.
+        const targetOrderId = preRedeemOrderId(inst.milestoneId, inst.lineKey);
+
+        const { data: preRow } = await supabaseAdmin
           .from('loyalty_transactions')
-          .update({
-            metadata: {
-              ...((activePre.metadata as Record<string, unknown>) ?? {}),
-              consumed_by_order: orderId,
-              consumed_at: new Date().toISOString(),
-            },
-          })
-          .eq('id', activePre.id);
-        // Anchor a zero-point marker under the per-milestone order key so a
-        // retried commit dedups on the fast-path above without re-deducting.
+          .select('id, metadata')
+          .eq('customer_id', customerId)
+          .eq('merchant_id', merchantId)
+          .eq('type', 'redeem')
+          .eq('loyalty_type', 'points')
+          .eq('reference_type', 'milestone')
+          .eq('reference_id', inst.milestoneId)
+          .eq('order_id', targetOrderId)
+          .maybeSingle();
+
+        let claimedPreRowId: string | null = null;
+        if (preRow) {
+          const priorMeta = (preRow.metadata as Record<string, unknown> | null) ?? {};
+          // Fresh-read-then-conditional-write: the WHERE clause (not the
+          // read above) is the actual CAS — Postgres re-evaluates it under
+          // row lock at UPDATE time, so a merge here can never resurrect a
+          // guard another writer already cleared.
+          const { data: claimRows } = await supabaseAdmin
+            .from('loyalty_transactions')
+            .update({
+              metadata: { ...priorMeta, consumed_by_order: orderId, consumed_at: new Date().toISOString() },
+            })
+            .eq('id', preRow.id)
+            .is('metadata->>consumed_by_order', null)
+            .is('metadata->>refunded_at', null)
+            .select('id');
+          if (claimRows && claimRows.length === 1) claimedPreRowId = claimRows[0].id;
+        }
+
+        if (!claimedPreRowId) {
+          // Lost the CAS (or no row exists). Re-read: if WE already own it
+          // (a prior attempt of this same retried commit won the claim but
+          // died before inserting the marker below), heal by proceeding to
+          // the marker insert instead of re-failing a legitimately consumed
+          // instance.
+          const { data: recheck } = await supabaseAdmin
+            .from('loyalty_transactions')
+            .select('id, metadata')
+            .eq('customer_id', customerId)
+            .eq('merchant_id', merchantId)
+            .eq('type', 'redeem')
+            .eq('loyalty_type', 'points')
+            .eq('reference_type', 'milestone')
+            .eq('reference_id', inst.milestoneId)
+            .eq('order_id', targetOrderId)
+            .maybeSingle();
+          const recheckMeta = (recheck?.metadata as Record<string, unknown> | null) ?? {};
+          if (recheck && recheckMeta.consumed_by_order === orderId) {
+            claimedPreRowId = recheck.id;
+          } else {
+            failed.push({ milestoneId: inst.milestoneId, reason: 'pre_redemption_unavailable' });
+            continue;
+          }
+        }
+
+        // Anchor a zero-point marker under the per-instance order key so a
+        // retried commit dedups on the fast-path above without re-claiming.
         const { error: markerErr } = await supabaseAdmin.from('loyalty_transactions').insert({
           customer_id: customerId,
           merchant_id: merchantId,
@@ -1883,44 +1964,123 @@ export async function consumeOrderMilestones(
           description: `Milestone pre-redeemed on rewards screen: ${milestone.reward_name ?? ''}`,
           source: 'app',
           reference_type: 'milestone',
-          reference_id: milestoneId,
-          metadata: { pre_redeem_of: activePre.id, milestone_name: milestone.reward_name ?? '' },
+          reference_id: inst.milestoneId,
+          metadata: { pre_redeem_of: claimedPreRowId, line_key: inst.lineKey, milestone_name: milestone.reward_name ?? '' },
         });
         if (markerErr && (markerErr as { code?: string }).code !== '23505') {
-          failed.push({ milestoneId, reason: markerErr.message ?? 'marker_insert_failed' });
+          // The claim stands (points already consumed) — a retry will
+          // re-check the ===orderId recheck branch above and heal by
+          // re-inserting this marker, so the deduction can't be lost.
+          failed.push({ milestoneId: inst.milestoneId, reason: markerErr.message ?? 'marker_insert_failed' });
           continue;
         }
-        deduplicated.push(milestoneId);
+        deduplicated.push(inst.milestoneId);
         continue;
       }
 
-      // LOY-10: atomic deduct + ledger insert in one SECURITY DEFINER call —
-      // no crash window where the ledger row exists but the balance never
-      // dropped (the previous insert-then-`.gte()`-update-then-rollback path
-      // left an orphan redeem row if the process died between the two writes).
+      // ── Keyless instance (identical to today's LOY-2 legacy R1 scan,
+      // now CAS'd instead of read-then-unconditional-update). Excludes any
+      // row this order's keyed instances already targeted so one order's
+      // keyed and keyless instances of the SAME milestone can't collide.
+      //
+      // Deliberately UNBOUNDED (no .limit here) — this must scan the exact
+      // same keyless-spare candidate set as the authorize gate
+      // (authorizeRewardInstancesForCommit's `reference_id.in.(keylessMids)`
+      // OR-clause, loyalty.ts ~2253-2269), which has no limit/order at all.
+      // A prior version capped this at .limit(25), which let the gate
+      // authorize off a spare row outside consume's top-25 window: the gate
+      // would say "covered by a spare" (no balance needed) while consume
+      // couldn't see that row and fell through to redeem_loyalty_points,
+      // charging a FRESH balance deduction for an already-authorized
+      // instance (double-charge, or a free item if the balance was
+      // insufficient). Active un-consumed pre-redemption spares per
+      // customer/milestone are few (bounded by how many times a customer
+      // can pre-redeem faster than they check out), so an unbounded scan
+      // here is cheap and safe. `.order('created_at', {ascending:false})`
+      // is kept so the CAS loop below still prefers the most recent spare
+      // first when multiple exist. ──
+      const { data: preRows } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .select('id, order_id, metadata')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .eq('type', 'redeem')
+        .eq('loyalty_type', 'points')
+        .eq('reference_type', 'milestone')
+        .eq('reference_id', inst.milestoneId)
+        .like('order_id', 'milestone-redeem:%')
+        .order('created_at', { ascending: false });
+      const candidates = (preRows ?? []).filter((r: { order_id: string; metadata?: Record<string, unknown> | null }) => {
+        if (keyedTargetOrderIds.has(r.order_id)) return false;
+        const meta = (r.metadata ?? {}) as { refunded_at?: unknown; consumed_by_order?: unknown };
+        return !meta.refunded_at && !meta.consumed_by_order;
+      }) as Array<{ id: string; order_id: string; metadata?: Record<string, unknown> | null }>;
+
+      let claimedSpareId: string | null = null;
+      for (const cand of candidates) {
+        const priorMeta = (cand.metadata as Record<string, unknown> | null) ?? {};
+        const { data: claimRows } = await supabaseAdmin
+          .from('loyalty_transactions')
+          .update({
+            metadata: { ...priorMeta, consumed_by_order: orderId, consumed_at: new Date().toISOString() },
+          })
+          .eq('id', cand.id)
+          .is('metadata->>consumed_by_order', null)
+          .is('metadata->>refunded_at', null)
+          .select('id');
+        if (claimRows && claimRows.length === 1) { claimedSpareId = claimRows[0].id; break; }
+        // Lost the CAS on this candidate (claimed by a concurrent commit
+        // between our scan and our update) — fall through and try the next.
+      }
+
+      if (claimedSpareId) {
+        const { error: markerErr } = await supabaseAdmin.from('loyalty_transactions').insert({
+          customer_id: customerId,
+          merchant_id: merchantId,
+          order_id: milestoneOrderId,
+          type: 'redeem',
+          loyalty_type: 'points',
+          points: 0,
+          description: `Milestone pre-redeemed on rewards screen: ${milestone.reward_name ?? ''}`,
+          source: 'app',
+          reference_type: 'milestone',
+          reference_id: inst.milestoneId,
+          metadata: { pre_redeem_of: claimedSpareId, milestone_name: milestone.reward_name ?? '' },
+        });
+        if (markerErr && (markerErr as { code?: string }).code !== '23505') {
+          failed.push({ milestoneId: inst.milestoneId, reason: markerErr.message ?? 'marker_insert_failed' });
+          continue;
+        }
+        deduplicated.push(inst.milestoneId);
+        continue;
+      }
+
+      // LOY-10: no spare pre-redemption — atomic deduct + ledger insert in
+      // one SECURITY DEFINER call (no crash window where the ledger row
+      // exists but the balance never dropped).
       const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('redeem_loyalty_points', {
         p_customer_id: customerId,
         p_merchant_id: merchantId,
         p_points: threshold,
         p_order_id: milestoneOrderId,
         p_reference_type: 'milestone',
-        p_reference_id: milestoneId,
+        p_reference_id: inst.milestoneId,
         p_source: 'app',
         p_description: `Redeemed milestone: ${milestone.reward_name ?? ''}`,
         p_program_id: null,
-        p_metadata: { milestone_id: milestoneId, milestone_name: milestone.reward_name ?? null },
+        p_metadata: { milestone_id: inst.milestoneId, milestone_name: milestone.reward_name ?? null },
       });
       if (rpcErr) {
-        if ((rpcErr as { code?: string }).code === '23505') { deduplicated.push(milestoneId); continue; }
-        failed.push({ milestoneId, reason: rpcErr.message ?? 'rpc_failed' });
+        if ((rpcErr as { code?: string }).code === '23505') { deduplicated.push(inst.milestoneId); continue; }
+        failed.push({ milestoneId: inst.milestoneId, reason: rpcErr.message ?? 'rpc_failed' });
         continue;
       }
       const status = rpcResultObject(rpcData)?.status;
-      if (status === 'duplicate') { deduplicated.push(milestoneId); continue; }
-      if (status === 'insufficient') { failed.push({ milestoneId, reason: 'insufficient_points' }); continue; }
-      redeemed.push(milestoneId);
+      if (status === 'duplicate') { deduplicated.push(inst.milestoneId); continue; }
+      if (status === 'insufficient') { failed.push({ milestoneId: inst.milestoneId, reason: 'insufficient_points' }); continue; }
+      redeemed.push(inst.milestoneId);
     } catch (e: any) {
-      failed.push({ milestoneId, reason: e?.message ?? 'error' });
+      failed.push({ milestoneId: inst.milestoneId, reason: e?.message ?? 'error' });
     }
   }
 
@@ -2042,6 +2202,172 @@ export async function authorizeRewardMilestoneForCommit(params: {
 }
 
 /**
+ * Pre-charge authorization gate for a WHOLE cart's reward instances — one
+ * call per order (design §3), replacing a per-milestone loop over
+ * authorizeRewardMilestoneForCommit. Read-only; batch-loads regardless of
+ * instance count N so a stacked cart doesn't cost N round trips.
+ *
+ * Mirrors consumeOrderMilestones' fast-paths exactly (keep both in sync if
+ * either changes):
+ *   - R0 retry pass-through: an instance whose order key already has a
+ *     redeem/marker row is authorized unconditionally (idempotent re-commit,
+ *     even if the milestone was deactivated or the balance since drained).
+ *   - Keyed instances must be backed by their OWN exact pre-redemption row
+ *     (un-refunded, and un-consumed OR already consumed by this same order —
+ *     the 2nd retry pass-through). There is NO balance fallback for a keyed
+ *     instance — authorize (or consume) never silently converts a missing
+ *     pre-redemption into a fresh live-balance deduction.
+ *   - Keyless instances (today's only shape) reuse a SPARE active
+ *     pre-redemption for the same milestone if one exists and isn't already
+ *     targeted by one of this cart's keyed instances; otherwise they add
+ *     their threshold to a SUMMED balance requirement.
+ *   - The summed balance check (fixes L4 — old code checked each milestone's
+ *     threshold against balance independently in a loop, so
+ *     M1(300)+M2(200) at a 350 balance passed the gate and the second
+ *     redeem_loyalty_points then failed post-commit, handing out a free
+ *     item) is checked ONCE against the total needed across every
+ *     balance-backed instance in the cart.
+ */
+export async function authorizeRewardInstancesForCommit(params: {
+  customerId: string;
+  merchantId: string;
+  orderId: string;
+  instances: RewardInstance[];
+}): Promise<{ authorized: true } | { authorized: false; reason: string; error: string; milestoneId: string }> {
+  if (!supabaseAdmin) return { authorized: false, reason: 'no_db', error: 'Database not configured', milestoneId: '' };
+  const { customerId, merchantId, orderId, instances } = params;
+  if (instances.length === 0) return { authorized: true };
+
+  const preRedeemOrderId = (mid: string, lineKey: string) => `milestone-redeem:${mid}:${lineKey}`;
+  const instanceKeyOf = (inst: RewardInstance) =>
+    inst.lineKey != null ? `${orderId}:m:${inst.milestoneId}:k:${inst.lineKey}` : `${orderId}:m:${inst.milestoneId}`;
+
+  const distinctMids = Array.from(new Set(instances.map((i) => i.milestoneId)));
+  const keyedInstances = instances.filter((i) => i.lineKey != null);
+  const keylessInstances = instances.filter((i) => i.lineKey == null);
+  const keyedTargetOrderIds = keyedInstances.map((i) => preRedeemOrderId(i.milestoneId, i.lineKey as string));
+  const keylessMids = Array.from(new Set(keylessInstances.map((i) => i.milestoneId)));
+
+  // 1. Batch loads — 3 queries regardless of N (the pre-redemption read
+  // covers both the keyed exact-key lookups and the keyless per-milestone
+  // spare scan in one request via `.or()`).
+  //
+  // Candidate-set parity with consumeOrderMilestones (closes the gate-vs-
+  // consume mismatch): the keyed half of this OR (`order_id.in.(...)`) is
+  // an exact-key lookup — always complete, nothing to bound. The keyless
+  // half (`reference_id.in.(keylessMids)`) is intentionally UNBOUNDED (no
+  // .order()/.limit()), and consumeOrderMilestones' keyless spare scan
+  // (loyalty.ts, "Keyless instance" branch) was widened to match — also
+  // unbounded, same filter predicate (unrefunded, unconsumed, not a keyed
+  // target of this cart). Gate and consume therefore always see the
+  // identical keyless-spare candidate set: the gate can no longer authorize
+  // off a spare that consume can't subsequently find and claim.
+  const [milestoneRows, markerRows, preRedemptionRows] = await Promise.all([
+    supabaseAdmin
+      .from('loyalty_milestones')
+      .select('id, points_threshold, foodics_product_ids, is_active')
+      .eq('merchant_id', merchantId)
+      .in('id', distinctMids)
+      .then((r) => r.data ?? []),
+    supabaseAdmin
+      .from('loyalty_transactions')
+      .select('order_id')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .eq('type', 'redeem')
+      .in('order_id', instances.map(instanceKeyOf))
+      .then((r) => r.data ?? []),
+    (async () => {
+      if (keyedTargetOrderIds.length === 0 && keylessMids.length === 0) return [];
+      let q = supabaseAdmin!
+        .from('loyalty_transactions')
+        .select('id, order_id, reference_id, metadata')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .eq('type', 'redeem')
+        .eq('loyalty_type', 'points')
+        .eq('reference_type', 'milestone')
+        .like('order_id', 'milestone-redeem:%');
+      const orClauses: string[] = [];
+      if (keyedTargetOrderIds.length > 0) orClauses.push(`order_id.in.(${keyedTargetOrderIds.join(',')})`);
+      if (keylessMids.length > 0) orClauses.push(`reference_id.in.(${keylessMids.join(',')})`);
+      const { data } = await q.or(orClauses.join(','));
+      return data ?? [];
+    })(),
+  ]);
+
+  const milestoneById = new Map<string, { id: string; points_threshold: number; foodics_product_ids: string[] | null; is_active: boolean }>();
+  for (const m of milestoneRows as Array<{ id: string; points_threshold: number; foodics_product_ids: string[] | null; is_active: boolean }>) {
+    milestoneById.set(m.id, m);
+  }
+  const markerOrderIds = new Set((markerRows as Array<{ order_id: string }>).map((r) => r.order_id));
+  const preRows = preRedemptionRows as Array<{ id: string; order_id: string; reference_id: string; metadata: Record<string, unknown> | null }>;
+  const preByOrderId = new Map(preRows.map((r) => [r.order_id, r]));
+  const keyedTargetSet = new Set(keyedTargetOrderIds);
+  const findSparePreRedemption = (mid: string): boolean =>
+    preRows.some((r) => {
+      if (r.reference_id !== mid) return false;
+      if (keyedTargetSet.has(r.order_id)) return false; // reserved for a keyed instance in this cart
+      const meta = (r.metadata ?? {}) as { refunded_at?: unknown; consumed_by_order?: unknown };
+      return !meta.refunded_at && !meta.consumed_by_order;
+    });
+
+  // 2. Per-instance evaluation (all reads — no claiming here).
+  let needsBalance = 0;
+  for (const inst of instances) {
+    if (markerOrderIds.has(instanceKeyOf(inst))) continue; // R0 retry pass-through
+
+    const milestone = milestoneById.get(inst.milestoneId);
+    if (!milestone || !milestone.is_active) {
+      return { authorized: false, reason: 'milestone_not_found_or_inactive', error: 'This reward is no longer available.', milestoneId: inst.milestoneId };
+    }
+    const threshold = Number(milestone.points_threshold);
+    if (!Number.isFinite(threshold) || threshold <= 0) {
+      return { authorized: false, reason: 'invalid_threshold', error: 'This reward is misconfigured.', milestoneId: inst.milestoneId };
+    }
+
+    const boundProductIds: string[] = Array.isArray(milestone.foodics_product_ids) ? milestone.foodics_product_ids : [];
+    const allBound = boundProductIds.length > 0 && inst.fids.length > 0 && inst.fids.every((fid) => boundProductIds.includes(fid));
+    if (!allBound) {
+      return { authorized: false, reason: 'product_not_bound', error: 'This item is not a valid reward for the redeemed milestone.', milestoneId: inst.milestoneId };
+    }
+
+    if (inst.lineKey != null) {
+      // Keyed instance: exact pre-redemption row required. No balance fallback.
+      const row = preByOrderId.get(preRedeemOrderId(inst.milestoneId, inst.lineKey));
+      const meta = (row?.metadata ?? {}) as { refunded_at?: unknown; consumed_by_order?: unknown };
+      const ok = !!row && !meta.refunded_at && (!meta.consumed_by_order || meta.consumed_by_order === orderId);
+      if (!ok) {
+        return { authorized: false, reason: 'pre_redemption_unavailable', error: 'This pre-redeemed reward is no longer available.', milestoneId: inst.milestoneId };
+      }
+      continue;
+    }
+
+    // Keyless instance: a spare active pre-redemption covers it, else it
+    // needs headroom in the summed balance check below.
+    if (findSparePreRedemption(inst.milestoneId)) continue;
+    needsBalance += threshold;
+  }
+
+  // 3. Summed balance check (fixes L4) — one read, checked against the
+  // TOTAL across every balance-backed instance in the cart.
+  if (needsBalance > 0) {
+    const { data: balanceRow } = await supabaseAdmin
+      .from('loyalty_points')
+      .select('points')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .maybeSingle();
+    const currentPoints = Number(balanceRow?.points ?? 0);
+    if (currentPoints < needsBalance) {
+      return { authorized: false, reason: 'insufficient_points', error: 'Not enough points for this reward.', milestoneId: '' };
+    }
+  }
+
+  return { authorized: true };
+}
+
+/**
  * Reverse the milestone point deductions consumeOrderMilestones made for an
  * order (cancellation / refund). Idempotent: a 'milestone-refund' marker row
  * per milestone stops a double-restore. Returns the total points given back
@@ -2073,13 +2399,42 @@ export async function restoreStampMilestonesForRefund(params: {
     .like('order_id', `${params.orderId}%`)
     .eq('type', 'redeem')
     .eq('reference_type', 'milestone');
-  if (!redeems || redeems.length === 0) {
-    return { stampsRestored: 0, milestonesCleared: [], alreadyRestored: false };
-  }
+  // NOTE: no early-return-on-empty here. Pre-redeemed (rewards-screen)
+  // instances that a later commit CONSUMED live under order_id
+  // `milestone-redeem:<mid>:<key>` — never under `<orderId>%` — so an order
+  // that ONLY had pre-redeemed rewards would find zero rows here and, with
+  // an early return, never reach the 2nd pass below (closes L3).
 
-  for (const row of redeems as Array<{ id: string; reference_id: string; points: number }>) {
-    // Idempotency: skip if we already restored this milestone for this order.
-    const { data: priorRestore } = await supabaseAdmin
+  for (const row of (redeems ?? []) as Array<{ id: string; reference_id: string; points: number }>) {
+    // Idempotency (defect-4 fix): scope the dedup check to the EXACT
+    // idempotency_key this 1st-pass row would produce
+    // (`refund:order:<orderId>:<reference_id>`), not just (order_id,
+    // reference_id). Under stacking, the 2nd pass below inserts ONE
+    // earn/milestone-refund row PER consumed keyed pre-redemption instance
+    // — same order_id, same reference_id (the milestone id), but its OWN
+    // distinct idempotency_key `refund:order:<orderId>:pre:<preRowId>`. So
+    // once an order has consumed 2+ keyed instances of one milestone, 2+
+    // rows can legitimately share (order_id, reference_id). The OLD
+    // `.eq('reference_id', ...).maybeSingle()` query matched ALL of them
+    // and, on a retry of this whole function after the 2nd pass had
+    // already run once, PostgREST errors on "multiple rows returned" —
+    // `.maybeSingle()` then resolves to `data: null` (the destructure
+    // above never checked `error`), so `priorRestore` read as "not yet
+    // restored" and this 1st-pass row got double-credited.
+    //
+    // Filtering on the exact idempotency_key instead of the raw
+    // (order_id, reference_id) pair is also NOT the same as a blanket
+    // existence check on (order_id, reference_id, type, reference_type) —
+    // a blanket check would find a 2nd-pass row for the SAME reference_id
+    // and wrongly conclude this DIFFERENT (1st-pass) deduction was already
+    // restored, silently skipping a legitimate refund (a customer loss in
+    // the other direction). Matching the exact key means this check only
+    // ever matches a row this exact 1st-pass source row itself previously
+    // created — `.limit(1)` (not `.maybeSingle()`) so it can never error
+    // even if some future bug produced duplicates, preserving
+    // exactly-once restore per source row without a false-skip risk.
+    const priorRestoreKey = `refund:order:${params.orderId}:${row.reference_id}`;
+    const { data: priorRestoreRows } = await supabaseAdmin
       .from('loyalty_transactions')
       .select('id')
       .eq('customer_id', params.customerId)
@@ -2088,8 +2443,9 @@ export async function restoreStampMilestonesForRefund(params: {
       .eq('type', 'earn')
       .eq('reference_type', 'milestone-refund')
       .eq('reference_id', row.reference_id)
-      .maybeSingle();
-    if (priorRestore) { anyAlready = true; cleared.push(String(row.reference_id)); continue; }
+      .eq('metadata->>idempotency_key', priorRestoreKey)
+      .limit(1);
+    if (priorRestoreRows && priorRestoreRows.length > 0) { anyAlready = true; cleared.push(String(row.reference_id)); continue; }
 
     const giveBack = Math.abs(Number(row.points) || 0);
     if (giveBack <= 0) continue;
@@ -2113,10 +2469,80 @@ export async function restoreStampMilestonesForRefund(params: {
       source: 'refund',
       reference_type: 'milestone-refund',
       reference_id: row.reference_id,
-      metadata: { idempotency_key: `refund:order:${params.orderId}:${row.reference_id}` },
+      metadata: { idempotency_key: priorRestoreKey },
     });
     pointsRestored += giveBack;
     cleared.push(String(row.reference_id));
+  }
+
+  // ── 2nd pass (design §8, closes L3): restore CONSUMED pre-redemptions.
+  // consumeOrderMilestones claims a rewards-screen pre-redemption by setting
+  // metadata.consumed_by_order = orderId on the ORIGINAL `milestone-redeem:
+  // <mid>:<key>` row — it never creates a 2nd row under this order's own id
+  // for that deduction (only a 0-point marker, skipped above via the
+  // `giveBack <= 0` guard). Without this pass, cancelling an order that
+  // consumed a pre-redemption never gave the points back — a real customer
+  // loss. Per-instance CAS (not the 1st pass's per-reference_id prior-restore
+  // check) so a SECOND instance of the same milestone in the same order
+  // restores independently instead of being skipped as "already restored".
+  const { data: consumedPre } = await supabaseAdmin
+    .from('loyalty_transactions')
+    .select('id, reference_id, points, metadata')
+    .eq('customer_id', params.customerId)
+    .eq('merchant_id', params.merchantId)
+    .eq('type', 'redeem')
+    .eq('loyalty_type', 'points')
+    .eq('reference_type', 'milestone')
+    .like('order_id', 'milestone-redeem:%')
+    .eq('metadata->>consumed_by_order', params.orderId);
+
+  for (const row of (consumedPre ?? []) as Array<{ id: string; reference_id: string; points: number; metadata: Record<string, unknown> | null }>) {
+    const giveBack = Math.abs(Number(row.points) || 0);
+    if (giveBack <= 0) continue;
+
+    // CAS: the WHERE clause (re-evaluated under row lock at UPDATE time) is
+    // the idempotency guard — only the first restore attempt for this exact
+    // pre-redemption row can win it. Do NOT clear consumed_by_order;
+    // refunded_at alone makes the row permanently unclaimable by both a
+    // future consume (loyalty.ts CAS requires refunded_at IS NULL) and a
+    // future unredeem (handleUnredeemMilestone's L1 CAS, same guard).
+    const priorMeta = (row.metadata as Record<string, unknown> | null) ?? {};
+    const { data: claimRows } = await supabaseAdmin
+      .from('loyalty_transactions')
+      .update({
+        metadata: { ...priorMeta, refunded_at: new Date().toISOString(), refund_reason: 'order_cancelled' },
+      })
+      .eq('id', row.id)
+      .is('metadata->>refunded_at', null)
+      .select('id');
+    if (!claimRows || claimRows.length !== 1) { anyAlready = true; continue; } // lost the CAS — already restored
+
+    const { error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
+      p_customer_id: params.customerId,
+      p_merchant_id: params.merchantId,
+      p_points: giveBack,
+      p_config_version: 1,
+    });
+    if (incErr) {
+      console.warn('[restoreMilestones] increment_loyalty_points failed (pre-redemption):', incErr.message);
+      continue;
+    }
+
+    await supabaseAdmin.from('loyalty_transactions').insert({
+      customer_id: params.customerId,
+      merchant_id: params.merchantId,
+      order_id: params.orderId,
+      type: 'earn',
+      loyalty_type: 'points',
+      points: giveBack,
+      description: 'Refunded pre-redeemed milestone (order cancelled)',
+      source: 'refund',
+      reference_type: 'milestone-refund',
+      reference_id: row.reference_id,
+      metadata: { idempotency_key: `refund:order:${params.orderId}:pre:${row.id}` },
+    });
+    pointsRestored += giveBack;
+    if (!cleared.includes(String(row.reference_id))) cleared.push(String(row.reference_id));
   }
 
   if (pointsRestored > 0) notifyPassUpdateSafe(params.customerId, params.merchantId);
@@ -2561,16 +2987,194 @@ async function handleUnredeemMilestone(req: any, res: any) {
       return res.status(404).json({ error: 'Redemption not found' });
     }
 
-    // Idempotency: if we already refunded this redemption, return success
-    // without doing anything. Lets the cart-context fire the refund call
-    // multiple times safely (e.g. on every remove → re-add → remove cycle).
-    const alreadyRefundedAt = (original.metadata as Record<string, unknown> | null)?.refunded_at;
-    if (alreadyRefundedAt) {
+    // Idempotency: if we already refunded this redemption, FINISH the
+    // refund (see finishRefund below) rather than blindly reporting
+    // success. Lets the cart-context fire the refund call multiple times
+    // safely (e.g. on every remove → re-add → remove cycle) AND recovers a
+    // refund an earlier process crashed in the middle of.
+    const originalMeta = (original.metadata as Record<string, unknown> | null) ?? {};
+    const referenceId = String(original.reference_id ?? '');
+    // Points value is negative on a redeem row; abs() to add back. Moved
+    // up (was previously computed after the guards below) — the
+    // refunded_at resume path needs it even when short-circuiting past
+    // those guards, since a prior attempt already cleared them to win the
+    // CAS.
+    const pointsToRefund = Math.abs(Number(original.points ?? 0));
+
+    // Defect-3 crash-window fix: completes the SECOND half of a refund
+    // (idempotent ledger insert + balance credit + audit log) for a row
+    // whose metadata.refunded_at is already set — either because the CAS
+    // below just won it, or because an EARLIER call/process won that same
+    // CAS and then errored or crashed before finishing. Called from all
+    // three sites where we observe refunded_at already set.
+    //
+    // Why this can't double-credit: the ledger row inserted here uses
+    // order_id `milestone-refund:<redemptionId>`, which falls under the
+    // SAME partial unique index that dedups redeem rows
+    // (idx_loyalty_tx_points_redeem_per_order on (merchant_id,
+    // customer_id, order_id) WHERE type='redeem' AND
+    // loyalty_type='points'), so a second insert attempt for the same
+    // redemptionId always 23505s. The balance credit only ever runs in the
+    // branch where THIS call's own insert created the row — never on a
+    // 23505 — so across the original attempt plus any number of retries
+    // resumes/concurrent duplicate calls, the credit fires at most once.
+    // If the credit step itself then fails for a normal (non-crash)
+    // reason, we roll back (delete) the ledger row we just inserted so the
+    // next retry re-enters a clean state (fresh insert, fresh credit)
+    // instead of a stuck "row exists, never credited" limbo — which would
+    // otherwise be a NEW silent-loss vector introduced by this very fix.
+    //
+    // Why this can't silently lose the credit: previously ANY crash
+    // between the CAS (refunded_at set) and the old inline ledger-insert
+    // +credit permanently stuck the row on the refunded_at dedup fast-path
+    // forever, since nothing ever re-examined it. Now that fast-path calls
+    // finishRefund, which re-attempts the insert; since no ledger row
+    // exists yet for that crash case, the insert succeeds fresh and the
+    // credit runs. The only remaining gap is the ledger insert's own
+    // sub-transaction boundary vs the balance-credit write immediately
+    // after it — a hard process kill in that exact narrow window would
+    // leave a ledger row with no credit, and a resume would then see 23505
+    // and (per the dedup branch) not credit again. This is the same
+    // residual risk every other ledger-then-credit pair in this file
+    // already carries (e.g. earnPoints above); fully closing it needs both
+    // writes wrapped in one DB transaction/RPC, which is a migration and
+    // out of scope for this fix. Every crash point OTHER than that single
+    // sub-write gap is now fully recoverable with no double-credit.
+    const finishRefund = async (meta: Record<string, unknown>) => {
+      if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured' });
+
+      const { data: refundRow, error: refundErr } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .insert({
+          customer_id: customerId,
+          merchant_id: merchantId,
+          type: 'redeem',
+          loyalty_type: 'points',
+          points: pointsToRefund, // positive = refund
+          source: 'app',
+          reference_type: 'milestone_refund',
+          reference_id: referenceId,
+          order_id: `milestone-refund:${redemptionId}`,
+          description: 'Refund: reward removed from cart',
+          metadata: {
+            refund_of: redemptionId,
+            original_milestone_id: referenceId,
+          },
+        })
+        .select('id')
+        .single();
+
+      if (refundErr || !refundRow) {
+        if ((refundErr as { code?: string } | null)?.code === '23505') {
+          // A prior attempt already inserted this ledger row (and per the
+          // invariant above, already credited it) — report the current
+          // balance without crediting again.
+          const { data: pts } = await supabaseAdmin
+            .from('loyalty_points')
+            .select('points')
+            .eq('customer_id', customerId)
+            .eq('merchant_id', merchantId)
+            .maybeSingle();
+          return res.json({
+            success: true,
+            deduplicated: true,
+            pointsRefunded: pointsToRefund,
+            newBalance: pts ? Number(pts.points ?? 0) : undefined,
+          });
+        }
+        // Real failure, not a dup — refunded_at stays set on the original
+        // row, and no ledger row was created, so the next retry re-enters
+        // this same finishRefund path and tries the insert again instead
+        // of silently reporting success. No credit has happened yet.
+        return res.status(500).json({ error: refundErr?.message || 'Refund insert failed' });
+      }
+
+      // Attach the refund transaction id onto the original's metadata.
+      // Best-effort follow-up write (not a CAS, not load-bearing) —
+      // refunded_at plus the ledger row above are the durable truth.
+      await supabaseAdmin
+        .from('loyalty_transactions')
+        .update({
+          metadata: {
+            ...meta,
+            refunded_at: (meta.refunded_at as string | undefined) ?? new Date().toISOString(),
+            refund_transaction_id: refundRow.id,
+          },
+        })
+        .eq('id', redemptionId);
+
+      // Increment the points balance (do NOT touch lifetime_points — a
+      // refund isn't earning). Read-modify-write because Supabase doesn't
+      // expose atomic UPDATE-by-expression in the JS client. On failure,
+      // roll back the ledger row we just inserted (see comment above) so a
+      // retry isn't stuck believing the credit already happened.
+      const { data: pts, error: ptsErr } = await supabaseAdmin
+        .from('loyalty_points')
+        .select('points')
+        .eq('customer_id', customerId)
+        .eq('merchant_id', merchantId)
+        .maybeSingle();
+      if (ptsErr) {
+        await supabaseAdmin.from('loyalty_transactions').delete().eq('id', refundRow.id);
+        return res.status(500).json({ error: ptsErr.message || 'Failed to read balance for refund credit' });
+      }
+      const currentBalance = Number(pts?.points ?? 0);
+      const newBalance = currentBalance + pointsToRefund;
+      const creditNowIso = new Date().toISOString();
+      const creditResult = pts
+        ? await supabaseAdmin
+            .from('loyalty_points')
+            .update({ points: newBalance, updated_at: creditNowIso })
+            .eq('customer_id', customerId)
+            .eq('merchant_id', merchantId)
+        : await supabaseAdmin.from('loyalty_points').insert({
+            customer_id: customerId,
+            merchant_id: merchantId,
+            points: pointsToRefund,
+            lifetime_points: 0,
+          });
+      if (creditResult.error) {
+        await supabaseAdmin.from('loyalty_transactions').delete().eq('id', refundRow.id);
+        return res.status(500).json({ error: creditResult.error.message || 'Failed to credit refund balance' });
+      }
+
+      // Audit log
+      await supabaseAdmin.from('audit_log').insert({
+        merchant_id: merchantId,
+        action: 'loyalty.milestone_refunded',
+        payload: {
+          customer_id: customerId,
+          redemption_id: redemptionId,
+          refund_transaction_id: refundRow.id,
+          points_refunded: pointsToRefund,
+          reason: 'cart_removal',
+        },
+      });
+
       return res.json({
         success: true,
-        deduplicated: true,
-        refundedAt: alreadyRefundedAt,
+        pointsRefunded: pointsToRefund,
+        newBalance,
       });
+    };
+
+    if (originalMeta.refunded_at) {
+      return finishRefund(originalMeta);
+    }
+
+    // L1 fix (design §8, closes a LIVE exploit): reject if a real order
+    // already consumed this pre-redemption. Before this check, the ONLY
+    // "already completed" guard was the completedOrder lookup below, keyed
+    // off `original.order_id` — but for a rewards-screen pre-redemption,
+    // `original.order_id` IS the `milestone-redeem:<mid>:<key>` row itself
+    // (never a customer_orders id), so that lookup always no-ops for this
+    // row shape. That let redeem → checkout (goods committed, and
+    // consumeOrderMilestones marks metadata.consumed_by_order on this exact
+    // row) → /unredeem-milestone hand back points for an already-delivered
+    // reward. metadata.consumed_by_order is the real signal that this
+    // pre-redemption was spent by an order.
+    if (originalMeta.consumed_by_order) {
+      return res.status(409).json({ error: 'Reward already used in an order' });
     }
 
     // Guard against refunding after checkout. If the customer actually
@@ -2589,99 +3193,55 @@ async function handleUnredeemMilestone(req: any, res: any) {
       }
     }
 
-    // Points value is negative on a redeem row; abs() to add back.
-    const pointsToRefund = Math.abs(Number(original.points ?? 0));
     if (pointsToRefund === 0) {
       return res.status(400).json({ error: 'Original redemption has zero points' });
     }
 
     const nowIso = new Date().toISOString();
 
-    // 1. Insert the refund transaction (positive points). Use a 'redeem'
-    //    type with a marker in metadata rather than a separate 'refund'
-    //    type to keep the existing balance computation working — the
-    //    ledger sums all 'earn'+'redeem' rows.
-    const { data: refundRow, error: refundErr } = await supabaseAdmin
+    // 1. CAS-claim FIRST (design §8, closes L2-style unredeem/consume race).
+    //    The two reads above (refunded_at, consumed_by_order) are fast-path
+    //    checks only — this conditional UPDATE's WHERE clause is the actual
+    //    guard, re-evaluated by Postgres under row lock at write time. It is
+    //    mutually exclusive with consumeOrderMilestones' own claim CAS
+    //    (which requires metadata->>refunded_at IS NULL): whichever writer
+    //    reaches the row first under the lock wins, and the loser's WHERE
+    //    clause simply stops matching. This closes the race where a
+    //    concurrent commit consumes the reward at the same instant a
+    //    duplicate unredeem call refunds it.
+    const { data: claimRows, error: claimErr } = await supabaseAdmin
       .from('loyalty_transactions')
-      .insert({
-        customer_id: customerId,
-        merchant_id: merchantId,
-        type: 'redeem',
-        loyalty_type: 'points',
-        points: pointsToRefund, // positive = refund
-        source: 'app',
-        reference_type: 'milestone_refund',
-        reference_id: String(original.reference_id ?? ''),
-        order_id: `milestone-refund:${redemptionId}`,
-        description: 'Refund: reward removed from cart',
-        metadata: {
-          refund_of: redemptionId,
-          original_milestone_id: original.reference_id,
-        },
-      })
-      .select('id')
-      .single();
-    if (refundErr || !refundRow) {
-      return res.status(500).json({ error: refundErr?.message || 'Refund insert failed' });
+      .update({ metadata: { ...originalMeta, refunded_at: nowIso } })
+      .eq('id', redemptionId)
+      .is('metadata->>refunded_at', null)
+      .is('metadata->>consumed_by_order', null)
+      .select('id');
+    if (claimErr) {
+      return res.status(500).json({ error: claimErr.message || 'Failed to claim redemption for refund' });
+    }
+    if (!claimRows || claimRows.length !== 1) {
+      // Lost the CAS between our reads above and this write — re-read to
+      // report the correct terminal state instead of guessing.
+      const { data: recheck } = await supabaseAdmin
+        .from('loyalty_transactions')
+        .select('metadata')
+        .eq('id', redemptionId)
+        .maybeSingle();
+      const recheckMeta = (recheck?.metadata as Record<string, unknown> | null) ?? {};
+      if (recheckMeta.refunded_at) {
+        return finishRefund(recheckMeta);
+      }
+      if (recheckMeta.consumed_by_order) {
+        return res.status(409).json({ error: 'Reward already used in an order' });
+      }
+      return res.status(500).json({ error: 'Failed to claim redemption for refund' });
     }
 
-    // 2. Mark the original redemption as refunded — prevents double-refund
-    //    on the next call.
-    await supabaseAdmin
-      .from('loyalty_transactions')
-      .update({
-        metadata: {
-          ...(original.metadata as Record<string, unknown> | null ?? {}),
-          refunded_at: nowIso,
-          refund_transaction_id: refundRow.id,
-        },
-      })
-      .eq('id', redemptionId);
-
-    // 3. Increment the points balance (do NOT touch lifetime_points —
-    //    a refund isn't earning). Read-modify-write because Supabase
-    //    doesn't expose atomic UPDATE-by-expression in the JS client.
-    const { data: pts } = await supabaseAdmin
-      .from('loyalty_points')
-      .select('points')
-      .eq('customer_id', customerId)
-      .eq('merchant_id', merchantId)
-      .maybeSingle();
-    const currentBalance = Number(pts?.points ?? 0);
-    const newBalance = currentBalance + pointsToRefund;
-    if (pts) {
-      await supabaseAdmin
-        .from('loyalty_points')
-        .update({ points: newBalance, updated_at: nowIso })
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId);
-    } else {
-      await supabaseAdmin.from('loyalty_points').insert({
-        customer_id: customerId,
-        merchant_id: merchantId,
-        points: pointsToRefund,
-        lifetime_points: 0,
-      });
-    }
-
-    // 4. Audit log
-    await supabaseAdmin.from('audit_log').insert({
-      merchant_id: merchantId,
-      action: 'loyalty.milestone_refunded',
-      payload: {
-        customer_id: customerId,
-        redemption_id: redemptionId,
-        refund_transaction_id: refundRow.id,
-        points_refunded: pointsToRefund,
-        reason: 'cart_removal',
-      },
-    });
-
-    return res.json({
-      success: true,
-      pointsRefunded: pointsToRefund,
-      newBalance,
-    });
+    // 2-5. Ledger insert + attach id + balance credit + audit log, via the
+    // same resumable finishRefund used by the retry/crash-recovery paths
+    // above — we just won the CAS, so this is the "fresh" call that will
+    // actually create the ledger row and perform the credit.
+    return finishRefund({ ...originalMeta, refunded_at: nowIso });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to refund redemption' });
   }
