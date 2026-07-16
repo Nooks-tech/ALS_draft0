@@ -694,6 +694,46 @@ loyaltyRouter.put('/config', async (req, res) => {
       }
     }
 
+    // On a loyalty-type switch, nudge every registered Apple Wallet pass for
+    // this merchant. Without this, nothing pushes: the per-customer
+    // auto-switch (getCustomerLoyaltyRoute) only runs — and only notifies —
+    // when that customer happens to hit a loyalty endpoint later, so passes
+    // sit on the old layout indefinitely. The push alone is safe and correct
+    // per customer: the pass render calls getCustomerLoyaltyRoute, which
+    // keeps a customer on their old type while they still hold a balance
+    // there and flips them (with the balance-reset contract) only at 0 — so
+    // fanning out to everyone just makes each pass re-render whatever is
+    // already true for that customer. Fire-and-forget AFTER the response:
+    // a slow APNs round shouldn't hold the merchant's dashboard save.
+    if (typeChanged) {
+      const FANOUT_CAP = 500;
+      void (async () => {
+        try {
+          const { data: regs, error: regErr } = await supabaseAdmin!
+            .from('wallet_pass_registrations')
+            .select('serial_number')
+            .like('serial_number', `loyalty-${merchantId}-%`)
+            .limit(FANOUT_CAP);
+          if (regErr) {
+            console.warn('[loyalty] type-switch pass fan-out query failed:', regErr.message);
+            return;
+          }
+          const serialPrefix = `loyalty-${merchantId}-`;
+          const customerIds = [...new Set((regs ?? []).map((r) => String(r.serial_number).slice(serialPrefix.length)))]
+            .filter(Boolean);
+          if (regs && regs.length === FANOUT_CAP) {
+            console.warn(`[loyalty] type-switch pass fan-out hit the ${FANOUT_CAP}-registration cap for merchant ${merchantId} — passes beyond the cap will lazily refresh on their customers' next loyalty action`);
+          }
+          console.log(`[loyalty] type-switch pass fan-out: notifying ${customerIds.length} registered pass(es) for merchant ${merchantId}`);
+          for (const cid of customerIds) {
+            notifyPassUpdateSafe(cid, merchantId);
+          }
+        } catch (e: any) {
+          console.warn('[loyalty] type-switch pass fan-out failed:', e?.message);
+        }
+      })();
+    }
+
     res.json({ success: true });
   } catch (err: any) {
     const cause = (err as any)?.cause;

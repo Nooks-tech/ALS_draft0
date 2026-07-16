@@ -81,12 +81,33 @@ const WEB_SERVICE_URL = process.env.WALLET_WEB_SERVICE_URL
   || 'https://alsdraft0-production.up.railway.app/api/loyalty';
 const AUTH_TOKEN_SECRET = (process.env.WALLET_AUTH_SECRET || process.env.NOOKS_INTERNAL_SECRET || '').trim();
 
+// Previous auth secrets, comma-separated. The authenticationToken is BAKED
+// into each pass at download time (HMAC(secret, serial)), and iOS presents
+// that frozen token on every update fetch for the pass's whole lifetime. So
+// rotating the secret above — or changing its derivation, as the 2026-03-24
+// hardening and a May rotation each did — silently 401s every
+// previously-issued pass forever: pushes still deliver, the device fetches,
+// gets rejected, and keeps showing the stale pass with no error anywhere
+// (diagnosed live 2026-07-16: a pass frozen on the points layout after the
+// merchant switched to cashback). When rotating WALLET_AUTH_SECRET, put the
+// old value(s) here: a legacy-token fetch is accepted, and the pass it
+// downloads re-bakes the CURRENT token, so every device self-heals on its
+// next fetch. Drop entries once the acceptance log goes quiet.
+const PREVIOUS_AUTH_SECRETS: string[] = (process.env.WALLET_AUTH_SECRET_PREVIOUS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 function isConfigured() {
   return !!(PASS_TYPE_ID && TEAM_ID && SIGNER_CERT_PEM && SIGNER_KEY_PEM && AUTH_TOKEN_SECRET);
 }
 
+function hmacForSerial(secret: string, serial: string): string {
+  return crypto.createHmac('sha256', secret).update(serial).digest('hex');
+}
+
 function authTokenForSerial(serial: string): string {
-  return crypto.createHmac('sha256', AUTH_TOKEN_SECRET).update(serial).digest('hex');
+  return hmacForSerial(AUTH_TOKEN_SECRET, serial);
 }
 
 async function requireWalletPassCustomer(req: Request, res: Response, customerId: string) {
@@ -802,18 +823,36 @@ async function createPassBuffer(files: Record<string, Buffer>): Promise<Buffer> 
 function verifyAuthHeader(req: any, serialNumber: string): boolean {
   const header = req.headers['authorization'] || '';
   const token = header.replace(/^ApplePass\s+/i, '');
-  const match = token === authTokenForSerial(serialNumber);
-  if (!match) {
-    const context = {
-      component: 'walletPass.verifyAuthHeader',
-      serialNumber,
-      deviceId: req.params?.deviceId,
-      passTypeId: req.params?.passTypeId,
-    };
-    console.warn('[walletPass] auth token mismatch for pass web-service request', context);
-    captureError(new Error('walletPass auth token mismatch'), context);
+  if (token === authTokenForSerial(serialNumber)) return true;
+
+  // Token baked under a previous secret? Accept it — the pass this request
+  // downloads carries the CURRENT token, so the device migrates itself and
+  // this branch stops firing for it. Log which key matched (index only) so
+  // retired entries can be dropped once the fleet has re-fetched.
+  for (let i = 0; i < PREVIOUS_AUTH_SECRETS.length; i++) {
+    if (token === hmacForSerial(PREVIOUS_AUTH_SECRETS[i], serialNumber)) {
+      console.log(
+        `[walletPass] accepted legacy auth token (previous secret #${i + 1}) for ${serialNumber} — pass re-bakes the current token on this fetch`,
+      );
+      return true;
+    }
   }
-  return match;
+
+  const context = {
+    component: 'walletPass.verifyAuthHeader',
+    serialNumber,
+    deviceId: req.params?.deviceId,
+    passTypeId: req.params?.passTypeId,
+  };
+  // A mismatch usually means the pass was baked under a secret that is
+  // neither current nor listed in WALLET_AUTH_SECRET_PREVIOUS — the pass is
+  // FROZEN on that device (updates silently rejected) until the customer
+  // removes and re-adds it. If this fires after a secret rotation, add the
+  // old secret to WALLET_AUTH_SECRET_PREVIOUS instead of asking customers
+  // to re-add.
+  console.warn('[walletPass] auth token mismatch for pass web-service request', context);
+  captureError(new Error('walletPass auth token mismatch'), context);
+  return false;
 }
 
 // POST /v1/devices/:deviceId/registrations/:passTypeId/:serialNumber
