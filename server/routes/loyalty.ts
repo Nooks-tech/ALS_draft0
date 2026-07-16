@@ -2450,28 +2450,31 @@ export async function restoreStampMilestonesForRefund(params: {
     const giveBack = Math.abs(Number(row.points) || 0);
     if (giveBack <= 0) continue;
 
-    const { error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
+    // Atomic + idempotent ledger-insert + balance-credit via
+    // refund_loyalty_points, keyed on the SAME priorRestoreKey the fast
+    // prior-check above uses — a crash between the old separate
+    // increment_loyalty_points call and ledger insert could double-credit
+    // (retry re-increments) or (in the other order) silently lose the
+    // credit; this RPC does both in one DB transaction, idempotent on
+    // p_order_id, so a retry/resume can never do either.
+    const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('refund_loyalty_points', {
       p_customer_id: params.customerId,
       p_merchant_id: params.merchantId,
       p_points: giveBack,
-      p_config_version: 1,
+      p_order_id: priorRestoreKey,
+      p_reference_type: 'milestone_refund',
+      p_reference_id: row.reference_id,
+      p_source: 'refund',
+      p_description: 'Refunded milestone (order cancelled)',
+      p_metadata: { idempotency_key: priorRestoreKey },
     });
-    if (incErr) { console.warn('[restoreMilestones] increment_loyalty_points failed:', incErr.message); continue; }
-
-    await supabaseAdmin.from('loyalty_transactions').insert({
-      customer_id: params.customerId,
-      merchant_id: params.merchantId,
-      order_id: params.orderId,
-      type: 'earn',
-      loyalty_type: 'points',
-      points: giveBack,
-      description: 'Refunded milestone (order cancelled)',
-      source: 'refund',
-      reference_type: 'milestone-refund',
-      reference_id: row.reference_id,
-      metadata: { idempotency_key: priorRestoreKey },
-    });
-    pointsRestored += giveBack;
+    if (rpcErr) { console.warn('[restoreMilestones] refund_loyalty_points failed:', rpcErr.message); continue; }
+    const rpcResult = rpcResultObject(rpcData);
+    if (rpcResult?.status === 'duplicate') {
+      anyAlready = true;
+    } else {
+      pointsRestored += giveBack;
+    }
     cleared.push(String(row.reference_id));
   }
 
@@ -2515,34 +2518,44 @@ export async function restoreStampMilestonesForRefund(params: {
       .eq('id', row.id)
       .is('metadata->>refunded_at', null)
       .select('id');
-    if (!claimRows || claimRows.length !== 1) { anyAlready = true; continue; } // lost the CAS — already restored
-
-    const { error: incErr } = await supabaseAdmin.rpc('increment_loyalty_points', {
+    const wonCas = !!claimRows && claimRows.length === 1;
+    // CRASH-WINDOW FIX: a lost CAS here does NOT necessarily mean this row
+    // was already fully restored — it can also mean a PRIOR attempt of
+    // THIS SAME restore won the CAS (marked refunded_at) and then crashed
+    // before crediting, which under the old separate
+    // increment_loyalty_points + ledger-insert would have silently lost the
+    // credit forever (nothing ever re-examined a refunded_at-set row). A
+    // `consumed_by_order = orderId` row can only be refunded by THIS
+    // order's cancellation, so a lost CAS here is always a prior attempt of
+    // this very restore — never a different, unrelated writer. Because
+    // refund_loyalty_points is idempotent on p_order_id, calling it below
+    // regardless of who won the CAS safely COMPLETES an interrupted credit
+    // on a lost CAS (status 'ok') or is a pure no-op if it was already
+    // fully completed (status 'duplicate') — never a double-credit.
+    const preRefundOrderId = `refund:order:${params.orderId}:pre:${row.id}`;
+    const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('refund_loyalty_points', {
       p_customer_id: params.customerId,
       p_merchant_id: params.merchantId,
       p_points: giveBack,
-      p_config_version: 1,
+      p_order_id: preRefundOrderId,
+      p_reference_type: 'milestone_refund',
+      p_reference_id: row.reference_id,
+      p_source: 'refund',
+      p_description: 'Refunded consumed pre-redemption (order cancelled)',
+      p_metadata: { idempotency_key: preRefundOrderId },
     });
-    if (incErr) {
-      console.warn('[restoreMilestones] increment_loyalty_points failed (pre-redemption):', incErr.message);
+    if (rpcErr) {
+      console.warn('[restoreMilestones] refund_loyalty_points failed (pre-redemption):', rpcErr.message);
+      if (!wonCas) anyAlready = true;
       continue;
     }
-
-    await supabaseAdmin.from('loyalty_transactions').insert({
-      customer_id: params.customerId,
-      merchant_id: params.merchantId,
-      order_id: params.orderId,
-      type: 'earn',
-      loyalty_type: 'points',
-      points: giveBack,
-      description: 'Refunded pre-redeemed milestone (order cancelled)',
-      source: 'refund',
-      reference_type: 'milestone-refund',
-      reference_id: row.reference_id,
-      metadata: { idempotency_key: `refund:order:${params.orderId}:pre:${row.id}` },
-    });
-    pointsRestored += giveBack;
-    if (!cleared.includes(String(row.reference_id))) cleared.push(String(row.reference_id));
+    const rpcResult = rpcResultObject(rpcData);
+    if (rpcResult?.status === 'duplicate') {
+      anyAlready = true;
+    } else {
+      pointsRestored += giveBack;
+      if (!cleared.includes(String(row.reference_id))) cleared.push(String(row.reference_id));
+    }
   }
 
   if (pointsRestored > 0) notifyPassUpdateSafe(params.customerId, params.merchantId);
@@ -3043,100 +3056,53 @@ async function handleUnredeemMilestone(req: any, res: any) {
     const finishRefund = async (meta: Record<string, unknown>) => {
       if (!supabaseAdmin) return res.status(500).json({ error: 'Supabase not configured' });
 
-      const { data: refundRow, error: refundErr } = await supabaseAdmin
-        .from('loyalty_transactions')
-        .insert({
-          customer_id: customerId,
-          merchant_id: merchantId,
-          type: 'redeem',
-          loyalty_type: 'points',
-          points: pointsToRefund, // positive = refund
-          source: 'app',
-          reference_type: 'milestone_refund',
-          reference_id: referenceId,
-          order_id: `milestone-refund:${redemptionId}`,
-          description: 'Refund: reward removed from cart',
-          metadata: {
-            refund_of: redemptionId,
-            original_milestone_id: referenceId,
-          },
-        })
-        .select('id')
-        .single();
-
-      if (refundErr || !refundRow) {
-        if ((refundErr as { code?: string } | null)?.code === '23505') {
-          // A prior attempt already inserted this ledger row (and per the
-          // invariant above, already credited it) — report the current
-          // balance without crediting again.
-          const { data: pts } = await supabaseAdmin
-            .from('loyalty_points')
-            .select('points')
-            .eq('customer_id', customerId)
-            .eq('merchant_id', merchantId)
-            .maybeSingle();
-          return res.json({
-            success: true,
-            deduplicated: true,
-            pointsRefunded: pointsToRefund,
-            newBalance: pts ? Number(pts.points ?? 0) : undefined,
-          });
-        }
-        // Real failure, not a dup — refunded_at stays set on the original
-        // row, and no ledger row was created, so the next retry re-enters
-        // this same finishRefund path and tries the insert again instead
-        // of silently reporting success. No credit has happened yet.
-        return res.status(500).json({ error: refundErr?.message || 'Refund insert failed' });
+      // Atomic + idempotent ledger-insert + balance-credit via the
+      // refund_loyalty_points RPC (SECURITY DEFINER, one DB transaction).
+      // Idempotency key = order_id `milestone-refund:<redemptionId>` — same
+      // value the old manual insert used, and it falls under the same
+      // partial unique index redeem_loyalty_points relies on, so a repeat
+      // call (retry, crash-recovery resume, or a concurrent duplicate) is
+      // guaranteed to credit at most once, and can never silently lose the
+      // credit either — insert and credit happen together or not at all.
+      const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc('refund_loyalty_points', {
+        p_customer_id: customerId,
+        p_merchant_id: merchantId,
+        p_points: pointsToRefund,
+        p_order_id: `milestone-refund:${redemptionId}`,
+        p_reference_type: 'milestone_refund',
+        p_reference_id: referenceId,
+        p_source: 'app',
+        p_description: 'Refund: reward removed from cart',
+        p_metadata: {
+          refund_of: redemptionId,
+          original_milestone_id: referenceId,
+        },
+      });
+      if (rpcErr) {
+        // Real failure — refunded_at stays set on the original row, so the
+        // next retry re-enters this same finishRefund path and tries the
+        // RPC again instead of silently reporting success. No credit has
+        // happened yet.
+        return res.status(500).json({ error: rpcErr.message || 'Refund failed' });
       }
+      const rpcResult = rpcResultObject(rpcData);
+      const rpcStatus = rpcResult?.status;
+      const newBalance = Number(rpcResult?.new_balance ?? 0);
+      const transactionId = rpcResult?.transaction_id as string | undefined;
 
       // Attach the refund transaction id onto the original's metadata.
-      // Best-effort follow-up write (not a CAS, not load-bearing) —
-      // refunded_at plus the ledger row above are the durable truth.
+      // Best-effort follow-up write (not a CAS, not load-bearing) — the
+      // RPC's ledger row plus refunded_at above are the durable truth.
       await supabaseAdmin
         .from('loyalty_transactions')
         .update({
           metadata: {
             ...meta,
             refunded_at: (meta.refunded_at as string | undefined) ?? new Date().toISOString(),
-            refund_transaction_id: refundRow.id,
+            ...(transactionId ? { refund_transaction_id: transactionId } : {}),
           },
         })
         .eq('id', redemptionId);
-
-      // Increment the points balance (do NOT touch lifetime_points — a
-      // refund isn't earning). Read-modify-write because Supabase doesn't
-      // expose atomic UPDATE-by-expression in the JS client. On failure,
-      // roll back the ledger row we just inserted (see comment above) so a
-      // retry isn't stuck believing the credit already happened.
-      const { data: pts, error: ptsErr } = await supabaseAdmin
-        .from('loyalty_points')
-        .select('points')
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId)
-        .maybeSingle();
-      if (ptsErr) {
-        await supabaseAdmin.from('loyalty_transactions').delete().eq('id', refundRow.id);
-        return res.status(500).json({ error: ptsErr.message || 'Failed to read balance for refund credit' });
-      }
-      const currentBalance = Number(pts?.points ?? 0);
-      const newBalance = currentBalance + pointsToRefund;
-      const creditNowIso = new Date().toISOString();
-      const creditResult = pts
-        ? await supabaseAdmin
-            .from('loyalty_points')
-            .update({ points: newBalance, updated_at: creditNowIso })
-            .eq('customer_id', customerId)
-            .eq('merchant_id', merchantId)
-        : await supabaseAdmin.from('loyalty_points').insert({
-            customer_id: customerId,
-            merchant_id: merchantId,
-            points: pointsToRefund,
-            lifetime_points: 0,
-          });
-      if (creditResult.error) {
-        await supabaseAdmin.from('loyalty_transactions').delete().eq('id', refundRow.id);
-        return res.status(500).json({ error: creditResult.error.message || 'Failed to credit refund balance' });
-      }
 
       // Audit log
       await supabaseAdmin.from('audit_log').insert({
@@ -3145,7 +3111,7 @@ async function handleUnredeemMilestone(req: any, res: any) {
         payload: {
           customer_id: customerId,
           redemption_id: redemptionId,
-          refund_transaction_id: refundRow.id,
+          refund_transaction_id: transactionId ?? null,
           points_refunded: pointsToRefund,
           reason: 'cart_removal',
         },
@@ -3153,6 +3119,7 @@ async function handleUnredeemMilestone(req: any, res: any) {
 
       return res.json({
         success: true,
+        deduplicated: rpcStatus === 'duplicate',
         pointsRefunded: pointsToRefund,
         newBalance,
       });
