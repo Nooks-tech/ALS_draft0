@@ -57,6 +57,16 @@ import { readBackFoodicsStatusViaNooks, readbackPermitsTimeoutCancel } from '../
 export const ordersRouter = Router();
 
 /**
+ * Caller-facing outcome of a rejected-commit void, so a TERMINAL response
+ * can tell the customer the truth instead of a blanket "retry me":
+ *   'no_charge'      — self-guard fired; there was nothing captured to void.
+ *   'completed'      — binding verified AND the provider void/refund went through.
+ *   'pending_manual' — binding couldn't be proven, or the provider mutation
+ *                       didn't clearly succeed; a human has to settle it.
+ */
+type ChargeReversalOutcome = 'completed' | 'pending_manual' | 'no_charge';
+
+/**
  * Best-effort void of a card charge when a commit is rejected by a
  * policy gate (store closed / loyalty misuse). Called on BOTH commits:
  * the Apple Pay / SDK card paths charge BEFORE the first commit, so a
@@ -75,9 +85,9 @@ async function voidChargeOnRejectedCommit(
   customerId: string,
   expectedAmountHalalas: number,
   context: string,
-): Promise<void> {
+): Promise<ChargeReversalOutcome> {
   const pid = typeof paymentId === 'string' ? paymentId.trim() : '';
-  if (!pid || isReservedClientPaymentId(pid)) return;
+  if (!pid || isReservedClientPaymentId(pid)) return 'no_charge';
   try {
     const cleanup = await reverseStrictlyBoundRejectedPayment(
       {
@@ -112,11 +122,15 @@ async function voidChargeOnRejectedCommit(
         });
         if (auditError) console.warn('[Orders] Rejected-commit binding audit failed:', auditError.message);
       }
-      return;
+      return 'pending_manual';
     }
 
     const result = cleanup.reversal;
     const disposition = cleanup.disposition;
+    // disposition.completed (void/refund/not_required) means the charge is
+    // genuinely handled — that's the caller's 'completed', independent of
+    // whether there was a customer_orders row around to annotate below.
+    const reversalConfirmed = disposition.completed;
     if (supabaseAdmin) {
       const now = new Date().toISOString();
       const { data: updatedRows, error: persistenceError } = await supabaseAdmin
@@ -145,10 +159,17 @@ async function voidChargeOnRejectedCommit(
         });
       }
       if (persistenceError || !updatedRows || updatedRows.length === 0) {
+        // A confirmed reversal with 0 rows matched and no update error is
+        // just the pre-upsert direct-card path (no draft row exists yet to
+        // mark) — a healthy outcome, not a signal ops needs to chase. Keep
+        // it out of the manual-review/unknown-readback bucket below so it
+        // doesn't read as a failure that needs a human.
+        const reversedNoRow = reversalConfirmed && !persistenceError;
         const { error: auditError } = await supabaseAdmin.from('audit_log').insert({
           merchant_id: merchantId,
-          action:
-            disposition.pending
+          action: reversedNoRow
+            ? 'orders.rejected_commit_payment_reversed_no_row'
+            : disposition.pending
               ? 'refund.card_reversal_unknown_needs_readback'
               : disposition.manualReview
                 ? 'refund.card_reversal_failed_needs_manual_review'
@@ -182,8 +203,10 @@ async function voidChargeOnRejectedCommit(
     } else {
       console.warn(`[Orders] ${context}: ${result.method} Moyasar payment ${cleanup.resolvedPaymentId} after rejecting commit`);
     }
+    return reversalConfirmed ? 'completed' : 'pending_manual';
   } catch (e: any) {
     console.error(`[Orders] ${context}: void of Moyasar payment ${pid} threw:`, e?.message);
+    return 'pending_manual';
   }
 }
 
@@ -1162,9 +1185,18 @@ ordersRouter.post('/commit', async (req, res) => {
     const claimedMilestoneSet = new Set(claimedMilestones);
     const cartMilestoneIds = Array.from(new Set(rewardInstances.map((inst) => inst.milestoneId)));
     if (cartMilestoneIds.some((mid) => !claimedMilestoneSet.has(mid))) {
+      // Apple Pay / saved-card already captured the charge before this first
+      // commit runs — a bare 400 here would strand it with no order and no
+      // sweep visibility. voidChargeOnRejectedCommit no-ops when there's
+      // nothing captured yet (self-guards on paymentId).
+      const reversal = await voidChargeOnRejectedCommit(
+        paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'reward milestone mismatch',
+      );
       return res.status(400).json({
         error: 'Cart has a reward item for a milestone that was not claimed as redeemed.',
         code: 'REWARD_MILESTONE_MISMATCH',
+        terminal: true,
+        reversal,
       });
     }
     // The server's lower-bound computed floor ignores discounts (promo,
@@ -1177,8 +1209,17 @@ ordersRouter.post('/commit', async (req, res) => {
     const MAX_DISCOUNT_RATIO = 0.95;
     const minAcceptableTotal = computedItemFloor * (1 - MAX_DISCOUNT_RATIO);
     if (Number(totalSar) < minAcceptableTotal - 0.01) {
+      // Same reasoning as the milestone-mismatch gate above: the card may
+      // already be captured (Apple Pay / saved-card charge before /commit),
+      // so a rejection here must void it rather than leave it stranded.
+      const reversal = await voidChargeOnRejectedCommit(
+        paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'discount ratio gate',
+      );
       return res.status(400).json({
         error: `Order total ${totalSar} is implausibly low for ${items.length} item(s) with floor ${computedItemFloor.toFixed(2)} SAR; refusing to commit.`,
+        code: 'DISCOUNT_RATIO_REJECTED',
+        terminal: true,
+        reversal,
       });
     }
 
@@ -1872,12 +1913,25 @@ ordersRouter.post('/commit', async (req, res) => {
           p_branch_id: branchId,
         });
         if (rpcErr) {
-          // Nothing else has been deducted yet — a retry is safe and the
-          // RPC is idempotent per order.
+          // Apple Pay / saved-card already captured the charge client-side
+          // BEFORE this final commit ran — the RPC failing here doesn't mean
+          // "nothing happened yet", it means the customer's card is already
+          // debited. A bare 503 with retryable:true left that charge
+          // stranded (the incident this gate exists to close): the client
+          // retried, got charged again, and no customer_orders row was ever
+          // created for any of the captures — invisible to every sweep.
+          // This is now a genuine terminal failure: void the charge (or
+          // record a manual-review audit row if the void itself can't be
+          // confirmed) and tell the client the truth instead of "retry me".
           console.error('[Orders] redeem_loyalty_cashback RPC error:', rpcErr.message);
+          const reversal = await voidChargeOnRejectedCommit(
+            paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'cashback rpc error',
+          );
           return res.status(503).json({
-            error: 'Could not apply the cashback discount. Please retry in a moment.',
-            retryable: true,
+            error: 'Could not apply the cashback discount. Any verified card charge is being reversed or held for provider review.',
+            code: 'CASHBACK_REDEEM_FAILED',
+            terminal: true,
+            reversal,
           });
         }
         const cashbackRpcResult = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
@@ -2025,7 +2079,17 @@ ordersRouter.post('/commit', async (req, res) => {
             } catch (_e) { /* non-fatal */ }
           }
           if (e?.message === 'INSUFFICIENT_WALLET_BALANCE') {
-            return res.status(400).json({ error: 'INSUFFICIENT_WALLET_BALANCE' });
+            // This is the final commit, so a captured Apple Pay / saved-card
+            // charge can already exist — void it rather than strand it.
+            const reversal = await voidChargeOnRejectedCommit(
+              paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'wallet insufficient',
+            );
+            return res.status(400).json({
+              error: 'INSUFFICIENT_WALLET_BALANCE',
+              code: 'INSUFFICIENT_WALLET_BALANCE',
+              terminal: true,
+              reversal,
+            });
           }
           // Phase A/E: wallet debit failures other than INSUFFICIENT_
           // WALLET_BALANCE are DB/RPC errors that previously surfaced
@@ -2045,7 +2109,17 @@ ordersRouter.post('/commit', async (req, res) => {
             orderId: id,
             extra: { walletAppliedSar },
           });
-          return res.status(500).json({ error: e?.message || 'Wallet debit failed' });
+          // Same captured-charge exposure as the insufficient-balance branch
+          // above — this is a terminal 500, not a safe-to-retry state.
+          const reversal = await voidChargeOnRejectedCommit(
+            paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'wallet debit failed',
+          );
+          return res.status(500).json({
+            error: e?.message || 'Wallet debit failed',
+            code: 'WALLET_DEBIT_FAILED',
+            terminal: true,
+            reversal,
+          });
         }
       }
 
