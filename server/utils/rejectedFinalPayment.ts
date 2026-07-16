@@ -12,6 +12,16 @@ export type RejectedFinalPaymentCleanupResult =
       submittedPaymentId: string;
       reason: string;
       retryable: boolean;
+      /**
+       * The provider's own status for the payment when the binding check
+       * rejected it, or undefined when verification threw before reading one.
+       * Callers need it to tell "already voided/refunded — nothing owed, this
+       * is the healthy end state" apart from "genuinely couldn't prove the
+       * binding — a human must look". Without it, a charge some other path
+       * already correctly reversed looks identical to an unprovable one and
+       * gets flagged for review forever.
+       */
+      providerStatus?: string;
     }
   | {
       bindingVerified: true;
@@ -77,6 +87,7 @@ export async function reverseStrictlyBoundRejectedPayment(
       submittedPaymentId: input.submittedPaymentId,
       reason: verification.reason,
       retryable: !!verification.retryable,
+      providerStatus: verification.status,
     };
   }
 

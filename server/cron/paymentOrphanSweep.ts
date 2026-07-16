@@ -60,17 +60,18 @@
  *     issuing a second provider write. So a second pass over an
  *     already-reversed payment classifies as completed/'reversed' again —
  *     not a double-refund.
- *   - The one edge this exposes: if the crash happens strictly BETWEEN a
- *     successful cancelPayment write and the resolved_at persist, the next
- *     tick's verifyPaidPayment call sees the payment is no longer
- *     'paid'/'captured' (it's now 'voided'/'refunded') and returns
- *     ok:false — bindingVerified:false — which this cron classifies as
- *     'manual_review', not 'reversed'. That's a spurious manual-review flag
- *     on an already-fixed payment, not a money-safety issue (nothing gets
- *     charged or refunded twice), and 'manual_review' is a NON-terminal
- *     state here specifically so a human glancing at the audit trail can
- *     confirm-and-close it. Flagged in the handoff report rather than
- *     silently special-cased.
+ *   - Arriving to find the payment ALREADY reversed is the COMMON case, not
+ *     an edge: /commit's own rejection paths void the charge inline, while
+ *     the webhook records the candidate a moment earlier, when the payment
+ *     is still 'paid'. verifyPaidPayment only passes on 'paid'/'captured',
+ *     so binding can never verify for those and they'd all land in
+ *     'manual_review' — a permanent flag plus a Sentry error on every retry,
+ *     for payments that are perfectly fine. So a candidate whose provider
+ *     status is already 'voided'/'refunded'/'failed' resolves terminally as
+ *     'not_paid' (nothing owed) and leaves the queue. The same applies to
+ *     the narrower crash-between-cancel-and-persist case. Only a genuinely
+ *     unprovable binding earns 'manual_review' — which stays NON-terminal so
+ *     a transient cause can still self-heal on a later pass.
  *   - cancelPayment's ambiguous-write outcome (method:'unknown', Moyasar
  *     429/5xx/timeout on the void/refund call itself) is also safe to
  *     retry: the next tick's fresh read-back tells us whether the
@@ -180,6 +181,32 @@ async function markResolved(
   }
 }
 
+/**
+ * Provider states that mean "this capture is already reversed, or was never
+ * money we hold" — nothing is owed and the candidate is done. Anything outside
+ * this set is genuinely ambiguous and earns a human.
+ */
+const ALREADY_SETTLED_PROVIDER_STATUSES = new Set(['voided', 'refunded', 'failed']);
+
+async function markNotPaid(
+  admin: NonNullable<typeof supabaseAdmin>,
+  paymentId: string,
+  providerStatus: string,
+): Promise<void> {
+  const { error } = await admin
+    .from('payment_orphan_candidates')
+    .update({
+      resolved_at: new Date().toISOString(),
+      resolution: 'not_paid',
+      last_error: `provider status: ${providerStatus}`,
+    })
+    .eq('payment_id', paymentId)
+    .is('resolved_at', null);
+  if (error) {
+    console.warn('[paymentOrphanSweep] failed to persist not_paid', { paymentId, error: error.message });
+  }
+}
+
 async function markManualReview(
   admin: NonNullable<typeof supabaseAdmin>,
   candidate: OrphanCandidateRow,
@@ -206,7 +233,7 @@ async function markManualReview(
   }
 }
 
-type CandidateOutcome = 'order_found' | 'reversed' | 'manual_review' | 'deferred';
+type CandidateOutcome = 'order_found' | 'reversed' | 'manual_review' | 'not_paid' | 'deferred';
 
 async function processCandidate(
   admin: NonNullable<typeof supabaseAdmin>,
@@ -264,6 +291,23 @@ async function processCandidate(
   );
 
   if (!cleanup.bindingVerified) {
+    // A candidate whose payment is ALREADY voided/refunded/failed is the
+    // healthy end state, not a problem: /commit's own rejection paths reverse
+    // the charge inline, and the webhook records the candidate while the
+    // payment is still 'paid' — so the reversal routinely wins the race and
+    // this cron arrives to find nothing owed. Binding can never verify then
+    // (verifyPaidPayment only passes on paid/captured), so without this the
+    // most COMMON outcome would be a permanent manual-review flag plus a
+    // Sentry error on every retry — noise that trains everyone to ignore the
+    // one alarm that means real money is stuck. Close those as 'not_paid'.
+    if (ALREADY_SETTLED_PROVIDER_STATUSES.has((cleanup.providerStatus ?? '').toLowerCase())) {
+      await markNotPaid(admin, candidate.payment_id, cleanup.providerStatus ?? 'unknown');
+      console.log('[paymentOrphanSweep] candidate already reversed at the provider — closing', {
+        paymentId: candidate.payment_id,
+        providerStatus: cleanup.providerStatus,
+      });
+      return 'not_paid';
+    }
     await markManualReview(admin, candidate, cleanup.reason);
     await writeAudit({
       merchant_id: candidate.merchant_id,
