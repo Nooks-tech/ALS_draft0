@@ -460,6 +460,17 @@ function TopupSheet({
 
   const onApplePayResult = useCallback(
     async (result: any) => {
+      // Timestamp FIRST: the Moyasar SDK fires this callback from
+      // didAuthorizePayment — i.e. while Apple's native payment sheet is
+      // STILL PRESENTED on top of this pageSheet (verified in the SDK's
+      // ReactNativePayments.m: the PKPaymentAuthorization completion is
+      // stored, the checkmark shows ~1s later, and only then does the PK
+      // sheet begin its own async dismissal). Starting THIS sheet's
+      // dismissal while Apple's sheet is mid-teardown wedges UIKit's
+      // presentation stack — the stranded grey/black ghost sheet that only
+      // ever appeared on Apple Pay top-ups (checkout is unaffected because
+      // it doesn't run Apple Pay inside a Modal).
+      const resultAt = Date.now();
       if (isMoyasarError(result)) {
         Alert.alert(
           isArabic ? 'الدفع فشل' : 'Payment failed',
@@ -477,13 +488,22 @@ function TopupSheet({
         );
         return;
       }
-      // Show the processing overlay while topupFinalize is in flight.
-      // Apple Pay's native sheet closes the moment the user authorises,
-      // so without this there's a few-second blank window between the
-      // sheet dismiss and the wallet balance update.
+      // Show the processing overlay while topupFinalize is in flight —
+      // it also covers the wait below, so the user just sees the normal
+      // spinner for a beat longer.
       setSubmitting(true);
       try {
         await walletApi.topupFinalize({ paymentId: id, merchantId });
+        // Don't hand control to the parent (which starts this sheet's
+        // dismissal) until Apple's sheet is provably gone: checkmark
+        // (~1s) + its dismissal animation. 2s floor from the result
+        // timestamp gives margin; on a slow network finalize alone
+        // already exceeds it and this waits 0ms.
+        const elapsed = Date.now() - resultAt;
+        const remaining = Math.max(0, 2000 - elapsed);
+        if (remaining > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remaining));
+        }
         await onSuccess();
       } catch (e: any) {
         Alert.alert(
