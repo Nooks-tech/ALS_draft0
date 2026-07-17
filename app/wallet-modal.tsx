@@ -91,7 +91,16 @@ export default function WalletModal() {
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   const [loading, setLoading] = useState(true);
   const [topupOpen, setTopupOpen] = useState(false);
+  const [topupInitialStage, setTopupInitialStage] = useState<'pick' | 'pay'>('pick');
   const topupSuccessPendingRef = useRef(false);
+  // The add-a-card round trip: 'push' = the sheet is dismissing and
+  // /add-card-modal should be pushed once it's fully gone; 'reopen' = we're
+  // on the add-card screen and the sheet should reopen (at the pay stage)
+  // when this screen regains focus. Routes must never be pushed while the
+  // sheet's Modal is presented — iOS dismisses the sheet natively without
+  // telling RN, which then re-asserts an invisible wedged modal that eats
+  // every touch (the frozen-wallet bug).
+  const addCardPhaseRef = useRef<'idle' | 'push' | 'reopen'>('idle');
 
   const reload = useCallback(async () => {
     if (!user?.id || !merchantId) {
@@ -117,6 +126,13 @@ export default function WalletModal() {
   // unmounting the presented sheet — is what avoids the stranded
   // grey half-dismissed sheet this flow used to leave on iOS.
   const handleTopupDismissed = useCallback(() => {
+    // Add-card hand-off: the sheet is now fully off screen, so pushing the
+    // route can't collide with any presented Modal.
+    if (addCardPhaseRef.current === 'push') {
+      addCardPhaseRef.current = 'reopen';
+      router.push('/add-card-modal');
+      return;
+    }
     if (!topupSuccessPendingRef.current) return;
     topupSuccessPendingRef.current = false;
     void reload();
@@ -124,14 +140,31 @@ export default function WalletModal() {
       isArabic ? 'تم!' : 'Done!',
       isArabic ? 'تم تعبئة محفظتك.' : 'Your wallet was topped up.',
     );
-  }, [reload, isArabic]);
+  }, [reload, isArabic, router]);
+
+  const handleRequestAddCard = useCallback(() => {
+    addCardPhaseRef.current = 'push';
+    setTopupOpen(false);
+    // Android: Modal.onDismiss never fires; there's also no iOS-style
+    // presentation wedge, so hand off immediately.
+    if (Platform.OS !== 'ios') handleTopupDismissed();
+  }, [handleTopupDismissed]);
 
   useEffect(() => {
     setLoading(true);
     void reload();
   }, [reload]);
 
-  useFocusEffect(useCallback(() => { void reload(); }, [reload]));
+  useFocusEffect(useCallback(() => {
+    void reload();
+    // Back from the add-card screen: reopen the sheet at the pay stage —
+    // the freshly saved card is auto-picked by the sheet's card loader.
+    if (addCardPhaseRef.current === 'reopen') {
+      addCardPhaseRef.current = 'idle';
+      setTopupInitialStage('pay');
+      setTopupOpen(true);
+    }
+  }, [reload]));
 
   if (!user?.id || !merchantId) {
     return (
@@ -183,7 +216,10 @@ export default function WalletModal() {
           </View>
           <View className="mt-5" style={{ flexDirection: 'row' }}>
             <TouchableOpacity
-              onPress={() => setTopupOpen(true)}
+              onPress={() => {
+                setTopupInitialStage('pick');
+                setTopupOpen(true);
+              }}
               className="flex-1 bg-white/15 rounded-2xl py-3 px-4 flex-row items-center justify-center"
             >
               <Plus size={18} color="#fff" />
@@ -274,6 +310,8 @@ export default function WalletModal() {
 
       <TopupSheet
         visible={topupOpen}
+        initialStage={topupInitialStage}
+        onRequestAddCard={handleRequestAddCard}
         merchantId={merchantId}
         customerName={profile.fullName || ''}
         customerEmail={profile.email || undefined}
@@ -325,14 +363,19 @@ const TOKEN_RETURN_HOSTNAME = 'sdk.moyasar.com';
 
 function TopupSheet({
   visible,
+  initialStage,
   merchantId,
   customerName,
   customerEmail,
   customerPhone,
   onClose,
   onSuccess,
-  onDismissed }: {
+  onDismissed,
+  onRequestAddCard }: {
   visible: boolean;
+  /** Stage the sheet opens at. 'pay' is used when reopening after the
+   *  add-a-card round trip so the customer lands back where they left. */
+  initialStage: 'pick' | 'pay';
   merchantId: string;
   customerName: string;
   customerEmail?: string;
@@ -340,8 +383,11 @@ function TopupSheet({
   onClose: () => void;
   onSuccess: () => Promise<void>;
   onDismissed?: () => void;
+  /** Ask the parent to run the add-card round trip: it dismisses this
+   *  sheet FULLY, then pushes /add-card-modal, then reopens the sheet on
+   *  focus return. Never push routes from inside this presented Modal. */
+  onRequestAddCard: () => void;
 }) {
-  const router = useRouter();
   const { i18n } = useTranslation();
   const { user } = useAuth();
   const isArabic = i18n.language === 'ar';
@@ -375,7 +421,7 @@ function TopupSheet({
   // initialized by the time this executes.)
   useEffect(() => {
     if (visible) {
-      setStage('pick');
+      setStage(initialStage);
       setAmountText('100');
       setChoice(null);
       setSubmitting(false);
@@ -383,6 +429,8 @@ function TopupSheet({
       setPendingPaymentId(null);
       pendingFinalizeRef.current = null;
     }
+    // initialStage is intentionally read only at open time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   const amountNum = useMemo(() => Number(amountText), [amountText]);
@@ -843,11 +891,15 @@ function TopupSheet({
               })
             )}
 
-            {/* Add new card row — opens our custom add-card modal so the
-                customer never sees the Moyasar SDK form. After save,
-                the focus effect refreshes the list. */}
+            {/* Add new card row — hands off to the PARENT, which fully
+                dismisses this sheet BEFORE pushing /add-card-modal and
+                reopens it (at the pay stage) when focus returns. Pushing
+                the route while this Modal was presented made iOS yank the
+                sheet natively without telling RN — RN then re-asserted an
+                invisible wedged modal over the wallet screen that ate
+                every touch (the "frozen wallet" bug). */}
             <TouchableOpacity
-              onPress={() => router.push('/add-card-modal')}
+              onPress={onRequestAddCard}
               className="mt-3 items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 p-3"
               style={{ flexDirection: 'row' }}
             >
