@@ -25,8 +25,15 @@ function normalizeLookupCode(value: string) {
   return value.replace(/[^a-z0-9]/gi, '').toUpperCase();
 }
 
+// Same strict UUID-shaped parse as walletPass.ts's parseLoyaltySerial. Not
+// imported from there directly: walletPass.ts already imports
+// ensureLoyaltyMemberProfile from this module, so a reverse import here
+// would form an import cycle. Keep both regexes in sync if the serial
+// format ever changes. (The old loose `([0-9a-f-]+)` here let a greedy
+// merchantId match swallow into the customerId, same class of bug as the
+// walletPass.ts DELETE-handler regex fixed 2026-07-17.)
 function parseWalletSerial(value: string) {
-  const match = value.match(/^loyalty-([0-9a-f-]+)-([0-9a-f-]+)$/i);
+  const match = value.match(/^loyalty-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(.+)$/i);
   if (!match) return null;
   return {
     merchantId: match[1],

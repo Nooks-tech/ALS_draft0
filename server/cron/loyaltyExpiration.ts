@@ -315,11 +315,25 @@ async function cleanupRetiredPrograms() {
       .update({ status: 'retired', retired_at: now })
       .eq('id', program.id);
 
+    // Select the rows about to be zeroed BEFORE the update, so we know
+    // which customers' wallet passes need a refresh after their balance
+    // actually changes on-server.
+    const { data: affectedRows } = await supabaseAdmin
+      .from('loyalty_points')
+      .select('customer_id, merchant_id')
+      .eq('program_id', program.id);
+
     // Zero out remaining balances for this program
-    await supabaseAdmin
+    const { error: zeroErr } = await supabaseAdmin
       .from('loyalty_points')
       .update({ points: 0, updated_at: now })
       .eq('program_id', program.id);
+
+    if (!zeroErr) {
+      for (const row of (affectedRows ?? []) as Array<{ customer_id: string; merchant_id: string }>) {
+        notifyPassUpdateSafe(row.customer_id, row.merchant_id);
+      }
+    }
 
     console.log(`[Loyalty Cron] Retired program ${program.id} for merchant ${program.merchant_id}`);
   }

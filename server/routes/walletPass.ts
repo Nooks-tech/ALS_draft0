@@ -110,6 +110,19 @@ function authTokenForSerial(serial: string): string {
   return hmacForSerial(AUTH_TOKEN_SECRET, serial);
 }
 
+/**
+ * Serial format: loyalty-<merchantId>-<customerId>, where BOTH ids are UUIDs.
+ * The merchantId must be matched with an exact UUID shape — a greedy (.+)
+ * swallows into the customerId and yields garbage ids (that exact bug made
+ * pass_deleted a no-op for months; found 2026-07-17). Single parser, no
+ * per-call-site regex variants.
+ */
+export function parseLoyaltySerial(serial: string): { merchantId: string; customerId: string } | null {
+  const m = serial.match(/^loyalty-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(.+)$/i);
+  if (!m) return null;
+  return { merchantId: m[1], customerId: m[2] };
+}
+
 async function requireWalletPassCustomer(req: Request, res: Response, customerId: string) {
   const user = await requireAuthenticatedAppUser(req, res);
   if (!user) return null;
@@ -664,14 +677,18 @@ function buildPassJson(opts: {
   ];
 
   if (loyaltyType === 'cashback') {
+    // Field KEYS are identical across the points and cashback layouts
+    // ('balance', 'secondaryLeft', 'secondaryRight', shared backFields) so a
+    // loyalty-type switch is a pure label/value update — iOS repaints those
+    // reliably; a changed key SET is a structural change it may not.
     storeCard = {
       headerFields: titleHeader,
       primaryFields: [
         { key: 'balance', label: 'CASHBACK BALANCE', value: `${(opts.cashbackBalance ?? 0).toFixed(2)} SAR` },
       ],
       secondaryFields: [
-        { key: 'cashbackRate', label: 'CASHBACK RATE', value: `${opts.cashbackPercent ?? 5}% back` },
-        { key: 'expires', label: 'EXPIRES', value: opts.expiresLabel, textAlignment: 'PKTextAlignmentRight' },
+        { key: 'secondaryLeft', label: 'CASHBACK RATE', value: `${opts.cashbackPercent ?? 5}% back` },
+        { key: 'secondaryRight', label: 'EXPIRES', value: opts.expiresLabel, textAlignment: 'PKTextAlignmentRight' },
       ],
       backFields: [
         { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
@@ -707,8 +724,8 @@ function buildPassJson(opts: {
         { key: 'balance', label: 'POINTS BALANCE', value: `${displayPoints} pts` },
       ],
       secondaryFields: [
-        { key: 'nextReward', label: 'NEXT REWARD', value: nextRewardValue },
-        { key: 'lifetime', label: 'LIFETIME', value: String(lifetimeDisplay), textAlignment: 'PKTextAlignmentRight' },
+        { key: 'secondaryLeft', label: 'NEXT REWARD', value: nextRewardValue },
+        { key: 'secondaryRight', label: 'LIFETIME', value: String(lifetimeDisplay), textAlignment: 'PKTextAlignmentRight' },
       ],
       backFields: [
         { key: 'memberCode', label: 'Member Code', value: opts.memberCode },
@@ -885,6 +902,17 @@ walletPassRouter.post(
         // so even the token often doesn't change). Log it — this branch being
         // silent cost hours of diagnosis on 2026-07-16.
         console.log(`[WalletPass] Device ${deviceId.substring(0, 8)}… RE-registered for ${serialNumber} (existing row, token refreshed)`);
+
+        // A re-registration is a freshly (re-)added pass. Bump the serial's
+        // update tag and nudge the device so its FIRST updated-since check
+        // sees this serial as changed and re-fetches immediately — without
+        // this, a re-added pass waited for the next unrelated bump (observed
+        // as a multi-hour stale gap on 2026-07-16).
+        await supabaseAdmin.from('wallet_pass_updates').upsert({
+          serial_number: serialNumber,
+          last_updated: Math.floor(Date.now() / 1000),
+        }, { onConflict: 'serial_number' });
+        void sendApnsPush(pushToken);
         return res.sendStatus(200);
       }
 
@@ -926,9 +954,9 @@ walletPassRouter.delete(
         .eq('serial_number', serialNumber);
 
       // Flag the customer as having deleted their pass — enables loyalty type switch on re-add
-      const serialParts = serialNumber.match(/^loyalty-(.+)-([0-9a-f-]+)$/);
-      if (serialParts && supabaseAdmin) {
-        const [, sMerchantId, sCustomerId] = serialParts;
+      const parsedSerial = parseLoyaltySerial(serialNumber);
+      if (parsedSerial && supabaseAdmin) {
+        const { merchantId: sMerchantId, customerId: sCustomerId } = parsedSerial;
         await supabaseAdmin.from('loyalty_member_profiles')
           .update({ pass_deleted: true, pass_deleted_at: new Date().toISOString() })
           .eq('customer_id', sCustomerId).eq('merchant_id', sMerchantId);
@@ -952,11 +980,15 @@ walletPassRouter.get(
       const { deviceId, passTypeId } = req.params;
       if (!supabaseAdmin) return res.sendStatus(500);
 
-      const { data: regs } = await supabaseAdmin
+      const { data: regs, error: regsErr } = await supabaseAdmin
         .from('wallet_pass_registrations')
         .select('serial_number')
         .eq('device_library_id', deviceId)
         .eq('pass_type_id', passTypeId);
+      if (regsErr) {
+        console.error('[WalletPass] updated-since: registrations query failed:', regsErr.message);
+        return res.sendStatus(500);
+      }
 
       if (!regs || regs.length === 0) {
         console.log(`[WalletPass] updated-since: device ${deviceId.substring(0, 8)}… has no registrations → 204`);
@@ -972,10 +1004,21 @@ walletPassRouter.get(
         .in('serial_number', serials);
 
       if (tag) {
-        query = query.gt('last_updated', Number(tag));
+        const parsed = Number(tag);
+        if (Number.isFinite(parsed)) {
+          query = query.gt('last_updated', parsed);
+        } else {
+          // Malformed tag: treat as "no tag" (full list) rather than letting
+          // NaN silently produce an empty filter result.
+          console.warn(`[WalletPass] updated-since: ignoring malformed tag '${String(tag).slice(0, 40)}' from device ${deviceId.substring(0, 8)}…`);
+        }
       }
 
-      const { data: updated } = await query;
+      const { data: updated, error: updErr } = await query;
+      if (updErr) {
+        console.error('[WalletPass] updated-since: wallet_pass_updates query failed:', updErr.message);
+        return res.sendStatus(500);
+      }
       if (!updated || updated.length === 0) {
         // The device asked "what changed since <tag>" and we said "nothing" —
         // if a pass looks stale on-device while these 204s appear, the bug is
@@ -1006,9 +1049,9 @@ walletPassRouter.get(
       if (!verifyAuthHeader(req, serialNumber)) return res.sendStatus(401);
       if (!isConfigured() || !supabaseAdmin) return res.sendStatus(500);
 
-      const parts = serialNumber.match(/^loyalty-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(.+)$/i);
-      if (!parts) return res.sendStatus(404);
-      const [, merchantId, customerId] = parts;
+      const parsedSerial = parseLoyaltySerial(serialNumber);
+      if (!parsedSerial) return res.sendStatus(404);
+      const { merchantId, customerId } = parsedSerial;
 
       // 304 check FIRST. iOS sends If-Modified-Since on every re-fetch;
       // the old code ran the full ~12-query + sharp + openssl pipeline
@@ -1168,6 +1211,20 @@ walletPassRouter.get(
   },
 );
 
+// POST /v1/log — Apple's "Log a Message" endpoint. Devices POST pass errors
+// here (bad pass, fetch failures, render problems). We 404'd it until
+// 2026-07-17, throwing away exactly the diagnostics that would have
+// shortened the stale-pass incident. No auth per Apple's spec.
+walletPassRouter.post('/v1/log', (req, res) => {
+  try {
+    const logs = Array.isArray(req.body?.logs) ? req.body.logs : [];
+    for (const line of logs) {
+      console.warn('[WalletPass][device-log]', String(line).slice(0, 500));
+    }
+  } catch { /* never fail a device log report */ }
+  return res.sendStatus(200);
+});
+
 // ─── APNs Push ───
 //
 // One persistent HTTP/2 session, requests multiplexed over it. The old
@@ -1184,26 +1241,26 @@ function getApnsSession(): http2.ClientHttp2Session {
     cert: SIGNER_CERT_PEM,
     key: SIGNER_KEY_PEM,
   });
-  const drop = () => {
-    if (apnsSession === session) apnsSession = null;
-    try { session.destroy(); } catch { /* already gone */ }
-  };
+  const detach = () => { if (apnsSession === session) apnsSession = null; };
+  const drop = () => { detach(); try { session.destroy(); } catch { /* already gone */ } };
   session.on('error', drop);
   session.on('close', drop);
-  session.on('goaway', drop);
+  // GOAWAY means "no NEW streams" — in-flight pushes on this session are
+  // still valid and must be allowed to finish; destroying here aborted them.
+  session.on('goaway', detach);
   // Don't hold the process open for an idle APNs socket.
   session.setTimeout?.(4 * 60 * 1000, () => { try { session.close(); } catch { /* closing */ } });
   apnsSession = session;
   return session;
 }
 
-async function sendApnsPush(pushToken: string): Promise<boolean> {
+async function sendApnsPush(pushToken: string): Promise<{ ok: boolean; status: number; reason: string }> {
   return new Promise((resolve) => {
     let settled = false;
-    const done = (ok: boolean) => {
+    const done = (ok: boolean, status: number, reason: string) => {
       if (!settled) {
         settled = true;
-        resolve(ok);
+        resolve({ ok, status, reason });
       }
     };
     try {
@@ -1225,7 +1282,7 @@ async function sendApnsPush(pushToken: string): Promise<boolean> {
 
       const timer = setTimeout(() => {
         try { req.close(); } catch { /* already closed */ }
-        done(false);
+        done(false, 0, 'timeout');
       }, 10000);
 
       req.end(JSON.stringify({}));
@@ -1240,22 +1297,28 @@ async function sendApnsPush(pushToken: string): Promise<boolean> {
         req.setEncoding('utf8');
         req.on('data', (c: string) => { body += c; });
         req.on('end', () => {
+          let reason = 'OK';
           if (status !== 200) {
             console.warn(`[WalletPass] APNs push rejected: status=${status} reason=${body.slice(0, 200)} token=${pushToken.substring(0, 8)}…`);
+            reason = body.slice(0, 200);
+            try {
+              const parsed = JSON.parse(body);
+              if (parsed && typeof parsed.reason === 'string') reason = parsed.reason;
+            } catch { /* body wasn't JSON — keep the raw slice */ }
           }
-          done(status === 200);
+          done(status === 200, status, reason);
         });
         // Backstop: if 'end' never fires (stream aborted mid-body), settle on
         // close so the caller's Promise can't hang. done() self-guards.
-        req.on('close', () => done(status === 200));
+        req.on('close', () => done(status === 200, status, status === 200 ? 'OK' : body.slice(0, 200)));
       });
 
-      req.on('error', () => {
+      req.on('error', (err: any) => {
         clearTimeout(timer);
-        done(false);
+        done(false, 0, err?.message || 'error');
       });
-    } catch {
-      done(false);
+    } catch (err: any) {
+      done(false, 0, err?.message || 'error');
     }
   });
 }
@@ -1273,8 +1336,16 @@ async function sendApnsPush(pushToken: string): Promise<boolean> {
  *      surface "pass pushes are failing" without trawling logs
  * Always returns void and never throws — callers can fire-and-forget.
  */
-export function notifyPassUpdateSafe(customerId: string, merchantId: string): void {
-  notifyPassUpdate(customerId, merchantId).catch(async (err: unknown) => {
+/**
+ * Awaitable counterpart to notifyPassUpdateSafe — same enrich-log /
+ * Sentry / audit-log-on-failure contract, but callable with `await` from
+ * fan-out helpers that need to bound concurrency (Promise.all over a
+ * fire-and-forget void function can't be awaited or throttled).
+ */
+export async function notifyPassUpdateSafeAsync(customerId: string, merchantId: string): Promise<void> {
+  try {
+    await notifyPassUpdate(customerId, merchantId);
+  } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn('[Loyalty] notifyPassUpdate failed', { merchantId, customerId, error: message });
     try {
@@ -1295,7 +1366,44 @@ export function notifyPassUpdateSafe(customerId: string, merchantId: string): vo
     } catch {
       // Observability hooks must never throw.
     }
-  });
+  }
+}
+
+export function notifyPassUpdateSafe(customerId: string, merchantId: string): void {
+  void notifyPassUpdateSafeAsync(customerId, merchantId);
+}
+
+/**
+ * Push a refresh to every registered pass of a merchant. Used on any change
+ * that alters what EVERY customer's pass renders (loyalty type, rates,
+ * colors/labels, milestones). Bounded concurrency: 500 unbounded parallel
+ * notify chains (registration query + tag bump + APNs per customer) is a
+ * self-inflicted stampede on the DB and APNs.
+ */
+export async function fanOutPassRefreshForMerchant(merchantId: string, reason: string): Promise<{ notified: number; capped: boolean }> {
+  if (!supabaseAdmin) return { notified: 0, capped: false };
+  const FANOUT_CAP = 500;
+  const CONCURRENCY = 5;
+  const serialPrefix = `loyalty-${merchantId}-`;
+  const { data: regs, error } = await supabaseAdmin
+    .from('wallet_pass_registrations')
+    .select('serial_number')
+    .like('serial_number', `${serialPrefix}%`)
+    .limit(FANOUT_CAP);
+  if (error) {
+    console.warn(`[WalletPass] fan-out query failed (${reason}):`, error.message);
+    return { notified: 0, capped: false };
+  }
+  const customerIds = [...new Set((regs ?? []).map((r: any) => String(r.serial_number).slice(serialPrefix.length)))].filter(Boolean);
+  const capped = (regs ?? []).length === FANOUT_CAP;
+  if (capped) {
+    console.warn(`[WalletPass] fan-out hit the ${FANOUT_CAP}-registration cap for merchant ${merchantId} (${reason}) — passes beyond the cap refresh lazily`);
+  }
+  console.log(`[WalletPass] fan-out (${reason}): notifying ${customerIds.length} registered pass(es) for merchant ${merchantId}`);
+  for (let i = 0; i < customerIds.length; i += CONCURRENCY) {
+    await Promise.all(customerIds.slice(i, i + CONCURRENCY).map((cid) => notifyPassUpdateSafeAsync(cid, merchantId)));
+  }
+  return { notified: customerIds.length, capped };
 }
 
 export async function notifyPassUpdate(customerId: string, merchantId: string): Promise<void> {
@@ -1304,10 +1412,16 @@ export async function notifyPassUpdate(customerId: string, merchantId: string): 
   const serialNumber = `loyalty-${merchantId}-${customerId}`;
   const now = Math.floor(Date.now() / 1000);
 
-  await supabaseAdmin.from('wallet_pass_updates').upsert({
+  const { error: bumpErr } = await supabaseAdmin.from('wallet_pass_updates').upsert({
     serial_number: serialNumber,
     last_updated: now,
   }, { onConflict: 'serial_number' });
+  if (bumpErr) {
+    // Pushing without the bump just makes devices fetch into a 304 — skip
+    // the pushes entirely, there's nothing for them to pick up.
+    console.warn('[WalletPass] failed to bump last_updated for', serialNumber, bumpErr.message);
+    return;
+  }
 
   const { data: regs } = await supabaseAdmin
     .from('wallet_pass_registrations')
@@ -1321,10 +1435,22 @@ export async function notifyPassUpdate(customerId: string, merchantId: string): 
   // round-trips.
   const uniqueTokens = [...new Set(regs.map((r: any) => r.push_token))];
   const results = await Promise.all(
-    uniqueTokens.map(async (token) => ({ token, ok: await sendApnsPush(token) })),
+    uniqueTokens.map(async (token) => ({ token, ...(await sendApnsPush(token)) })),
   );
-  for (const { token, ok } of results) {
-    console.log(`[WalletPass] APNs push to ${token.substring(0, 8)}…: ${ok ? 'OK' : 'FAIL'}`);
+  for (const { token, ok, status, reason } of results) {
+    console.log(`[WalletPass] APNs push to ${token.substring(0, 8)}…: ${ok ? 'OK' : `FAIL status=${status} reason=${reason}`}`);
+  }
+
+  // Apple's documented server responsibility: a 410/Unregistered token
+  // means the pass is gone from that device — delete the registration
+  // or we push to a corpse forever (and it occupies a fan-out slot).
+  for (const { token: deadToken, status, reason } of results) {
+    if (status !== 410 && !/Unregistered|BadDeviceToken/i.test(reason)) continue;
+    await supabaseAdmin.from('wallet_pass_registrations')
+      .delete()
+      .eq('serial_number', serialNumber)
+      .eq('push_token', deadToken);
+    console.log(`[WalletPass] pruned dead registration (APNs said gone): ${serialNumber.substring(0, 24)}… token=${deadToken.substring(0, 8)}…`);
   }
 }
 
@@ -1619,28 +1745,7 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
       .eq('customer_id', customerId).eq('merchant_id', merchantId)
       .maybeSingle();
 
-    if (memberLoyaltyInfo?.pass_deleted) {
-      const { data: currentConfig } = await supabaseAdmin.from('loyalty_config')
-        .select('loyalty_type').eq('merchant_id', merchantId).maybeSingle();
-      const newType = currentConfig?.loyalty_type;
-      if (newType && newType !== memberLoyaltyInfo.active_loyalty_type) {
-        // Customer is opting into the new loyalty type
-        await supabaseAdmin.from('loyalty_member_profiles')
-          .update({
-            active_loyalty_type: newType,
-            loyalty_type_opted_in_at: new Date().toISOString(),
-            pass_deleted: false,
-            pass_deleted_at: null,
-          })
-          .eq('customer_id', customerId).eq('merchant_id', merchantId);
-        console.log(`[WalletPass] Customer ${customerId.substring(0, 8)}… switched loyalty type to ${newType}`);
-      } else {
-        // Same type or no type — just clear the deleted flag
-        await supabaseAdmin.from('loyalty_member_profiles')
-          .update({ pass_deleted: false, pass_deleted_at: null })
-          .eq('customer_id', customerId).eq('merchant_id', merchantId);
-      }
-    }
+    // pass_deleted no longer forces a type switch here — getCustomerLoyaltyRoute below resolves the effective type WITH the balance guard.
 
     // Determine effective loyalty type: member override > config default.
     // Ask the loyalty module for the customer's effective type — handles

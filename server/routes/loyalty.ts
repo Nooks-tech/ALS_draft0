@@ -10,7 +10,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { Router, type Request, type Response } from 'express';
-import { notifyPassUpdateSafe } from './walletPass';
+import { notifyPassUpdateSafe, fanOutPassRefreshForMerchant } from './walletPass';
 import { ensureLoyaltyMemberProfile, findLoyaltyMemberByLookup } from '../services/loyaltyMembers';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
@@ -695,44 +695,22 @@ loyaltyRouter.put('/config', async (req, res) => {
       }
     }
 
-    // On a loyalty-type switch, nudge every registered Apple Wallet pass for
-    // this merchant. Without this, nothing pushes: the per-customer
-    // auto-switch (getCustomerLoyaltyRoute) only runs — and only notifies —
-    // when that customer happens to hit a loyalty endpoint later, so passes
-    // sit on the old layout indefinitely. The push alone is safe and correct
-    // per customer: the pass render calls getCustomerLoyaltyRoute, which
-    // keeps a customer on their old type while they still hold a balance
-    // there and flips them (with the balance-reset contract) only at 0 — so
-    // fanning out to everyone just makes each pass re-render whatever is
-    // already true for that customer. Fire-and-forget AFTER the response:
-    // a slow APNs round shouldn't hold the merchant's dashboard save.
-    if (typeChanged) {
-      const FANOUT_CAP = 500;
-      void (async () => {
-        try {
-          const { data: regs, error: regErr } = await supabaseAdmin!
-            .from('wallet_pass_registrations')
-            .select('serial_number')
-            .like('serial_number', `loyalty-${merchantId}-%`)
-            .limit(FANOUT_CAP);
-          if (regErr) {
-            console.warn('[loyalty] type-switch pass fan-out query failed:', regErr.message);
-            return;
-          }
-          const serialPrefix = `loyalty-${merchantId}-`;
-          const customerIds = [...new Set((regs ?? []).map((r) => String(r.serial_number).slice(serialPrefix.length)))]
-            .filter(Boolean);
-          if (regs && regs.length === FANOUT_CAP) {
-            console.warn(`[loyalty] type-switch pass fan-out hit the ${FANOUT_CAP}-registration cap for merchant ${merchantId} — passes beyond the cap will lazily refresh on their customers' next loyalty action`);
-          }
-          console.log(`[loyalty] type-switch pass fan-out: notifying ${customerIds.length} registered pass(es) for merchant ${merchantId}`);
-          for (const cid of customerIds) {
-            notifyPassUpdateSafe(cid, merchantId);
-          }
-        } catch (e: any) {
-          console.warn('[loyalty] type-switch pass fan-out failed:', e?.message);
-        }
-      })();
+    // Fan out a pass refresh on ANY change that alters what every customer's
+    // pass renders — not just the loyalty type. Colors, labels, logos, the
+    // cashback rate, and expiry all appear on the pass; before 2026-07-17 a
+    // merchant recoloring their card updated nobody's wallet.
+    const PASS_VISIBLE_FIELDS = [
+      'loyalty_type', 'cashback_percent', 'expiry_months', 'business_type',
+      'wallet_card_bg_color', 'wallet_card_text_color', 'wallet_card_logo_url',
+      'wallet_card_label', 'wallet_card_secondary_label', 'wallet_card_logo_scale',
+      'wallet_card_banner_url', 'wallet_stamp_box_color', 'wallet_stamp_icon_color',
+      'wallet_stamp_icon_url', 'wallet_stamp_icon_scale',
+    ];
+    const passVisibleChanged = typeChanged || rateChanged || PASS_VISIBLE_FIELDS.some((k) => k in fields);
+    if (passVisibleChanged) {
+      // Fire-and-forget AFTER the response — a slow APNs round must not hold
+      // the merchant's dashboard save.
+      void fanOutPassRefreshForMerchant(merchantId, typeChanged ? 'loyalty-type change' : 'pass-visible config change');
     }
 
     res.json({ success: true });
@@ -2945,6 +2923,20 @@ loyaltyRouter.post('/internal/notify-pass-update', async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ── POST /api/loyalty/internal/notify-pass-update-merchant ──
+   nooksweb dashboard mutations that change what EVERY pass of a merchant
+   renders (milestone create/update/delete, config edits done on the web
+   side) call this to fan out a refresh. Internal secret only. */
+loyaltyRouter.post('/internal/notify-pass-update-merchant', async (req, res) => {
+  if (!requireNooksInternalRequest(req, res)) return;
+  const { merchantId } = req.body ?? {};
+  if (typeof merchantId !== 'string') {
+    return res.status(400).json({ error: 'merchantId required' });
+  }
+  const result = await fanOutPassRefreshForMerchant(merchantId, 'internal request');
+  res.json({ success: true, ...result });
+});
+
 /**
  * POST /api/loyalty/unredeem-milestone
  *
@@ -3116,6 +3108,8 @@ async function handleUnredeemMilestone(req: any, res: any) {
           reason: 'cart_removal',
         },
       });
+
+      notifyPassUpdateSafe(customerId, merchantId);
 
       return res.json({
         success: true,

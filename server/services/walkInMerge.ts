@@ -16,6 +16,11 @@
  */
 import crypto from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
+// Safe to import statically: walkInMerge.ts is only imported by auth.ts,
+// which is outside walletPass.ts's own import chain (walletPass.ts ->
+// loyaltyMembers.ts / loyalty.ts, neither of which touches auth.ts or this
+// file), so this does not form a cycle.
+import { notifyPassUpdateSafe } from '../routes/walletPass';
 
 function normaliseSaudiPhone(raw: string): string | null {
   if (typeof raw !== 'string') return null;
@@ -177,6 +182,15 @@ export async function mergeWalkInProfiles(
       merchantCount: merchantIds.length,
       profileCount: mergedRows.length,
     });
+
+    // Balances were just rewritten (points migrated/summed onto authUserId)
+    // for every merchant touched above — without this, the customer's
+    // wallet pass at each of those merchants keeps showing the pre-merge
+    // balance until their next unrelated loyalty action.
+    for (const merchantId of merchantIds) {
+      notifyPassUpdateSafe(authUserId, merchantId);
+    }
+
     return { merged: mergedRows.length, merchantIds };
   } catch (err) {
     console.warn('[walk-in-merge] unexpected error:', err);
