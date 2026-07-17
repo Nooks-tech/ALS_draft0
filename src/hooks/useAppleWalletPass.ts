@@ -1,22 +1,21 @@
 /**
  * Apple Wallet pass add hook — extracted from app/(tabs)/offers.tsx
  * so the Polaroid offers screen can reuse the EXACT same wallet
- * flow (cache versioning, pkpass fetch, addPass call) without
- * duplicating ~80 lines of bridge plumbing.
+ * flow (pkpass fetch, addPass call) without duplicating ~80 lines
+ * of bridge plumbing.
  *
  * Returns:
  *   - available: bridge readiness + iOS check
- *   - loading: true while fetch / cache / native addPass is in flight
+ *   - loading: true while fetch / native addPass is in flight
  *   - addPass(): the handler bound to the AppleWalletAddPassButton
  *
- * `configUpdatedAt` is required so the cache key flips deterministically
- * the moment a merchant edits their loyalty config in the dashboard.
+ * configUpdatedAt is accepted for caller compatibility but no longer used —
+ * the pass is always fetched fresh (no cache) as of 2026-07-17.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, Platform } from 'react-native';
 import { API_URL } from '../api/config';
 import { getAuthToken } from '../api/client';
-import { readCache, writeCache, clearCache } from '../lib/persistentCache';
 
 type ExpoWalletBridge = {
   addPass?: (base64: string) => Promise<unknown>;
@@ -56,17 +55,12 @@ async function addPassToAppleWallet(base64: string): Promise<unknown> {
   throw new Error('Apple Wallet is not available on this device.');
 }
 
-// Bumping this forces every cached pass to refetch on the next
-// "Add to Wallet" press — needed when the pass.json shape changes
-// (chrome, fields, strip image) without a loyalty_config.updated_at bump.
-const PASS_TEMPLATE_VERSION = 'pts-v3-no-strip';
-
 export function useAppleWalletPass(opts: {
   merchantId: string | null;
   userId: string | null;
   configUpdatedAt: string | number | null;
 }) {
-  const { merchantId, userId, configUpdatedAt } = opts;
+  const { merchantId, userId } = opts;
   const [available, setAvailable] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -88,58 +82,42 @@ export function useAppleWalletPass(opts: {
     if (!userId || !merchantId) return;
     setLoading(true);
     try {
-      const passCacheKey = `@als_apple_pass_${merchantId}_${userId}`;
-      const cfgVersion = configUpdatedAt ? String(configUpdatedAt) : '';
-      const currentVersion = `${PASS_TEMPLATE_VERSION}|${cfgVersion}`;
-      type CachedPass = { base64: string; version: string };
-      const cached = await readCache<CachedPass>(passCacheKey);
-      let base64: string | null = null;
-
-      if (
-        cached &&
-        typeof cached === 'object' &&
-        typeof cached.base64 === 'string' &&
-        cached.base64.length > 0 &&
-        cached.version === currentVersion &&
-        currentVersion !== ''
-      ) {
-        base64 = cached.base64;
-      } else if (cached) {
-        await clearCache(passCacheKey);
+      // Always fetch fresh. The pass renders the customer's LIVE balance, so
+      // any cached copy is stale the moment they earn or redeem — and adding
+      // a cached pass doesn't just show a stale preview, it INSTALLS the old
+      // snapshot over the fresher pass already in the wallet (bit us
+      // 2026-07-17: app said 5161 pts, the cached pass re-installed 5021).
+      // One ~200KB fetch behind an explicit tap with a spinner is the right
+      // trade.
+      const authToken = await getAuthToken();
+      if (!authToken) {
+        Alert.alert('Error', 'Please sign in again to add this pass.');
+        return;
       }
-
-      if (!base64) {
-        const authToken = await getAuthToken();
-        if (!authToken) {
-          Alert.alert('Error', 'Please sign in again to add this pass.');
-          return;
+      const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(
+        userId,
+      )}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
+      const res = await fetch(passUrl, { headers: { Authorization: `Bearer ${authToken}` } });
+      if (!res.ok) {
+        let msg = `Server returned ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data.error) msg = data.error;
+        } catch {
+          /* not JSON */
         }
-        const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(
-          userId,
-        )}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
-        const res = await fetch(passUrl, { headers: { Authorization: `Bearer ${authToken}` } });
-        if (!res.ok) {
-          let msg = `Server returned ${res.status}`;
-          try {
-            const data = await res.json();
-            if (data.error) msg = data.error;
-          } catch {
-            /* not JSON */
-          }
-          Alert.alert('Error', msg);
-          return;
-        }
-        const data = await res.json();
-        if (data.error) {
-          Alert.alert('Error', data.error);
-          return;
-        }
-        base64 = data.base64 as string;
-        if (!base64 || base64.length === 0) {
-          Alert.alert('Error', 'Empty pass data from server.');
-          return;
-        }
-        writeCache<CachedPass>(passCacheKey, { base64, version: currentVersion });
+        Alert.alert('Error', msg);
+        return;
+      }
+      const data = await res.json();
+      if (data.error) {
+        Alert.alert('Error', data.error);
+        return;
+      }
+      const base64 = data.base64 as string;
+      if (!base64 || base64.length === 0) {
+        Alert.alert('Error', 'Empty pass data from server.');
+        return;
       }
 
       await addPassToAppleWallet(base64);
@@ -158,7 +136,7 @@ export function useAppleWalletPass(opts: {
     } finally {
       setLoading(false);
     }
-  }, [merchantId, userId, configUpdatedAt]);
+  }, [merchantId, userId]);
 
   return { available, loading, addPass };
 }

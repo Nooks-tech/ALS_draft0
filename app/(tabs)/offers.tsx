@@ -443,83 +443,44 @@ function ClassicOffersScreen() {
     if (!user?.id || !merchantId) return;
     setWalletLoading(true);
     try {
-      // Cache the base64 .pkpass per (merchant, customer) so the
-      // SECOND press is instant — generating a pass server-side is
-      // expensive (cert signing + zip + ~10s on first hit). The cache
-      // entry stores the base64 pass alongside the merchant's
-      // loyalty_config.updated_at as a version stamp. On read we
-      // compare versions; mismatch → explicit clearCache + fresh
-      // fetch. This guarantees the merchant's dashboard saves
-      // invalidate the customer-app cache deterministically, instead
-      // of leaving orphan entries to bite us later.
-      // Bump this when the pass.json shape changes (Apple Wallet
-       // chrome, primary/secondary field structure, strip image, etc).
-       // Mixing it into the cached version string forces every existing
-       // device to refetch on the next "Add to Wallet" press — even
-       // though loyalty_config.updated_at didn't change. Without this,
-       // a code-only redesign ships but customers see the pre-deploy
-       // cached pkpass when they tap the button.
-       const PASS_TEMPLATE_VERSION = 'pts-v3-no-strip';
-      const passCacheKey = `@als_apple_pass_${merchantId}_${user.id}`;
-      const cfgVersion = balance?.configUpdatedAt ? String(balance.configUpdatedAt) : '';
-      const currentVersion = `${PASS_TEMPLATE_VERSION}|${cfgVersion}`;
-      type CachedPass = { base64: string; version: string };
-      const cached = await readCache<CachedPass>(passCacheKey);
-      let base64: string | null = null;
-      if (
-        cached &&
-        typeof cached === 'object' &&
-        typeof cached.base64 === 'string' &&
-        cached.base64.length > 0 &&
-        cached.version === currentVersion &&
-        currentVersion !== ''
-      ) {
-        base64 = cached.base64;
-        console.log('[AppleWallet] cache hit, version:', cached.version);
-      } else if (cached) {
-        // Stale (version mismatch) or wrong shape (legacy plain-string
-        // cache from before this change). Explicitly delete so we
-        // never see this entry again.
-        console.log('[AppleWallet] cache stale or wrong shape — clearing');
-        await clearCache(passCacheKey);
-      }
+      // Always fetch fresh — never cache the .pkpass. The pass renders the
+      // customer's LIVE balance, so any cached copy is stale the moment they
+      // earn or redeem, and adding a cached pass doesn't just show a stale
+      // preview: it INSTALLS the old snapshot over the fresher pass already
+      // in the wallet (bit us 2026-07-17: the app showed 5161 pts while this
+      // cache kept re-installing a 5021 pass). One ~200KB fetch behind an
+      // explicit tap with a spinner is the right trade. Stale entries from
+      // the old cache are cleared so they can never be re-installed.
+      await clearCache(`@als_apple_pass_${merchantId}_${user.id}`);
 
-      if (!base64) {
-        const authToken = await getAuthToken();
-        if (!authToken) {
-          Alert.alert('Error', 'Please sign in again to add this pass.');
-          return;
-        }
-        const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
-        const res = await fetch(passUrl, {
-          headers: { Authorization: `Bearer ${authToken}` } });
-        if (!res.ok) {
-          let msg = `Server returned ${res.status}`;
-          try {
-            const data = await res.json();
-            if (data.error) msg = data.error;
-          } catch { /* not JSON */ }
-          Alert.alert('Error', msg);
-          return;
-        }
-        const data = await res.json();
-        if (data.error) {
-          Alert.alert('Error', data.error);
-          return;
-        }
-        base64 = data.base64 as string;
-        if (!base64 || base64.length === 0) {
-          Alert.alert('Error', 'Empty pass data from server.');
-          return;
-        }
-        console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
-        // Persist for instant re-add.
-        // Persist for instant re-add — store the version alongside so
-        // we can detect dashboard changes deterministically.
-        writeCache<CachedPass>(passCacheKey, { base64, version: currentVersion });
-      } else {
-        console.log('[AppleWallet] reusing cached pass, length:', base64.length);
+      const authToken = await getAuthToken();
+      if (!authToken) {
+        Alert.alert('Error', 'Please sign in again to add this pass.');
+        return;
       }
+      const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(user.id)}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
+      const res = await fetch(passUrl, {
+        headers: { Authorization: `Bearer ${authToken}` } });
+      if (!res.ok) {
+        let msg = `Server returned ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data.error) msg = data.error;
+        } catch { /* not JSON */ }
+        Alert.alert('Error', msg);
+        return;
+      }
+      const data = await res.json();
+      if (data.error) {
+        Alert.alert('Error', data.error);
+        return;
+      }
+      const base64 = data.base64 as string;
+      if (!base64 || base64.length === 0) {
+        Alert.alert('Error', 'Empty pass data from server.');
+        return;
+      }
+      console.log('[AppleWallet] pass size:', data.size, 'base64 length:', base64.length);
 
       await addPassToAppleWallet(base64);
     } catch (err: unknown) {

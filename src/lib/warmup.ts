@@ -35,9 +35,9 @@ import { readCache, writeCache, fetchWithTimeout } from './persistentCache';
 export type WarmupContext = {
   userId: string | null;
   merchantId: string;
-  /** Has the customer already added the Apple Wallet pass once?
-   *  When true we skip prefetching since the offers screen already
-   *  hides the Add button. Persisted at apple_pass_added::{m}::{u}. */
+  /** Accepted for caller compatibility but no longer used — the pass
+   *  prefetch was removed 2026-07-17 (both add paths fetch fresh at tap
+   *  time; see the tombstone comment below). */
   applePassAlreadyAdded: boolean;
 };
 
@@ -118,70 +118,14 @@ async function warmupSavedCards(userId: string, merchantId: string): Promise<voi
   }
 }
 
-/* ─── Apple Wallet pass ──────────────────────────────────────────── */
-
-/**
- * Generates the .pkpass on the server and caches the base64 blob so
- * the customer's first tap of "Add to Apple Wallet" is near-instant
- * (just the PassKit hand-off, no server round-trip). The server-side
- * generation is the slow step (~10 s on Khrtoom's first build) and
- * doing it during warmup means the customer never feels it.
- *
- * Skipped on Android, when the pass-generation endpoint isn't
- * available, or when the customer has already added the pass once
- * (offers screen hides the Add button in that state, so prefetching
- * would be wasted bytes).
- */
-async function warmupApplePass(
-  userId: string,
-  merchantId: string,
-  alreadyAdded: boolean,
-): Promise<void> {
-  if (Platform.OS !== 'ios') return;
-  if (!userId || !merchantId) return;
-  if (alreadyAdded) return;
-
-  const passCacheKey = `@als_apple_pass_${merchantId}_${userId}`;
-  // Don't refetch if we already have a cached copy — pass content
-  // changes only when the merchant updates their loyalty card design,
-  // which is rare. The customer can clear it via reinstall if needed.
-  const existing = await readCache<string>(passCacheKey);
-  if (existing) return;
-
-  // Cheap check: does the server have a wallet-pass cert configured
-  // at all? If not, generating would 404 — skip silently.
-  try {
-    const ok = await fetchWithTimeout(`${API_URL}/api/loyalty/wallet-pass/check`)
-      .then((r) => r.ok)
-      .catch(() => false);
-    if (!ok) return;
-  } catch {
-    return;
-  }
-
-  try {
-    const authToken = await getAuthToken();
-    if (!authToken) return;
-    const passUrl = `${API_URL}/api/loyalty/wallet-pass?customerId=${encodeURIComponent(
-      userId,
-    )}&merchantId=${encodeURIComponent(merchantId)}&format=base64`;
-    // Pass generation is the slowest payload in the warmup, so it
-    // gets a longer timeout than the other fetches (12 s) — server-
-    // side cert signing + zip can take a beat on cold lambdas.
-    const res = await fetchWithTimeout(
-      passUrl,
-      { headers: { Authorization: `Bearer ${authToken}` } },
-      12000,
-    );
-    if (!res.ok) return;
-    const data = (await res.json().catch(() => null)) as { base64?: string } | null;
-    const base64 = data?.base64;
-    if (typeof base64 !== 'string' || base64.length === 0) return;
-    await writeCache<string>(passCacheKey, base64);
-  } catch {
-    // best effort
-  }
-}
+/* ─── Apple Wallet pass ─── (prefetch removed 2026-07-17)
+   The pass used to be pre-generated and cached here so the Add button felt
+   instant — but the pass renders the customer's LIVE balance, and both add
+   paths now deliberately fetch it fresh at tap time (a cached pass doesn't
+   just preview stale, PassKit INSTALLS the stale snapshot over the fresher
+   pass already in the wallet). With no readers left, prefetching was pure
+   waste: the single most expensive warmup call (server-side cert signing +
+   zip) on every app launch, written into a cache nothing consumes. */
 
 /* ─── Wallet availability checks (Apple/Google) ──────────────────── */
 
@@ -215,7 +159,7 @@ async function warmupWalletAvailability(): Promise<void> {
 /* ─── Public entrypoint ──────────────────────────────────────────── */
 
 export async function runWarmup(ctx: WarmupContext): Promise<void> {
-  const { userId, merchantId, applePassAlreadyAdded } = ctx;
+  const { userId, merchantId } = ctx;
   if (!merchantId) return;
 
   // Phase 1: merchant-scoped data — runs even without auth so the
@@ -227,18 +171,10 @@ export async function runWarmup(ctx: WarmupContext): Promise<void> {
 
   if (!userId) return;
 
-  // Phase 2: customer-scoped data — fire all in parallel including
-  // the heavy Apple Wallet pass. HTTP/2 multiplexes over a single
-  // socket so firing them concurrently doesn't meaningfully slow any
-  // individual request, and the previously-applied 1500 ms delay on
-  // the pass fetch only ever helped when bandwidth was the bottleneck
-  // (which it usually isn't — the server-side cert signing + image
-  // composition is). Firing the pass request alongside Phase 2 means
-  // the cached pkpass is on disk ~1.5 s sooner, which directly
-  // shortens the worst-case window where a customer might tap "Add
-  // to Apple Wallet" before warmup finished.
+  // Phase 2: customer-scoped data — fire all in parallel. HTTP/2
+  // multiplexes over a single socket, so firing them concurrently
+  // doesn't meaningfully slow any individual request.
   void warmupLoyalty(userId, merchantId);
   void warmupWallet(userId, merchantId);
   void warmupSavedCards(userId, merchantId);
-  void warmupApplePass(userId, merchantId, applePassAlreadyAdded);
 }
