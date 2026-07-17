@@ -370,6 +370,9 @@ function TopupSheet({
   // The sheet stays mounted (dismissal is driven by `visible`, never by
   // unmounting a presented Modal — unmount-while-presented is what left
   // the stuck grey half-sheet on iOS). Reset per-run state on each open.
+  // (pendingFinalizeRef is declared further down, next to the finalize
+  // logic it belongs to; effects run post-render, so the binding is
+  // initialized by the time this executes.)
   useEffect(() => {
     if (visible) {
       setStage('pick');
@@ -378,6 +381,7 @@ function TopupSheet({
       setSubmitting(false);
       setVerifyUrl(null);
       setPendingPaymentId(null);
+      pendingFinalizeRef.current = null;
     }
   }, [visible]);
 
@@ -545,19 +549,14 @@ function TopupSheet({
     }
   }, [amountNum, amountValid, choice, isArabic, merchantId, onSuccess]);
 
-  const onVerifyNavigationChange = useCallback(
-    async (url: string) => {
-      if (!url || !pendingPaymentId) return;
-      let host = '';
-      try {
-        host = new URL(url).hostname;
-      } catch {
-        host = url.includes(TOKEN_RETURN_HOSTNAME) ? TOKEN_RETURN_HOSTNAME : '';
-      }
-      if (host !== TOKEN_RETURN_HOSTNAME) return;
-      const id = pendingPaymentId;
-      setPendingPaymentId(null);
-      setVerifyUrl(null);
+  // Finalize a paid top-up and hand control to the parent. Runs ONLY once
+  // the 3DS sheet is fully off screen (see pendingFinalizeRef below) so the
+  // chain is strictly serial: inner sheet dismisses → finalize → parent
+  // starts the OUTER sheet's dismissal → parent alerts on ITS onDismiss.
+  // Any overlap between those presentation transitions is what strands the
+  // empty grey/black ghost sheet on iOS.
+  const runFinalize = useCallback(
+    async (id: string) => {
       // Same overlay reason as the Apple Pay branch — between 3DS
       // WebView dismiss and topupFinalize completion there's a gap
       // where the user sees a blank stage if we don't flag submitting.
@@ -574,7 +573,41 @@ function TopupSheet({
         setSubmitting(false);
       }
     },
-    [merchantId, onSuccess, pendingPaymentId, isArabic],
+    [merchantId, onSuccess, isArabic],
+  );
+
+  // Payment id whose finalize is parked until the 3DS sheet's onDismiss
+  // fires. A manual close (X / swipe) never sets it, so its onDismiss
+  // correctly no-ops.
+  const pendingFinalizeRef = useRef<string | null>(null);
+
+  const handleVerifyDismissed = useCallback(() => {
+    const id = pendingFinalizeRef.current;
+    pendingFinalizeRef.current = null;
+    if (id) void runFinalize(id);
+  }, [runFinalize]);
+
+  const onVerifyNavigationChange = useCallback(
+    (url: string) => {
+      if (!url || !pendingPaymentId) return;
+      let host = '';
+      try {
+        host = new URL(url).hostname;
+      } catch {
+        host = url.includes(TOKEN_RETURN_HOSTNAME) ? TOKEN_RETURN_HOSTNAME : '';
+      }
+      if (host !== TOKEN_RETURN_HOSTNAME) return;
+      const id = pendingPaymentId;
+      setPendingPaymentId(null);
+      setVerifyUrl(null);
+      pendingFinalizeRef.current = id;
+      // Android's Modal never fires onDismiss — finalize immediately there.
+      // The ghost-sheet race is an iOS presentation-stack problem.
+      if (Platform.OS !== 'ios') {
+        handleVerifyDismissed();
+      }
+    },
+    [pendingPaymentId, handleVerifyDismissed],
   );
 
   return (
@@ -869,6 +902,7 @@ function TopupSheet({
           visible={!!verifyUrl}
           animationType="slide"
           presentationStyle="pageSheet"
+          onDismiss={handleVerifyDismissed}
           onRequestClose={() => {
             if (!submitting) {
               setVerifyUrl(null);
