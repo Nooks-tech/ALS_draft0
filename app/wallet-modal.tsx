@@ -20,7 +20,7 @@ import {
   ShoppingBag,
   Wallet,
   X } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -91,6 +91,7 @@ export default function WalletModal() {
   const [balance, setBalance] = useState<WalletBalance | null>(null);
   const [loading, setLoading] = useState(true);
   const [topupOpen, setTopupOpen] = useState(false);
+  const topupSuccessPendingRef = useRef(false);
 
   const reload = useCallback(async () => {
     if (!user?.id || !merchantId) {
@@ -107,6 +108,23 @@ export default function WalletModal() {
       setLoading(false);
     }
   }, [user?.id, merchantId]);
+
+  // Fires once the topup sheet has FULLY dismissed (iOS: Modal's
+  // onDismiss, which only fires after the pageSheet has completed its
+  // slide-away animation; Android: called directly on success since
+  // RN Modal never fires onDismiss there). Presenting the success Alert
+  // only after real dismissal — instead of in the same tick as
+  // unmounting the presented sheet — is what avoids the stranded
+  // grey half-dismissed sheet this flow used to leave on iOS.
+  const handleTopupDismissed = useCallback(() => {
+    if (!topupSuccessPendingRef.current) return;
+    topupSuccessPendingRef.current = false;
+    void reload();
+    Alert.alert(
+      isArabic ? 'تم!' : 'Done!',
+      isArabic ? 'تم تعبئة محفظتك.' : 'Your wallet was topped up.',
+    );
+  }, [reload, isArabic]);
 
   useEffect(() => {
     setLoading(true);
@@ -254,23 +272,28 @@ export default function WalletModal() {
         </View>
       </ScrollView>
 
-      {topupOpen && (
-        <TopupSheet
-          merchantId={merchantId}
-          customerName={profile.fullName || ''}
-          customerEmail={profile.email || undefined}
-          customerPhone={profile.phone || undefined}
-          onClose={() => setTopupOpen(false)}
-          onSuccess={async () => {
-            setTopupOpen(false);
-            await reload();
-            Alert.alert(
-              isArabic ? 'تم!' : 'Done!',
-              isArabic ? 'تم تعبئة محفظتك.' : 'Your wallet was topped up.',
-            );
-          }}
-        />
-      )}
+      <TopupSheet
+        visible={topupOpen}
+        merchantId={merchantId}
+        customerName={profile.fullName || ''}
+        customerEmail={profile.email || undefined}
+        customerPhone={profile.phone || undefined}
+        onClose={() => setTopupOpen(false)}
+        onSuccess={async () => {
+          // Start the sheet's dismissal and remember that a success alert
+          // is owed. The alert is presented from onDismissed — presenting
+          // it while the pageSheet (and possibly the nested 3DS modal) is
+          // still animating away is what wedged UIKit into the stuck grey
+          // sheet this flow was known for.
+          topupSuccessPendingRef.current = true;
+          setTopupOpen(false);
+          // Android never fires Modal.onDismiss — run the same completion
+          // there directly; the grey-sheet race is an iOS-presentation
+          // problem, so immediate completion is safe on Android.
+          if (Platform.OS !== 'ios') handleTopupDismissed();
+        }}
+        onDismissed={handleTopupDismissed}
+      />
     </SafeAreaView>
   );
 }
@@ -301,18 +324,22 @@ type WalletPaymentChoice =
 const TOKEN_RETURN_HOSTNAME = 'sdk.moyasar.com';
 
 function TopupSheet({
+  visible,
   merchantId,
   customerName,
   customerEmail,
   customerPhone,
   onClose,
-  onSuccess }: {
+  onSuccess,
+  onDismissed }: {
+  visible: boolean;
   merchantId: string;
   customerName: string;
   customerEmail?: string;
   customerPhone?: string;
   onClose: () => void;
   onSuccess: () => Promise<void>;
+  onDismissed?: () => void;
 }) {
   const router = useRouter();
   const { i18n } = useTranslation();
@@ -339,6 +366,20 @@ function TopupSheet({
   const [submitting, setSubmitting] = useState(false);
   const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
   const [pendingPaymentId, setPendingPaymentId] = useState<string | null>(null);
+
+  // The sheet stays mounted (dismissal is driven by `visible`, never by
+  // unmounting a presented Modal — unmount-while-presented is what left
+  // the stuck grey half-sheet on iOS). Reset per-run state on each open.
+  useEffect(() => {
+    if (visible) {
+      setStage('pick');
+      setAmountText('100');
+      setChoice(null);
+      setSubmitting(false);
+      setVerifyUrl(null);
+      setPendingPaymentId(null);
+    }
+  }, [visible]);
 
   const amountNum = useMemo(() => Number(amountText), [amountText]);
   const amountValid = Number.isFinite(amountNum) && amountNum >= TOPUP_MIN && amountNum <= TOPUP_MAX;
@@ -537,7 +578,13 @@ function TopupSheet({
   );
 
   return (
-    <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+      onDismiss={() => onDismissed?.()}
+    >
       {/* Top-up payment-processing overlay. Same component the checkout
           page uses — covers the gap between Apple Pay sheet dismiss /
           3DS WebView close / saved-card response and the
