@@ -9,6 +9,7 @@ import { hasProcessedWebhookEvent, recordWebhookEvent } from '../utils/webhookId
 import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { requireDiagnosticAccess } from '../utils/nooksInternal';
 import { decryptMerchantCredential } from '../lib/merchantCredentials';
+import { writeAudit } from '../utils/auditLog';
 import {
   hasRewardBearingOrderItems,
   reservedClientPaymentPrefix,
@@ -701,21 +702,20 @@ paymentRouter.post('/saved-cards/attach', async (req, res) => {
       return res.status(502).json({ error: `Moyasar token lookup failed (${tokenRes.status}): ${text.slice(0, 200)}` });
     }
     const tokenData: any = await tokenRes.json();
-    // Acceptable statuses for a token we're about to attach:
-    //   - "save_only"        → token created with save_only:true (our flow)
-    //   - "active"           → fully verified after 3DS
-    //   - "verified"         → alias some Moyasar versions emit
-    //   - "initiated"        → just created, may still need 3DS — we'll
-    //                          let the customer try anyway; /token-pay
-    //                          will surface a clearer error if the bank
-    //                          rejects it later.
-    // Reject only the unambiguous failure states so a real declined
-    // card doesn't end up persisted.
     const status = String(tokenData?.status || '').toLowerCase();
     const FAIL_STATES = new Set(['failed', 'inactive', 'declined', 'expired']);
-    if (status && FAIL_STATES.has(status)) {
+    if (FAIL_STATES.has(status)) {
       return res.status(400).json({
         error: `Card was declined by the issuer (token status: ${status}).`,
+      });
+    }
+    if (status !== 'active' && status !== 'verified') {
+      // "initiated" = 3DS verification never completed; "save_only" = a
+      // legacy single-use token from the old flow. Neither is chargeable
+      // later, so refuse to persist it as a saved card.
+      return res.status(409).json({
+        error: 'Card verification was not completed. Please try adding the card again.',
+        code: 'CARD_NOT_VERIFIED',
       });
     }
 
@@ -1096,6 +1096,17 @@ paymentRouter.post('/token-pay', async (req, res) => {
           '— Moyasar error:',
           chargeErr?.message,
         );
+        await writeAudit({
+          merchant_id: scopedMerchantId,
+          action: 'saved_card.charge_invalid_removed',
+          payload: {
+            card_id: savedCardId,
+            customer_id: user.id,
+            brand: null,
+            last_four: null,
+            reason: 'charge_rejected_token_invalid',
+          },
+        });
         return res.status(409).json({
           error: 'SAVED_CARD_INVALID',
           message:

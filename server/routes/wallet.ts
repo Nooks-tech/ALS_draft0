@@ -28,6 +28,7 @@ import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { paymentService } from '../services/payment';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { decryptSavedCardToken } from './payment';
+import { writeAudit } from '../utils/auditLog';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -412,6 +413,17 @@ walletRouter.post('/topup-with-saved-card', async (req: Request, res: Response) 
           '— Moyasar error:',
           chargeErr?.message,
         );
+        await writeAudit({
+          merchant_id: merchantId,
+          action: 'saved_card.charge_invalid_removed',
+          payload: {
+            card_id: savedCardId,
+            customer_id: user.id,
+            brand: null,
+            last_four: null,
+            reason: 'charge_rejected_token_invalid',
+          },
+        });
         return res.status(409).json({
           error: 'SAVED_CARD_INVALID',
           message:

@@ -30,12 +30,14 @@ import {
  * our own UI. Calling flow:
  *
  *   1. User types name / number / expiry / CVC and taps Save Card.
- *   2. We POST directly to Moyasar /v1/tokens with `save_only=true`
- *      using the merchant's publishable key. No payment is charged.
- *   3. If Moyasar requires 3DS verification, the response includes a
- *      `verification_url` — we open that in a webview, and the user's
- *      bank does its dance. Closing back to sdk.moyasar.com/return
- *      means the token is verified.
+ *   2. We POST directly to Moyasar /v1/tokens (default flow — no
+ *      save_only) using the merchant's publishable key. Moyasar runs a
+ *      1-SAR authorization that it auto-voids, plus 3DS verification.
+ *   3. Verification is EXPECTED for every card under this flow: the
+ *      response includes a `verification_url` — we open that in a
+ *      webview, and the user's bank does its dance. Closing back to
+ *      sdk.moyasar.com/return means the token is now "active" and
+ *      reusable for future charges.
  *   4. We call /api/payment/saved-cards/attach so the server links the
  *      verified token to (customer, merchant) — server re-fetches the
  *      token with the secret key to read canonical brand/last_four.
@@ -220,9 +222,11 @@ export default function AddCardModal() {
         month: expParsed.month,
         year: expParsed.year });
 
-      // Some BINs require 3DS even for save-only tokens. Open the
-      // verification URL in a webview; once it lands back on
-      // sdk.moyasar.com/return the bank has approved the token.
+      // Verification is now EXPECTED for every card under the default
+      // tokenization flow (not just "some BINs" as under the old
+      // save_only flow). Open the verification URL in a webview; once
+      // it lands back on sdk.moyasar.com/return the bank has approved
+      // the token and it's active/reusable.
       if (token.verification_url) {
         pendingTokenRef.current = token.id;
         setVerifyUrl(token.verification_url);

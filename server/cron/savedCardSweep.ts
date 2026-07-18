@@ -18,6 +18,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { getMerchantPaymentRuntimeConfig } from '../lib/merchantIntegrations';
 import { decryptSavedCardToken } from '../routes/payment';
+import { writeAudit } from '../utils/auditLog';
+import { sendLocalizedPushScoped } from '../utils/push';
 import {
   CURSOR_NAME,
   EMPTY_CURSOR,
@@ -47,8 +49,47 @@ async function sleep(ms: number) {
 // merchant with 500 saved cards was previously 500 identical lookups.
 type MerchantKeyCache = Map<string, string | null>;
 
+// Best-effort customer notice for a card the sweep just removed. Mirrors
+// cartAbandonment.ts's sendLocalizedPushScoped usage — the helper itself
+// never throws, but we wrap it too so a push failure can never surface
+// past this point and disturb the sweep.
+async function notifyCardRemoved(card: {
+  id: string;
+  customer_id: string;
+  merchant_id: string;
+  last_four: string | null;
+}) {
+  try {
+    const lastFour = card.last_four ?? '';
+    await sendLocalizedPushScoped({
+      customerId: card.customer_id,
+      merchantId: card.merchant_id,
+      channel: 'orders',
+      copy: {
+        en: {
+          title: 'Saved card removed',
+          body: `Your saved card •••• ${lastFour} is no longer valid and was removed. Please add it again.`,
+        },
+        ar: {
+          title: 'تمت إزالة البطاقة المحفوظة',
+          body: `بطاقتك المحفوظة •••• ${lastFour} لم تعد صالحة وتمت إزالتها. يرجى إضافتها مرة أخرى.`,
+        },
+      },
+    });
+  } catch (err: any) {
+    console.warn('[SavedCardSweep] removal push failed', card.id, err?.message);
+  }
+}
+
 async function checkOne(
-  card: { id: string; customer_id: string; merchant_id: string; token: string },
+  card: {
+    id: string;
+    customer_id: string;
+    merchant_id: string;
+    token: string;
+    brand: string | null;
+    last_four: string | null;
+  },
   keyCache: MerchantKeyCache,
 ) {
   if (!supabaseAdmin) return;
@@ -86,6 +127,18 @@ async function checkOne(
         .delete()
         .eq('id', card.id);
       console.log('[SavedCardSweep] Removed missing-token card', card.id);
+      await writeAudit({
+        merchant_id: card.merchant_id,
+        action: 'saved_card.sweep_removed',
+        payload: {
+          card_id: card.id,
+          customer_id: card.customer_id,
+          brand: card.brand ?? null,
+          last_four: card.last_four ?? null,
+          reason: 'moyasar_404',
+        },
+      });
+      await notifyCardRemoved(card);
       return;
     }
     if (!res.ok) {
@@ -100,6 +153,18 @@ async function checkOne(
         .delete()
         .eq('id', card.id);
       console.log('[SavedCardSweep] Removed', status, 'card', card.id);
+      await writeAudit({
+        merchant_id: card.merchant_id,
+        action: 'saved_card.sweep_removed',
+        payload: {
+          card_id: card.id,
+          customer_id: card.customer_id,
+          brand: card.brand ?? null,
+          last_four: card.last_four ?? null,
+          reason: status,
+        },
+      });
+      await notifyCardRemoved(card);
     }
   } catch (err: any) {
     // Network error talking to Moyasar — just skip this tick.
@@ -109,7 +174,14 @@ async function checkOne(
 
 let sweepInFlight = false;
 
-type SavedCard = { id: string; customer_id: string; merchant_id: string; token: string };
+type SavedCard = {
+  id: string;
+  customer_id: string;
+  merchant_id: string;
+  token: string;
+  brand: string | null;
+  last_four: string | null;
+};
 
 // Durable resume cursor (SCAL-013). Persisted in the shared cron_cursors
 // table so a run cut short by SWEEP_BUDGET_MS resumes on the next tick
@@ -166,7 +238,7 @@ async function runSweep() {
       fetchBatch: async (afterId, limit) => {
         let query = supabaseAdmin!
           .from('customer_saved_cards')
-          .select('id, customer_id, merchant_id, token')
+          .select('id, customer_id, merchant_id, token, brand, last_four')
           .order('id', { ascending: true })
           .limit(limit);
         if (afterId) query = query.gt('id', afterId);
