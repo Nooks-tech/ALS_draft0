@@ -41,7 +41,25 @@ type BranchOpsRow = {
   drivethru_enabled?: boolean | null;
 };
 
-/** Current minute-of-day (0..1439) in the given IANA timezone. */
+/**
+ * Foodics reports the business timezone as either an IANA name
+ * ("Asia/Riyadh") or a bare UTC offset ("+03:00" — what our live rows
+ * hold today). Offset strings are only valid Intl timezone identifiers
+ * on newer V8s, so probe this runtime's Intl and fall back instead of
+ * letting every hours evaluation throw a RangeError.
+ */
+function resolveIntlTimeZone(value: unknown, fallback = 'Asia/Riyadh'): string {
+  const candidate = typeof value === 'string' ? value.trim() : '';
+  if (!candidate) return fallback;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate });
+    return candidate;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Current minute-of-day (0..1439) in the given Intl-accepted timezone. */
 function minuteOfDayIn(timeZone: string, now: Date): number {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone,
@@ -99,16 +117,13 @@ export async function checkBranchOrderable(
       .maybeSingle(),
     supabaseAdmin
       .from('foodics_connections')
-      .select('business_timezone')
+      .select('settings_business_timezone')
       .eq('merchant_id', merchantId)
       .maybeSingle(),
   ]);
 
   const ops = (row ?? null) as BranchOpsRow | null;
-  const timeZone =
-    typeof foodics?.business_timezone === 'string' && foodics.business_timezone.trim()
-      ? foodics.business_timezone.trim()
-      : 'Asia/Riyadh';
+  const timeZone = resolveIntlTimeZone(foodics?.settings_business_timezone);
   const now = new Date();
   const nowMs = now.getTime();
 

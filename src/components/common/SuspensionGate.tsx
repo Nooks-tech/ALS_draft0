@@ -1,7 +1,14 @@
 /**
  * App-wide suspension gate. Replaces the entire navigator stack with
- * a "store unavailable" blocker when the merchant has gone past their
- * 2-day billing grace period.
+ * a "store unavailable" blocker when subscriptionState is 'suspended'.
+ *
+ * This is NOT the billing-grace-period path: a merchant that has
+ * lapsed past their grace period gets subscriptionState
+ * 'billing_closed' from the branding endpoint and keeps the
+ * browsable storefront — operations forces every branch closed with
+ * reason 'billing' instead. 'suspended' only fires for
+ * never-activated/hard-blocked merchants, and for the branding
+ * fail-closed path (fetch failed + cache more than 24h stale).
  *
  * Lives at the root layout (above the Stack), so it gates every
  * route: tabs, modals (checkout, payment-modal, wallet-modal,
