@@ -213,6 +213,9 @@ function easUpdate(channel, msg, plat, clearCache) {
   const result = spawnSync("eas", argv, {
     stdio: "inherit",
     encoding: "utf8",
+    // Windows: eas is eas.cmd — CreateProcess can't resolve it without
+    // a shell. No-op on the Linux GitHub runners.
+    shell: process.platform === "win32",
   });
   return result.status === 0;
 }
