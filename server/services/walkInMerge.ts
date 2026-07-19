@@ -113,41 +113,105 @@ export async function mergeWalkInProfiles(
             .eq('merchant_id', row.merchant_id)
             .eq('customer_id', row.id)
             .maybeSingle();
-          if (!oldPoints) return;
-          const { data: existingPoints } = await supabase
-            .from('loyalty_points')
-            .select('points, lifetime_points')
-            .eq('merchant_id', row.merchant_id)
-            .eq('customer_id', authUserId)
-            .maybeSingle();
-          if (existingPoints) {
-            await supabase
+          // LOY-14: this used to be `if (!oldPoints) return;` — a bare
+          // return here exits the WHOLE per-row async callback (map's
+          // arrow function), not just this try block. That silently
+          // skipped every block below it (previously nothing; now the
+          // cashback migration) for any walk-in with no points balance —
+          // exactly the case for a cashback-mode merchant, whose walk-ins
+          // never have a loyalty_points row at all. Guard with `if
+          // (oldPoints)` instead so a missing points balance only skips
+          // the points migration, not the rest of the merge.
+          if (oldPoints) {
+            const { data: existingPoints } = await supabase
               .from('loyalty_points')
-              .update({
-                points:
-                  Number((existingPoints as { points?: number }).points ?? 0) +
-                  Number((oldPoints as { points?: number }).points ?? 0),
-                lifetime_points:
-                  Number((existingPoints as { lifetime_points?: number }).lifetime_points ?? 0) +
-                  Number((oldPoints as { lifetime_points?: number }).lifetime_points ?? 0),
-                updated_at: new Date().toISOString(),
-              })
+              .select('points, lifetime_points')
               .eq('merchant_id', row.merchant_id)
-              .eq('customer_id', authUserId);
-            await supabase
-              .from('loyalty_points')
-              .delete()
-              .eq('merchant_id', row.merchant_id)
-              .eq('customer_id', row.id);
-          } else {
-            await supabase
-              .from('loyalty_points')
-              .update({ customer_id: authUserId })
-              .eq('merchant_id', row.merchant_id)
-              .eq('customer_id', row.id);
+              .eq('customer_id', authUserId)
+              .maybeSingle();
+            if (existingPoints) {
+              await supabase
+                .from('loyalty_points')
+                .update({
+                  points:
+                    Number((existingPoints as { points?: number }).points ?? 0) +
+                    Number((oldPoints as { points?: number }).points ?? 0),
+                  lifetime_points:
+                    Number((existingPoints as { lifetime_points?: number }).lifetime_points ?? 0) +
+                    Number((oldPoints as { lifetime_points?: number }).lifetime_points ?? 0),
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('merchant_id', row.merchant_id)
+                .eq('customer_id', authUserId);
+              await supabase
+                .from('loyalty_points')
+                .delete()
+                .eq('merchant_id', row.merchant_id)
+                .eq('customer_id', row.id);
+            } else {
+              await supabase
+                .from('loyalty_points')
+                .update({ customer_id: authUserId })
+                .eq('merchant_id', row.merchant_id)
+                .eq('customer_id', row.id);
+            }
           }
         } catch (err) {
           console.warn('[walk-in-merge] points migrate failed', row.id, err);
+        }
+        try {
+          // loyalty_cashback_balances is versioned per (merchant, customer,
+          // config_version) — UNIQUE(customer_id, merchant_id,
+          // config_version), unlike loyalty_points which has one row per
+          // (merchant, customer). A walk-in can have accrued balance under
+          // more than one config_version, so migrate every row, not just
+          // the latest. No lifetime_* column exists on this table (checked
+          // live schema) — balance_sar is the only field to merge.
+          const { data: oldCashbackRows } = await supabase
+            .from('loyalty_cashback_balances')
+            .select('balance_sar, config_version')
+            .eq('merchant_id', row.merchant_id)
+            .eq('customer_id', row.id);
+          for (const oldBal of (oldCashbackRows ?? []) as Array<{
+            balance_sar: number;
+            config_version: number;
+          }>) {
+            const { data: existingBal } = await supabase
+              .from('loyalty_cashback_balances')
+              .select('balance_sar')
+              .eq('merchant_id', row.merchant_id)
+              .eq('customer_id', authUserId)
+              .eq('config_version', oldBal.config_version)
+              .maybeSingle();
+            if (existingBal) {
+              await supabase
+                .from('loyalty_cashback_balances')
+                .update({
+                  balance_sar:
+                    Number((existingBal as { balance_sar?: number }).balance_sar ?? 0) +
+                    Number(oldBal.balance_sar ?? 0),
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('merchant_id', row.merchant_id)
+                .eq('customer_id', authUserId)
+                .eq('config_version', oldBal.config_version);
+              await supabase
+                .from('loyalty_cashback_balances')
+                .delete()
+                .eq('merchant_id', row.merchant_id)
+                .eq('customer_id', row.id)
+                .eq('config_version', oldBal.config_version);
+            } else {
+              await supabase
+                .from('loyalty_cashback_balances')
+                .update({ customer_id: authUserId })
+                .eq('merchant_id', row.merchant_id)
+                .eq('customer_id', row.id)
+                .eq('config_version', oldBal.config_version);
+            }
+          }
+        } catch (err) {
+          console.warn('[walk-in-merge] cashback migrate failed', row.id, err);
         }
       }),
     );

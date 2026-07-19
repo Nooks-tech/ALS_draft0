@@ -1409,21 +1409,38 @@ loyaltyRouter.post('/branch/earn', async (req, res) => {
     }
 
     const orderId = redirectTo ? redirectTo.id : buildBranchReference('branch-sale', referenceId);
-    const result = await earnPoints(redirectTo ? redirectTo.customer_id : member.customer_id, orderId, amountSar, merchantId, {
+    const creditedCustomerId = redirectTo ? redirectTo.customer_id : member.customer_id;
+    const earnContext: LoyaltyActionContext = {
       source: 'branch',
       branchId,
       actorUserId,
       actorRole,
       referenceType: 'branch_sale',
       referenceId,
-      // Phase H8: only forwarded in enforce mode (and earnPoints only
-      // writes foodics_order_ref in enforce) so shadow stays non-mutating.
+      // Phase H8: only forwarded in enforce mode (and earnPoints/earnCashback
+      // only write foodics_order_ref in enforce) so shadow stays non-mutating.
       ...(guardMode === 'enforce' && isFoodicsUuidRef ? { foodicsOrderRef: referenceId } : {}),
       metadata: {
         note: normalizeOptionalString(req.body?.note),
         amount_sar: amountSar,
       },
-    });
+    };
+    // LOY-14: branch/kiosk earns were unconditionally earning POINTS,
+    // ignoring the merchant's/customer's loyalty type — a cashback
+    // merchant's branch sale always credited points. Mirror earnForOrder's
+    // (the app-order earn dispatcher's) type resolution exactly: resolve
+    // the CREDITED customer's effective loyalty type (not necessarily
+    // `member.customer_id` — the H8 redirect above can credit a different
+    // customer) and route to earnCashback when it's 'cashback'. An
+    // unactivated merchant (loyalty_type null) keeps today's points-only
+    // behavior unchanged.
+    const branchConfig = await getMerchantConfig(merchantId);
+    const effectiveLoyaltyType = branchConfig.loyalty_type
+      ? await initCustomerLoyaltyType(merchantId, creditedCustomerId, branchConfig.loyalty_type)
+      : null;
+    const result = effectiveLoyaltyType === 'cashback'
+      ? await earnCashback(merchantId, creditedCustomerId, orderId, amountSar, earnContext)
+      : await earnPoints(creditedCustomerId, orderId, amountSar, merchantId, earnContext);
     const snapshot = await getLoyaltySnapshot(merchantId, member.customer_id);
     res.json({ success: true, result, member: snapshot });
   } catch (err: any) {
@@ -1622,11 +1639,23 @@ async function earnCashback(merchantId: string, customerId: string, orderId: str
   // INSERT fails with 23505 and we short-circuit — the winning
   // caller already credited the balance, so we just return the
   // current state.
+  // LOY-14: forward the same context fields earnPoints already writes
+  // (branch/kiosk earns need source='branch' + branch_id + reference_*
+  // so the branch dedup index and audit trail cover cashback the same as
+  // points). Every field defaults to exactly what this insert wrote
+  // before context existed — undefined context is zero behavior change.
   const txInsert = await supabaseAdmin.from('loyalty_transactions').insert({
     customer_id: customerId, merchant_id: merchantId, order_id: orderId,
     type: 'earn', loyalty_type: 'cashback', amount_sar: cashbackSar,
     points: 0, description: `Earned ${cashbackSar} SAR cashback`,
-    source: 'app', expires_at: expiresAt, config_version: currentVersion,
+    source: normalizeOptionalString(context?.source) ?? 'app',
+    branch_id: normalizeOptionalString(context?.branchId),
+    actor_user_id: normalizeOptionalString(context?.actorUserId),
+    actor_role: normalizeOptionalString(context?.actorRole),
+    reference_type: normalizeOptionalString(context?.referenceType),
+    reference_id: normalizeOptionalString(context?.referenceId),
+    metadata: context?.metadata ?? {},
+    expires_at: expiresAt, config_version: currentVersion,
     // Phase H8: stamped ONLY in enforce mode — in off/shadow the column
     // stays null so idx_loyalty_foodics_purchase_earn_unique stays dormant.
     ...(guardMode === 'enforce' && foodicsRef ? { foodics_order_ref: foodicsRef } : {}),
