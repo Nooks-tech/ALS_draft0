@@ -108,6 +108,14 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   // Tracks the previous (merchant, user) scope so we can clear cart
   // state when EITHER axis changes.
   const prevScopeRef = useRef<string | null>(null);
+  // Which scope the current in-memory cart was hydrated FOR. The
+  // persistence + server-sync effects refuse to write unless this
+  // matches the render's scope. Without it, the one render where the
+  // scope (and thus CART_CACHE_KEY) has already switched but the
+  // reset effect's setState hasn't applied yet would write the OLD
+  // user's items under the NEW user's key — the cross-account cart
+  // leak (A logs out, B signs in, B sees A's basket).
+  const hydratedScopeRef = useRef<string | null>(null);
   // Phase D: debounce server sync writes so a flurry of "+ -" taps
   // collapses into one PUT.
   const serverSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -133,10 +141,14 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       prevScopeRef.current !== null &&
       prevScopeRef.current !== SCOPE_KEY
     ) {
+      hydratedScopeRef.current = null;
       setCartItems([]);
       setOrderTypeState('pickup');
       setSelectedBranchState(null);
       setDeliveryAddressState(null);
+      setDeliveryFeeState(0);
+      setDeliveryOptionIdState(null);
+      setDeliveryCarrierNameState(null);
       setHydrated(false);
       setLastUpdatedAt(Date.now());
     }
@@ -145,6 +157,11 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     if (!initialized || hydrated) return;
+    // Cancellation guard: if the (merchant, user) scope flips while a
+    // hydration is in flight (logout mid-fetch, merchant id resolving
+    // at boot), the stale run must not seed the NEW scope's state with
+    // the OLD scope's server/local cart.
+    let cancelled = false;
     (async () => {
       try {
         // Phase D: try the server first (source of truth across devices
@@ -178,6 +195,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         let serverSaysEmpty = false;
         if (uid !== 'guest' && merchantId) {
           const remote = await fetchServerCart(merchantId);
+          if (cancelled) return;
           if (remote) {
             if (Array.isArray(remote.items) && remote.items.length > 0) {
               setCartItems(remote.items as CartItem[]);
@@ -193,6 +211,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
         }
 
         let raw = await AsyncStorage.getItem(CART_CACHE_KEY);
+        if (cancelled) return;
         // One-time migration of legacy non-namespaced cart data so
         // existing customers don't lose their basket on the OTA
         // update that introduced merchant scoping.
@@ -203,6 +222,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
             await AsyncStorage.removeItem(`@als_cart_${uid}`);
             raw = legacy;
           }
+          if (cancelled) return;
         }
         if (!raw || seeded) return;
         const parsed = JSON.parse(raw) as PersistedCart;
@@ -225,6 +245,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
           await AsyncStorage.removeItem(CART_CACHE_KEY);
           return;
         }
+        if (cancelled) return;
 
         const expiresAt =
           typeof parsed.expiresAt === 'number'
@@ -246,10 +267,18 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       } catch {
         // Corrupted JSON, AsyncStorage error, or offline — start fresh.
       } finally {
-        setHydrated(true);
+        if (!cancelled) {
+          // Stamp WHICH scope this hydration was for — the write
+          // effects below key off it, not just the boolean.
+          hydratedScopeRef.current = SCOPE_KEY;
+          setHydrated(true);
+        }
       }
     })();
-  }, [CART_CACHE_KEY, hydrated, initialized, uid, merchantId]);
+    return () => {
+      cancelled = true;
+    };
+  }, [CART_CACHE_KEY, SCOPE_KEY, hydrated, initialized, uid, merchantId]);
 
   // QR landing: when the entry URL carries an order_type override,
   // apply it AFTER cache hydration so the QR's intent wins over a
@@ -262,7 +291,11 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   }, [hydrated, landing.orderType]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    // Scope-accurate write guard (not just the hydrated boolean): on
+    // the render where the scope has switched but state is still the
+    // previous user's, hydratedScopeRef holds the OLD scope (or null)
+    // — never write that cart under the NEW scope's key.
+    if (!hydrated || hydratedScopeRef.current !== SCOPE_KEY) return;
     const payload = JSON.stringify({
       cartItems,
       orderType,
@@ -272,7 +305,7 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
       expiresAt: cartItems.length > 0 ? lastUpdatedAt + CART_TTL_MS : null,
     });
     AsyncStorage.setItem(CART_CACHE_KEY, payload).catch(() => {});
-  }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress, CART_CACHE_KEY, lastUpdatedAt]);
+  }, [hydrated, cartItems, orderType, selectedBranch, deliveryAddress, CART_CACHE_KEY, SCOPE_KEY, lastUpdatedAt]);
 
   // Phase D: debounced server-side sync. Every cart change schedules a
   // PUT 300ms later; back-to-back changes collapse into one request.
@@ -282,6 +315,10 @@ export const CartProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     if (!hydrated || !initialized) return;
     if (!merchantId || uid === 'guest') return;
+    // Same scope-accurate guard as the AsyncStorage mirror above —
+    // without it, the transition render would schedule a PUT of the
+    // previous user's items under the NEW user's session token.
+    if (hydratedScopeRef.current !== SCOPE_KEY) return;
     if (serverSyncTimerRef.current) {
       clearTimeout(serverSyncTimerRef.current);
     }

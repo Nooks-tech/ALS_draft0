@@ -6,7 +6,12 @@
 // would be merchant-X env on every device, breaking N-1 merchants.
 //
 // Usage:
-//   node scripts/broadcast-update.mjs --message "fix(push): ..." [--target all|<merchant_id>] [--platform all|ios|android]
+//   node scripts/broadcast-update.mjs --message "fix(push): ..." [--target all|<merchant_id>] [--platform all|ios|android] [--clear-cache]
+//
+// --clear-cache passes eas update's Metro-cache flush through. Use it
+// after ANY env change: the transform cache happily serves modules with
+// stale EXPO_PUBLIC_* values baked in even after .env is corrected
+// (the 07-16 Tokyo-env OTA incident).
 //
 // Required env (provided by the GitHub workflow):
 //   SUPABASE_URL                    Supabase REST URL
@@ -187,7 +192,7 @@ function writeEnvFor(merchant) {
   writeFileSync(".env", lines.join(""));
 }
 
-function easUpdate(channel, msg, plat) {
+function easUpdate(channel, msg, plat, clearCache) {
   // Sequential per merchant. Each invocation re-bundles the JS using
   // the .env we just wrote, then uploads + tags the bundle on the
   // merchant's channel. ~30-90 s per merchant.
@@ -199,6 +204,9 @@ function easUpdate(channel, msg, plat) {
     msg,
     "--non-interactive",
   ];
+  if (clearCache) {
+    argv.push("--clear-cache");
+  }
   if (plat !== "all") {
     argv.push("--platform", plat);
   }
@@ -244,7 +252,7 @@ function easUpdate(channel, msg, plat) {
     console.log("========================================");
     try {
       writeEnvFor(m);
-      const ok = easUpdate(m.id, message, platform);
+      const ok = easUpdate(m.id, message, platform, args["clear-cache"] === "true");
       results.push({ id: m.id, name, ok, error: ok ? null : "eas update returned non-zero" });
     } catch (err) {
       console.error(`[broadcast] ${m.id} threw:`, err?.message || err);
