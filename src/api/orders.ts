@@ -35,6 +35,7 @@ function normalizeLegacy(row: Record<string, any>): OrderRow {
 
 export type OrderRow = {
   id: string;
+  order_source?: 'native' | 'web' | 'kiosk' | 'pos';
   merchant_id: string | null;
   branch_id: string | null;
   branch_name: string | null;
@@ -220,6 +221,7 @@ export async function fetchOrdersForCustomer(
     .select('*')
     .eq('customer_id', customerId)
     .eq('merchant_id', merchantId)
+    .neq('order_source', 'web')
     .not('foodics_order_id', 'is', null)
     .order('created_at', { ascending: false });
   if (primary.error && !isCustomerOrdersMissing(primary.error.message)) {

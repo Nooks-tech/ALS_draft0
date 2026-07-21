@@ -265,7 +265,11 @@ export const OrdersProvider = ({ children }: { children: React.ReactNode }) => {
         try {
           const cached = JSON.parse(raw) as PlacedOrder[];
           if (Array.isArray(cached) && cached.length > 0) {
-            setOrders(cached);
+            // Purge browser-checkout rows cached by older app builds. The DB
+            // now hides them too, but local AsyncStorage survives upgrades.
+            const nativeOnly = cached.filter((order) => !order.id.startsWith('web-'));
+            setOrders(nativeOnly);
+            persistOrdersCache(nativeOnly);
             setLoading(false);
           }
         } catch {}

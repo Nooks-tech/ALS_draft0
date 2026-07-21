@@ -31,6 +31,7 @@ import {
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { netOfLoyaltyEarnBase } from '../utils/loyaltyEarnBase';
+import { isWebOrder, shouldSendCustomerOrderPush } from '../utils/orderSource';
 import { enforceLimits, ipFromReq } from '../utils/rateLimit';
 import { creditWalletForRefund } from './wallet';
 import { notifyPassUpdateSafe } from './walletPass';
@@ -3583,7 +3584,7 @@ export async function refundOrderToWallet(
     typeof reason === 'string' &&
     reason.toLowerCase().startsWith('abandoned payment') &&
     !order.foodics_order_id;
-  if (!isAbandonedPaymentSweep) {
+  if (!isAbandonedPaymentSweep && shouldSendCustomerOrderPush(order)) {
     // Customer language preference — per-(merchant, customer), falls back
     // to English when no profile exists. We localize the cancel push here
     // because it's the SOLE cancellation notification the customer sees
@@ -3669,7 +3670,7 @@ export async function refundOrderToWallet(
         ? 'ما تم خصم أي مبلغ من بطاقتك، لذلك ما في شي يحتاج استرداد.'
         : 'No charge was made to your card, so nothing needs to be refunded.';
     sendPushToCustomer(order.customer_id, title, `${lead} ${refundLine}`, order.merchant_id);
-  } else {
+  } else if (isAbandonedPaymentSweep) {
     console.log(
       `[Orders] Suppressing cancellation push for abandoned-payment sweep on order ${orderId} (never reached Foodics)`,
     );
@@ -4199,6 +4200,7 @@ ordersRouter.post('/:id/hold', async (req, res) => {
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
+    if (isWebOrder(order)) return res.status(404).json({ error: 'Order not found' });
 
     const createdAt = new Date(order.created_at).getTime();
     const holdWindowMs = 5000;
@@ -4230,12 +4232,13 @@ ordersRouter.post('/:id/resume', async (req, res) => {
 
     const { data: order, error: fetchErr } = await supabaseAdmin
       .from('customer_orders')
-      .select('customer_id, status')
+      .select('id, customer_id, status, order_source')
       .eq('id', orderId)
       .eq('customer_id', user.id)
       .single();
 
     if (fetchErr || !order) return res.status(404).json({ error: 'Order not found' });
+    if (isWebOrder(order)) return res.status(404).json({ error: 'Order not found' });
 
     const { error: updateErr } = await supabaseAdmin
       .from('customer_orders')
@@ -4304,12 +4307,13 @@ ordersRouter.get('/:id/status', async (req, res) => {
 
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, merchant_id, foodics_order_id, status, cancellation_reason, cancelled_by, refund_status, refund_amount, refund_fee, refund_method, created_at, updated_at')
+      .select('id, customer_id, merchant_id, foodics_order_id, status, cancellation_reason, cancelled_by, refund_status, refund_amount, refund_fee, refund_method, created_at, updated_at, order_source')
       .eq('id', orderId)
       .eq('customer_id', user.id)
       .single();
 
     if (error || !order) return res.status(404).json({ error: 'Order not found' });
+    if (isWebOrder(order)) return res.status(404).json({ error: 'Order not found' });
 
     // ─── Foodics read-through (2026-07-15) ───────────────────────────
     // The Foodics webhook never lands (registration blocked by Foodics perms +
@@ -4379,12 +4383,13 @@ ordersRouter.post('/:id/customer-received', async (req, res) => {
     const orderId = req.params.id;
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, status, order_type, ready_at, total_sar, wallet_paid_sar, cashback_paid_sar, merchant_id')
+      .select('id, customer_id, status, order_type, ready_at, total_sar, wallet_paid_sar, cashback_paid_sar, merchant_id, order_source')
       .eq('id', orderId)
       .eq('customer_id', user.id)
       .maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
     if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (isWebOrder(order)) return res.status(404).json({ error: 'Order not found' });
 
     if (order.order_type !== 'pickup') {
       return res.status(400).json({ error: 'This action is only available for pickup orders' });
@@ -4477,12 +4482,13 @@ ordersRouter.post('/:id/customer-arrived', async (req, res) => {
     const orderId = req.params.id;
     const { data: order, error } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, status, order_type, foodics_order_id, merchant_id, customer_arrived_at')
+      .select('id, customer_id, status, order_type, foodics_order_id, merchant_id, customer_arrived_at, order_source')
       .eq('id', orderId)
       .eq('customer_id', user.id)
       .maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
     if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (isWebOrder(order)) return res.status(404).json({ error: 'Order not found' });
 
     if (order.order_type !== 'drivethru') {
       return res.status(400).json({ error: 'This action is only for curbside (receive-from-car) orders' });
@@ -4568,7 +4574,7 @@ ordersRouter.patch('/:id/status', async (req, res) => {
 
     const { data: order } = await supabaseAdmin
       .from('customer_orders')
-      .select('id, customer_id, status, total_sar, wallet_paid_sar, cashback_paid_sar, merchant_id')
+      .select('id, customer_id, status, total_sar, wallet_paid_sar, cashback_paid_sar, merchant_id, order_source')
       .eq('id', orderId)
       .single();
 
@@ -4629,12 +4635,16 @@ ordersRouter.patch('/:id/status', async (req, res) => {
 
     if (order.customer_id) {
       const mid = order.merchant_id ?? undefined;
-      if (status === 'Ready') {
-        sendPushToCustomer(order.customer_id, 'Order Ready!', 'Your order is ready for pickup.', mid);
-      } else if (status === 'Out for delivery') {
-        sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.', mid);
-      } else if (status === 'Delivered') {
-        sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!', mid);
+      if (shouldSendCustomerOrderPush(order)) {
+        if (status === 'Ready') {
+          sendPushToCustomer(order.customer_id, 'Order Ready!', 'Your order is ready for pickup.', mid);
+        } else if (status === 'Out for delivery') {
+          sendPushToCustomer(order.customer_id, 'Order On The Way!', 'Your order is out for delivery.', mid);
+        } else if (status === 'Delivered') {
+          sendPushToCustomer(order.customer_id, 'Order Delivered', 'Your order has been delivered. Enjoy!', mid);
+        }
+      }
+      if (status === 'Delivered') {
         earnForOrder(order.customer_id, orderId, netOfLoyaltyEarnBase(order), order.merchant_id ?? '').catch(
           (e: any) => console.warn('[Orders] Auto-earn loyalty failed:', e?.message),
         );

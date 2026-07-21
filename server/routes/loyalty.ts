@@ -16,6 +16,11 @@ import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils
 import { hasValidInternalSecret, requireDiagnosticAccess, requireNooksInternalRequest } from '../utils/nooksInternal';
 import { netOfLoyaltyEarnBase } from '../utils/loyaltyEarnBase';
 import { enforceLimits } from '../utils/rateLimit';
+import {
+  chooseInitialLoyaltyMode,
+  shouldKeepExistingLoyaltyMode,
+  type LoyaltyMode,
+} from '../utils/loyaltyRouting';
 
 export const loyaltyRouter = Router();
 
@@ -24,8 +29,6 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
-
-type LoyaltyMode = 'cashback' | 'points';
 
 const DEFAULT_CONFIG = {
   loyalty_type: null as LoyaltyMode | null,
@@ -80,10 +83,11 @@ async function getMerchantConfig(merchantId: string) {
 /** Get or initialize the customer's active loyalty type from loyalty_member_profiles */
 async function getCustomerActiveLoyaltyType(merchantId: string, customerId: string): Promise<string | null> {
   if (!supabaseAdmin) return null;
-  const { data } = await supabaseAdmin.from('loyalty_member_profiles')
+  const { data, error } = await supabaseAdmin.from('loyalty_member_profiles')
     .select('active_loyalty_type')
     .eq('customer_id', customerId).eq('merchant_id', merchantId)
     .maybeSingle();
+  if (error) throw new Error(`Failed to resolve customer loyalty type: ${error.message}`);
   return data?.active_loyalty_type ?? null;
 }
 
@@ -91,21 +95,50 @@ async function getCustomerActiveLoyaltyType(merchantId: string, customerId: stri
 async function initCustomerLoyaltyType(merchantId: string, customerId: string, loyaltyType: string): Promise<string> {
   if (!supabaseAdmin) return loyaltyType;
   // Try to set only if not already set (don't overwrite existing)
-  const { data: existing } = await supabaseAdmin.from('loyalty_member_profiles')
+  const { data: existing, error: existingError } = await supabaseAdmin.from('loyalty_member_profiles')
     .select('active_loyalty_type')
     .eq('customer_id', customerId).eq('merchant_id', merchantId)
     .maybeSingle();
+  if (existingError) throw new Error(`Failed to initialize customer loyalty type: ${existingError.message}`);
 
   if (existing?.active_loyalty_type) return existing.active_loyalty_type;
 
   // Set for the first time
   if (existing) {
-    await supabaseAdmin.from('loyalty_member_profiles')
+    const { error } = await supabaseAdmin.from('loyalty_member_profiles')
       .update({ active_loyalty_type: loyaltyType, loyalty_type_set_at: new Date().toISOString() })
       .eq('customer_id', customerId).eq('merchant_id', merchantId);
+    if (error) throw new Error(`Failed to initialize customer loyalty type: ${error.message}`);
   }
   // If no profile exists yet, ensureLoyaltyMemberProfile will be called first by the earn/redeem handler
   return loyaltyType;
+}
+
+async function getCustomerBalanceForMode(
+  merchantId: string,
+  customerId: string,
+  loyaltyType: LoyaltyMode,
+): Promise<number> {
+  if (!supabaseAdmin) return 0;
+  if (loyaltyType === 'cashback') {
+    const { data, error } = await supabaseAdmin
+      .from('loyalty_cashback_balances')
+      .select('balance_sar')
+      .eq('customer_id', customerId)
+      .eq('merchant_id', merchantId)
+      .order('config_version', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(`Failed to resolve cashback balance: ${error.message}`);
+    return Number(data?.balance_sar ?? 0);
+  }
+  const { data, error } = await supabaseAdmin
+    .from('loyalty_points')
+    .select('points')
+    .eq('customer_id', customerId)
+    .eq('merchant_id', merchantId);
+  if (error) throw new Error(`Failed to resolve points balance: ${error.message}`);
+  return (data ?? []).reduce((sum, row) => sum + Number(row.points ?? 0), 0);
 }
 
 /**
@@ -133,8 +166,24 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
 
   if (!customerType) {
     // New customer — assign them the merchant's current type
-    const assignedType = await initCustomerLoyaltyType(merchantId, customerId, merchantType);
-    return { earn: assignedType, redeem: assignedType, transitioning: false, oldSystemType: null, oldBalance: 0 };
+    const [pointsBalance, cashbackBalance] = await Promise.all([
+      getCustomerBalanceForMode(merchantId, customerId, 'points'),
+      getCustomerBalanceForMode(merchantId, customerId, 'cashback'),
+    ]);
+    const initialType = chooseInitialLoyaltyMode({
+      merchantMode: merchantType as LoyaltyMode,
+      pointsBalance,
+      cashbackBalance,
+    });
+    const assignedType = await initCustomerLoyaltyType(merchantId, customerId, initialType);
+    const retainedBalance = assignedType === 'cashback' ? cashbackBalance : pointsBalance;
+    return {
+      earn: assignedType,
+      redeem: assignedType,
+      transitioning: assignedType !== merchantType,
+      oldSystemType: assignedType !== merchantType ? assignedType : null,
+      oldBalance: assignedType !== merchantType ? retainedBalance : 0,
+    };
   }
 
   // Customer type matches merchant type — no transition needed
@@ -143,32 +192,17 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
   }
 
   // Customer type differs from merchant type — check old system balance
-  let oldBalance = 0;
-  if (supabaseAdmin) {
-    if (customerType === 'cashback') {
-      const { data: cbData } = await supabaseAdmin
-        .from('loyalty_cashback_balances')
-        .select('balance_sar')
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId)
-        .order('config_version', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      oldBalance = cbData?.balance_sar ?? 0;
-    } else {
-      // points (or legacy stamps row, which now lives only in
-      // loyalty_points after the Phase 1 schema collapse)
-      const { data: ptsData } = await supabaseAdmin
-        .from('loyalty_points')
-        .select('points')
-        .eq('customer_id', customerId)
-        .eq('merchant_id', merchantId)
-        .maybeSingle();
-      oldBalance = ptsData?.points ?? 0;
-    }
-  }
+  const oldBalance = await getCustomerBalanceForMode(
+    merchantId,
+    customerId,
+    customerType as LoyaltyMode,
+  );
 
-  if (oldBalance > 0) {
+  if (shouldKeepExistingLoyaltyMode({
+    merchantMode: merchantType as LoyaltyMode,
+    customerMode: customerType as LoyaltyMode,
+    existingBalance: oldBalance,
+  })) {
     // Keep old system until balance is spent
     return { earn: customerType, redeem: customerType, transitioning: true, oldSystemType: customerType, oldBalance };
   }
@@ -176,25 +210,28 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
   // Balance is 0 — auto-switch to new system
   if (supabaseAdmin) {
     const now = new Date().toISOString();
-    await supabaseAdmin.from('loyalty_member_profiles')
+    const { error: switchError } = await supabaseAdmin.from('loyalty_member_profiles')
       .update({ active_loyalty_type: merchantType, loyalty_type_opted_in_at: now })
       .eq('customer_id', customerId).eq('merchant_id', merchantId);
+    if (switchError) throw new Error(`Failed to switch customer loyalty type: ${switchError.message}`);
 
     // Zero out the DESTINATION system's balance so a customer who
     // accumulated in X, was switched to Y and exhausted Y, then
     // flipped back to X doesn't see old X balance resurface.
     if (merchantType === 'points') {
-      await supabaseAdmin.from('loyalty_points')
+      const { error } = await supabaseAdmin.from('loyalty_points')
         .update({ points: 0, updated_at: now })
         .eq('customer_id', customerId).eq('merchant_id', merchantId);
+      if (error) throw new Error(`Failed to reset destination points balance: ${error.message}`);
     } else if (merchantType === 'cashback') {
-      await supabaseAdmin.from('loyalty_cashback_balances')
+      const { error } = await supabaseAdmin.from('loyalty_cashback_balances')
         .update({ balance_sar: 0, updated_at: now })
         .eq('customer_id', customerId).eq('merchant_id', merchantId);
+      if (error) throw new Error(`Failed to reset destination cashback balance: ${error.message}`);
     }
 
     // Mark the transition as complete in the tracking table
-    await supabaseAdmin.from('loyalty_customer_transitions')
+    const { error: transitionError } = await supabaseAdmin.from('loyalty_customer_transitions')
       .upsert({
         customer_id: customerId,
         merchant_id: merchantId,
@@ -204,6 +241,7 @@ export async function getCustomerLoyaltyRoute(merchantId: string, customerId: st
         old_balance_exhausted: true,
         old_balance_exhausted_at: now,
       }, { onConflict: 'customer_id,merchant_id,config_version_at_switch' });
+    if (transitionError) throw new Error(`Failed to record customer loyalty transition: ${transitionError.message}`);
 
     // Trigger pass update so the design changes to the new loyalty type
     notifyPassUpdateSafe(customerId, merchantId);
@@ -944,8 +982,10 @@ loyaltyRouter.post('/earn', async (req, res) => {
     }
 
     await ensureLoyaltyMemberProfile(merchantId || '', customerId);
-    const customerType = await initCustomerLoyaltyType(merchantId || '', customerId, config.loyalty_type);
-    const loyaltyType = customerType;
+    const loyaltyType = (await getCustomerLoyaltyRoute(merchantId || '', customerId)).earn;
+    if (!loyaltyType) {
+      return res.status(400).json({ error: 'Loyalty is not activated for this merchant' });
+    }
 
     // LOY-7 / LOY-8 / M15: derive the earn base from the DB order row, never
     // the caller's `orderSubtotal` — a buggy/compromised internal caller must
@@ -988,7 +1028,9 @@ export async function earnForOrder(
   if (!supabaseAdmin) throw new Error('Database not configured');
   const config = await getMerchantConfig(merchantId);
   if (!config.loyalty_type) return { success: false, skipped: 'no_loyalty' };
-  const loyaltyType = await initCustomerLoyaltyType(merchantId, customerId, config.loyalty_type);
+  await ensureLoyaltyMemberProfile(merchantId, customerId);
+  const loyaltyType = (await getCustomerLoyaltyRoute(merchantId, customerId)).earn;
+  if (!loyaltyType) return { success: false, skipped: 'no_loyalty' };
   if (loyaltyType === 'cashback') {
     return earnCashback(merchantId, customerId, orderId, earnBase, context);
   }
@@ -1435,8 +1477,9 @@ loyaltyRouter.post('/branch/earn', async (req, res) => {
     // unactivated merchant (loyalty_type null) keeps today's points-only
     // behavior unchanged.
     const branchConfig = await getMerchantConfig(merchantId);
+    await ensureLoyaltyMemberProfile(merchantId, creditedCustomerId);
     const effectiveLoyaltyType = branchConfig.loyalty_type
-      ? await initCustomerLoyaltyType(merchantId, creditedCustomerId, branchConfig.loyalty_type)
+      ? (await getCustomerLoyaltyRoute(merchantId, creditedCustomerId)).earn
       : null;
     const result = effectiveLoyaltyType === 'cashback'
       ? await earnCashback(merchantId, creditedCustomerId, orderId, amountSar, earnContext)
