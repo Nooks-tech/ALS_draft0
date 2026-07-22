@@ -43,6 +43,12 @@ type OperationsContextType = {
   deliveryEnabled: boolean;
   pickupEnabled: boolean;
   drivethruEnabled: boolean;
+  // Per-order-type minimum item subtotal (SAR), or null for no minimum.
+  // Display-only — checkout shows a pre-checkout hint; the server enforces
+  // it at commit. null on pre-migration branches.
+  deliveryMinSubtotal: number | null;
+  pickupMinSubtotal: number | null;
+  drivethruMinSubtotal: number | null;
   prepTimeMinutes: number;
   busySecondsLeft: number;
 };
@@ -68,6 +74,9 @@ const OperationsContext = createContext<OperationsContextType>({
   deliveryEnabled: true,
   pickupEnabled: true,
   drivethruEnabled: true,
+  deliveryMinSubtotal: null,
+  pickupMinSubtotal: null,
+  drivethruMinSubtotal: null,
   prepTimeMinutes: 0,
   busySecondsLeft: 0,
 });
@@ -203,6 +212,18 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const drivethruEnabled =
     typeof operations?.drivethru_enabled === 'boolean' ? operations.drivethru_enabled : true;
   const prepTimeMinutes = operations?.prep_time_minutes ?? 0;
+  const deliveryMinSubtotal =
+    typeof operations?.min_order_subtotal_delivery_sar === 'number'
+      ? operations.min_order_subtotal_delivery_sar
+      : null;
+  const pickupMinSubtotal =
+    typeof operations?.min_order_subtotal_pickup_sar === 'number'
+      ? operations.min_order_subtotal_pickup_sar
+      : null;
+  const drivethruMinSubtotal =
+    typeof operations?.min_order_subtotal_drivethru_sar === 'number'
+      ? operations.min_order_subtotal_drivethru_sar
+      : null;
 
   useEffect(() => {
     if (!isBusy) setBusySecondsLeft(0);
@@ -249,6 +270,9 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         deliveryEnabled,
         pickupEnabled,
         drivethruEnabled,
+        deliveryMinSubtotal,
+        pickupMinSubtotal,
+        drivethruMinSubtotal,
         prepTimeMinutes,
         busySecondsLeft,
       }}

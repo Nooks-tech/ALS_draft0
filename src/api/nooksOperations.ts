@@ -37,6 +37,12 @@ export type NooksOperations = {
   closed_reason?: ClosedReason | null;
   reopens_at?: string | null;
   busy_until?: string | null;
+  // Per-order-type minimum item subtotal (SAR, VAT-inclusive, delivery fee
+  // excluded). null = no minimum. Display-only hint; the server enforces it at
+  // commit. Absent on branches without the migration → parsed as null.
+  min_order_subtotal_delivery_sar?: number | null;
+  min_order_subtotal_pickup_sar?: number | null;
+  min_order_subtotal_drivethru_sar?: number | null;
 };
 
 export async function fetchNooksOperations(merchantId: string, branchId?: string | null): Promise<NooksOperations | null> {
@@ -67,6 +73,10 @@ export async function fetchNooksOperations(merchantId: string, branchId?: string
       : null;
   const reopens_at = typeof data.reopens_at === 'string' ? data.reopens_at : null;
   const busy_until = typeof data.busy_until === 'string' ? data.busy_until : null;
+  const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
+  const min_order_subtotal_delivery_sar = num(data.min_order_subtotal_delivery_sar);
+  const min_order_subtotal_pickup_sar = num(data.min_order_subtotal_pickup_sar);
+  const min_order_subtotal_drivethru_sar = num(data.min_order_subtotal_drivethru_sar);
   return {
     store_status,
     prep_time_minutes,
@@ -80,5 +90,8 @@ export async function fetchNooksOperations(merchantId: string, branchId?: string
     closed_reason,
     reopens_at,
     busy_until,
+    min_order_subtotal_delivery_sar,
+    min_order_subtotal_pickup_sar,
+    min_order_subtotal_drivethru_sar,
   };
 }

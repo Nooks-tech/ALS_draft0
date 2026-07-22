@@ -134,6 +134,15 @@ function friendlyRewardErrorMessage(
   if (code === 'REWARD_UNAUTHORIZED') {
     return serverMessage || null;
   }
+  // Server-enforced minimum-order floor. The client blocks this
+  // pre-checkout (belowMinimum), but a race — cart edited elsewhere, or a
+  // branch minimum raised mid-session — can still trip it at commit.
+  // Prefer clean bilingual copy; fall back to the server's human `error`.
+  if (code === 'BELOW_MIN_SUBTOTAL') {
+    return isArabic
+      ? 'قيمة طلبك أقل من الحد الأدنى المطلوب لهذا النوع من الطلبات. أضف المزيد من المنتجات وحاول مرة أخرى.'
+      : 'Your order is below the minimum required for this order type. Add a few more items and try again.';
+  }
   const copy = REWARD_ERROR_COPY[code];
   if (!copy) return null;
   return isArabic ? copy.ar : copy.en;
@@ -223,7 +232,16 @@ export default function CheckoutScreen() {
   const { landing: qrLanding } = useQrLanding();
   const { addOrder } = useOrders();
   const { profile } = useProfile();
-  const { isPickupOnly, effectivelyClosed, closedReason, reopensAt, reopenSecondsLeft } = useOperations();
+  const {
+    isPickupOnly,
+    effectivelyClosed,
+    closedReason,
+    reopensAt,
+    reopenSecondsLeft,
+    deliveryMinSubtotal,
+    pickupMinSubtotal,
+    drivethruMinSubtotal,
+  } = useOperations();
   const {
     primaryColor,
     appName,
@@ -593,6 +611,34 @@ export default function CheckoutScreen() {
       ? (deliveryQuoteFee != null ? deliveryQuoteFee : cartDeliveryFee > 0 ? cartDeliveryFee : 0)
       : 0;
   const subtotalBeforePromo = totalPrice + deliveryFee;
+  // Pre-checkout minimum-order guard (additive UX hint — the server
+  // enforces the same floor at commit; this just stops the customer being
+  // charged then reversed). The comparison is ITEMS ONLY: `totalPrice` is
+  // the cart's item subtotal EXCLUDING the delivery fee (unlike
+  // `subtotalBeforePromo`, which adds it). `dine_in` and a null/zero
+  // minimum are never "below".
+  const minSubtotal =
+    orderType === 'delivery'
+      ? deliveryMinSubtotal
+      : orderType === 'pickup'
+        ? pickupMinSubtotal
+        : orderType === 'drivethru'
+          ? drivethruMinSubtotal
+          : null;
+  const belowMinimum = minSubtotal != null && minSubtotal > 0 && totalPrice < minSubtotal;
+  // Order-type label + shortfall for the below-minimum banner/alert copy.
+  const minOrderTypeLabel = isArabic
+    ? orderType === 'delivery'
+      ? 'التوصيل'
+      : orderType === 'drivethru'
+        ? 'استلام السيارة'
+        : 'الاستلام'
+    : orderType === 'delivery'
+      ? 'delivery'
+      : orderType === 'drivethru'
+        ? 'drive-thru'
+        : 'pickup';
+  const minShortfall = belowMinimum && minSubtotal != null ? Math.max(0, minSubtotal - totalPrice) : 0;
   // Recompute the discount from the LIVE cart on every render instead of
   // freezing a SAR amount at apply-time. The cart can change after a
   // promo is applied — reward milestones toggle cart items, and
@@ -1151,6 +1197,18 @@ export default function CheckoutScreen() {
   };
 
   const handlePay = async () => {
+    // Belt-and-suspenders: the Pay button is disabled and Apple Pay is
+    // unmounted when belowMinimum, but guard here too before any
+    // charge/commit branch runs.
+    if (belowMinimum && minSubtotal != null) {
+      Alert.alert(
+        isArabic ? 'الحد الأدنى للطلب' : 'Minimum Order Not Met',
+        isArabic
+          ? `الحد الأدنى للطلب عبر ${minOrderTypeLabel} هو ${minSubtotal.toFixed(2)} ر.س (بدون رسوم التوصيل). أضف ${minShortfall.toFixed(2)} ر.س إضافية.`
+          : `Minimum order for ${minOrderTypeLabel} is ${minSubtotal.toFixed(2)} SAR (excluding delivery fee). Add ${minShortfall.toFixed(2)} SAR more.`,
+      );
+      return;
+    }
     const branchName = selectedBranch?.name
       ?? (isArabic ? 'هذا الفرع' : 'This branch');
     if (effectivelyClosed) {
@@ -2295,6 +2353,25 @@ export default function CheckoutScreen() {
             </Text>
           </View>
         )}
+        {/* Minimum-order guard. The Apple Pay button is unmounted and the
+            Pay button stays disabled while this shows — the customer has to
+            add more items (or switch order type) to continue. The server
+            enforces the same floor at commit; this just avoids a
+            charge-then-reverse. */}
+        {belowMinimum && minSubtotal != null && (
+          <View className="mb-3 rounded-2xl bg-red-50 border border-red-100 p-3">
+            <Text className="text-red-700 text-sm font-bold" style={{ }}>
+              {isArabic
+                ? `الحد الأدنى للطلب عبر ${minOrderTypeLabel} هو ${minSubtotal.toFixed(2)} ر.س (بدون رسوم التوصيل)`
+                : `Minimum order for ${minOrderTypeLabel} is ${minSubtotal.toFixed(2)} SAR (excluding delivery fee)`}
+            </Text>
+            <Text className="text-red-600 text-xs mt-1" style={{ }}>
+              {isArabic
+                ? `أضف ${minShortfall.toFixed(2)} ر.س إضافية لإتمام الطلب`
+                : `Add ${minShortfall.toFixed(2)} SAR more to continue`}
+            </Text>
+          </View>
+        )}
         <View className="rounded-[28px] bg-slate-50 border border-slate-100 p-4">
           <View className="flex-row items-center justify-between">
             <View>
@@ -2323,7 +2400,7 @@ export default function CheckoutScreen() {
               by the givenId + rotation-on-terminal-failure pair instead
               (see orderIdToClientGivenId and the catch block in
               createOrderAfterPayment). */}
-          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 && !curbsideCarInfoMissing && !effectivelyClosed && !submitting ? (
+          {paymentMethod === 'apple_pay' && resolvedApplePayEnabled && paymentConfig && chargeAmount > 0 && !curbsideCarInfoMissing && !effectivelyClosed && !belowMinimum && !submitting ? (
             <View style={{ width: 180, height: 50 }}>
               <ApplePayButton
                 paymentConfig={paymentConfig}
@@ -2334,9 +2411,9 @@ export default function CheckoutScreen() {
           ) : (
             <TouchableOpacity
               onPress={handlePay}
-              disabled={submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing || effectivelyClosed}
+              disabled={submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing || effectivelyClosed || belowMinimum}
               className="px-6 py-4 rounded-[24px] min-w-[190px] items-center flex-row justify-center"
-              style={{ backgroundColor: primaryColor, opacity: (submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing || effectivelyClosed) ? 0.5 : 1 }}
+              style={{ backgroundColor: primaryColor, opacity: (submitting || deliveryQuoteLoading || !deliveryQuoteWithin || curbsideCarInfoMissing || effectivelyClosed || belowMinimum) ? 0.5 : 1 }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color="white" />

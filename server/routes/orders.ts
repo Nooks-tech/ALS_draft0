@@ -54,6 +54,7 @@ import {
   sarToHalalas,
   type PromoScope,
 } from '../utils/orderTotalReconciliation';
+import { isBelowMinimum, minSubtotalHalalasForType } from '../utils/minimumSubtotal';
 import { readBackFoodicsStatusViaNooks, readbackPermitsTimeoutCancel } from '../utils/foodicsStatusReadback';
 
 export const ordersRouter = Router();
@@ -1943,6 +1944,57 @@ ordersRouter.post('/commit', async (req, res) => {
       } catch (e: any) {
         // Shadow reconciliation must never break a legitimate commit.
         console.error('[Orders] TOTAL_RECONCILIATION error (non-blocking)', { orderId: id, error: e?.message });
+      }
+    }
+
+    // ─── Minimum order subtotal gate (per order type, branch-scoped) ───
+    // A merchant can set a least-accepted ITEM subtotal per order type from
+    // Live Operations. Enforced here — NOT inside the reconciliation try above,
+    // which defaults to shadow and swallows throws, so a reject there would be
+    // silently disabled. Runs on BOTH commits (before line 1980), so it blocks
+    // at the first, pre-charge commit and is re-checked at the final one.
+    //
+    // computeServerItemsSubtotalHalalas is the authoritative item subtotal in
+    // halalas — reward lines contribute 0 and the delivery fee is never part of
+    // it, so "delivery fee excluded" holds automatically. The branch_operations
+    // read is wrapped fail-open: a missing column (migration not yet applied) or
+    // read error means "no minimum", matching the shadow posture and decoupling
+    // deploy order. orderType is already validated to delivery/pickup/drivethru
+    // above; the helper exempts dine_in / unknown.
+    {
+      let minH = 0;
+      try {
+        const { data: minOps } = await supabaseAdmin
+          .from('branch_operations')
+          .select(
+            'min_order_subtotal_delivery_sar, min_order_subtotal_pickup_sar, min_order_subtotal_drivethru_sar',
+          )
+          .eq('merchant_id', merchantId)
+          .eq('branch_id', branchId)
+          .maybeSingle();
+        minH = minSubtotalHalalasForType(minOps ?? null, orderType);
+      } catch {
+        minH = 0; // missing column / read error → no minimum (fail-open)
+      }
+
+      if (minH > 0) {
+        const { halalas: minGateItemsH } = await computeServerItemsSubtotalHalalas(
+          supabaseAdmin,
+          merchantId,
+          typeof branchId === 'string' ? branchId : null,
+          items as Array<Record<string, unknown>>,
+        );
+        if (isBelowMinimum(minGateItemsH, minH)) {
+          const reversal = await voidChargeOnRejectedCommit(
+            paymentId, merchantId, id, user.id, expectedHalalsForVerify, 'min subtotal gate',
+          );
+          return res.status(400).json({
+            error: `Minimum order for ${orderType} is ${(minH / 100).toFixed(2)} SAR (excluding delivery fee).`,
+            code: 'BELOW_MIN_SUBTOTAL',
+            terminal: true,
+            reversal,
+          });
+        }
       }
     }
 
