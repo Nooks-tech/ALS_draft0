@@ -94,7 +94,7 @@ async function fetchMerchants() {
   const filterTarget =
     target === "all" ? "" : `&id=eq.${encodeURIComponent(target)}`;
   const select =
-    "select=id,cafe_name,status,app_config(app_name,logo_url,app_icon_url,app_icon_bg_color,launcher_icon_scale,primary_color,accent_color,background_color,menu_card_color,text_color,tab_text_color,moyasar_publishable_key,apple_pay_merchant_id,ios_bundle_id,android_package_id)";
+    "select=id,cafe_name,status,app_config(app_name,logo_url,app_icon_url,app_icon_bg_color,launcher_icon_scale,primary_color,accent_color,background_color,menu_card_color,text_color,tab_text_color)";
   const url = `${SUPABASE_URL}/rest/v1/merchants?status=eq.active&${select}${filterTarget}`;
 
   const res = await fetch(url, {
@@ -172,19 +172,12 @@ function writeEnvFor(merchant) {
       "EXPO_PUBLIC_NOOKS_API_BASE_URL",
       process.env.NOOKS_API_BASE_URL || ""
     ),
-    envLine(
-      "EXPO_PUBLIC_MOYASAR_PUBLISHABLE_KEY",
-      cfg.moyasar_publishable_key || ""
-    ),
-    envLine(
-      "EXPO_PUBLIC_APPLE_PAY_MERCHANT_ID",
-      cfg.apple_pay_merchant_id || ""
-    ),
-    envLine(
-      "EXPO_PUBLIC_IOS_BUNDLE_IDENTIFIER",
-      cfg.ios_bundle_id || ""
-    ),
-    envLine("EXPO_PUBLIC_ANDROID_PACKAGE", cfg.android_package_id || ""),
+    // Never bake a payment key into an OTA bundle. Checkout reads the active
+    // publishable key from the merchant branding endpoint at runtime so the
+    // mobile and server halves always use the same atomic credential pair.
+    // Apple Pay merchant ID is also resolved from runtime branding. Native
+    // bundle/package identifiers are properties of the installed binary and
+    // must not be synthesized by an OTA script.
   ];
   if (process.env.GOOGLE_MAPS_API_KEY) {
     lines.push(envLine("GOOGLE_MAPS_API_KEY", process.env.GOOGLE_MAPS_API_KEY));
