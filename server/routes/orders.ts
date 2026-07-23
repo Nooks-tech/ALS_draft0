@@ -56,6 +56,19 @@ import {
 } from '../utils/orderTotalReconciliation';
 import { isBelowMinimum, minSubtotalHalalasForType } from '../utils/minimumSubtotal';
 import { readBackFoodicsStatusViaNooks, readbackPermitsTimeoutCancel } from '../utils/foodicsStatusReadback';
+import {
+  buildCommitPaymentOrphanCandidate,
+  COMMIT_LEASE_MS,
+  insertTerminalPaymentOrphanManualReview,
+  markPaymentOrphanCandidateOrderFound,
+  markPaymentOrphanCandidateManualReview,
+  PaymentOrphanCandidateCapacityError,
+  PaymentOrphanCandidateConflictError,
+  releasePaymentOrphanLease,
+  renewPaymentOrphanLease,
+  type PaymentOrphanCandidate,
+  upsertPaymentOrphanCandidate,
+} from '../utils/paymentOrphanCandidate';
 
 export const ordersRouter = Router();
 
@@ -68,6 +81,17 @@ export const ordersRouter = Router();
  *                       didn't clearly succeed; a human has to settle it.
  */
 type ChargeReversalOutcome = 'completed' | 'pending_manual' | 'no_charge';
+
+function paymentReversalResponse(reversal: ChargeReversalOutcome) {
+  const safeToStartNewPayment =
+    reversal === 'completed' || reversal === 'no_charge';
+  return {
+    terminal: safeToStartNewPayment,
+    reversal,
+    retrySamePayment: false,
+    safeToStartNewPayment,
+  };
+}
 
 /**
  * Best-effort void of a card charge when a commit is rejected by a
@@ -98,6 +122,7 @@ async function voidChargeOnRejectedCommit(
         expectedAmountHalalas,
         merchantId,
         orderId,
+        customerId,
       },
       { verify: verifyPaidPayment, cancel: cancelPayment },
     );
@@ -1078,11 +1103,307 @@ ordersRouter.post('/relay-to-nooks', async (req, res) => {
 // handler below.
 
 ordersRouter.post('/commit', async (req, res) => {
+  let recoveryCandidate: PaymentOrphanCandidate | null = null;
+  let recoveryCandidateRegistered = false;
+  let recoveryLeaseToken: string | null = null;
+  let merchantVerificationCompleted = false;
+
+  const renewCommitRecoveryLease = async (): Promise<boolean> => {
+    if (
+      !recoveryCandidateRegistered ||
+      !recoveryCandidate ||
+      !recoveryLeaseToken ||
+      !supabaseAdmin
+    ) {
+      return true;
+    }
+    try {
+      const renewed = await renewPaymentOrphanLease(
+        supabaseAdmin,
+        recoveryCandidate.payment_id,
+        'commit',
+        recoveryLeaseToken,
+        COMMIT_LEASE_MS,
+      );
+      if (!renewed) {
+        captureError(
+          new Error('Payment recovery commit lease ownership was lost'),
+          {
+            component: 'orders.commit.captureCandidate.renewConflict',
+            merchantId: recoveryCandidate.merchant_id,
+            customerId: recoveryCandidate.metadata_customer_id,
+            orderId: recoveryCandidate.metadata_order_id,
+            paymentId: recoveryCandidate.payment_id,
+          },
+        );
+      }
+      return renewed;
+    } catch (leaseError: any) {
+      captureError(leaseError, {
+        component: 'orders.commit.captureCandidate.renew',
+        merchantId: recoveryCandidate.merchant_id,
+        customerId: recoveryCandidate.metadata_customer_id,
+        orderId: recoveryCandidate.metadata_order_id,
+        paymentId: recoveryCandidate.payment_id,
+      });
+      return false;
+    }
+  };
+
+  const sendRecoveryOwnershipLost = () =>
+    res.status(409).json({
+      success: false,
+      error:
+        'This payment is already being checked. Do not make another payment.',
+      terminal: false,
+      code: 'PAYMENT_RECOVERY_PENDING',
+      reversal: 'pending_manual',
+      retrySamePayment: false,
+      safeToStartNewPayment: false,
+      recoveryId: recoveryCandidate?.payment_id,
+      orderId: recoveryCandidate?.metadata_order_id,
+      paymentId: recoveryCandidate?.payment_id,
+    });
+
   try {
     const user = await requireAuthenticatedAppUser(req, res);
     if (!user) return;
+    recoveryCandidate = buildCommitPaymentOrphanCandidate({
+      paymentId: req.body?.paymentId,
+      merchantId: req.body?.merchantId,
+      orderId: req.body?.id,
+      customerId: user.id,
+      totalSar: req.body?.totalSar,
+      paymentMethod: req.body?.paymentMethod,
+      walletAmountSar: req.body?.walletAmountSar,
+    });
     if (!supabaseAdmin) {
-      return res.status(503).json({ error: 'Database not configured' });
+      return res.status(503).json({
+        error: 'Database not configured',
+        ...(recoveryCandidate
+          ? {
+              success: false,
+              terminal: false,
+              code: 'PAYMENT_RECOVERY_UNAVAILABLE',
+              reversal: 'pending_manual',
+              retrySamePayment: false,
+              safeToStartNewPayment: false,
+              recoveryId: recoveryCandidate.payment_id,
+              orderId: recoveryCandidate.metadata_order_id,
+              paymentId: recoveryCandidate.payment_id,
+            }
+          : {}),
+      });
+    }
+
+    if (recoveryCandidate) {
+      // A syntactically valid UUID is not enough admission: reject invented
+      // tenants before they can grow even terminal history. This is the only
+      // pre-persistence lookup; capture durability intentionally does not
+      // depend on credentials, OTP state, or rate-limit availability.
+      const {
+        data: recoveryMerchant,
+        error: recoveryMerchantError,
+      } = await supabaseAdmin
+        .from('merchants')
+        .select('id')
+        .eq('id', recoveryCandidate.merchant_id)
+        .maybeSingle();
+      if (recoveryMerchantError) {
+        return res.status(503).json({
+          success: false,
+          error:
+            'Merchant validation is temporarily unavailable. Do not make another payment.',
+          terminal: false,
+          code: 'PAYMENT_RECOVERY_UNAVAILABLE',
+          reversal: 'pending_manual',
+          retrySamePayment: false,
+          safeToStartNewPayment: false,
+          orderId: recoveryCandidate.metadata_order_id,
+          paymentId: recoveryCandidate.payment_id,
+        });
+      }
+      if (!recoveryMerchant) {
+        return res.status(404).json({
+          success: false,
+          error: 'Merchant not found.',
+          terminal: false,
+          code: 'PAYMENT_RECOVERY_CONFLICT',
+          reversal: 'pending_manual',
+          retrySamePayment: false,
+          safeToStartNewPayment: false,
+          orderId: recoveryCandidate.metadata_order_id,
+          paymentId: recoveryCandidate.payment_id,
+        });
+      }
+
+      // The app may already have captured the card before this request
+      // arrives. Durability therefore comes before every fallible limiter,
+      // credential lookup, and OTP lookup. The database trigger caps each
+      // customer's unresolved rows; invalid attribution never permits a
+      // provider mutation.
+      try {
+        const registration = await upsertPaymentOrphanCandidate(
+          supabaseAdmin,
+          recoveryCandidate,
+        );
+        if (registration.status === 'in_progress') {
+          return sendRecoveryOwnershipLost();
+        }
+        if (registration.status === 'active') {
+          recoveryCandidateRegistered = true;
+          recoveryLeaseToken = registration.leaseToken;
+        }
+      } catch (candidateError: any) {
+        captureError(candidateError, {
+          component: 'orders.commit.captureCandidate',
+          merchantId: recoveryCandidate.merchant_id,
+          customerId: recoveryCandidate.metadata_customer_id,
+          orderId: recoveryCandidate.metadata_order_id,
+          paymentId: recoveryCandidate.payment_id,
+        });
+        const capacityExceeded =
+          candidateError instanceof PaymentOrphanCandidateCapacityError;
+        if (capacityExceeded) {
+          try {
+            await insertTerminalPaymentOrphanManualReview(
+              supabaseAdmin,
+              recoveryCandidate,
+              'customer unresolved recovery cap exceeded; operator review required',
+            );
+            return res.status(503).json({
+              success: false,
+              error:
+                'This payment was flagged for manual review. Do not make another payment.',
+              terminal: false,
+              code: 'PAYMENT_MANUAL_REVIEW',
+              reversal: 'pending_manual',
+              retrySamePayment: false,
+              safeToStartNewPayment: false,
+              recoveryId: recoveryCandidate.payment_id,
+              orderId: recoveryCandidate.metadata_order_id,
+              paymentId: recoveryCandidate.payment_id,
+            });
+          } catch (fallbackError: any) {
+            captureError(fallbackError, {
+              component: 'orders.commit.captureCandidate.capacityFallback',
+              merchantId: recoveryCandidate.merchant_id,
+              customerId: recoveryCandidate.metadata_customer_id,
+              orderId: recoveryCandidate.metadata_order_id,
+              paymentId: recoveryCandidate.payment_id,
+            });
+          }
+        }
+        const conflict =
+          candidateError instanceof PaymentOrphanCandidateConflictError;
+        return res.status(conflict ? 409 : 503).json({
+          success: false,
+          error: conflict
+            ? 'This payment is already associated with another recovery state. Do not make another payment.'
+            : 'Order safety registration failed. Do not make another payment.',
+          terminal: false,
+          code: conflict
+            ? 'PAYMENT_RECOVERY_CONFLICT'
+            : 'PAYMENT_RECOVERY_UNAVAILABLE',
+          reversal: 'pending_manual',
+          retrySamePayment: false,
+          safeToStartNewPayment: false,
+          recoveryId: conflict ? undefined : recoveryCandidate.payment_id,
+          orderId: recoveryCandidate.metadata_order_id,
+          paymentId: recoveryCandidate.payment_id,
+        });
+      }
+
+      // Throttle only after an already-captured payment has a durable row.
+      // A limiter rejection can delay processing, but can no longer make the
+      // charge invisible to recovery.
+      if (
+        !(await enforceLimits(req, res, {
+          endpoint: 'orders.commit.recovery-candidate',
+          keys: [
+            { dim: 'customer', value: user.id, max: 24, windowMs: 60_000 },
+            { dim: 'ip', value: ipFromReq(req), max: 72, windowMs: 60_000 },
+          ],
+          supabaseAdmin,
+          merchantId: recoveryCandidate.merchant_id,
+        }))
+      ) {
+        return;
+      }
+
+      if (recoveryCandidateRegistered && recoveryLeaseToken) {
+        const paymentRuntime = await getMerchantPaymentRuntimeConfig(
+          recoveryCandidate.merchant_id,
+        );
+        if (
+          paymentRuntime.source !== 'merchant' ||
+          !paymentRuntime.publishableKey ||
+          !paymentRuntime.secretKey
+        ) {
+          await markPaymentOrphanCandidateManualReview(
+            supabaseAdmin,
+            recoveryCandidate.payment_id,
+            recoveryLeaseToken,
+            'merchant credential pair unavailable during captured-payment commit',
+            true,
+          );
+          captureError(
+            new Error('Captured payment requires manual review: merchant credentials unavailable'),
+            {
+              component: 'orders.commit.captureCandidate.admission',
+              merchantId: recoveryCandidate.merchant_id,
+              customerId: recoveryCandidate.metadata_customer_id,
+              orderId: recoveryCandidate.metadata_order_id,
+              paymentId: recoveryCandidate.payment_id,
+            },
+          );
+          return res.status(503).json({
+            success: false,
+            error:
+              'The payment configuration is unavailable and this charge was flagged for review. Do not make another payment.',
+            terminal: false,
+            code: 'PAYMENT_MANUAL_REVIEW',
+            reversal: 'pending_manual',
+            retrySamePayment: false,
+            safeToStartNewPayment: false,
+            recoveryId: recoveryCandidate.payment_id,
+            orderId: recoveryCandidate.metadata_order_id,
+            paymentId: recoveryCandidate.payment_id,
+          });
+        }
+
+        const recoveryVerification = await requireVerifiedAtMerchant(
+          res,
+          user.id,
+          recoveryCandidate.merchant_id,
+          { respond: false },
+        );
+        if (!recoveryVerification.ok) {
+          await markPaymentOrphanCandidateManualReview(
+            supabaseAdmin,
+            recoveryCandidate.payment_id,
+            recoveryLeaseToken,
+            `merchant verification failed during captured-payment commit: ${recoveryVerification.reason}`,
+            true,
+          );
+          const lookupFailed = recoveryVerification.reason === 'lookup_failed';
+          return res.status(lookupFailed ? 503 : 401).json({
+            success: false,
+            error: lookupFailed
+              ? 'Merchant verification is unavailable and this charge was flagged for review. Do not make another payment.'
+              : 'This charge was flagged for review because merchant verification was not current. Do not make another payment.',
+            terminal: false,
+            code: 'PAYMENT_MANUAL_REVIEW',
+            reversal: 'pending_manual',
+            retrySamePayment: false,
+            safeToStartNewPayment: false,
+            recoveryId: recoveryCandidate.payment_id,
+            orderId: recoveryCandidate.metadata_order_id,
+            paymentId: recoveryCandidate.payment_id,
+          });
+        }
+        merchantVerificationCompleted = true;
+      }
     }
 
     // Layer 3: customer-scoped commit rate limit. SCAL-005 — shared across
@@ -1169,8 +1490,11 @@ ordersRouter.post('/commit', async (req, res) => {
     // merchant A doesn't grant access to merchant B without a fresh
     // OTP. requireVerifiedAtMerchant sends the 401 itself; we just
     // return early.
-    const verification = await requireVerifiedAtMerchant(res, user.id, merchantId);
-    if (!verification.ok) return;
+    if (!merchantVerificationCompleted) {
+      const verification = await requireVerifiedAtMerchant(res, user.id, merchantId);
+      if (!verification.ok) return;
+      merchantVerificationCompleted = true;
+    }
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'items are required' });
     }
@@ -1188,6 +1512,9 @@ ordersRouter.post('/commit', async (req, res) => {
         ? 0
         : Math.max(0, Number(totalSar) - requestedWalletAppliedSar);
     const expectedHalalsForVerify = Math.round(requestedCardPortionSar * 100);
+    if (!(await renewCommitRecoveryLease())) {
+      return sendRecoveryOwnershipLost();
+    }
 
     // ─── QR + dine-in validation ──────────────────────────────────────
     // Server is the source of truth on QR ↔ branch ↔ table linkage —
@@ -1401,8 +1728,7 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(400).json({
         error: 'Cart has a reward item for a milestone that was not claimed as redeemed.',
         code: 'REWARD_MILESTONE_MISMATCH',
-        terminal: true,
-        reversal,
+        ...paymentReversalResponse(reversal),
       });
     }
     // The server's lower-bound computed floor ignores discounts (promo,
@@ -1424,8 +1750,7 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(400).json({
         error: `Order total ${totalSar} is implausibly low for ${items.length} item(s) with floor ${computedItemFloor.toFixed(2)} SAR; refusing to commit.`,
         code: 'DISCOUNT_RATIO_REJECTED',
-        terminal: true,
-        reversal,
+        ...paymentReversalResponse(reversal),
       });
     }
 
@@ -1664,8 +1989,7 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(finalizationDecision.status).json({
         error: finalizationDecision.error,
         code: finalizationDecision.code,
-        terminal: true,
-        reversal: guardReversal,
+        ...paymentReversalResponse(guardReversal),
       });
     }
     const isMoyasarPaymentId = Boolean(trimmedPaymentId) && !isReservedClientPaymentId(trimmedPaymentId);
@@ -1991,8 +2315,7 @@ ordersRouter.post('/commit', async (req, res) => {
           return res.status(400).json({
             error: `Minimum order for ${orderType} is ${(minH / 100).toFixed(2)} SAR (excluding delivery fee).`,
             code: 'BELOW_MIN_SUBTOTAL',
-            terminal: true,
-            reversal,
+            ...paymentReversalResponse(reversal),
           });
         }
       }
@@ -2030,6 +2353,9 @@ ordersRouter.post('/commit', async (req, res) => {
     }
 
     if (isFinalCommit) {
+      if (!(await renewCommitRecoveryLease())) {
+        return sendRecoveryOwnershipLost();
+      }
       // ─── ORD-4 guard: refuse re-commit of an already-reversed order ───
       // The final commit deducts wallet/promo/cashback/milestone below and
       // only THEN upserts the confirmed row. If that upsert fails we reverse
@@ -2122,6 +2448,11 @@ ordersRouter.post('/commit', async (req, res) => {
               success: false,
               pending: true,
               code: 'PAYMENT_SETTLING',
+              terminal: false,
+              retrySamePayment: true,
+              safeToStartNewPayment: false,
+              orderId: id,
+              paymentId: trimmedPaymentId,
               // Fixed hint; the client owns the escalating 1s/2s/4s backoff.
               retryAfterMs: 1000,
             });
@@ -2132,11 +2463,42 @@ ordersRouter.post('/commit', async (req, res) => {
             'status:',
             finalPaymentVerification.status,
           );
+          const reversal = await voidChargeOnRejectedCommit(
+            trimmedPaymentId,
+            merchantId,
+            id,
+            user.id,
+            expectedHalalsForVerify,
+            'final payment verification failed',
+          );
+          const safeToStartNewPayment =
+            reversal === 'completed' || reversal === 'no_charge';
           return res.status(402).json({
             error: `Payment not confirmed (${finalPaymentVerification.reason}). The order was not created.`,
             moyasarStatus: finalPaymentVerification.status,
+            success: false,
+            // Keep false while recovery is pending so already-shipped clients
+            // do not rotate their given_id and create a second charge.
+            terminal: safeToStartNewPayment,
+            code: safeToStartNewPayment
+              ? 'PAYMENT_NOT_CONFIRMED'
+              : recoveryCandidateRegistered
+                ? 'PAYMENT_RECOVERY_PENDING'
+                : 'PAYMENT_RECOVERY_UNAVAILABLE',
+            reversal,
+            retrySamePayment: false,
+            safeToStartNewPayment,
+            recoveryId: recoveryCandidateRegistered ? trimmedPaymentId : undefined,
+            orderId: id,
+            paymentId: trimmedPaymentId,
           });
         }
+      }
+
+      // Verification is read-only. Reassert the unique commit token at the
+      // exact boundary before cashback/promo/wallet/reward deductions begin.
+      if (!(await renewCommitRecoveryLease())) {
+        return sendRecoveryOwnershipLost();
       }
 
       // ─── Active server-side cashback redemption ───
@@ -2190,8 +2552,7 @@ ordersRouter.post('/commit', async (req, res) => {
           return res.status(503).json({
             error: 'Could not apply the cashback discount. Any verified card charge is being reversed or held for provider review.',
             code: 'CASHBACK_REDEEM_FAILED',
-            terminal: true,
-            reversal,
+            ...paymentReversalResponse(reversal),
           });
         }
         const cashbackRpcResult = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as
@@ -2275,8 +2636,7 @@ ordersRouter.post('/commit', async (req, res) => {
           return res.status(500).json({
             error: 'Promo redemption failed',
             code: 'PROMO_REDEEM_FAILED',
-            terminal: true,
-            reversal,
+            ...paymentReversalResponse(reversal),
           });
         }
         const redeemResult = Array.isArray(redeemRows) ? redeemRows[0] : redeemRows;
@@ -2294,7 +2654,11 @@ ordersRouter.post('/commit', async (req, res) => {
             expectedAmountHalalas: expectedHalalsForVerify,
             context: 'promo rejected',
           });
-          return res.status(400).json({ error: reason, code: 'PROMO_REJECTED', terminal: true, reversal });
+          return res.status(400).json({
+            error: reason,
+            code: 'PROMO_REJECTED',
+            ...paymentReversalResponse(reversal),
+          });
         }
       }
 
@@ -2374,8 +2738,7 @@ ordersRouter.post('/commit', async (req, res) => {
             return res.status(400).json({
               error: 'INSUFFICIENT_WALLET_BALANCE',
               code: 'INSUFFICIENT_WALLET_BALANCE',
-              terminal: true,
-              reversal,
+              ...paymentReversalResponse(reversal),
             });
           }
           // Phase A/E: wallet debit failures other than INSUFFICIENT_
@@ -2404,8 +2767,7 @@ ordersRouter.post('/commit', async (req, res) => {
           return res.status(500).json({
             error: e?.message || 'Wallet debit failed',
             code: 'WALLET_DEBIT_FAILED',
-            terminal: true,
-            reversal,
+            ...paymentReversalResponse(reversal),
           });
         }
       }
@@ -2519,8 +2881,7 @@ ordersRouter.post('/commit', async (req, res) => {
       return res.status(500).json({
         error: 'The order could not be finalized because settlement proof was incomplete.',
         code: 'SETTLEMENT_PROOF_INVARIANT',
-        terminal: true,
-        reversal,
+        ...paymentReversalResponse(reversal),
       });
     }
     const settlementConfirmed = finalSettlementProof.settled;
@@ -2659,6 +3020,12 @@ ordersRouter.post('/commit', async (req, res) => {
         : {}),
       updated_at: new Date().toISOString(),
     };
+
+    // The sweep must never refund a charge while this request is about to
+    // make its order durable. Token-CAS the lease again at that boundary.
+    if (!(await renewCommitRecoveryLease())) {
+      return sendRecoveryOwnershipLost();
+    }
 
     const { data: savedOrder, error: commitError } = await supabaseAdmin
       .from('customer_orders')
@@ -3152,10 +3519,81 @@ ordersRouter.post('/commit', async (req, res) => {
       });
     }
 
+    if (
+      recoveryCandidateRegistered &&
+      recoveryCandidate &&
+      recoveryLeaseToken
+    ) {
+      try {
+        await markPaymentOrphanCandidateOrderFound(
+          supabaseAdmin,
+          recoveryCandidate.payment_id,
+          recoveryLeaseToken,
+        );
+      } catch (candidateCloseError: any) {
+        // The sweep independently checks customer_orders before any provider
+        // mutation, so a close-write failure is recoverable and must not turn
+        // an already-committed order into a client-visible failure.
+        console.warn('[Orders] failed to close payment recovery candidate after commit', {
+          orderId: recoveryCandidate.metadata_order_id,
+          paymentId: recoveryCandidate.payment_id,
+          error: candidateCloseError?.message,
+        });
+        captureError(candidateCloseError, {
+          component: 'orders.commit.captureCandidate.close',
+          merchantId: recoveryCandidate.merchant_id,
+          customerId: recoveryCandidate.metadata_customer_id,
+          orderId: recoveryCandidate.metadata_order_id,
+          paymentId: recoveryCandidate.payment_id,
+        });
+      }
+    }
+
     res.json({ success: true, order: savedOrder, relayResult });
   } catch (err: any) {
     console.error('[Orders] commit error:', err?.message);
+    if (recoveryCandidateRegistered && recoveryCandidate) {
+      return res.status(500).json({
+        success: false,
+        error: 'The order could not be completed. Do not make another payment while recovery is checked.',
+        terminal: false,
+        code: 'PAYMENT_RECOVERY_PENDING',
+        reversal: 'pending_manual',
+        retrySamePayment: false,
+        safeToStartNewPayment: false,
+        recoveryId: recoveryCandidate.payment_id,
+        orderId: recoveryCandidate.metadata_order_id,
+        paymentId: recoveryCandidate.payment_id,
+      });
+    }
     res.status(500).json({ error: err?.message || 'Failed to commit order' });
+  } finally {
+    if (
+      recoveryCandidateRegistered &&
+      recoveryCandidate &&
+      recoveryLeaseToken &&
+      supabaseAdmin
+    ) {
+      try {
+        // A successful close already cleared this token, making the release
+        // a harmless no-op. Every early return/error releases only its own
+        // token, never a lease subsequently acquired by a retry or sweep.
+        await releasePaymentOrphanLease(
+          supabaseAdmin,
+          recoveryCandidate.payment_id,
+          'commit',
+          recoveryLeaseToken,
+        );
+      } catch (releaseError: any) {
+        captureError(releaseError, {
+          component: 'orders.commit.captureCandidate.release',
+          merchantId: recoveryCandidate.merchant_id,
+          customerId: recoveryCandidate.metadata_customer_id,
+          orderId: recoveryCandidate.metadata_order_id,
+          paymentId: recoveryCandidate.payment_id,
+        });
+      }
+    }
   }
 });
 

@@ -80,6 +80,15 @@ export type CancelPaymentDeps = {
   fetchImpl?: typeof fetch;
   /** Test seam; production callers resolve the merchant-scoped secret. */
   secretKey?: string;
+  /**
+   * Optional ownership fence run immediately before each provider POST.
+   * Returning false (or throwing) skips the write with an unknown/pending
+   * result so a stale recovery worker can never mutate money.
+   */
+  beforeProviderWrite?: (
+    operation: 'void' | 'refund',
+    paymentId: string,
+  ) => boolean | Promise<boolean>;
 };
 
 export type VerifyPaymentResult =
@@ -105,6 +114,9 @@ export type VerifyPaymentResult =
 export type VerifyPaidPaymentOptions = {
   /** Reversal paths must never act on an unbound, attacker-supplied id. */
   requireOrderBinding?: boolean;
+  /** Recovery reversals also bind the provider metadata to the customer. */
+  requireCustomerBinding?: boolean;
+  expectedCustomerId?: string;
   /** Test seams; normal callers omit both. */
   fetchImpl?: typeof fetch;
   secretKey?: string;
@@ -260,6 +272,30 @@ export async function verifyPaidPayment(
         );
       }
     }
+    if (options.requireCustomerBinding) {
+      const expectedCustomerId = options.expectedCustomerId?.trim() || '';
+      const boundCustomerId = String(
+        payment?.metadata?.customer_id ?? resolved.invoiceCustomerId ?? '',
+      ).trim();
+      if (!expectedCustomerId || !boundCustomerId) {
+        return {
+          ok: false,
+          status,
+          amountHalals,
+          moyasarId: realPaymentId,
+          reason: 'payment is missing required customer_id binding',
+        };
+      }
+      if (boundCustomerId !== expectedCustomerId) {
+        return {
+          ok: false,
+          status,
+          amountHalals,
+          moyasarId: realPaymentId,
+          reason: `customer mismatch: payment is bound to customer "${boundCustomerId}"`,
+        };
+      }
+    }
     return { ok: true, status: status as 'paid' | 'captured', amountHalals, moyasarId: realPaymentId };
   } catch (e: any) {
     // M12: ship verify network errors (incl. AbortSignal timeouts) to
@@ -285,7 +321,12 @@ async function resolvePayment(
   authHeader: string,
   expectedAmountHalals?: number,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ id: string; payment: any | null; invoiceOrderId?: string | null }> {
+): Promise<{
+  id: string;
+  payment: any | null;
+  invoiceOrderId?: string | null;
+  invoiceCustomerId?: string | null;
+}> {
   // First try to fetch as a payment — if it works, it's already correct
   try {
     const res = await fetchImpl(`https://api.moyasar.com/v1/payments/${storedId}`, {
@@ -319,6 +360,10 @@ async function resolvePayment(
       // caller can still bind payment→order for the invoice-checkout flow.
       const invoiceOrderId =
         typeof invoice?.metadata?.order_id === 'string' ? invoice.metadata.order_id : null;
+      const invoiceCustomerId =
+        typeof invoice?.metadata?.customer_id === 'string'
+          ? invoice.metadata.customer_id
+          : null;
       const payments: any[] = Array.isArray(invoice?.payments) ? invoice.payments : [];
       const succeeded = payments.filter((p) => p?.status === 'paid' || p?.status === 'captured');
       if (succeeded.length === 0) {
@@ -330,7 +375,12 @@ async function resolvePayment(
             : null;
         if (amountMatch?.id) {
           console.log('[Payment] Resolved invoice', storedId, '-> payment (amount match)', amountMatch.id);
-          return { id: amountMatch.id, payment: amountMatch, invoiceOrderId };
+          return {
+            id: amountMatch.id,
+            payment: amountMatch,
+            invoiceOrderId,
+            invoiceCustomerId,
+          };
         }
         const sorted = [...succeeded].sort((a, b) => {
           const ta = Date.parse(a?.created_at ?? '') || 0;
@@ -339,7 +389,12 @@ async function resolvePayment(
         });
         if (sorted[0]?.id) {
           console.log('[Payment] Resolved invoice', storedId, '-> payment (most recent)', sorted[0].id);
-          return { id: sorted[0].id, payment: sorted[0], invoiceOrderId };
+          return {
+            id: sorted[0].id,
+            payment: sorted[0],
+            invoiceOrderId,
+            invoiceCustomerId,
+          };
         }
       }
     }
@@ -444,7 +499,29 @@ export async function cancelPayment(
     };
   }
 
+  const providerWriteAllowed = async (operation: 'void' | 'refund') => {
+    if (!deps.beforeProviderWrite) return true;
+    try {
+      return await deps.beforeProviderWrite(operation, realPaymentId);
+    } catch (error) {
+      captureError(error, {
+        component: 'payment.cancel.beforeProviderWrite',
+        extra: { operation, paymentId: realPaymentId },
+      });
+      return false;
+    }
+  };
+  const ownershipLostResult = (operation: 'void' | 'refund'): CancelPaymentResult => ({
+    method: 'unknown',
+    fee: 0,
+    moyasarId: realPaymentId,
+    error: `${operation} skipped because recovery ownership could not be re-confirmed`,
+  });
+
   if (amountHalals == null) {
+    if (!(await providerWriteAllowed('void'))) {
+      return ownershipLostResult('void');
+    }
     try {
       const voidRes = await fetchImpl(`https://api.moyasar.com/v1/payments/${realPaymentId}/void`, {
         method: 'POST',
@@ -484,6 +561,9 @@ export async function cancelPayment(
     }
   }
 
+  if (!(await providerWriteAllowed('refund'))) {
+    return ownershipLostResult('refund');
+  }
   try {
     const body: Record<string, unknown> = {};
     if (amountHalals != null) body.amount = amountHalals;

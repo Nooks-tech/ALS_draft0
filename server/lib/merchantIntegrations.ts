@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { decryptMerchantCredential, hasMerchantCredential } from './merchantCredentials';
+import { selectActiveMoyasarCredentialPair } from './moyasarCredentialSelection';
 import { captureError } from '../utils/sentryContext';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -203,12 +204,18 @@ async function fetchMerchantPaymentRuntimeConfig(
   }
 
   const environment = data.environment === 'sandbox' ? 'sandbox' : 'production';
-  const publishableKeyEnc =
-    environment === 'sandbox' ? data.test_publishable_key_enc : data.live_publishable_key_enc;
-  const secretKeyEnc =
-    environment === 'sandbox' ? data.test_secret_key_enc : data.live_secret_key_enc;
   const webhookSecretEnc =
     environment === 'sandbox' ? data.test_webhook_secret_enc : data.live_webhook_secret_enc;
+  const decryptPaymentCredential = (encrypted: string) =>
+    safeDecrypt(encrypted, null, merchantId);
+  const activeMoyasarPair = selectActiveMoyasarCredentialPair({
+    environment,
+    testPublishableEncrypted: data.test_publishable_key_enc,
+    testSecretEncrypted: data.test_secret_key_enc,
+    livePublishableEncrypted: data.live_publishable_key_enc,
+    liveSecretEncrypted: data.live_secret_key_enc,
+    decrypt: decryptPaymentCredential,
+  });
 
   return {
     merchantId,
@@ -216,8 +223,8 @@ async function fetchMerchantPaymentRuntimeConfig(
     customerPaymentsEnabled: paymentsPolicyAllowed && Boolean(data.customer_payments_enabled),
     applePayEnabled: paymentsPolicyAllowed && Boolean(data.apple_pay_enabled),
     applePayMerchantId: normalizeOptionalString(data.apple_pay_merchant_id),
-    publishableKey: safeDecrypt(publishableKeyEnc, null, merchantId),
-    secretKey: safeDecrypt(secretKeyEnc, null, merchantId),
+    publishableKey: activeMoyasarPair?.publishableKey ?? null,
+    secretKey: activeMoyasarPair?.secretKey ?? null,
     webhookSecret: safeDecrypt(webhookSecretEnc, null, merchantId),
     source: 'merchant',
   };

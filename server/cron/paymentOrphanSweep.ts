@@ -69,9 +69,12 @@
  *     for payments that are perfectly fine. So a candidate whose provider
  *     status is already 'voided'/'refunded'/'failed' resolves terminally as
  *     'not_paid' (nothing owed) and leaves the queue. The same applies to
- *     the narrower crash-between-cancel-and-persist case. Only a genuinely
- *     unprovable binding earns 'manual_review' — which stays NON-terminal so
- *     a transient cause can still self-heal on a later pass.
+ *     the narrower crash-between-cancel-and-persist case.
+ *   - A transiently unprovable binding earns NON-terminal 'manual_review' so
+ *     provider/key ambiguity can self-heal. Deterministic binding failures
+ *     (missing or mismatched order metadata, currency, or amount after a
+ *     successful paid/captured read) leave the hot queue as terminal manual
+ *     review after one alert.
  *   - cancelPayment's ambiguous-write outcome (method:'unknown', Moyasar
  *     429/5xx/timeout on the void/refund call itself) is also safe to
  *     retry: the next tick's fresh read-back tells us whether the
@@ -79,12 +82,18 @@
  *     clean) or didn't (still 'paid'/'captured' -> retries the write) —
  *     never a blind second charge/refund.
  */
+import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import { runWithHeartbeat } from '../utils/cronHeartbeat';
 import { captureError } from '../utils/sentryContext';
 import { writeAudit } from '../utils/auditLog';
 import { verifyPaidPayment, cancelPayment } from '../services/payment';
 import { reverseStrictlyBoundRejectedPayment } from '../utils/rejectedFinalPayment';
+import {
+  paymentOrphanManualReviewUpdate,
+  releasePaymentOrphanLease,
+  renewPaymentOrphanLease,
+} from '../utils/paymentOrphanCandidate';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -106,6 +115,9 @@ const BATCH_LIMIT = 50; // capped per tick; logged (not silently dropped) when t
 // deadline passes and leave the remainder for the next tick (same
 // oldest-first query re-picks them — nothing is skipped, only deferred).
 const PROCESS_DEADLINE_MS = 4 * 60 * 1000;
+// One candidate may still be in flight when the four-minute batch deadline
+// is reached, so keep its ownership lease aligned with the cron-lock TTL.
+const SWEEP_LEASE_MS = 5 * 60 * 1000;
 // Cron-lock TTL must cover the worst-case tick duration (PROCESS_DEADLINE_MS
 // plus the final in-flight candidate's own worst-case latency) so a slow
 // tick doesn't get its lock stolen mid-run by another replica.
@@ -119,6 +131,15 @@ type OrphanCandidateRow = {
   metadata_customer_id: string | null;
   first_seen_at: string;
   attempts: number;
+  processing_owner?: 'commit' | 'sweep' | null;
+  processing_token?: string | null;
+  processing_until?: string | null;
+};
+
+type ClaimedOrphanCandidateRow = OrphanCandidateRow & {
+  processing_owner: 'sweep';
+  processing_token: string;
+  processing_until: string;
 };
 
 /**
@@ -128,28 +149,37 @@ type OrphanCandidateRow = {
  * healthy and nothing should be reversed. Scoped to merchant_id as a
  * tenant-safety belt (Moyasar payment/order ids are already globally
  * unique in practice, but this costs nothing and matches how the rest of
- * this codebase scopes lookups).
+ * this codebase scopes lookups). Customer scope is equally load-bearing:
+ * client order ids are timestamp-derived and can collide across customers.
  */
-async function orderAlreadyLanded(
+export async function orderAlreadyLanded(
   admin: NonNullable<typeof supabaseAdmin>,
   candidate: OrphanCandidateRow,
 ): Promise<{ found: boolean; queryError?: string }> {
-  const byPaymentId = await admin
+  let byPaymentIdQuery = admin
     .from('customer_orders')
     .select('id')
     .eq('merchant_id', candidate.merchant_id)
-    .eq('payment_id', candidate.payment_id)
+    .eq('payment_id', candidate.payment_id);
+  if (candidate.metadata_customer_id) {
+    byPaymentIdQuery = byPaymentIdQuery.eq(
+      'customer_id',
+      candidate.metadata_customer_id,
+    );
+  }
+  const byPaymentId = await byPaymentIdQuery
     .limit(1)
     .maybeSingle();
   if (byPaymentId.error) return { found: false, queryError: byPaymentId.error.message };
   if (byPaymentId.data) return { found: true };
 
-  if (candidate.metadata_order_id) {
+  if (candidate.metadata_order_id && candidate.metadata_customer_id) {
     const byOrderId = await admin
       .from('customer_orders')
       .select('id')
       .eq('merchant_id', candidate.merchant_id)
       .eq('id', candidate.metadata_order_id)
+      .eq('customer_id', candidate.metadata_customer_id)
       .limit(1)
       .maybeSingle();
     if (byOrderId.error) return { found: false, queryError: byOrderId.error.message };
@@ -160,24 +190,33 @@ async function orderAlreadyLanded(
 
 async function markResolved(
   admin: NonNullable<typeof supabaseAdmin>,
-  paymentId: string,
+  candidate: ClaimedOrphanCandidateRow,
   resolution: 'order_found' | 'reversed',
 ): Promise<void> {
-  // .is('resolved_at', null) guard: belt-and-suspenders against ever
-  // clobbering an already-resolved row (tryClaimCronTick already rules out
-  // concurrent ticks, but this is free).
-  const { error } = await admin
+  const nowIso = new Date().toISOString();
+  const { data, error } = await admin
     .from('payment_orphan_candidates')
-    .update({ resolved_at: new Date().toISOString(), resolution })
-    .eq('payment_id', paymentId)
-    .is('resolved_at', null);
+    .update({
+      resolved_at: nowIso,
+      resolution,
+      processing_owner: null,
+      processing_token: null,
+      processing_until: null,
+    })
+    .eq('payment_id', candidate.payment_id)
+    .eq('processing_owner', 'sweep')
+    .eq('processing_token', candidate.processing_token)
+    .is('resolved_at', null)
+    .gt('processing_until', nowIso)
+    .select('payment_id')
+    .maybeSingle();
   if (error) {
-    console.warn('[paymentOrphanSweep] failed to persist resolution', { paymentId, resolution, error: error.message });
-    captureError(new Error(`paymentOrphanSweep resolve-persist failed: ${error.message}`), {
-      component: 'cron.paymentOrphanSweep.persist',
-      paymentId,
-      extra: { resolution },
-    });
+    throw new Error(`paymentOrphanSweep resolve-persist failed: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(
+      `paymentOrphanSweep lost lease before persisting ${resolution} for ${candidate.payment_id}`,
+    );
   }
 }
 
@@ -188,56 +227,151 @@ async function markResolved(
  */
 const ALREADY_SETTLED_PROVIDER_STATUSES = new Set(['voided', 'refunded', 'failed']);
 
+/**
+ * A successful provider read that still reports paid/captured, followed by a
+ * non-retryable strict-binding rejection, is conclusive: the payment's
+ * amount/currency/order metadata does not match this recovery row. Re-running
+ * the same check cannot make that attribution safe, so leave the hot queue
+ * after alerting once. Unknown/transient reads remain retryable.
+ */
+export function isTerminalOrphanBindingFailure(input: {
+  retryable: boolean;
+  providerStatus?: string;
+  reason?: string;
+}): boolean {
+  const status = (input.providerStatus ?? '').trim().toLowerCase();
+  const definitelyMissing =
+    /^Moyasar HTTP 404(?:\b|$)/i.test(input.reason?.trim() ?? '');
+  const credentialUnavailable =
+    /^Moyasar secret key not configured(?:\b|$)/i.test(
+      input.reason?.trim() ?? '',
+    );
+  return (
+    !input.retryable &&
+    (
+      status === 'paid' ||
+      status === 'captured' ||
+      definitelyMissing ||
+      credentialUnavailable
+    )
+  );
+}
+
 async function markNotPaid(
   admin: NonNullable<typeof supabaseAdmin>,
-  paymentId: string,
+  candidate: ClaimedOrphanCandidateRow,
   providerStatus: string,
 ): Promise<void> {
-  const { error } = await admin
+  const nowIso = new Date().toISOString();
+  const { data, error } = await admin
     .from('payment_orphan_candidates')
     .update({
-      resolved_at: new Date().toISOString(),
+      resolved_at: nowIso,
       resolution: 'not_paid',
       last_error: `provider status: ${providerStatus}`,
+      processing_owner: null,
+      processing_token: null,
+      processing_until: null,
     })
-    .eq('payment_id', paymentId)
-    .is('resolved_at', null);
+    .eq('payment_id', candidate.payment_id)
+    .eq('processing_owner', 'sweep')
+    .eq('processing_token', candidate.processing_token)
+    .is('resolved_at', null)
+    .gt('processing_until', nowIso)
+    .select('payment_id')
+    .maybeSingle();
   if (error) {
-    console.warn('[paymentOrphanSweep] failed to persist not_paid', { paymentId, error: error.message });
+    throw new Error(`paymentOrphanSweep not-paid persistence failed: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(
+      `paymentOrphanSweep lost lease before persisting not_paid for ${candidate.payment_id}`,
+    );
   }
 }
 
 async function markManualReview(
   admin: NonNullable<typeof supabaseAdmin>,
-  candidate: OrphanCandidateRow,
+  candidate: ClaimedOrphanCandidateRow,
   reason: string,
+  terminal = false,
 ): Promise<void> {
-  // Deliberately does NOT set resolved_at — see the migration's
-  // payment_orphan_candidates_resolution_shape check + this file's header:
-  // manual_review stays in the retry queue so a transient cause can
-  // self-heal on a later pass instead of getting silently stuck forever.
-  const { error } = await admin
+  const nowIso = new Date().toISOString();
+  const { data, error } = await admin
     .from('payment_orphan_candidates')
-    .update({
-      resolution: 'manual_review',
-      attempts: candidate.attempts + 1,
-      last_error: reason.slice(0, 1000),
-    })
+    .update(paymentOrphanManualReviewUpdate(candidate.attempts, reason, terminal, nowIso))
     .eq('payment_id', candidate.payment_id)
-    .is('resolved_at', null);
+    .eq('processing_owner', 'sweep')
+    .eq('processing_token', candidate.processing_token)
+    .is('resolved_at', null)
+    .gt('processing_until', nowIso)
+    .select('payment_id')
+    .maybeSingle();
   if (error) {
-    console.warn('[paymentOrphanSweep] failed to persist manual_review', {
-      paymentId: candidate.payment_id,
-      error: error.message,
-    });
+    throw new Error(`paymentOrphanSweep manual-review persistence failed: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(
+      `paymentOrphanSweep lost lease before persisting manual_review for ${candidate.payment_id}`,
+    );
   }
 }
 
 type CandidateOutcome = 'order_found' | 'reversed' | 'manual_review' | 'not_paid' | 'deferred';
 
-async function processCandidate(
+async function claimCandidateForSweep(
   admin: NonNullable<typeof supabaseAdmin>,
   candidate: OrphanCandidateRow,
+): Promise<ClaimedOrphanCandidateRow | null> {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const processingToken = randomUUID();
+  const processingUntil = new Date(
+    now.getTime() + SWEEP_LEASE_MS,
+  ).toISOString();
+  const { data, error } = await admin
+    .from('payment_orphan_candidates')
+    .update({
+      processing_owner: 'sweep',
+      processing_token: processingToken,
+      processing_until: processingUntil,
+    })
+    .eq('payment_id', candidate.payment_id)
+    .is('resolved_at', null)
+    .or(
+      `processing_owner.is.null,processing_until.lt.${nowIso}`,
+    )
+    .select(
+      'payment_id, merchant_id, amount_halalas, metadata_order_id, metadata_customer_id, first_seen_at, attempts, processing_owner, processing_token, processing_until',
+    )
+    .maybeSingle();
+  if (error) {
+    console.warn('[paymentOrphanSweep] candidate lease failed', {
+      paymentId: candidate.payment_id,
+      error: error.message,
+    });
+    captureError(new Error(`paymentOrphanSweep lease failed: ${error.message}`), {
+      component: 'cron.paymentOrphanSweep.lease',
+      paymentId: candidate.payment_id,
+    });
+    return null;
+  }
+  if (!data) return null;
+  const claimed = data as ClaimedOrphanCandidateRow;
+  if (
+    claimed.processing_owner !== 'sweep' ||
+    claimed.processing_token !== processingToken
+  ) {
+    throw new Error(
+      `paymentOrphanSweep lease read-back did not preserve ownership for ${candidate.payment_id}`,
+    );
+  }
+  return claimed;
+}
+
+async function processCandidate(
+  admin: NonNullable<typeof supabaseAdmin>,
+  candidate: ClaimedOrphanCandidateRow,
 ): Promise<CandidateOutcome> {
   const landed = await orderAlreadyLanded(admin, candidate);
   if (landed.queryError) {
@@ -250,7 +384,7 @@ async function processCandidate(
     return 'deferred';
   }
   if (landed.found) {
-    await markResolved(admin, candidate.payment_id, 'order_found');
+    await markResolved(admin, candidate, 'order_found');
     console.log('[paymentOrphanSweep] order landed late — closing candidate', { paymentId: candidate.payment_id });
     return 'order_found';
   }
@@ -267,6 +401,7 @@ async function processCandidate(
       admin,
       candidate,
       'payment carries no metadata.order_id — cannot strictly bind for automated reversal',
+      true,
     );
     await writeAudit({
       merchant_id: candidate.merchant_id,
@@ -279,6 +414,36 @@ async function processCandidate(
     });
     return 'manual_review';
   }
+  if (!candidate.metadata_customer_id) {
+    await markManualReview(
+      admin,
+      candidate,
+      'payment carries no metadata.customer_id — cannot strictly bind for automated reversal',
+      true,
+    );
+    await writeAudit({
+      merchant_id: candidate.merchant_id,
+      action: 'payment.orphan_manual_review',
+      payload: {
+        payment_id: candidate.payment_id,
+        amount_halalas: candidate.amount_halalas,
+        reason: 'missing_customer_id_metadata',
+      },
+    });
+    return 'manual_review';
+  }
+
+  // The read/validation work above may have consumed part of the claim. A
+  // fresh token-CAS renewal immediately before provider access guarantees
+  // that no expired owner can race a commit or another sweep into a refund.
+  const renewed = await renewPaymentOrphanLease(
+    admin,
+    candidate.payment_id,
+    'sweep',
+    candidate.processing_token,
+    SWEEP_LEASE_MS,
+  );
+  if (!renewed) return 'deferred';
 
   const cleanup = await reverseStrictlyBoundRejectedPayment(
     {
@@ -286,8 +451,25 @@ async function processCandidate(
       expectedAmountHalalas: candidate.amount_halalas,
       merchantId: candidate.merchant_id,
       orderId: candidate.metadata_order_id,
+      customerId: candidate.metadata_customer_id,
     },
-    { verify: verifyPaidPayment, cancel: cancelPayment },
+    {
+      verify: verifyPaidPayment,
+      cancel: (paymentId, amountHalalas, merchantId) =>
+        cancelPayment(paymentId, amountHalalas, merchantId, {
+          // cancelPayment performs a fresh provider read before deciding
+          // void/refund. Fence each actual POST after that read, at the last
+          // possible moment, so an expired sweep can never mutate money.
+          beforeProviderWrite: () =>
+            renewPaymentOrphanLease(
+              admin,
+              candidate.payment_id,
+              'sweep',
+              candidate.processing_token,
+              SWEEP_LEASE_MS,
+            ),
+        }),
+    },
   );
 
   if (!cleanup.bindingVerified) {
@@ -301,14 +483,15 @@ async function processCandidate(
     // Sentry error on every retry — noise that trains everyone to ignore the
     // one alarm that means real money is stuck. Close those as 'not_paid'.
     if (ALREADY_SETTLED_PROVIDER_STATUSES.has((cleanup.providerStatus ?? '').toLowerCase())) {
-      await markNotPaid(admin, candidate.payment_id, cleanup.providerStatus ?? 'unknown');
+      await markNotPaid(admin, candidate, cleanup.providerStatus ?? 'unknown');
       console.log('[paymentOrphanSweep] candidate already reversed at the provider — closing', {
         paymentId: candidate.payment_id,
         providerStatus: cleanup.providerStatus,
       });
       return 'not_paid';
     }
-    await markManualReview(admin, candidate, cleanup.reason);
+    const terminal = isTerminalOrphanBindingFailure(cleanup);
+    await markManualReview(admin, candidate, cleanup.reason, terminal);
     await writeAudit({
       merchant_id: candidate.merchant_id,
       action: 'payment.orphan_manual_review',
@@ -317,6 +500,7 @@ async function processCandidate(
         amount_halalas: candidate.amount_halalas,
         reason: cleanup.reason,
         retryable: cleanup.retryable,
+        terminal,
         stage: 'binding_verification',
       },
     });
@@ -324,14 +508,14 @@ async function processCandidate(
       component: 'cron.paymentOrphanSweep.bindingRejected',
       merchantId: candidate.merchant_id,
       paymentId: candidate.payment_id,
-      extra: { retryable: cleanup.retryable },
+      extra: { retryable: cleanup.retryable, terminal },
     });
     return 'manual_review';
   }
 
   const { disposition, reversal, resolvedPaymentId } = cleanup;
   if (disposition.completed) {
-    await markResolved(admin, candidate.payment_id, 'reversed');
+    await markResolved(admin, candidate, 'reversed');
     await writeAudit({
       merchant_id: candidate.merchant_id,
       action: 'payment.orphan_reversed',
@@ -382,11 +566,15 @@ async function runSweep(): Promise<{ scanned: number; reversed: number; manualRe
   const admin = supabaseAdmin;
 
   const cutoff = new Date(Date.now() - GRACE_WINDOW_MS).toISOString();
+  const claimableAt = new Date().toISOString();
   const { data, error } = await admin
     .from('payment_orphan_candidates')
     .select('payment_id, merchant_id, amount_halalas, metadata_order_id, metadata_customer_id, first_seen_at, attempts')
     .is('resolved_at', null)
     .lt('first_seen_at', cutoff)
+    .or(
+      `processing_owner.is.null,processing_until.lt.${claimableAt}`,
+    )
     .order('first_seen_at', { ascending: true })
     .limit(BATCH_LIMIT);
 
@@ -410,7 +598,10 @@ async function runSweep(): Promise<{ scanned: number; reversed: number; manualRe
       .from('payment_orphan_candidates')
       .select('payment_id', { head: true, count: 'exact' })
       .is('resolved_at', null)
-      .lt('first_seen_at', cutoff);
+      .lt('first_seen_at', cutoff)
+      .or(
+        `processing_owner.is.null,processing_until.lt.${claimableAt}`,
+      );
     if (!countError && typeof count === 'number' && count > BATCH_LIMIT) {
       console.warn(
         `[paymentOrphanSweep] batch capped at ${BATCH_LIMIT} — ${count} total eligible candidates outstanding, ${count - BATCH_LIMIT} deferred to later ticks`,
@@ -431,11 +622,22 @@ async function runSweep(): Promise<{ scanned: number; reversed: number; manualRe
       break;
     }
     processed += 1;
+    let claimed: ClaimedOrphanCandidateRow | null = null;
     try {
-      const outcome = await processCandidate(admin, candidate);
+      claimed = await claimCandidateForSweep(admin, candidate);
+      if (!claimed) continue;
+      const outcome = await processCandidate(admin, claimed);
       if (outcome === 'order_found') orderFound += 1;
       else if (outcome === 'reversed') reversed += 1;
       else if (outcome === 'manual_review') manualReview += 1;
+      else if (outcome === 'deferred') {
+        await releasePaymentOrphanLease(
+          admin,
+          claimed.payment_id,
+          'sweep',
+          claimed.processing_token,
+        );
+      }
       // 'deferred' (inconclusive order-lookup read) intentionally isn't
       // tallied as any of the three outcomes — it's neither resolved nor a
       // review flag, just a skip for this tick.
@@ -451,6 +653,21 @@ async function runSweep(): Promise<{ scanned: number; reversed: number; manualRe
         merchantId: candidate.merchant_id,
         paymentId: candidate.payment_id,
       });
+      if (claimed) {
+        try {
+          await releasePaymentOrphanLease(
+            admin,
+            claimed.payment_id,
+            'sweep',
+            claimed.processing_token,
+          );
+        } catch (releaseError: any) {
+          console.warn('[paymentOrphanSweep] failed to release candidate lease', {
+            paymentId: claimed.payment_id,
+            error: releaseError?.message,
+          });
+        }
+      }
       continue;
     }
   }

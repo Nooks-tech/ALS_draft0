@@ -311,6 +311,9 @@ export type CommitOrderResponse = {
   pending?: boolean;
   code?: string;
   retryAfterMs?: number;
+  retrySamePayment?: boolean;
+  safeToStartNewPayment?: boolean;
+  recoveryId?: string;
   order?: { id: string; status: string; payment_id: string | null };
   [key: string]: unknown;
 };
@@ -318,6 +321,8 @@ export type CommitOrderResponse = {
 /** Thrown when the card payment is still settling after the retry budget. */
 export class PaymentSettlingError extends Error {
   code = 'PAYMENT_SETTLING' as const;
+  retrySamePayment = true as const;
+  safeToStartNewPayment = false as const;
   constructor() {
     super('Payment is still confirming');
     this.name = 'PaymentSettlingError';

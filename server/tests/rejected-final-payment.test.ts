@@ -3,23 +3,37 @@ import assert from 'node:assert/strict';
 import { verifyPaidPayment } from '../services/payment';
 import { reverseStrictlyBoundRejectedPayment } from '../utils/rejectedFinalPayment';
 
-function paidPaymentResponse(orderId?: string): Response {
+function paidPaymentResponse(orderId?: string, customerId?: string): Response {
   return new Response(JSON.stringify({
     id: 'pay_bound_1',
     status: 'paid',
     amount: 3_000,
     currency: 'SAR',
-    ...(orderId === undefined ? {} : { metadata: { order_id: orderId } }),
+    ...(orderId === undefined && customerId === undefined
+      ? {}
+      : {
+          metadata: {
+            ...(orderId === undefined ? {} : { order_id: orderId }),
+            ...(customerId === undefined ? {} : { customer_id: customerId }),
+          },
+        }),
   }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
 }
 
-async function runStrictCleanup(providerOrderId?: string) {
+async function runStrictCleanup(
+  providerOrderId?: string,
+  providerCustomerId: string | null = 'customer_expected',
+) {
   let cancelCalls = 0;
   let verifyCalls = 0;
-  const fetchImpl = (async () => paidPaymentResponse(providerOrderId)) as typeof fetch;
+  const fetchImpl = (async () =>
+    paidPaymentResponse(
+      providerOrderId,
+      providerCustomerId ?? undefined,
+    )) as typeof fetch;
 
   const result = await reverseStrictlyBoundRejectedPayment(
     {
@@ -27,6 +41,7 @@ async function runStrictCleanup(providerOrderId?: string) {
       expectedAmountHalalas: 3_000,
       merchantId: 'merchant_1',
       orderId: 'order_expected',
+      customerId: 'customer_expected',
     },
     {
       verify: async (paymentId, amount, merchantId, orderId, options) => {
@@ -80,5 +95,19 @@ test('matching provider order binding permits exactly one cancel call', async ()
     assert.equal(result.resolvedPaymentId, 'pay_bound_1');
     assert.equal(result.reversal.method, 'void');
     assert.equal(result.disposition.refundStatus, 'refunded');
+  }
+});
+
+test('missing or mismatched provider customer binding returns before cancel', async () => {
+  for (const providerCustomerId of [null, 'customer_other']) {
+    const { result, cancelCalls } = await runStrictCleanup(
+      'order_expected',
+      providerCustomerId,
+    );
+    assert.equal(cancelCalls, 0);
+    assert.equal(result.bindingVerified, false);
+    if (!result.bindingVerified) {
+      assert.match(result.reason, /customer_id binding|customer mismatch/i);
+    }
   }
 });

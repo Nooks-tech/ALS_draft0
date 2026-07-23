@@ -30,6 +30,23 @@ function fakeFetch(
 
 const paidReadback = () => jsonResponse(200, { id: 'pay_1', status: 'paid', amount: 1_000, refunded: 0 });
 
+test('an ownership fence that fails after read-back prevents every provider write', async () => {
+  const fake = fakeFetch([paidReadback]);
+  const fencedOperations: string[] = [];
+  const result = await cancelPayment('pay_1', undefined, null, {
+    fetchImpl: fake.fetchImpl,
+    secretKey: 'test_secret',
+    beforeProviderWrite: async (operation) => {
+      fencedOperations.push(operation);
+      return false;
+    },
+  });
+
+  assert.equal(result.method, 'unknown');
+  assert.deepEqual(fencedOperations, ['void']);
+  assert.deepEqual(fake.calls.map((call) => call.method), ['GET']);
+});
+
 test('void network ambiguity returns unknown immediately and never writes a refund', async () => {
   const fake = fakeFetch([
     paidReadback,
@@ -79,6 +96,26 @@ test('a deterministic void 4xx may fall back to one clearly confirmed refund', a
   assert.equal(result.method, 'refund');
   assert.equal(fake.calls.length, 3);
   assert.deepEqual(fake.calls.map((call) => call.method), ['GET', 'POST', 'POST']);
+});
+
+test('void-to-refund fallback rechecks ownership before the second provider write', async () => {
+  const fake = fakeFetch([
+    paidReadback,
+    () => jsonResponse(400, { message: 'cannot void a settled payment' }),
+  ]);
+  const fencedOperations: string[] = [];
+  const result = await cancelPayment('pay_1', undefined, null, {
+    fetchImpl: fake.fetchImpl,
+    secretKey: 'test_secret',
+    beforeProviderWrite: async (operation) => {
+      fencedOperations.push(operation);
+      return operation === 'void';
+    },
+  });
+
+  assert.equal(result.method, 'unknown');
+  assert.deepEqual(fencedOperations, ['void', 'refund']);
+  assert.deepEqual(fake.calls.map((call) => call.method), ['GET', 'POST']);
 });
 
 test('provider read-back reports already-voided and already-refunded as returned', async () => {

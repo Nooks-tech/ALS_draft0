@@ -42,6 +42,11 @@ on:
         required: false
         type: string
         default: "all"
+      clear_cache:
+        description: "Flush Metro cache (required after EXPO_PUBLIC_* env changes)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   broadcast:
@@ -91,6 +96,7 @@ jobs:
           UPDATE_MESSAGE: ${{ github.event.inputs.message }}
           UPDATE_TARGET: ${{ github.event.inputs.target }}
           UPDATE_PLATFORM: ${{ github.event.inputs.platform }}
+          UPDATE_CLEAR_CACHE: ${{ github.event.inputs.clear_cache }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -101,4 +107,5 @@ jobs:
           node scripts/broadcast-update.mjs \
             --message "$UPDATE_MESSAGE" \
             --target "$UPDATE_TARGET" \
-            --platform "$UPDATE_PLATFORM"
+            --platform "$UPDATE_PLATFORM" \
+            --clear-cache "$UPDATE_CLEAR_CACHE"

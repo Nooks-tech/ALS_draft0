@@ -15,13 +15,14 @@ test('commit path uses the shared minimum-subtotal helper', () => {
   assert.match(src, /minSubtotalHalalasForType\(minOps/);
 });
 
-test('below-minimum orders are rejected with a reversal and terminal code', () => {
+test('below-minimum orders are rejected with a reversal-derived safety contract', () => {
   assert.match(src, /code: 'BELOW_MIN_SUBTOTAL'/);
   // A charge may already have landed (Apple Pay / saved card before commit),
-  // so the gate must void it and mark the response terminal.
+  // so the gate must void it. `terminal` is true only when that reversal is
+  // confirmed; older clients must not rotate into a second charge otherwise.
   assert.match(src, /voidChargeOnRejectedCommit\([^)]*'min subtotal gate'/s);
   const gate = src.slice(src.indexOf("code: 'BELOW_MIN_SUBTOTAL'") - 400, src.indexOf("code: 'BELOW_MIN_SUBTOTAL'") + 100);
-  assert.match(gate, /terminal:\s*true/);
+  assert.match(gate, /paymentReversalResponse\(reversal\)/);
 });
 
 test('the gate sits outside the shadow reconciliation and before the reward gate', () => {

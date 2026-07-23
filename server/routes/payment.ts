@@ -265,7 +265,10 @@ paymentRouter.post('/initiate', async (req, res) => {
       successUrl,
       deliveryFee: deliveryFee != null ? Number(deliveryFee) : Number(order.delivery_fee ?? 0),
       merchantId: scopedMerchantId,
-      metadata: { merchant_id: scopedMerchantId },
+      metadata: {
+        merchant_id: scopedMerchantId,
+        customer_id: user.id,
+      },
     });
 
     const commission = calculateCommission(requestedAmount, deliveryFee ? Number(deliveryFee) : Number(order.delivery_fee ?? 0));
@@ -1068,7 +1071,10 @@ paymentRouter.post('/token-pay', async (req, res) => {
         orderId,
         token: moyasarCardToken,
         merchantId: scopedMerchantId,
-        metadata: { merchant_id: scopedMerchantId },
+        metadata: {
+          merchant_id: scopedMerchantId,
+          customer_id: user.id,
+        },
       });
     } catch (chargeErr: any) {
       const msg = String(chargeErr?.message ?? '').toLowerCase();

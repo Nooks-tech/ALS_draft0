@@ -95,19 +95,9 @@ app.use(
 );
 app.use(express.json());
 
-// Rate limiting for public-facing endpoints. Primary key = customer (JWT
-// sub), generous per-IP backstop — the old 10/min-per-IP caps false-429'd
-// Saudi carrier CGNAT traffic at ~5 concurrent paying customers. Upstash-
-// backed via enforceLimits, so limits hold across replicas and deploys.
-app.use(
-  '/api/orders/commit',
-  createCustomerAwareRateLimit({
-    endpoint: 'orders.commit',
-    // The app fires 2 commits per order → 10/min = 5 orders/min/customer.
-    perCustomer: { max: 10, windowMs: 60 * 1000 },
-    perIp: { max: 120, windowMs: 60 * 1000 },
-  }),
-);
+// Order commit is deliberately excluded from pre-router rate limiting: its
+// payment may already be captured, so the route persists a recovery candidate
+// before enforcing customer/IP limits. A middleware 429 would strand the charge.
 app.use(
   '/api/payment/initiate',
   createCustomerAwareRateLimit({

@@ -76,7 +76,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const errData = data as
-      | { error?: unknown; message?: unknown; code?: unknown; terminal?: unknown; reversal?: unknown }
+      | {
+          error?: unknown;
+          message?: unknown;
+          code?: unknown;
+          terminal?: unknown;
+          reversal?: unknown;
+          retrySamePayment?: unknown;
+          safeToStartNewPayment?: unknown;
+          recoveryId?: unknown;
+        }
       | null;
     const msg = errData?.error || errData?.message || `Request failed ${res.status}`;
     const e: any = new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
@@ -90,6 +99,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     // dropping them here would make that decision impossible downstream.
     e.terminal = errData?.terminal;
     e.reversal = errData?.reversal;
+    e.retrySamePayment = errData?.retrySamePayment;
+    e.safeToStartNewPayment = errData?.safeToStartNewPayment;
+    e.recoveryId = errData?.recoveryId;
     throw e;
   }
 

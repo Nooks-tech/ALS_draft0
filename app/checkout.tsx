@@ -40,7 +40,7 @@ import {
   isMoyasarError } from 'react-native-moyasar-sdk';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { PaymentProcessingOverlay } from '../src/components/common/PaymentProcessingOverlay';
-import { MOYASAR_BASE_URL, MOYASAR_PUBLISHABLE_KEY, APPLE_PAY_MERCHANT_ID } from '../src/api/config';
+import { MOYASAR_BASE_URL, APPLE_PAY_MERCHANT_ID } from '../src/api/config';
 import { paymentApi, type SavedCard } from '../src/api/payment';
 import { walletApi } from '../src/api/wallet';
 import { getDeliveryQuote } from '../src/api/deliveryQuote';
@@ -251,7 +251,10 @@ export default function CheckoutScreen() {
     applePayMerchantId: brandingApplePayMerchantId } = useMerchantBranding();
   const { user } = useAuth();
   const isArabic = i18n.language === 'ar';
-  const resolvedPublishableKey = (moyasarPublishableKey || MOYASAR_PUBLISHABLE_KEY || '').trim();
+  // Fail closed on the merchant's runtime key. A baked build-time fallback
+  // can outlive a key rotation (or a broken server-side credential mapping)
+  // and let the app capture money that the server cannot verify or reverse.
+  const resolvedPublishableKey = (moyasarPublishableKey || '').trim();
   const resolvedApplePayMerchantId = (APPLE_PAY_MERCHANT_ID || brandingApplePayMerchantId || '').trim();
   const resolvedApplePayEnabled = Platform.OS === 'ios' && applePayEnabled && Boolean(resolvedApplePayMerchantId);
 
@@ -767,7 +770,15 @@ export default function CheckoutScreen() {
   const amountHalals = Math.round(chargeAmount * 100);
 
   const paymentConfig = useMemo(() => {
-    if (!resolvedPublishableKey || !customerPaymentsEnabled) return null;
+    if (
+      !resolvedPublishableKey ||
+      !customerPaymentsEnabled ||
+      !merchantId ||
+      !selectedBranch?.id ||
+      !user?.id
+    ) {
+      return null;
+    }
     try {
       return new PaymentConfig({
         // Idempotency key for Moyasar — see orderIdToClientGivenId's doc
@@ -808,7 +819,7 @@ export default function CheckoutScreen() {
     // React re-diffs it on the next render (see the givenId comment
     // above); mutating a ref alone does NOT trigger that render, only
     // the setSubmitting(false) that always accompanies a rotation does.
-  }, [amountHalals, appName, customerPaymentsEnabled, merchantId, orderIdRef.current, resolvedApplePayEnabled, resolvedPublishableKey, saveCardChecked, user?.id]);
+  }, [amountHalals, appName, customerPaymentsEnabled, merchantId, orderIdRef.current, resolvedApplePayEnabled, resolvedApplePayMerchantId, resolvedPublishableKey, saveCardChecked, selectedBranch?.id, user?.id]);
 
   const applyCoupon = async () => {
     const code = (couponInput || promoCode).trim();
@@ -901,11 +912,14 @@ export default function CheckoutScreen() {
   };
 
   const createOrderAfterPayment = useCallback(async (moyasarPaymentId?: string) => {
-    if (!selectedBranch?.id) return;
-    if (!merchantId) {
+    const pendingOrderId = orderIdRef.current;
+    if (!selectedBranch?.id || !merchantId || !user?.id) {
+      setSubmitting(false);
       Alert.alert(
         isArabic ? 'خطأ في الإعدادات' : 'Configuration Error',
-        isArabic ? 'إعدادات المتجر ناقصة. أعد تشغيل التطبيق وحاول مرة ثانية.' : 'Merchant configuration is missing. Please restart the app and try again.',
+        isArabic
+          ? `تعذر إرسال الطلب. لا تحاول الدفع مرة أخرى الآن. الرقم المرجعي: ${pendingOrderId}`
+          : `We could not submit the order because the checkout session changed. Do not pay again yet. Reference: ${pendingOrderId}`,
       );
       return;
     }
@@ -927,9 +941,8 @@ export default function CheckoutScreen() {
       // reverses everything and throws, and we must NOT surface the order or
       // redeem stamps/cashback/wallet on the client side.
       let finalCommitOk = false;
-      if (user?.id) {
-        try {
-          await commitOrder({
+      try {
+        await commitOrder({
             id: orderId,
             merchantId,
             branchId: selectedBranch.id,
@@ -978,11 +991,13 @@ export default function CheckoutScreen() {
             stampMilestoneIds: stampMilestoneIdsForOrder.length > 0 ? stampMilestoneIdsForOrder : undefined,
             stampsConsumed: stampsConsumedForOrder > 0 ? stampsConsumedForOrder : null,
             relayToNooks: true });
-          finalCommitOk = true;
-        } catch (err: any) {
+        finalCommitOk = true;
+      } catch (err: any) {
           console.warn('[Checkout] Final commit failed:', err?.message, {
             terminal: err?.terminal,
             reversal: err?.reversal,
+            safeToStartNewPayment: err?.safeToStartNewPayment,
+            retrySamePayment: err?.retrySamePayment,
           });
           // The charge has ALREADY happened at this point (Apple Pay /
           // saved-card session succeeded before this commit ran).
@@ -1009,7 +1024,24 @@ export default function CheckoutScreen() {
           //     Rotating here would let a retry mint a SECOND charge
           //     instead of Moyasar recognizing the unchanged givenId and
           //     handing back the first payment. So: touch NOTHING.
-          if (err?.terminal === true) {
+          const reversal = err?.reversal;
+          const durableRecovery =
+            err?.code === 'PAYMENT_RECOVERY_PENDING' ||
+            err?.code === 'PAYMENT_MANUAL_REVIEW';
+          const safeToStartNewPayment =
+            !durableRecovery &&
+            reversal !== 'pending_manual' &&
+            err?.code !== 'PAYMENT_SETTLING' &&
+            err?.retrySamePayment !== true &&
+            (
+              err?.safeToStartNewPayment === true ||
+              (
+                err?.safeToStartNewPayment === undefined &&
+                err?.terminal === true &&
+                (reversal === 'completed' || reversal === 'no_charge')
+              )
+            );
+          if (safeToStartNewPayment) {
             orderIdRef.current = `order-${Date.now()}`;
             moyasarInvoiceIdRef.current = null;
             setMoyasarWebUrl(null);
@@ -1020,18 +1052,24 @@ export default function CheckoutScreen() {
           // statement — so it's gone from every branch below, not just
           // the happy one.
           const rewardMsg = friendlyRewardErrorMessage(err?.code, err?.message, isArabic);
-          const reversal = err?.terminal === true ? err?.reversal : undefined;
           let fallbackMsg: string;
           if (reversal === 'completed' || reversal === 'no_charge') {
             fallbackMsg = isArabic
               ? 'ما تم تنفيذ طلبك، وتم إلغاء المبلغ المدفوع بالكامل — ما راح يتم خصم أي شيء منك. حسب البنك، قد يبقى ظاهر كحجز مؤقت لعدة أيام قبل ما يختفي من كشف حسابك. تقدر تحاول مرة ثانية.'
               : "Your order didn't go through, and your payment has been reversed — you have not been charged. Depending on your bank, a temporary hold may take a few days to disappear. You can try again.";
-          } else if (reversal === 'pending_manual') {
+          } else if (
+            err?.code === 'PAYMENT_RECOVERY_PENDING' ||
+            err?.code === 'PAYMENT_MANUAL_REVIEW'
+          ) {
             // Do NOT invite an immediate retry here — that would stack
             // more manual-review charges on top of this one.
             fallbackMsg = isArabic
-              ? `ما تم تنفيذ طلبك. لو شفت أي مبلغ مخصوم من بطاقتك، لا تقلق — تم رصده من طرفنا وراح يتم إرجاعه لك. الرقم المرجعي: ${orderId}. تواصل مع الدعم لو تحتاج تحديث عن حالته.`
-              : `Your order didn't go through. If you see a charge, don't worry — it's flagged on our side and will be returned. Reference: ${orderId}. Contact support if you'd like an update.`;
+              ? `ما قدرنا نأكد طلبك حتى الآن. لو شفت أي مبلغ مخصوم، تم رصده وجاري التحقق منه. لا تحاول الدفع مرة أخرى الآن؛ تابع تبويب الطلبات أو تواصل مع الدعم. الرقم المرجعي: ${orderId}.`
+              : `We could not confirm your order yet. If you see a charge, it is flagged and being checked. Do not pay again yet; check your Orders tab or contact support. Reference: ${orderId}.`;
+          } else if (reversal === 'pending_manual') {
+            fallbackMsg = isArabic
+              ? `تعذر تأكيد إلغاء الدفعة. لا تحاول الدفع مرة أخرى الآن. الرقم المرجعي: ${orderId}`
+              : `We could not confirm the payment reversal. Do not pay again yet. Reference: ${orderId}. Contact support for an update.`;
           } else if (err?.code === 'PAYMENT_SETTLING') {
             // Known-but-not-terminal: the settling retry budget ran out
             // client-side. The charge is likely fine and still
@@ -1041,7 +1079,7 @@ export default function CheckoutScreen() {
             // the first attempt is still in flight.
             fallbackMsg = isArabic
               ? 'دفعتك لسه قيد التأكيد. تابع تبويب طلباتك بعد شوي قبل ما تحاول مرة ثانية — عشان ما نخصم بطاقتك مرتين.'
-              : "Your payment is still confirming. Please check your Orders tab in a moment before trying again — we don't want to charge your card twice.";
+              : `Your payment is still confirming. Do not pay again yet. Check your Orders tab in a moment. Reference: ${orderId}.`;
           } else {
             // Ambiguous — network error/timeout, or a terminal:true whose
             // reversal value we don't recognize. Stay cautious in both
@@ -1049,16 +1087,15 @@ export default function CheckoutScreen() {
             // claim it's fine, don't promise a timeline.
             fallbackMsg = isArabic
               ? 'ما قدرنا نأكد حالة طلبك. لو انخصم أي مبلغ، تابع تبويب طلباتك بعد شوي، أو تواصل مع الدعم لو استمر الخصم.'
-              : "We couldn't confirm your order. If any amount was charged, please check your Orders tab in a moment, or contact support if the charge doesn't clear.";
+              : `We couldn't confirm your order or payment reversal. Do not pay again yet. Check your Orders tab or contact support. Reference: ${orderId}.`;
           }
           Alert.alert(
             isArabic ? 'فشل إنشاء الطلب' : 'Order failed',
             rewardMsg ?? fallbackMsg,
           );
-          return;
-        }
+        return;
       }
-      if (!finalCommitOk && user?.id) {
+      if (!finalCommitOk) {
         return;
       }
       addOrder(

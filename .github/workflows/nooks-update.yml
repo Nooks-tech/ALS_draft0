@@ -158,4 +158,5 @@ jobs:
           eas update \
             --channel "${{ github.event.inputs.merchant_id }}" \
             --message "${{ github.event.inputs.message }}" \
+            --clear-cache \
             --non-interactive

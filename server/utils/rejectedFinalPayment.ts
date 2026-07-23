@@ -58,6 +58,7 @@ export async function reverseStrictlyBoundRejectedPayment(
     expectedAmountHalalas: number;
     merchantId: string;
     orderId: string;
+    customerId: string;
   },
   deps: RejectedFinalPaymentDeps,
 ): Promise<RejectedFinalPaymentCleanupResult> {
@@ -68,7 +69,11 @@ export async function reverseStrictlyBoundRejectedPayment(
       input.expectedAmountHalalas,
       input.merchantId,
       input.orderId,
-      { requireOrderBinding: true },
+      {
+        requireOrderBinding: true,
+        requireCustomerBinding: true,
+        expectedCustomerId: input.customerId,
+      },
     );
   } catch (error: any) {
     return {
