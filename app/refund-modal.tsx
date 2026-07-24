@@ -11,7 +11,7 @@ export default function RefundModal() {
   const isArabic = i18n.language === 'ar';
   const brandName = appName || cafeName || 'the app';
   const brandNameAr = appName || cafeName || 'التطبيق';
-  const email = contactEmail || 'support@nooks.sa';
+  const email = contactEmail || 'team@nooks.space';
 
   return (
     <View className="flex-1">
@@ -40,12 +40,12 @@ export default function RefundModal() {
           {isArabic ? (
             <>
               <Text className="text-slate-600 leading-6 mb-4">
-                <Text className="font-bold text-slate-800">{'سارية من ١٠ مايو ٢٠٢٦ · النسخة ٢٫٠'}</Text>
+                <Text className="font-bold text-slate-800">{'سارية من ٢٤ يوليو ٢٠٢٦ · النسخة ٢٫١'}</Text>
                 {'\n\n'}
                 {'تنطبق هذه السياسة على طلبات الطعام والمشروبات التي تتمّها عبر تطبيق '}
                 <Text className="font-bold text-slate-800">{brandNameAr}</Text>
                 {'. التاجر هو من يتخذ القرار النهائي في كل طلب استرداد، بينما '}
-                <Text className="font-bold text-slate-800">{'مؤسسة نُوكس لتقنية المعلومات'}</Text>
+                <Text className="font-bold text-slate-800">{'مؤسسة نوكس لتقنيات البرمجيات'}</Text>
                 {' هي مزوّد البرمجيات فقط ولا تحتفظ بأموال التاجر (نموذج BYOG: المدفوعات تذهب من Moyasar مباشرة إلى حساب التاجر البنكي).'}
               </Text>
 
@@ -174,7 +174,7 @@ export default function RefundModal() {
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'٩. التواصل'}</Text>
-              <Text className="text-slate-600 leading-6 mb-8">
+              <Text className="text-slate-600 leading-6 mb-4">
                 {'لتقديم شكوى أو الاستفسار عن طلب استرداد:\n'}
                 {'• مسار الشكاوى داخل التطبيق هو القناة المعتمدة.\n'}
                 {'• البريد الإلكتروني للتاجر: '}
@@ -184,16 +184,36 @@ export default function RefundModal() {
                 <Text className="font-bold text-slate-800">{brandNameAr}</Text>
                 {' وحده. نُوكس تُتيح فقط البنية البرمجية ومسار الشكاوى.'}
               </Text>
+
+              <Text className="text-slate-800 font-bold mb-2">{'١٠. حقوقك النظامية'}</Text>
+              <Text className="text-slate-600 leading-6 mb-4">
+                {'لا يوجد في هذه السياسة ما يحدّ من حقوقك الإلزامية بموجب نظام حماية المستهلك ونظام التجارة الإلكترونية السعوديين. آلية الاسترداد الافتراضية تتم '}
+                <Text className="font-bold text-slate-800">{'إلى المحفظة داخل التطبيق'}</Text>
+                {' لأنها فورية، إلا أنه في حالات الطلب '}
+                <Text className="font-bold text-slate-800">{'المعيب أو الخاطئ أو الذي لم يُسلَّم'}</Text>
+                {'، يمكنك طلب استرداد المبلغ إلى وسيلة الدفع الأصلية أثناء تصعيد الشكوى، وسيُلبَّى هذا الطلب حيثما يُلزم به النظام.'}
+              </Text>
+
+              <Text className="text-slate-800 font-bold mb-2">{'١١. القانون والاختصاص'}</Text>
+              <Text className="text-slate-600 leading-6 mb-8">
+                {'• تخضع هذه السياسة لـ'}
+                <Text className="font-bold text-slate-800">{'أنظمة المملكة العربية السعودية'}</Text>
+                {'.\n'}
+                {'• المحاكم المختصة في الرياض هي صاحبة الاختصاص الحصري.\n'}
+                {'• عند التعارض بين النسخة العربية والإنجليزية، '}
+                <Text className="font-bold text-slate-800">{'تسود النسخة العربية'}</Text>
+                {'.'}
+              </Text>
             </>
           ) : (
             <>
               <Text className="text-slate-600 leading-6 mb-4">
-                <Text className="font-bold text-slate-800">{'Effective: 10 May 2026 · Version 2.0'}</Text>
+                <Text className="font-bold text-slate-800">{'Effective: 24 July 2026 · Version 2.1'}</Text>
                 {'\n\n'}
                 {'This policy applies to food and beverage orders placed through the '}
                 <Text className="font-bold text-slate-800">{brandName}</Text>
                 {' app. The merchant makes the final decision on each refund request, while '}
-                <Text className="font-bold text-slate-800">{'Nooks Information Technology Est.'}</Text>
+                <Text className="font-bold text-slate-800">{'Nooks Software Technologies Est.'}</Text>
                 {' is the software vendor only and does not hold the merchant\'s funds (BYOG model: payments flow from Moyasar directly to the merchant\'s own bank account).'}
               </Text>
 
@@ -322,7 +342,7 @@ export default function RefundModal() {
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'9. Contact'}</Text>
-              <Text className="text-slate-600 leading-6 mb-8">
+              <Text className="text-slate-600 leading-6 mb-4">
                 {'To file a complaint or inquire about a refund:\n'}
                 {'• The in-app complaint flow is the primary channel.\n'}
                 {'• Merchant email: '}
@@ -331,6 +351,26 @@ export default function RefundModal() {
                 {'Reminder: Nooks does not decide individual refunds and does not hold merchant funds — that is solely the responsibility of the merchant '}
                 <Text className="font-bold text-slate-800">{brandName}</Text>
                 {'. Nooks only provides the software platform and the complaint pipeline.'}
+              </Text>
+
+              <Text className="text-slate-800 font-bold mb-2">{'10. Your Statutory Rights'}</Text>
+              <Text className="text-slate-600 leading-6 mb-4">
+                {'Nothing in this policy limits your mandatory rights under Saudi consumer-protection and e-commerce regulations. Refunds default to '}
+                <Text className="font-bold text-slate-800">{'your in-app wallet'}</Text>
+                {' because it is instant, but for '}
+                <Text className="font-bold text-slate-800">{'defective, incorrect, or never-delivered orders'}</Text>
+                {' you may request a refund to your original payment method during complaint escalation, and that request will be honored where required by law.'}
+              </Text>
+
+              <Text className="text-slate-800 font-bold mb-2">{'11. Governing Law & Jurisdiction'}</Text>
+              <Text className="text-slate-600 leading-6 mb-8">
+                {'• This Policy is governed by '}
+                <Text className="font-bold text-slate-800">{'the laws of the Kingdom of Saudi Arabia'}</Text>
+                {'.\n'}
+                {'• The competent courts in Riyadh have exclusive jurisdiction.\n'}
+                {'• In case of any conflict between the Arabic and English versions, '}
+                <Text className="font-bold text-slate-800">{'the Arabic version prevails'}</Text>
+                {'.'}
               </Text>
             </>
           )}

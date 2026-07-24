@@ -440,6 +440,33 @@ export async function submitComplaint(orderId: string, data: ComplaintInsert): P
   return api.post(`/api/complaints/${orderId}`, data);
 }
 
+// complaint-photos is a private bucket (PDPL — migration
+// 20260724120000_complaint_photos_private.sql) with NO client-readable RLS
+// policy (the unrestricted "Anyone can view complaint photos" SELECT
+// policy was dropped by 20260724140000_complaint_photos_rls.sql because it
+// let any authenticated client sign ANY path — a cross-customer photo
+// leak). A client-side createSignedUrl call against this bucket no longer
+// works, so we don't attempt one. Stored photo_urls are either a
+// bucket-relative path (new rows) or a legacy full public URL (old rows);
+// normalize down to the bucket-relative path only — DO NOT sign here.
+// There is currently no customer-facing server endpoint that returns
+// server-signed complaint photo URLs (the merchant-dashboard list/read
+// endpoints in server/routes/complaints.ts are gated behind internal
+// auth); any UI that wants to render these photos must add one that signs
+// with the service-role key, mirroring server/utils/complaintPhotos.ts.
+const COMPLAINT_PHOTO_PUBLIC_URL_MARKER = '/object/public/complaint-photos/';
+
+function complaintPhotoStoragePath(value: string): string {
+  const idx = value.indexOf(COMPLAINT_PHOTO_PUBLIC_URL_MARKER);
+  if (idx === -1) return value;
+  const rawPath = value.slice(idx + COMPLAINT_PHOTO_PUBLIC_URL_MARKER.length);
+  try {
+    return decodeURIComponent(rawPath);
+  } catch {
+    return rawPath;
+  }
+}
+
 export async function getOrderComplaint(
   orderId: string,
   merchantId: string,
@@ -460,7 +487,11 @@ export async function getOrderComplaint(
     .eq('order_id', orderId)
     .eq('merchant_id', merchantId)
     .maybeSingle();
-  return (data as ComplaintRow | null) ?? null;
+  if (!data) return null;
+  const row = data as ComplaintRow;
+  // Raw bucket-relative paths — NOT signed URLs. See the comment above:
+  // the client has no RLS access to sign these anymore.
+  return { ...row, photo_urls: (row.photo_urls ?? []).map(complaintPhotoStoragePath) };
 }
 
 // DB-1 (2026-07-10): subscribeToOrders — the persistent Supabase Realtime

@@ -8,6 +8,11 @@ import { creditWalletForRefund } from './wallet';
 import { requireAuthenticatedAppUser, requireVerifiedAtMerchant } from '../utils/appUserAuth';
 import { requireNooksInternalRequest } from '../utils/nooksInternal';
 import { sendPushScoped } from '../utils/push';
+import {
+  COMPLAINT_PHOTO_SIGNED_URL_TTL_SECONDS,
+  COMPLAINT_PHOTOS_BUCKET,
+  signComplaintPhotoUrls,
+} from '../utils/complaintPhotos';
 
 export const complaintsRouter = Router();
 
@@ -16,6 +21,14 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const supabaseAdmin =
   SUPABASE_URL && SUPABASE_SERVICE_KEY ? createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY) : null;
+
+// Bucket is private (PDPL) — every response that carries photo_urls must
+// sign them first. See utils/complaintPhotos.ts.
+function signPhotoUrls(photoUrls: string[] | null | undefined): Promise<string[]> {
+  return signComplaintPhotoUrls(photoUrls, (paths, ttl) =>
+    supabaseAdmin!.storage.from(COMPLAINT_PHOTOS_BUCKET).createSignedUrls(paths, ttl),
+  );
+}
 
 const COMPLAINT_WINDOW_HOURS = 24;
 const ABUSE_THRESHOLD_PERCENT = 30;
@@ -144,7 +157,8 @@ complaintsRouter.post('/:orderId', async (req, res) => {
     // TODO: Push notification to merchant (needs merchant push token infrastructure)
     console.log(`[Complaints] New complaint ${complaint.id} for order ${orderId}`, { flagged });
 
-    res.json({ success: true, complaint });
+    const signedPhotoUrls = await signPhotoUrls(complaint.photo_urls);
+    res.json({ success: true, complaint: { ...complaint, photo_urls: signedPhotoUrls } });
   } catch (err: any) {
     console.error('[Complaints] Submit error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to submit complaint' });
@@ -176,7 +190,11 @@ complaintsRouter.get('/', async (req, res) => {
     const { data, error } = await query.limit(100);
     if (error) return res.status(500).json({ error: error.message });
 
-    res.json({ complaints: data ?? [] });
+    const complaints = await Promise.all(
+      (data ?? []).map(async (c: any) => ({ ...c, photo_urls: await signPhotoUrls(c.photo_urls) })),
+    );
+
+    res.json({ complaints });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Failed to list complaints' });
   }
@@ -232,7 +250,7 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
           merchantId: order.merchant_id,
           title: 'Complaint Update',
           body: `Your complaint for order #${complaint.order_id.replace('order-', '')} was not approved. Please contact support if you disagree.`,
-          channel: 'marketing',
+          channel: 'orders',
         });
       }
 
@@ -347,7 +365,7 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
         merchantId: order.merchant_id,
         title: 'Refund Approved',
         body: `Your complaint for order #${complaint.order_id.replace('order-', '')} has been approved. A refund of ${refundSAR} SAR has been initiated.`,
-        channel: 'marketing',
+        channel: 'orders',
       });
     }
 
@@ -360,7 +378,15 @@ complaintsRouter.post('/:complaintId/resolve', async (req, res) => {
 
 /** POST /api/complaints/upload – Upload complaint photo (base64 payload)
  * Body: { image: "data:image/jpeg;base64,..." OR raw base64, filename?: "photo.jpg" }
- * Returns: { url: "https://..." } - public Supabase storage URL
+ * Returns: { path: "complaints/<userId>/<file>", previewUrl: string | null }
+ * `path` is the bucket-relative storage path (NOT a public URL — the
+ * complaint-photos bucket is private and has no client-readable RLS
+ * policy, see 20260724140000_complaint_photos_rls.sql). Callers should
+ * submit `path` back as the photo_urls entry; read paths sign it into a
+ * short-lived URL on the way out (see utils/complaintPhotos.ts).
+ * `previewUrl` is a short-lived signed URL for the object just uploaded,
+ * generated here with the service-role key so the client never needs
+ * (and can no longer get) a client-side signed URL of its own.
  */
 complaintsRouter.post('/upload', async (req, res) => {
   try {
@@ -399,11 +425,14 @@ complaintsRouter.post('/upload', async (req, res) => {
       return res.status(500).json({ error: 'Failed to upload image' });
     }
 
-    const { data: publicUrl } = supabaseAdmin.storage
-      .from('complaint-photos')
-      .getPublicUrl(storagePath);
+    const { data: signedData, error: signError } = await supabaseAdmin.storage
+      .from(COMPLAINT_PHOTOS_BUCKET)
+      .createSignedUrl(storagePath, COMPLAINT_PHOTO_SIGNED_URL_TTL_SECONDS);
+    if (signError) {
+      console.error('[Complaints] Preview sign error:', signError.message);
+    }
 
-    res.json({ url: publicUrl.publicUrl });
+    res.json({ path: storagePath, previewUrl: signedData?.signedUrl ?? null });
   } catch (err: any) {
     console.error('[Complaints] Upload error:', err?.message);
     res.status(500).json({ error: err?.message || 'Failed to upload' });

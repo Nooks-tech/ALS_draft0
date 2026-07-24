@@ -4,6 +4,7 @@ import { openMapToLocation } from '../src/lib/openMaps';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Modal, Pressable, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { File } from 'expo-file-system';
 import { useTranslation } from 'react-i18next';
 import { useOrders } from '../src/context/OrdersContext';
 import { useCart } from '../src/context/CartContext';
@@ -15,6 +16,7 @@ import { fetchDriverLocation } from '../src/api/driverLocation';
 import { PriceWithSymbol } from '../src/components/common/PriceWithSymbol';
 import { useMerchantBranding } from '../src/context/MerchantBrandingContext';
 import { supabase } from '../src/api/supabase';
+import { api } from '../src/api/client';
 
 const COMPLAINT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const STORE_COMPLAINT_TYPES = [
@@ -73,7 +75,11 @@ export default function OrderDetailModal() {
   const [showComplaintModal, setShowComplaintModal] = useState(false);
   const [complaintType, setComplaintType] = useState<string>('missing_item');
   const [complaintDescription, setComplaintDescription] = useState('');
-  const [complaintPhotos, setComplaintPhotos] = useState<string[]>([]);
+  // complaint-photos bucket is private (PDPL) — `path` is the bucket-relative
+  // storage path returned by the server upload endpoint and is the value
+  // submitted with the complaint; `previewUrl` is a short-lived signed URL
+  // for the local thumbnail only.
+  const [complaintPhotos, setComplaintPhotos] = useState<{ path: string; previewUrl: string | null }[]>([]);
   const [selectedItems, setSelectedItems] = useState<Record<string, boolean>>({});
   const [submittingComplaint, setSubmittingComplaint] = useState(false);
   const [existingComplaint, setExistingComplaint] = useState<ComplaintRow | null>(null);
@@ -219,33 +225,23 @@ export default function OrderDetailModal() {
   }, [order, setCartFromOrder, router]);
 
   const uploadPhoto = async (uri: string) => {
-    if (!supabase) return;
     try {
       const ext = uri.split('.').pop()?.split('?')[0] || 'jpg';
-      const fileName = `${orderId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const formData = new FormData();
-      formData.append('', {
-        uri,
-        name: fileName.split('/').pop(),
-        type: `image/${ext}` } as any);
-      const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-      const session = (await supabase.auth.getSession()).data.session;
-      const token = session?.access_token;
-      const uploadRes = await fetch(
-        `${supabaseUrl}/storage/v1/object/complaint-photos/${fileName}`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'x-upsert': 'true' },
-          body: formData }
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const base64 = await new File(uri).base64();
+      // Server uploads with the service-role key (bucket is private — PDPL,
+      // and the client has no RLS read access to this bucket at all, see
+      // 20260724140000_complaint_photos_rls.sql) and hands back both the
+      // bucket-relative path AND a server-signed preview URL; see
+      // server/routes/complaints.ts POST /upload. `path` is what gets
+      // submitted with the complaint — read paths (server/utils/complaintPhotos.ts)
+      // sign it again on the way out.
+      const { path, previewUrl } = await api.post<{ path: string; previewUrl: string | null }>(
+        '/api/complaints/upload',
+        { image: `data:image/${ext};base64,${base64}`, filename },
       );
-      if (uploadRes.ok) {
-        const { data: urlData } = supabase.storage.from('complaint-photos').getPublicUrl(fileName);
-        if (urlData?.publicUrl) {
-          setComplaintPhotos((prev) => [...prev, urlData.publicUrl]);
-        }
-      }
+      if (!path) return;
+      setComplaintPhotos((prev) => [...prev, { path, previewUrl: previewUrl ?? null }]);
     } catch (err) {
       console.warn('[Complaint] Photo upload failed:', err);
     }
@@ -296,7 +292,7 @@ export default function OrderDetailModal() {
       const result = await submitComplaint(orderId, {
         complaint_type: complaintType as any,
         description: complaintDescription || undefined,
-        photo_urls: complaintPhotos.length > 0 ? complaintPhotos : undefined,
+        photo_urls: complaintPhotos.length > 0 ? complaintPhotos.map((p) => p.path) : undefined,
         items: affectedItems.length > 0 ? affectedItems : undefined,
         customer_id: user.id });
       if (result.success) {
@@ -898,9 +894,9 @@ export default function OrderDetailModal() {
               {/* Photos */}
               <Text className="font-bold text-slate-700 mb-2">{isArabic ? 'الصور (اختياري، بحد أقصى 3)' : 'Photos (optional, max 3)'}</Text>
               <View className="flex-row gap-2 mb-4">
-                {complaintPhotos.map((url, i) => (
+                {complaintPhotos.map((photo, i) => (
                   <View key={i} className="relative">
-                    <Image source={{ uri: url }} className="w-20 h-20 rounded-xl" />
+                    <Image source={{ uri: photo.previewUrl ?? undefined }} className="w-20 h-20 rounded-xl bg-slate-200" />
                     <TouchableOpacity
                       onPress={() => setComplaintPhotos((p) => p.filter((_, idx) => idx !== i))}
                       className="absolute -top-1 -right-1 bg-red-500 rounded-full w-5 h-5 items-center justify-center"

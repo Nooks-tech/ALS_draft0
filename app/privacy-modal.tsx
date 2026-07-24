@@ -11,7 +11,7 @@ export default function PrivacyModal() {
   const isArabic = i18n.language === 'ar';
   const brandName = appName || cafeName || 'the app';
   const brandNameAr = appName || cafeName || 'التطبيق';
-  const email = contactEmail || 'support@nooks.sa';
+  const email = contactEmail || 'team@nooks.space';
 
   return (
     <View className="flex-1">
@@ -40,7 +40,7 @@ export default function PrivacyModal() {
           {isArabic ? (
             <>
               <Text className="text-slate-600 leading-6 mb-4">
-                <Text className="font-bold text-slate-800">{'سارية من ١٠ مايو ٢٠٢٦ · النسخة ٢٫٠'}</Text>
+                <Text className="font-bold text-slate-800">{'سارية من ٢٤ يوليو ٢٠٢٦ · النسخة ٢٫١'}</Text>
                 {'\n\n'}
                 {'يوضّح هذا الإشعار كيفية معالجة بياناتك الشخصية عند استخدامك تطبيق '}
                 <Text className="font-bold text-slate-800">{brandNameAr}</Text>
@@ -51,7 +51,7 @@ export default function PrivacyModal() {
                 {' بصفتها '}
                 <Text className="font-bold text-slate-800">{'المتحكم في البيانات (Data Controller)'}</Text>
                 {'، بينما تعمل '}
-                <Text className="font-bold text-slate-800">{'مؤسسة نُوكس لتقنية المعلومات'}</Text>
+                <Text className="font-bold text-slate-800">{'مؤسسة نوكس لتقنيات البرمجيات'}</Text>
                 {' بصفتها '}
                 <Text className="font-bold text-slate-800">{'المعالج (Data Processor)'}</Text>
                 {' الذي يشغّل البنية التقنية للتطبيق نيابةً عن التاجر بموجب اتفاقية معالجة بيانات قياسية.'}
@@ -130,9 +130,10 @@ export default function PrivacyModal() {
                 {'• تشفير '}
                 <Text className="font-bold text-slate-800">{'TLS 1.2+'}</Text>
                 {' لجميع الاتصالات بين التطبيق وخوادمنا.\n'}
+                {'• تُخزَّن رموز الدفع وبيانات الاعتماد الحساسة (Tokens/Credentials) مُشفَّرة داخل قاعدة البيانات (Encryption at Rest).\n'}
                 {'• تُحفظ رموز الجلسة في '}
                 <Text className="font-bold text-slate-800">{'iOS Keychain / Android Keystore'}</Text>
-                {' — لا تُخزّن في الذاكرة العادية.\n'}
+                {' على جهازك — لا تُخزّن في الذاكرة العادية.\n'}
                 {'• '}
                 <Text className="font-bold text-slate-800">{'لا نخزّن رقم البطاقة الكامل أبداً'}</Text>
                 {' — جميع المدفوعات تُرمَّز بالكامل عبر Moyasar وفق معيار PCI-DSS.\n'}
@@ -180,7 +181,7 @@ export default function PrivacyModal() {
 
               <Text className="text-slate-800 font-bold mb-2">{'٨. القاصرون'}</Text>
               <Text className="text-slate-600 leading-6 mb-4">
-                {'الخدمة غير موجّهة للأشخاص دون سن ١٨ عاماً. إذا اكتشفنا جمع بيانات لقاصر دون موافقة وليّ الأمر، نحذفها فوراً. على وليّ الأمر الإشراف على استخدام أبنائه للتطبيق.'}
+                {'يجب ألا يقل عمر مستخدم الخدمة عن ١٨ عاماً، أو أن يستخدم الخدمة تحت إشراف وليّ أمر وبموافقته. إذا اكتشفنا جمع بيانات لقاصر دون إشراف وليّ الأمر وموافقته، نحذفها فوراً.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'٩. التحليلات والتتبّع'}</Text>
@@ -199,7 +200,7 @@ export default function PrivacyModal() {
 
               <Text className="text-slate-800 font-bold mb-2">{'١١. تحديثات السياسة'}</Text>
               <Text className="text-slate-600 leading-6 mb-4">
-                {'يحق لنا تحديث هذه السياسة في أي وقت. سنُخطرك بالتغييرات الجوهرية عبر البريد الإلكتروني وبانر داخل التطبيق قبل سريانها بفترة معقولة. استمرارك في استخدام التطبيق بعد التحديث يُعدّ موافقة على السياسة المعدّلة.'}
+                {'يحق لنا تحديث هذه السياسة. سنُخطرك بالتغييرات الجوهرية عبر البريد الإلكتروني وبانر داخل التطبيق قبل ١٤ يوماً على الأقل من سريانها. استمرارك في استخدام التطبيق بعد سريان التحديث يُعدّ موافقة على السياسة المعدّلة.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'١٢. التواصل والشكاوى'}</Text>
@@ -214,16 +215,23 @@ export default function PrivacyModal() {
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'١٣. القانون الواجب التطبيق'}</Text>
-              <Text className="text-slate-600 leading-6 mb-8">
+              <Text className="text-slate-600 leading-6 mb-4">
                 {'تخضع هذه السياسة لأنظمة المملكة العربية السعودية. عند التعارض بين النسخة العربية والإنجليزية، '}
                 <Text className="font-bold text-slate-800">{'تسود النسخة العربية'}</Text>
                 {'.'}
+              </Text>
+
+              <Text className="text-slate-800 font-bold mb-2">{'١٤. الهوية الموحّدة عبر التجّار'}</Text>
+              <Text className="text-slate-600 leading-6 mb-8">
+                {'تعتمد نُوكس هوية عميل واحدة مُشتقّة من رقم جوالك تعمل عبر جميع المتاجر المشاركة على منصة نُوكس، بحيث تستمر جلسة تسجيل دخولك عند التنقّل بين تطبيقات تجّار مختلفين (استمرارية تسجيل الدخول). مع ذلك، يبقى ملفك الشخصي وبياناتك الخاصة بكل تاجر (الطلبات، المحفظة، نقاط الولاء) '}
+                <Text className="font-bold text-slate-800">{'منفصلاً تماماً'}</Text>
+                {' عن باقي التجّار — كل تاجر يرى فقط بيانات عملائه لديه.'}
               </Text>
             </>
           ) : (
             <>
               <Text className="text-slate-600 leading-6 mb-4">
-                <Text className="font-bold text-slate-800">{'Effective: 10 May 2026 · Version 2.0'}</Text>
+                <Text className="font-bold text-slate-800">{'Effective: 24 July 2026 · Version 2.1'}</Text>
                 {'\n\n'}
                 {'This notice explains how your personal data is processed when you use the '}
                 <Text className="font-bold text-slate-800">{brandName}</Text>
@@ -234,7 +242,7 @@ export default function PrivacyModal() {
                 {' acts as the '}
                 <Text className="font-bold text-slate-800">{'Data Controller'}</Text>
                 {', while '}
-                <Text className="font-bold text-slate-800">{'Nooks Information Technology Est.'}</Text>
+                <Text className="font-bold text-slate-800">{'Nooks Software Technologies Est.'}</Text>
                 {' acts as the '}
                 <Text className="font-bold text-slate-800">{'Data Processor'}</Text>
                 {' running the technical infrastructure on the merchant\'s behalf under a standard data processing addendum.'}
@@ -313,9 +321,10 @@ export default function PrivacyModal() {
                 {'• '}
                 <Text className="font-bold text-slate-800">{'TLS 1.2+'}</Text>
                 {' encryption for all communications between the app and our servers.\n'}
+                {'• Payment tokens and other sensitive credentials are encrypted at rest in the database.\n'}
                 {'• Session tokens are stored in '}
                 <Text className="font-bold text-slate-800">{'iOS Keychain / Android Keystore'}</Text>
-                {' — never in plain memory.\n'}
+                {' on your device — never in plain memory.\n'}
                 {'• '}
                 <Text className="font-bold text-slate-800">{'We never store the full card PAN'}</Text>
                 {' — all payments are tokenized end-to-end via Moyasar per PCI-DSS.\n'}
@@ -363,7 +372,7 @@ export default function PrivacyModal() {
 
               <Text className="text-slate-800 font-bold mb-2">{'8. Minors'}</Text>
               <Text className="text-slate-600 leading-6 mb-4">
-                {'The service is not directed at individuals under 18. If we discover we have collected data on a minor without guardian consent, we will delete it immediately. Guardians are responsible for supervising their children\'s use of the app.'}
+                {'Users of the service must be at least 18 years old, or use the service under the supervision and consent of a legal guardian. If we discover we have collected data on a minor without a guardian\'s supervision and consent, we will delete it immediately.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'9. Analytics & Tracking'}</Text>
@@ -382,7 +391,7 @@ export default function PrivacyModal() {
 
               <Text className="text-slate-800 font-bold mb-2">{'11. Policy Updates'}</Text>
               <Text className="text-slate-600 leading-6 mb-4">
-                {'We reserve the right to update this notice at any time. We will notify you of material changes via email and an in-app banner before they take effect. Continued use after an update constitutes acceptance of the revised notice.'}
+                {'We reserve the right to update this notice. We will notify you of material changes via email and an in-app banner at least 14 days before they take effect. Continued use after an update takes effect constitutes acceptance of the revised notice.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'12. Contact & Complaints'}</Text>
@@ -397,10 +406,17 @@ export default function PrivacyModal() {
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'13. Governing Law'}</Text>
-              <Text className="text-slate-600 leading-6 mb-8">
+              <Text className="text-slate-600 leading-6 mb-4">
                 {'This Policy is governed by the laws of the Kingdom of Saudi Arabia. In case of any conflict between the Arabic and English versions, '}
                 <Text className="font-bold text-slate-800">{'the Arabic version prevails'}</Text>
                 {'.'}
+              </Text>
+
+              <Text className="text-slate-800 font-bold mb-2">{'14. Cross-Merchant Account Identity'}</Text>
+              <Text className="text-slate-600 leading-6 mb-8">
+                {'Nooks uses a single, phone-number-based customer identity that works across all merchants on the Nooks platform, so your login session carries over as you move between different merchants\' apps (login continuity). However, your profile and merchant-specific data (orders, wallet, loyalty points) remain '}
+                <Text className="font-bold text-slate-800">{'fully separate'}</Text>
+                {' per merchant — each merchant can only see the data of its own customers.'}
               </Text>
             </>
           )}

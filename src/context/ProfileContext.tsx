@@ -17,7 +17,6 @@ export type ProfileData = {
   fullName: string;
   email: string;
   phone: string;
-  dateOfBirth: string;
   language: 'en' | 'ar' | '';
   marketingOptIn: boolean;
 };
@@ -35,7 +34,6 @@ const defaultProfile: ProfileData = {
   fullName: '',
   email: '',
   phone: '',
-  dateOfBirth: '',
   language: '',
   marketingOptIn: false,
 };
@@ -50,7 +48,6 @@ function rowToProfile(row: ProfileRow | null, phone: string): ProfileData {
     email: row?.email ?? '',
     // Phone is identity — global. Comes from auth user, not per-merchant.
     phone,
-    dateOfBirth: '',
     language: row?.language ?? '',
     marketingOptIn: row?.marketing_opt_in ?? false,
   };

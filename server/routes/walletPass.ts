@@ -1100,13 +1100,21 @@ walletPassRouter.get(
       // mobile number for lookup, so the name field is decorative —
       // dropping it keeps the QR ASCII-clean and renders reliably for
       // every merchant regardless of language.
-      const customerPhone = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
-      const barcodeMessage = customerPhone
-        ? JSON.stringify({
-            customer_mobile_number: customerPhone,
-            mobile_country_code: 966,
-          })
-        : memberProfile.member_code; // Fallback if no phone number
+      //
+      // PDPL: the customer_mobile_number slot used to hold the real
+      // phone digits — anyone who scanned the pass could read the
+      // customer's mobile number. Foodics' adapter still requires this
+      // exact JSON shape to scan the pass at all, so we keep the
+      // envelope but put the opaque loyalty member_code in that slot
+      // instead. adapter/v1/reward + adapter/v1/redeem (nooksweb) try a
+      // member_code match first and fall back to the legacy phone match
+      // for passes issued before this change. mobile_country_code is
+      // left at 966 purely for schema shape — it's not read as a real
+      // country code anymore.
+      const barcodeMessage = JSON.stringify({
+        customer_mobile_number: memberProfile.member_code,
+        mobile_country_code: 966,
+      });
 
       const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);
       const solidStripPng = createStripPng(750, 246, bgR, bgG, bgB);
@@ -1779,13 +1787,14 @@ walletPassRouter.get('/wallet-pass', async (req, res) => {
     // iso-8859-1 messageEncoding can't represent Arabic chars and
     // Apple silently fails to render the QR. See the duplicate logic
     // above for the full explanation.
-    const customerPhone2 = (memberProfile.phone_number || '').replace(/^\+?966/, '').replace(/^0/, '').trim();
-    const barcodeMessage = customerPhone2
-      ? JSON.stringify({
-          customer_mobile_number: customerPhone2,
-          mobile_country_code: 966,
-        })
-      : memberProfile.member_code;
+    //
+    // PDPL: customer_mobile_number carries the opaque loyalty
+    // member_code, not the real phone number — see the duplicate logic
+    // above for the full rationale.
+    const barcodeMessage = JSON.stringify({
+      customer_mobile_number: memberProfile.member_code,
+      mobile_country_code: 966,
+    });
 
     const bgRgb = hexToRgb(bgColor);
     const { r: bgR, g: bgG, b: bgB } = hexToRgbValues(bgColor);

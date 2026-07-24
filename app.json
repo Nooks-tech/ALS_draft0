@@ -53,7 +53,6 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find nearby branches and set delivery addresses.",
           "locationWhenInUsePermission": "Allow $(PRODUCT_NAME) to use your location to find nearby branches and set delivery addresses."
         }
       ],

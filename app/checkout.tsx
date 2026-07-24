@@ -2497,7 +2497,7 @@ export default function CheckoutScreen() {
           )}
           </View>
         </View>
-        <TouchableOpacity onPress={() => router.push('/terms-modal')} className="self-center">
+        <TouchableOpacity onPress={() => router.push('/refund-modal')} className="self-center">
           <Text className="text-slate-500 text-sm underline">{isArabic ? 'سياسة الإلغاء' : 'Cancellation Policy'}</Text>
         </TouchableOpacity>
       </View>

@@ -76,6 +76,7 @@ export default function PolaroidMoreScreen() {
     { key: 'about', label: isArabic ? 'عن التطبيق' : 'About', onPress: () => router.push('/about-modal') },
     { key: 'privacy', label: isArabic ? 'سياسة الخصوصية' : 'Privacy', onPress: () => router.push('/privacy-modal') },
     { key: 'terms', label: isArabic ? 'الشروط' : 'Terms', onPress: () => router.push('/terms-modal') },
+    { key: 'refund', label: isArabic ? 'سياسة الاسترجاع والإلغاء' : 'Refund & Cancellation', onPress: () => router.push('/refund-modal') },
     { key: 'logout', label: isArabic ? 'تسجيل الخروج' : 'Log Out', onPress: confirmLogout, destructive: true },
   ];
 

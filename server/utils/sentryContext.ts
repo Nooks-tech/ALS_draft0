@@ -56,6 +56,56 @@ const URL_PARAM_DENY_LIST = new Set([
   'secret',
 ]);
 
+// 2026-07-24 legal review, Tier 1 finding #1 / Tier 1 finding #2: the
+// original deny lists above only strip secrets (auth headers, OTP
+// codes), so request bodies carrying customer names/phones/emails were
+// shipping to Sentry (US) unredacted — a PDPL cross-border-transfer
+// problem on top of the "Sentry anonymized" claim in the privacy
+// policy being false. These widen coverage to personal data. Field
+// names are matched case-insensitively and at any nesting depth.
+const PII_KEY_DENY_LIST = new Set([
+  'name',
+  'full_name',
+  'phone',
+  'phone_number',
+  'mobile',
+  'email',
+  'address',
+  'delivery_address',
+]);
+
+// Saudi mobile numbers, international (+9665XXXXXXXX / 9665XXXXXXXX) and
+// local (05XXXXXXXX) formats. Matched inside free-text string values too
+// (e.g. a note field that pastes a phone number), not just fields named
+// in PII_KEY_DENY_LIST above.
+const SA_PHONE_PATTERNS = [/\+?9665\d{8}/g, /\b05\d{8}\b/g];
+const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+
+function redactPiiPatterns(value: string): string {
+  let out = value;
+  for (const pattern of SA_PHONE_PATTERNS) out = out.replace(pattern, '[redacted]');
+  out = out.replace(EMAIL_PATTERN, '[redacted]');
+  return out;
+}
+
+// Like redactDeep above, but for PII rather than secrets: redacts whole
+// values under PII_KEY_DENY_LIST keys, and additionally scans every
+// string leaf (regardless of key) for embedded phone numbers / emails.
+function redactPiiDeep(value: unknown, depth = 0): unknown {
+  if (depth > 6 || value == null) return value;
+  if (typeof value === 'string') return redactPiiPatterns(value);
+  if (Array.isArray(value)) return value.map((v) => redactPiiDeep(v, depth + 1));
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (PII_KEY_DENY_LIST.has(k.toLowerCase())) out[k] = '[redacted]';
+      else out[k] = redactPiiDeep(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 // Redacts denylisted query params from a URL string, returning it
 // unchanged if nothing matched. Handles relative URLs (e.g.
 // "/api/kiosk/pending-order?token=...") by returning a relative
@@ -100,8 +150,13 @@ function redactDeep(value: unknown, deny: Set<string>, depth = 0): unknown {
 }
 
 /**
- * Scrub a Sentry event before send. Strips secret-bearing headers and
- * body fields. Mirror of nooksweb/lib/sentry-scrub.ts.
+ * Scrub a Sentry event before send. Strips secret-bearing headers/body
+ * fields (auth tokens, OTP codes) AND personal data (names, phones,
+ * emails, addresses — by field name and, for phones/emails, by pattern
+ * anywhere in a string value) from request bodies, query strings, and
+ * breadcrumbs. Started as a mirror of nooksweb/lib/sentry-scrub.ts; the
+ * PII redaction below goes further than that file (see PII_KEY_DENY_LIST
+ * above, added 2026-07-24).
  */
 export function scrubSentryEvent(event: Sentry.Event): Sentry.Event | null {
   try {
@@ -112,9 +167,13 @@ export function scrubSentryEvent(event: Sentry.Event): Sentry.Event | null {
           event.request.query_string as unknown as Record<string, unknown>,
           BODY_DENY_KEYS,
         );
+        event.request.query_string = redactPiiDeep(
+          event.request.query_string,
+        ) as typeof event.request.query_string;
       }
       if (event.request.data !== undefined) {
         event.request.data = redactDeep(event.request.data, BODY_DENY_KEYS) as typeof event.request.data;
+        event.request.data = redactPiiDeep(event.request.data) as typeof event.request.data;
       }
       if (typeof event.request.url === 'string') {
         event.request.url = scrubUrlString(event.request.url);
@@ -125,8 +184,14 @@ export function scrubSentryEvent(event: Sentry.Event): Sentry.Event | null {
         if (bc.data && typeof bc.data === 'object') {
           const data = bc.data as Record<string, unknown>;
           if (data.headers) redactStringMap(data.headers as Record<string, unknown>, HEADER_DENY_LIST);
-          if (data.body !== undefined) data.body = redactDeep(data.body, BODY_DENY_KEYS);
+          if (data.body !== undefined) {
+            data.body = redactDeep(data.body, BODY_DENY_KEYS);
+            data.body = redactPiiDeep(data.body);
+          }
           if (typeof data.url === 'string') data.url = scrubUrlString(data.url);
+        }
+        if (typeof bc.message === 'string') {
+          bc.message = redactPiiPatterns(bc.message);
         }
         return bc;
       });

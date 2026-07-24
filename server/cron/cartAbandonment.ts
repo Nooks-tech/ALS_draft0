@@ -8,7 +8,10 @@
  *
  *   updated_at < now() - 15min AND notified_at IS NULL
  *     → send a merchant-branded "Don't forget your cart 😉" push,
- *       stamp notified_at so it doesn't repeat.
+ *       stamp notified_at so it doesn't repeat. This is marketing
+ *       content, so it's gated on customer_merchant_profiles.
+ *       marketing_opt_in = true (privacy-policy promise, 2026-07-24
+ *       legal review) — see fetchMarketingOptedInSet below.
  *
  *   updated_at < now() - 45min
  *     → move the row into abandoned_carts (recovered_at NULL),
@@ -70,6 +73,45 @@ type CartRow = {
   updated_at: string;
 };
 
+/**
+ * Marketing-consent gate for cart-abandonment nudges — these pushes are
+ * promotional content ("Don't forget your cart"), and the privacy policy
+ * promises marketing pushes only go out with prior opt-in consent
+ * (2026-07-24 legal review, Tier 1 finding #1: SDAIA has already fined
+ * companies over exactly this gap). Source of truth is
+ * customer_merchant_profiles.marketing_opt_in (per merchant+customer;
+ * see supabase/migrations/20260521000002_customer_merchant_profiles.sql)
+ * — NOT NULL DEFAULT false, so a customer with no profile row yet is
+ * correctly treated as not opted in.
+ *
+ * Batched the same way as the cooldown lookup below (one query for the
+ * whole tick's pairs, not N round-trips) — but unlike the cooldown
+ * lookup this FAILS CLOSED: a query error means we can't positively
+ * confirm consent, so nothing in this batch is treated as opted in
+ * rather than defaulting to "send anyway".
+ */
+export async function fetchMarketingOptedInSet(
+  admin: NonNullable<typeof supabaseAdmin>,
+  pairs: Array<{ m: string; c: string }>,
+): Promise<Set<string>> {
+  const optedIn = new Set<string>();
+  if (pairs.length === 0) return optedIn;
+  const { data: profiles, error } = await admin
+    .from('customer_merchant_profiles')
+    .select('merchant_id, customer_id, marketing_opt_in')
+    .in('merchant_id', Array.from(new Set(pairs.map((p) => p.m))))
+    .in('customer_id', Array.from(new Set(pairs.map((p) => p.c))))
+    .eq('marketing_opt_in', true);
+  if (error) {
+    console.warn('[cartAbandonment] marketing opt-in lookup failed (assuming none opted in):', error.message);
+    return optedIn;
+  }
+  for (const row of profiles ?? []) {
+    optedIn.add(`${row.merchant_id}:${row.customer_id}`);
+  }
+  return optedIn;
+}
+
 async function processNotifyBatch() {
   if (!supabaseAdmin) return 0;
   const cutoff = new Date(Date.now() - NOTIFY_AFTER_MS).toISOString();
@@ -97,6 +139,7 @@ async function processNotifyBatch() {
   // cron doesn't keep re-scanning the same row every tick) but skip
   // the actual push.
   const pairs = (data ?? []).map((r) => ({ m: r.merchant_id, c: r.customer_id }));
+  const optedIn = await fetchMarketingOptedInSet(supabaseAdmin, pairs);
   const cooldownCutoffIso = new Date(Date.now() - NOTIFY_COOLDOWN_MS).toISOString();
   const inCooldown = new Set<string>();
   if (pairs.length > 0) {
@@ -129,6 +172,34 @@ async function processNotifyBatch() {
         .delete()
         .eq('merchant_id', row.merchant_id)
         .eq('customer_id', row.customer_id);
+      continue;
+    }
+
+    // Consent gate: cart-abandonment nudges are marketing content, so a
+    // (merchant, customer) pair without a confirmed marketing_opt_in=true
+    // row never gets pushed. Still stamp notified_at (claim) so the cron
+    // stops re-scanning this row every tick, and audit separately from
+    // the cooldown suppression below so "why didn't this nudge fire?"
+    // distinguishes consent from throttling.
+    if (!optedIn.has(`${row.merchant_id}:${row.customer_id}`)) {
+      const { data: optOutClaimed, error: optOutStampErr } = await supabaseAdmin
+        .from('customer_carts')
+        .update({ notified_at: new Date().toISOString() })
+        .eq('merchant_id', row.merchant_id)
+        .eq('customer_id', row.customer_id)
+        .is('notified_at', null)
+        .select('customer_id');
+      if (!optOutStampErr && optOutClaimed && optOutClaimed.length > 0) {
+        await supabaseAdmin.from('audit_log').insert({
+          merchant_id: row.merchant_id,
+          action: 'cart.notification_suppressed_no_marketing_consent',
+          payload: {
+            customer_id: row.customer_id,
+            item_count: itemCount,
+            subtotal_sar: row.subtotal_sar ?? 0,
+          },
+        });
+      }
       continue;
     }
 

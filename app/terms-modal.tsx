@@ -11,7 +11,7 @@ export default function TermsModal() {
   const isArabic = i18n.language === 'ar';
   const brandName = appName || cafeName || 'the app';
   const brandNameAr = appName || cafeName || 'التطبيق';
-  const email = contactEmail || 'support@nooks.sa';
+  const email = contactEmail || 'team@nooks.space';
 
   return (
     <View className="flex-1">
@@ -40,12 +40,12 @@ export default function TermsModal() {
           {isArabic ? (
             <>
               <Text className="text-slate-600 leading-6 mb-4">
-                <Text className="font-bold text-slate-800">{'سارية من ١٠ مايو ٢٠٢٦ · النسخة ٢٫٠'}</Text>
+                <Text className="font-bold text-slate-800">{'سارية من ٢٤ يوليو ٢٠٢٦ · النسخة ٢٫١'}</Text>
                 {'\n\n'}
                 {'مرحباً بك في تطبيق '}
                 <Text className="font-bold text-slate-800">{brandNameAr}</Text>
                 {'. باستخدامك للتطبيق فإنك توافق على هذه الشروط بالكامل. اقرأها بعناية — فهي تحدد بوضوح أن العقد التجاري قائم بينك وبين التاجر، وأن '}
-                <Text className="font-bold text-slate-800">{'مؤسسة نُوكس لتقنية المعلومات'}</Text>
+                <Text className="font-bold text-slate-800">{'مؤسسة نوكس لتقنيات البرمجيات'}</Text>
                 {' هي مزوّد البرمجيات فقط، كما تتضمن سقفاً لمسؤولية نُوكس وقائمة موسّعة بما لا تتحمّله من مسؤولية.'}
               </Text>
 
@@ -235,12 +235,16 @@ export default function TermsModal() {
               <Text className="text-slate-600 leading-6 mb-4">
                 {'• يحق لك حذف حسابك في أي وقت من إعدادات التطبيق.\n'}
                 {'• يحق لنا إنهاء حسابك أو تعليقه فوراً عند: الاحتيال، الإساءة المتكررة، خرق هذه الشروط، أو طلب رسمي من جهة حكومية.\n'}
-                {'• عند الإنهاء: تُحذف بياناتك الشخصية وفق سياسة الخصوصية، ويُفقد رصيد المحفظة ونقاط الولاء.'}
+                {'• عند الإنهاء: تُحذف بياناتك الشخصية وفق سياسة الخصوصية.\n'}
+                {'• '}
+                <Text className="font-bold text-slate-800">{'رصيد المحفظة الناتج عن عمليات شحن مدفوعة لا يُفقد تلقائياً.'}</Text>
+                {' عند إنهاء نُوكس أو التاجر لحسابك دون تقصير منك، وحيثما يُلزم النظام السعودي بردّ الأرصدة المدفوعة، يُرَدّ أي رصيد غير مستخدَم من الشحن المدفوع إلى وسيلة الدفع الأصلية أو يُحفَظ بناءً على طلبك.\n'}
+                {'• يبقى الرصيد الترويجي والاسترداد النقدي (Cashback) ونقاط/طوابع الولاء قابلة للفقد عند الإنهاء.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'١٥. تعديل الشروط'}</Text>
               <Text className="text-slate-600 leading-6 mb-4">
-                {'يحق لنا تعديل هذه الشروط في أي وقت. سيتم إخطارك بالتغييرات الجوهرية مُسبقاً عبر البريد الإلكتروني وبانر داخل التطبيق. استمرارك في استخدام التطبيق بعد التعديل يُعدّ موافقةً على الشروط المحدّثة.'}
+                {'يحق لنا تعديل هذه الشروط. سيتم إخطارك بالتغييرات الجوهرية قبل ١٤ يوماً على الأقل من سريانها، عبر البريد الإلكتروني وبانر داخل التطبيق. استمرارك في استخدام التطبيق بعد سريان التعديل يُعدّ موافقةً على الشروط المحدّثة.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'١٦. القانون والاختصاص'}</Text>
@@ -264,12 +268,12 @@ export default function TermsModal() {
           ) : (
             <>
               <Text className="text-slate-600 leading-6 mb-4">
-                <Text className="font-bold text-slate-800">{'Effective: 10 May 2026 · Version 2.0'}</Text>
+                <Text className="font-bold text-slate-800">{'Effective: 24 July 2026 · Version 2.1'}</Text>
                 {'\n\n'}
                 {'Welcome to the '}
                 <Text className="font-bold text-slate-800">{brandName}</Text>
                 {' app. By using the app you agree to these Terms in their entirety. Read them carefully — they make clear that the commercial contract is between you and the merchant, that '}
-                <Text className="font-bold text-slate-800">{'Nooks Information Technology Est.'}</Text>
+                <Text className="font-bold text-slate-800">{'Nooks Software Technologies Est.'}</Text>
                 {' is the software vendor only, and they include a liability cap and an extensive list of items Nooks is not responsible for.'}
               </Text>
 
@@ -459,12 +463,16 @@ export default function TermsModal() {
               <Text className="text-slate-600 leading-6 mb-4">
                 {'• You may delete your account at any time from the app settings.\n'}
                 {'• We may terminate or suspend your account immediately for: fraud, repeated abuse, breach of these Terms, or upon official government request.\n'}
-                {'• On termination: personal data is deleted per the Privacy Policy, and wallet balance and loyalty points are forfeited.'}
+                {'• On termination: personal data is deleted per the Privacy Policy.\n'}
+                {'• '}
+                <Text className="font-bold text-slate-800">{'Unspent wallet balance funded by paid top-ups is not automatically forfeited.'}</Text>
+                {' Where Nooks or the merchant terminates your account through no fault of yours, and Saudi law requires the return of paid balances, any unspent paid top-up balance will be refunded to your original payment method or preserved at your request.\n'}
+                {'• Promotional credit, cashback, and loyalty points remain forfeitable on termination.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'15. Amendments'}</Text>
               <Text className="text-slate-600 leading-6 mb-4">
-                {'We reserve the right to amend these Terms at any time. You will be notified of material changes in advance via email and an in-app banner. Continued use of the app after a change constitutes acceptance of the updated Terms.'}
+                {'We reserve the right to amend these Terms. Material changes will be notified to you at least 14 days before they take effect, via email and an in-app banner. Continued use of the app after a change takes effect constitutes acceptance of the updated Terms.'}
               </Text>
 
               <Text className="text-slate-800 font-bold mb-2">{'16. Governing Law & Jurisdiction'}</Text>
