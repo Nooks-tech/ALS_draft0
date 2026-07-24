@@ -39,7 +39,7 @@ export type MerchantPaymentRuntimeConfig = {
   publishableKey: string | null;
   secretKey: string | null;
   webhookSecret: string | null;
-  source: 'merchant' | 'fallback' | 'missing';
+  source: 'merchant' | 'fallback' | 'missing' | 'unavailable';
 };
 
 export type MerchantDeliveryRuntimeConfig = {
@@ -73,7 +73,12 @@ export async function getMerchantPaymentRuntimeConfig(
   const cached = paymentConfigCache.get(cacheKey);
   if (cached && Date.now() - cached.at < PAYMENT_CONFIG_TTL_MS) return cached.value;
   const value = await fetchMerchantPaymentRuntimeConfig(merchantId);
-  paymentConfigCache.set(cacheKey, { at: Date.now(), value });
+  // A transient read failure (or a not-yet-provisioned row) must not be
+  // cached and served stale for the TTL — only a resolved 'merchant' or
+  // env-fallback 'fallback' result is stable enough to cache.
+  if (value.source !== 'unavailable' && value.source !== 'missing') {
+    paymentConfigCache.set(cacheKey, { at: Date.now(), value });
+  }
   // Opportunistic prune so one-time merchant ids can't grow the map forever.
   if (paymentConfigCache.size > 2000) {
     const cutoff = Date.now() - PAYMENT_CONFIG_TTL_MS;
@@ -136,7 +141,23 @@ async function fetchMerchantPaymentRuntimeConfig(
       .maybeSingle(),
   ]);
 
-  if (error || !data) {
+  if (error) {
+    // Transient read failure (DB blip): distinct from a genuinely-absent
+    // config so the captured-payment commit path can keep the recovery
+    // candidate retryable in the sweep instead of terminalizing it.
+    return {
+      merchantId,
+      environment: 'production',
+      customerPaymentsEnabled: false,
+      applePayEnabled: false,
+      applePayMerchantId: null,
+      publishableKey: null,
+      secretKey: null,
+      webhookSecret: null,
+      source: 'unavailable',
+    };
+  }
+  if (!data) {
     return {
       merchantId,
       environment: 'production',

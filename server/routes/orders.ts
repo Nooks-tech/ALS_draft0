@@ -1340,12 +1340,16 @@ ordersRouter.post('/commit', async (req, res) => {
           !paymentRuntime.publishableKey ||
           !paymentRuntime.secretKey
         ) {
+          // A transient settings-read failure (source 'unavailable') must stay
+          // retryable so the orphan sweep can still auto-reverse this captured
+          // payment; only a genuinely-missing config or absent credentials is terminal.
+          const credentialsUnavailableTransiently = paymentRuntime.source === 'unavailable';
           await markPaymentOrphanCandidateManualReview(
             supabaseAdmin,
             recoveryCandidate.payment_id,
             recoveryLeaseToken,
             'merchant credential pair unavailable during captured-payment commit',
-            true,
+            !credentialsUnavailableTransiently,
           );
           captureError(
             new Error('Captured payment requires manual review: merchant credentials unavailable'),
